@@ -30,6 +30,8 @@ type AuditSink interface {
 	AppendPluginAudit(ctx context.Context, event AuditEvent) error
 }
 
+var ErrStreamTicketRequired = errors.New("stream ticket is required")
+
 type DiagnosticsSink interface {
 	AppendPluginDiagnostic(ctx context.Context, event DiagnosticEvent) error
 }
@@ -289,6 +291,8 @@ type CallMethodResult struct {
 	Data                 any    `json:"data,omitempty"`
 	OperationID          string `json:"operation_id,omitempty"`
 	StreamID             string `json:"stream_id,omitempty"`
+	StreamTicket         string `json:"stream_ticket,omitempty"`
+	StreamTicketID       string `json:"stream_ticket_id,omitempty"`
 	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
 	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
 	RequestHash          string `json:"request_hash,omitempty"`
@@ -353,9 +357,10 @@ type AppendStreamEventRequest struct {
 }
 
 type ReadStreamRequest struct {
-	StreamID  string `json:"stream_id"`
-	MaxEvents int    `json:"max_events,omitempty"`
-	MaxBytes  int64  `json:"max_bytes,omitempty"`
+	StreamID     string `json:"stream_id"`
+	StreamTicket string `json:"stream_ticket,omitempty"`
+	MaxEvents    int    `json:"max_events,omitempty"`
+	MaxBytes     int64  `json:"max_bytes,omitempty"`
 }
 
 type ReadStreamResult struct {
@@ -571,6 +576,27 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 	result, err := h.dispatchMethod(ctx, call.record, call.method, req)
 	if err != nil {
 		return CallMethodResult{}, err
+	}
+	if result.StreamID != "" {
+		streamTicket, err := h.surfaceTokens.MintStreamTicket(bridge.MintStreamTicketRequest{
+			PluginInstanceID:     call.record.PluginInstanceID,
+			ActiveFingerprint:    call.record.ActiveFingerprint,
+			SurfaceInstanceID:    req.SurfaceInstanceID,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			BridgeChannelID:      req.BridgeChannelID,
+			StreamID:             result.StreamID,
+			StreamDirection:      "read",
+			Method:               call.method.Method,
+			Revision:             call.revision,
+			Now:                  req.Now,
+		})
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+		result.StreamTicket = streamTicket.StreamTicket
+		result.StreamTicketID = streamTicket.StreamTicketID
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.method.called", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
 	return result, nil
@@ -1017,6 +1043,40 @@ func (h *Host) AppendStreamEvent(ctx context.Context, req AppendStreamEventReque
 }
 
 func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStreamResult, error) {
+	if strings.TrimSpace(req.StreamTicket) == "" {
+		return ReadStreamResult{}, ErrStreamTicketRequired
+	}
+	record, err := h.adapters.Streams.Get(ctx, req.StreamID)
+	if err != nil {
+		return ReadStreamResult{}, err
+	}
+	plugin, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		return ReadStreamResult{}, err
+	}
+	if _, err := h.surfaceTokens.ValidateStreamTicket(bridge.ValidateStreamTicketRequest{
+		StreamTicket: req.StreamTicket,
+		Audience: bridge.Audience{
+			PluginInstanceID:     record.PluginInstanceID,
+			ActiveFingerprint:    plugin.ActiveFingerprint,
+			SurfaceInstanceID:    record.SurfaceInstanceID,
+			OwnerSessionHash:     record.OwnerSessionHash,
+			OwnerUserHash:        record.OwnerUserHash,
+			SessionChannelIDHash: record.SessionChannelIDHash,
+			BridgeChannelID:      record.BridgeChannelID,
+			StreamID:             record.StreamID,
+			StreamDirection:      string(record.Direction),
+			Method:               record.Method,
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     plugin.PolicyRevision,
+			ManagementRevision: plugin.ManagementRevision,
+			RevokeEpoch:        plugin.RevokeEpoch,
+		},
+		Now: time.Time{},
+	}); err != nil {
+		return ReadStreamResult{}, err
+	}
 	record, events, err := h.adapters.Streams.Read(ctx, stream.ReadRequest{
 		StreamID:  req.StreamID,
 		MaxEvents: req.MaxEvents,
@@ -1765,6 +1825,8 @@ func (h *Host) registerStreamIfNeeded(ctx context.Context, record registry.Plugi
 		Effect:               string(method.Effect),
 		Execution:            string(method.Execution),
 		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		Direction:            stream.DirectionRead,

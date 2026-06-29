@@ -825,10 +825,16 @@ func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "stream_id is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
+	streamTicket := strings.TrimSpace(r.URL.Query().Get("ticket"))
+	if streamTicket == "" {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "stream ticket is required", ErrorCode: string(security.ErrPermissionDenied)})
+		return
+	}
 	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
-		StreamID:  streamID,
-		MaxEvents: defaultStreamReadMaxEvents,
-		MaxBytes:  defaultStreamReadMaxBytes,
+		StreamID:     streamID,
+		StreamTicket: streamTicket,
+		MaxEvents:    defaultStreamReadMaxEvents,
+		MaxBytes:     defaultStreamReadMaxBytes,
 	})
 	if err != nil {
 		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStreamError(err))})

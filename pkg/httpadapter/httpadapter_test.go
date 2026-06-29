@@ -530,7 +530,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 		"plugin_gateway_token":    bridgeResp.GatewayToken,
 		"method":                  "logs.tail",
 	})
-	if result.StreamID != "stream_http_1" {
+	if result.StreamID != "stream_http_1" || result.StreamTicket == "" {
 		t.Fatalf("rpc stream result mismatch: %#v", result)
 	}
 	if _, err := h.AppendStreamEvent(context.Background(), host.AppendStreamEventRequest{
@@ -542,6 +542,13 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1", nil)
 	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stream without ticket status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stream status = %d body = %s", rec.Code, rec.Body.String())
@@ -559,6 +566,13 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	}
 	if event.StreamID != "stream_http_1" || event.Sequence != 1 || string(event.Data) != "line 1" {
 		t.Fatalf("stream event mismatch: %#v body = %s", event, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stream replay status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
 

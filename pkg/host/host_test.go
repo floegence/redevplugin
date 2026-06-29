@@ -452,7 +452,7 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if result.StreamID != "stream_logs_1" {
+	if result.StreamID != "stream_logs_1" || result.StreamTicket == "" || result.StreamTicketID == "" {
 		t.Fatalf("CallPluginMethod() stream result mismatch: %#v", result)
 	}
 	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
@@ -461,12 +461,18 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendStreamEvent() error = %v", err)
 	}
-	streamResult, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1"})
+	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1"}); !errors.Is(err, ErrStreamTicketRequired) {
+		t.Fatalf("ReadStream() without ticket error = %v, want %v", err, ErrStreamTicketRequired)
+	}
+	streamResult, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1", StreamTicket: result.StreamTicket})
 	if err != nil {
 		t.Fatalf("ReadStream() error = %v", err)
 	}
 	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != "line 1" {
 		t.Fatalf("stream read mismatch: %#v", streamResult)
+	}
+	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1", StreamTicket: result.StreamTicket}); !errors.Is(err, bridge.ErrTokenReplay) {
+		t.Fatalf("ReadStream() replay error = %v, want %v", err, bridge.ErrTokenReplay)
 	}
 	if !audits.hasEvent("plugin.stream.started") {
 		t.Fatalf("missing stream audit event: %#v", audits.events)

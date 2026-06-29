@@ -42,6 +42,8 @@ type Record struct {
 	Effect               string     `json:"effect,omitempty"`
 	Execution            string     `json:"execution"`
 	SurfaceInstanceID    string     `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string     `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string     `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string     `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string     `json:"bridge_channel_id,omitempty"`
 	Direction            Direction  `json:"direction"`
@@ -71,6 +73,8 @@ type RegisterRequest struct {
 	Effect               string    `json:"effect,omitempty"`
 	Execution            string    `json:"execution"`
 	SurfaceInstanceID    string    `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string    `json:"bridge_channel_id,omitempty"`
 	Direction            Direction `json:"direction,omitempty"`
@@ -171,6 +175,8 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 		Effect:               req.Effect,
 		Execution:            req.Execution,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		Direction:            direction,

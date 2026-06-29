@@ -156,6 +156,11 @@ paths:
           in: path
           required: true
           schema: { type: string }
+        - name: ticket
+          in: query
+          required: true
+          schema: { type: string }
+          description: Single-use stream ticket returned by the RPC call that created the stream.
       responses:
         "200":
           description: Plugin stream events drained as newline-delimited JSON.
