@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/storage"
 )
 
 type AuditSink interface {
@@ -105,6 +106,7 @@ type Adapters struct {
 	SurfaceCatalog          SurfaceCatalogSink
 	Capabilities            *capability.Registry
 	SurfaceTokens           *bridge.SurfaceTokenService
+	Storage                 storage.Broker
 }
 
 type Host struct {
@@ -135,6 +137,21 @@ type UninstallRequest struct {
 	PluginInstanceID string
 	DeleteData       bool
 	Now              time.Time
+}
+
+type ExportDataRequest struct {
+	PluginInstanceID string
+	IncludeSecrets   bool
+}
+
+type ImportDataRequest struct {
+	PluginInstanceID string
+	ArchiveRef       string
+	DeleteExisting   bool
+}
+
+type ExportDataResult struct {
+	ArchiveRef string `json:"archive_ref"`
 }
 
 type OpenSurfaceRequest struct {
@@ -294,6 +311,9 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	if err := h.canRun(ctx, record); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	enabled, err := h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableEnabled, "", req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -334,11 +354,18 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 }
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (registry.PluginRecord, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.deleteOrRetainStorage(ctx, record, req.DeleteData); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	retained := registry.RetainedDataRetained
 	if req.DeleteData {
 		retained = registry.RetainedDataDeleted
 	}
-	record, err := h.adapters.Registry.MarkUninstalled(ctx, req.PluginInstanceID, retained, req.Now)
+	record, err = h.adapters.Registry.MarkUninstalled(ctx, req.PluginInstanceID, retained, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -353,6 +380,57 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.uninstalled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return record, nil
+}
+
+func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (ExportDataResult, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return ExportDataResult{}, err
+	}
+	if h.adapters.Storage == nil {
+		return ExportDataResult{}, errors.New("storage broker is required")
+	}
+	archiveRef, err := h.adapters.Storage.ExportData(ctx, storage.ExportRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		IncludeSecrets:   req.IncludeSecrets,
+	})
+	if err != nil {
+		return ExportDataResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.data.exported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return ExportDataResult{ArchiveRef: archiveRef}, nil
+}
+
+func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) error {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	if h.adapters.Storage == nil {
+		return errors.New("storage broker is required")
+	}
+	namespaces, err := storageNamespacesFromManifest(record)
+	if err != nil {
+		return err
+	}
+	if len(namespaces) == 0 {
+		return errors.New("target plugin does not declare storage")
+	}
+	for _, ns := range namespaces {
+		if err := h.adapters.Storage.EnsureNamespace(ctx, ns); err != nil {
+			return fmt.Errorf("ensure storage namespace %q: %w", ns.StoreID, err)
+		}
+	}
+	if err := h.adapters.Storage.ImportData(ctx, storage.ImportRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		ArchiveRef:       req.ArchiveRef,
+		DeleteExisting:   req.DeleteExisting,
+		TargetNamespaces: namespaces,
+	}); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.data.imported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
 }
 
 func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
@@ -374,6 +452,62 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 		}
 	}
 	return nil
+}
+
+func (h *Host) ensureStorageNamespaces(ctx context.Context, record registry.PluginRecord) error {
+	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
+		return nil
+	}
+	if h.adapters.Storage == nil {
+		return errors.New("storage broker is required for plugins that declare storage")
+	}
+	namespaces, err := storageNamespacesFromManifest(record)
+	if err != nil {
+		return err
+	}
+	for _, ns := range namespaces {
+		if err := h.adapters.Storage.EnsureNamespace(ctx, ns); err != nil {
+			return fmt.Errorf("ensure storage namespace %q: %w", ns.StoreID, err)
+		}
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.storage.ensured", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func (h *Host) deleteOrRetainStorage(ctx context.Context, record registry.PluginRecord, deleteData bool) error {
+	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
+		return nil
+	}
+	if h.adapters.Storage == nil {
+		return errors.New("storage broker is required for plugins that declare storage")
+	}
+	if err := h.adapters.Storage.DeleteNamespace(ctx, record.PluginInstanceID, deleteData); err != nil {
+		return err
+	}
+	eventType := "plugin.storage.retained"
+	if deleteData {
+		eventType = "plugin.storage.deleted"
+	}
+	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Namespace, error) {
+	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
+		return nil, nil
+	}
+	namespaces := make([]storage.Namespace, 0, len(record.Manifest.Storage.Stores))
+	for _, store := range record.Manifest.Storage.Stores {
+		namespaces = append(namespaces, storage.Namespace{
+			PluginInstanceID: record.PluginInstanceID,
+			StoreID:          store.StoreID,
+			Kind:             storage.StoreKind(store.Kind),
+			Scope:            store.Scope,
+			QuotaBytes:       store.QuotaBytes,
+			SchemaVersion:    store.SchemaVersion,
+		})
+	}
+	return namespaces, nil
 }
 
 func (h *Host) audit(ctx context.Context, event AuditEvent) {

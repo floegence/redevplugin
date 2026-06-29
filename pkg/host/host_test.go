@@ -13,6 +13,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/storage"
 )
 
 func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
@@ -165,7 +166,150 @@ func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	}
 }
 
+func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
+	storageBroker := storage.NewMemoryBroker()
+	host, _, _ := newTestHostWithStorage(t, true, true, storageBroker)
+	installed, err := InstallPackageBytes(context.Background(), host, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	namespaces, err := storageBroker.ListNamespaces(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != 2 {
+		t.Fatalf("namespace count = %d, want 2: %#v", len(namespaces), namespaces)
+	}
+	if namespaces[0].StoreID != "cache" || namespaces[0].Kind != storage.StoreKV || namespaces[0].Scope != "user" {
+		t.Fatalf("first namespace mismatch: %#v", namespaces[0])
+	}
+	if namespaces[1].StoreID != "db" || namespaces[1].Kind != storage.StoreSQLite || namespaces[1].Scope != "environment" {
+		t.Fatalf("second namespace mismatch: %#v", namespaces[1])
+	}
+}
+
+func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
+	ctx := context.Background()
+	retainBroker := storage.NewMemoryBroker()
+	retainHost, _, _ := newTestHostWithStorage(t, true, true, retainBroker)
+	retainedPlugin, err := InstallPackageBytes(ctx, retainHost, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatalf("UninstallPlugin(retain) error = %v", err)
+	}
+	retained, err := retainBroker.ListNamespaces(ctx, retainedPlugin.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 2 || retained[0].State != storage.NamespaceRetained || retained[1].State != storage.NamespaceRetained {
+		t.Fatalf("retained namespaces mismatch: %#v", retained)
+	}
+
+	deleteBroker := storage.NewMemoryBroker()
+	deleteHost, _, _ := newTestHostWithStorage(t, true, true, deleteBroker)
+	deletedPlugin, err := InstallPackageBytes(ctx, deleteHost, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin(delete) error = %v", err)
+	}
+	deleted, err := deleteBroker.ListNamespaces(ctx, deletedPlugin.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("deleted namespaces still present: %#v", deleted)
+	}
+}
+
+func TestExportImportPluginData(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	h, _, audits := newTestHostWithStorage(t, true, true, broker)
+	source, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.SetUsage(ctx, source.PluginInstanceID, "db", 2048); err != nil {
+		t.Fatal(err)
+	}
+
+	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("ExportPluginData() error = %v", err)
+	}
+	if err := broker.SetUsage(ctx, source.PluginInstanceID, "db", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ImportPluginData(ctx, ImportDataRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		ArchiveRef:       exported.ArchiveRef,
+		DeleteExisting:   true,
+	}); err != nil {
+		t.Fatalf("ImportPluginData() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, source.PluginInstanceID, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.UsageBytes != 2048 {
+		t.Fatalf("imported usage = %d, want 2048", usage.UsageBytes)
+	}
+	if !audits.hasEvent("plugin.data.exported") || !audits.hasEvent("plugin.data.imported") {
+		t.Fatalf("missing data audit events: %#v", audits.events)
+	}
+}
+
+func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	source, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target, err := InstallPackageBytes(ctx, h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ImportPluginData(ctx, ImportDataRequest{
+		PluginInstanceID: target.PluginInstanceID,
+		ArchiveRef:       exported.ArchiveRef,
+		DeleteExisting:   true,
+	}); err == nil {
+		t.Fatal("ImportPluginData() expected storage declaration error")
+	}
+}
+
 func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
+	return newTestHostWithStorage(t, developerMode, localGenerated, nil)
+}
+
+func newTestHostWithStorage(t *testing.T, developerMode bool, localGenerated bool, storageBroker storage.Broker) (*Host, *surfaceSink, *auditSink) {
 	t.Helper()
 	surfaces := &surfaceSink{}
 	audits := &auditSink{}
@@ -177,6 +321,7 @@ func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, 
 		},
 		SurfaceCatalog: surfaces,
 		Audit:          audits,
+		Storage:        storageBroker,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,6 +334,18 @@ func buildFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), fixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Plugin</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildStorageFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), storageFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Storage</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -221,6 +378,62 @@ func fixtureManifestJSON() string {
 		"surfaces": [
 			{"surface_id": "lifecycle.activity", "kind": "activity", "label": "Lifecycle", "entry": "ui/index.html"}
 		]
+	}`
+}
+
+func storageFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.storage",
+			"display_name": "Storage",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "storage.activity", "kind": "activity", "label": "Storage", "entry": "ui/index.html"}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "cache",
+					"kind": "kv",
+					"scope": "user",
+					"quota_bytes": 4096,
+					"schema_version": 1,
+					"migration": {
+						"from_version": 1,
+						"to_version": 1,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				},
+				{
+					"store_id": "db",
+					"kind": "sqlite",
+					"scope": "environment",
+					"quota_bytes": 8192,
+					"schema_version": 2,
+					"migration": {
+						"from_version": 1,
+						"to_version": 2,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				}
+			]
+		}
 	}`
 }
 
@@ -263,4 +476,13 @@ type auditSink struct {
 func (s *auditSink) AppendPluginAudit(_ context.Context, event AuditEvent) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+func (s *auditSink) hasEvent(eventType string) bool {
+	for _, event := range s.events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }

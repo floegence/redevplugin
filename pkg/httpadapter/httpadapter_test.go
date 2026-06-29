@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/storage"
 )
 
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
@@ -98,6 +99,35 @@ func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestHandlerDataExportImportFlow(t *testing.T) {
+	storageBroker := storage.NewMemoryBroker()
+	h := newHTTPTestHostWithStorage(t, storageBroker)
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storageBroker.SetUsage(context.Background(), installed.PluginInstanceID, "db", 1024); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+
+	exported := postJSON[host.ExportDataResult](t, handler, "/_redeven_proxy/api/plugins/data/export", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if exported.ArchiveRef == "" {
+		t.Fatal("export response missing archive_ref")
+	}
+
+	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/data/import", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"archive_ref":        exported.ArchiveRef,
+		"delete_existing":    true,
+	})
+}
+
 func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -128,10 +158,15 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 }
 
 func newHTTPTestHost(t *testing.T) *host.Host {
+	return newHTTPTestHostWithStorage(t, nil)
+}
+
+func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *host.Host {
 	t.Helper()
 	h, err := host.New(host.Adapters{
 		SessionResolver: httpTestSessionResolver{},
 		Policy:          httpTestPolicy{},
+		Storage:         storageBroker,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +179,18 @@ func buildHTTPFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPStorageFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpStorageFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Storage</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -176,6 +223,45 @@ func httpFixtureManifestJSON() string {
 		"surfaces": [
 			{"surface_id": "http.activity", "kind": "activity", "label": "HTTP", "entry": "ui/index.html"}
 		]
+	}`
+}
+
+func httpStorageFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.storage",
+			"display_name": "HTTP Storage",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.storage.activity", "kind": "activity", "label": "HTTP Storage", "entry": "ui/index.html"}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "db",
+					"kind": "sqlite",
+					"scope": "environment",
+					"quota_bytes": 4096,
+					"schema_version": 1,
+					"migration": {
+						"from_version": 1,
+						"to_version": 1,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				}
+			]
+		}
 	}`
 }
 

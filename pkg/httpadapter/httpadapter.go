@@ -11,6 +11,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/pkg/storage"
 )
 
 type Envelope struct {
@@ -47,6 +48,17 @@ type bridgeTokenRequest struct {
 	BridgeChannelID string           `json:"bridge_channel_id"`
 }
 
+type exportDataRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	IncludeSecrets   bool   `json:"include_secrets,omitempty"`
+}
+
+type importDataRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	ArchiveRef       string `json:"archive_ref"`
+	DeleteExisting   bool   `json:"delete_existing,omitempty"`
+}
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/surfaces/open":
@@ -55,6 +67,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleExchangeAssetTicket(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bridge-token"):
 		h.handleBridgeToken(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/export":
+		h.handleExportData(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
+		h.handleImportData(w, r)
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 	}
@@ -184,6 +200,48 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
 }
 
+func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req exportDataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.ExportPluginData(r.Context(), host.ExportDataRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		IncludeSecrets:   req.IncludeSecrets,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForStorageError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStorageError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
+func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req importDataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if err := h.Host.ImportPluginData(r.Context(), host.ImportDataRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		ArchiveRef:       req.ArchiveRef,
+		DeleteExisting:   req.DeleteExisting,
+	}); err != nil {
+		WriteJSON(w, httpStatusForStorageError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStorageError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"imported": true}})
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	decoder := json.NewDecoder(r.Body)
@@ -221,5 +279,27 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 		return security.ErrGatewayTokenChannelMismatch
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func errorCodeForStorageError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return security.ErrStorageQuotaExceeded
+	case errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+		return security.ErrInvalidRequest
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForStorageError(err error) int {
+	switch {
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+		return http.StatusBadRequest
+	default:
+		return http.StatusForbidden
 	}
 }
