@@ -127,6 +127,32 @@ func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) 
 	}
 }
 
+func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{storageBroker: storage.NewMemoryBroker()})
+	handler := Handler{Host: h}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPBlockedNetworkFixturePackage(t)),
+		"trust_state":    "verified",
+	})
+	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/enable", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("blocked network enable status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrNetworkTargetDenied) {
+		t.Fatalf("error_code = %q body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+}
+
 func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
 	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
@@ -590,6 +616,18 @@ func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPBlockedNetworkFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpBlockedNetworkFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Network</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func writeHTTPFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
@@ -749,6 +787,50 @@ func httpOperationRPCFixtureManifestJSON() string {
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
 			}
 		]
+	}`
+}
+
+func httpBlockedNetworkFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.network",
+			"display_name": "HTTP Network",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.network.activity", "kind": "activity", "label": "HTTP Network", "entry": "ui/index.html"}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "cache",
+					"kind": "kv",
+					"scope": "user",
+					"quota_bytes": 4096,
+					"schema_version": 1,
+					"migration": {
+						"from_version": 1,
+						"to_version": 1,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				}
+			]
+		},
+		"network_access": {
+			"connectors": [
+				{"connector_id": "metadata", "transport": "http", "scope": "user", "destinations": ["http://169.254.169.254"]}
+			]
+		}
 	}`
 }
 

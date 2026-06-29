@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -598,6 +599,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, operation.ErrDeleteBlocked):
 		return security.ErrOperationBlocked
+	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrConnectorDenied):
+		return security.ErrNetworkTargetDenied
 	default:
 		return security.ErrPermissionDenied
 	}
@@ -611,6 +614,8 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, operation.ErrDeleteBlocked):
 		return http.StatusConflict
+	case errors.Is(err, connectivity.ErrInvalidConnector), errors.Is(err, connectivity.ErrTargetDenied), errors.Is(err, connectivity.ErrConnectorDenied):
+		return http.StatusForbidden
 	default:
 		return http.StatusForbidden
 	}

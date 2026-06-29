@@ -355,6 +355,27 @@ func Validate(m Manifest) error {
 			}
 		}
 	}
+	if m.NetworkAccess != nil {
+		connectors := map[string]struct{}{}
+		for i, connector := range m.NetworkAccess.Connectors {
+			if strings.TrimSpace(connector.ConnectorID) == "" {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].connector_id", i), Message: "is required"}
+			}
+			if _, ok := connectors[connector.ConnectorID]; ok {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].connector_id", i), Message: "must be unique"}
+			}
+			connectors[connector.ConnectorID] = struct{}{}
+			if !validNetworkTransport(connector.Transport) {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].transport", i), Message: "must be http, websocket, tcp, or udp"}
+			}
+			if connector.Scope != "user" && connector.Scope != "environment" {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].scope", i), Message: "must be user or environment"}
+			}
+			if len(connector.Destinations) == 0 {
+				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].destinations", i), Message: "must not be empty"}
+			}
+		}
+	}
 
 	return nil
 }
@@ -405,6 +426,15 @@ func validEffect(effect MethodEffect) bool {
 func validExecutionMode(mode MethodExecutionMode) bool {
 	switch mode {
 	case MethodExecutionSync, MethodExecutionOperation, MethodExecutionSubscription:
+		return true
+	default:
+		return false
+	}
+}
+
+func validNetworkTransport(transport string) bool {
+	switch transport {
+	case "http", "websocket", "tcp", "udp":
 		return true
 	default:
 		return false

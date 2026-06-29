@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/network-grant-v1.schema.json",
+  "title": "ReDevPlugin network grant v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grant_id",
+    "plugin_instance_id",
+    "active_fingerprint",
+    "policy_revision",
+    "management_revision",
+    "revoke_epoch",
+    "connector_id",
+    "transport",
+    "destination",
+    "target_classifier_version",
+    "expires_at"
+  ],
+  "properties": {
+    "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
+    "plugin_instance_id": { "type": "string", "minLength": 1 },
+    "active_fingerprint": { "type": "string", "minLength": 1 },
+    "policy_revision": { "type": "integer", "minimum": 0 },
+    "management_revision": { "type": "integer", "minimum": 0 },
+    "revoke_epoch": { "type": "integer", "minimum": 0 },
+    "connector_id": { "type": "string", "minLength": 1 },
+    "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+    "destination": { "$ref": "#/$defs/destination" },
+    "runtime_generation_id": { "type": "string" },
+    "target_classifier_version": { "const": "target-classifier-v1" },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "host", "port"],
+      "properties": {
+        "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+        "scheme": { "enum": ["http", "https", "ws", "wss"] },
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    }
+  }
+}

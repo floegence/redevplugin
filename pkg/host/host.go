@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -109,6 +110,7 @@ type Adapters struct {
 	Capabilities            *capability.Registry
 	SurfaceTokens           *bridge.SurfaceTokenService
 	Storage                 storage.Broker
+	Connectivity            connectivity.Broker
 	Operations              operation.Store
 }
 
@@ -228,6 +230,16 @@ type FinishOperationRequest struct {
 	Now         time.Time
 }
 
+type MintConnectionGrantRequest struct {
+	PluginInstanceID    string                 `json:"plugin_instance_id"`
+	ConnectorID         string                 `json:"connector_id"`
+	Transport           connectivity.Transport `json:"transport"`
+	Destination         string                 `json:"destination"`
+	RuntimeGenerationID string                 `json:"runtime_generation_id,omitempty"`
+	Now                 time.Time              `json:"now,omitempty"`
+	TTL                 time.Duration          `json:"ttl,omitempty"`
+}
+
 func New(adapters Adapters) (*Host, error) {
 	if adapters.SessionResolver == nil {
 		return nil, errors.New("session resolver is required")
@@ -243,6 +255,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.SurfaceTokens == nil {
 		adapters.SurfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	}
+	if adapters.Connectivity == nil {
+		adapters.Connectivity = connectivity.NewMemoryBroker()
 	}
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
@@ -536,6 +551,37 @@ func (h *Host) FinishOperation(ctx context.Context, req FinishOperationRequest) 
 	return record, nil
 }
 
+func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (connectivity.ConnectionGrant, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return connectivity.ConnectionGrant{}, err
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return connectivity.ConnectionGrant{}, errors.New("plugin is not enabled")
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return connectivity.ConnectionGrant{}, err
+	}
+	grant, err := h.adapters.Connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:    record.PluginInstanceID,
+		ActiveFingerprint:   record.ActiveFingerprint,
+		PolicyRevision:      record.PolicyRevision,
+		ManagementRevision:  record.ManagementRevision,
+		RevokeEpoch:         record.RevokeEpoch,
+		ConnectorID:         req.ConnectorID,
+		Transport:           req.Transport,
+		Destination:         req.Destination,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		Now:                 req.Now,
+		TTL:                 req.TTL,
+	})
+	if err != nil {
+		return connectivity.ConnectionGrant{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return grant, nil
+}
+
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -544,11 +590,26 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	if err := h.canRun(ctx, record); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if _, _, err := compileConnectivityPolicy(record); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	enabled, err := h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableEnabled, "", req.Now)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	connectivityPolicy, hasConnectivityPolicy, err := compileConnectivityPolicy(enabled)
+	if err != nil {
+		_, _ = h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableDisabledByPolicy, "connectivity policy compilation failed", req.Now)
+		return registry.PluginRecord{}, err
+	}
+	if err := h.installConnectivityPolicy(ctx, enabled, connectivityPolicy, hasConnectivityPolicy); err != nil {
+		_, _ = h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableDisabledByPolicy, "connectivity policy installation failed", req.Now)
+		if h.adapters.Connectivity != nil {
+			_ = h.adapters.Connectivity.RemovePolicy(ctx, enabled.PluginInstanceID)
+		}
 		return registry.PluginRecord{}, err
 	}
 	if h.adapters.SurfaceCatalog != nil {
@@ -594,6 +655,9 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 	if len(operations) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
 	}
+	if h.adapters.Connectivity != nil {
+		_ = h.adapters.Connectivity.RemovePolicy(ctx, disabled.PluginInstanceID)
+	}
 	return disabled, nil
 }
 
@@ -616,6 +680,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	}
 	if err := h.deleteOrRetainStorage(ctx, record, req.DeleteData); err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if h.adapters.Connectivity != nil {
+		_ = h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID)
 	}
 	retained := registry.RetainedDataRetained
 	if req.DeleteData {
@@ -897,6 +964,38 @@ func (h *Host) ensureStorageNamespaces(ctx context.Context, record registry.Plug
 		}
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.storage.ensured", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func compileConnectivityPolicy(record registry.PluginRecord) (connectivity.PolicySet, bool, error) {
+	if record.Manifest.NetworkAccess == nil || len(record.Manifest.NetworkAccess.Connectors) == 0 {
+		return connectivity.PolicySet{}, false, nil
+	}
+	policy, err := connectivity.CompilePolicy(connectivity.CompileRequest{
+		PluginInstanceID:   record.PluginInstanceID,
+		PluginID:           record.PluginID,
+		ActiveFingerprint:  record.ActiveFingerprint,
+		PolicyRevision:     record.PolicyRevision,
+		ManagementRevision: record.ManagementRevision,
+		RevokeEpoch:        record.RevokeEpoch,
+		Manifest:           record.Manifest,
+	})
+	if err != nil {
+		return connectivity.PolicySet{}, false, err
+	}
+	return policy, true, nil
+}
+
+func (h *Host) installConnectivityPolicy(ctx context.Context, record registry.PluginRecord, policy connectivity.PolicySet, hasPolicy bool) error {
+	if !hasPolicy {
+		return nil
+	}
+	if h.adapters.Connectivity != nil {
+		if err := h.adapters.Connectivity.InstallPolicy(ctx, policy); err != nil {
+			return err
+		}
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.policy_installed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 

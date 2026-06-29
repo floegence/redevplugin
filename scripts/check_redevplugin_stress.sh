@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "redevplugin stress gate is not implemented yet; this placeholder is release-blocking until replaced" >&2
-exit 2
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
+(
+  cd "$ROOT_DIR"
+  go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/storage
+)

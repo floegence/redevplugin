@@ -71,6 +71,41 @@ func TestValidateRequiresCancelPolicyForSubscription(t *testing.T) {
 	}
 }
 
+func TestValidateNetworkConnectors(t *testing.T) {
+	m := validManifest()
+	m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
+		ConnectorID:  "api",
+		Transport:    "http",
+		Scope:        "user",
+		Destinations: []string{"api.example.com"},
+	}}}
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	m.NetworkAccess.Connectors = append(m.NetworkAccess.Connectors, NetworkConnectorSpec{
+		ConnectorID:  "api",
+		Transport:    "tcp",
+		Scope:        "environment",
+		Destinations: []string{"db.example.com:3306"},
+	})
+	if err := Validate(m); err == nil {
+		t.Fatal("Validate() expected duplicate connector error")
+	}
+
+	m.NetworkAccess.Connectors[1].ConnectorID = "db"
+	m.NetworkAccess.Connectors[1].Transport = "icmp"
+	if err := Validate(m); err == nil {
+		t.Fatal("Validate() expected transport error")
+	}
+
+	m.NetworkAccess.Connectors[1].Transport = "tcp"
+	m.NetworkAccess.Connectors[1].Scope = "global"
+	if err := Validate(m); err == nil {
+		t.Fatal("Validate() expected scope error")
+	}
+}
+
 func validManifest() Manifest {
 	return Manifest{
 		SchemaVersion: "redeven.plugin.manifest.v1",

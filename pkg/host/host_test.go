@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -535,6 +537,84 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	}
 }
 
+func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
+	connectivityBroker := connectivity.NewMemoryBroker()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		storageBroker:      storage.NewMemoryBroker(),
+		connectivityBroker: connectivityBroker,
+	})
+	installed, err := InstallPackageBytes(context.Background(), h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	if !audits.hasEvent("plugin.connectivity.policy_installed") {
+		t.Fatalf("missing connectivity policy audit event: %#v", audits.events)
+	}
+	grant, err := h.MintConnectionGrant(context.Background(), MintConnectionGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		ConnectorID:         "mysql",
+		Transport:           connectivity.TransportTCP,
+		Destination:         "db.example.com:3306",
+		RuntimeGenerationID: "runtime_gen_1",
+		TTL:                 time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("MintConnectionGrant() error = %v", err)
+	}
+	if grant.GrantID == "" || grant.PluginInstanceID != installed.PluginInstanceID || grant.Destination.Port != 3306 {
+		t.Fatalf("grant mismatch: %#v", grant)
+	}
+	if !audits.hasEvent("plugin.connectivity.grant_minted") {
+		t.Fatalf("missing connectivity grant audit event: %#v", audits.events)
+	}
+
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test"}); err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		ActiveFingerprint:  installed.ActiveFingerprint,
+		PolicyRevision:     installed.PolicyRevision,
+		ManagementRevision: installed.ManagementRevision,
+		RevokeEpoch:        installed.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant() after disable error = %v, want ErrConnectorDenied", err)
+	}
+}
+
+func TestEnableRejectsBlockedNetworkTargetBeforeStorageSideEffects(t *testing.T) {
+	ctx := context.Background()
+	storageBroker := storage.NewMemoryBroker()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		storageBroker:      storageBroker,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildBlockedNetworkFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); !errors.Is(err, connectivity.ErrTargetDenied) {
+		t.Fatalf("EnablePlugin() error = %v, want ErrTargetDenied", err)
+	}
+	namespaces, err := storageBroker.ListNamespaces(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != 0 {
+		t.Fatalf("storage namespaces created despite blocked network target: %#v", namespaces)
+	}
+}
+
 func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	ctx := context.Background()
 	retainBroker := storage.NewMemoryBroker()
@@ -802,12 +882,13 @@ func newTestHostWithStorage(t *testing.T, developerMode bool, localGenerated boo
 }
 
 type testHostOptions struct {
-	developerMode     bool
-	localGenerated    bool
-	policyDecision    PolicyDecision
-	storageBroker     storage.Broker
-	capabilityID      string
-	capabilityAdapter capability.Adapter
+	developerMode      bool
+	localGenerated     bool
+	policyDecision     PolicyDecision
+	storageBroker      storage.Broker
+	connectivityBroker connectivity.Broker
+	capabilityID       string
+	capabilityAdapter  capability.Adapter
 }
 
 func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
@@ -832,6 +913,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		SurfaceCatalog: surfaces,
 		Audit:          audits,
 		Storage:        opts.storageBroker,
+		Connectivity:   opts.connectivityBroker,
 		Capabilities:   capabilities,
 	})
 	if err != nil {
@@ -893,6 +975,30 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Operation</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildNetworkFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(false))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Network</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildBlockedNetworkFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(true))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Network</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1076,6 +1182,57 @@ func operationRPCFixtureManifestJSON() string {
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
 			}
 		]
+	}`
+}
+
+func networkFixtureManifestJSON(blocked bool) string {
+	httpDestination := "https://api.example.com"
+	if blocked {
+		httpDestination = "http://localhost"
+	}
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.network",
+			"display_name": "Network",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "network.activity", "kind": "activity", "label": "Network", "entry": "ui/index.html"}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "cache",
+					"kind": "kv",
+					"scope": "user",
+					"quota_bytes": 4096,
+					"schema_version": 1,
+					"migration": {
+						"from_version": 1,
+						"to_version": 1,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				}
+			]
+		},
+		"network_access": {
+			"connectors": [
+				{"connector_id": "api", "transport": "http", "scope": "user", "destinations": [` + strconv.Quote(httpDestination) + `]},
+				{"connector_id": "stream", "transport": "websocket", "scope": "user", "destinations": ["wss://stream.example.com"]},
+				{"connector_id": "mysql", "transport": "tcp", "scope": "environment", "destinations": ["db.example.com:3306"]},
+				{"connector_id": "metrics", "transport": "udp", "scope": "environment", "destinations": ["metrics.example.com:8125"]}
+			]
+		}
 	}`
 }
 
