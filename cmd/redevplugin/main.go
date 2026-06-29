@@ -260,6 +260,23 @@ func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
 			Kind:      manifest.SurfaceActivity,
 			Label:     displayName,
 			Entry:     "ui/index.html",
+			Method:    "worker.echo",
+		}},
+		Workers: []manifest.WorkerSpec{{
+			WorkerID:         "backend",
+			Artifact:         "workers/backend.wasm",
+			ABI:              "redeven-wasm-worker-v1",
+			Mode:             manifest.WorkerModeJob,
+			Scope:            "user",
+			MemoryLimitBytes: 16 << 20,
+		}},
+		Methods: []manifest.MethodSpec{{
+			Method:         "worker.echo",
+			Effect:         manifest.MethodEffectRead,
+			Execution:      manifest.MethodExecutionSync,
+			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redeven_worker_invoke"},
+			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
+			ResponseSchema: map[string]any{"type": "object"},
 		}},
 	}
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
@@ -271,6 +288,9 @@ func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
 		"ui/index.html":        []byte(scaffoldIndexHTML(displayName)),
 		"ui/assets/app.js":     []byte(scaffoldAppJS(displayName)),
 		"ui/assets/styles.css": []byte(scaffoldStylesCSS()),
+		"workers/backend.wat":  []byte(scaffoldWorkerWAT()),
+		"workers/backend.wasm": minimalWorkerWASM(),
+		"workers/abi.json":     []byte(scaffoldWorkerABIJSON()),
 	}
 	if _, err := os.Stat(outDir); err == nil {
 		entries, err := os.ReadDir(outDir)
@@ -590,6 +610,7 @@ func scaffoldIndexHTML(displayName string) string {
 		"        <p class=\"eyebrow\">Plugin surface</p>\n" +
 		"        <h1>" + title + "</h1>\n" +
 		"        <p class=\"status\" id=\"status\">Ready</p>\n" +
+		"        <button id=\"invoke-worker\" type=\"button\">Invoke backend</button>\n" +
 		"      </section>\n" +
 		"    </main>\n" +
 		"  </body>\n" +
@@ -599,8 +620,16 @@ func scaffoldIndexHTML(displayName string) string {
 func scaffoldAppJS(displayName string) string {
 	message, _ := json.Marshal(displayName + " loaded")
 	return "const status = document.getElementById('status');\n" +
+		"const invokeButton = document.getElementById('invoke-worker');\n" +
 		"if (status) {\n" +
 		"  status.textContent = " + string(message) + ";\n" +
+		"}\n" +
+		"if (invokeButton) {\n" +
+		"  invokeButton.addEventListener('click', () => {\n" +
+		"    if (status) {\n" +
+		"      status.textContent = 'Backend method declared as worker.echo';\n" +
+		"    }\n" +
+		"  });\n" +
 		"}\n"
 }
 
@@ -639,7 +668,49 @@ func scaffoldStylesCSS() string {
 		".status {\n" +
 		"  margin: 0;\n" +
 		"  font-size: 14px;\n" +
+		"}\n\n" +
+		"button {\n" +
+		"  width: fit-content;\n" +
+		"  border: 1px solid ButtonBorder;\n" +
+		"  border-radius: 6px;\n" +
+		"  background: ButtonFace;\n" +
+		"  color: ButtonText;\n" +
+		"  cursor: pointer;\n" +
+		"  font: inherit;\n" +
+		"  padding: 8px 12px;\n" +
 		"}\n"
+}
+
+func scaffoldWorkerWAT() string {
+	return "(module\n" +
+		"  ;; Minimal ReDevPlugin worker scaffold. Replace this module with a\n" +
+		"  ;; generated worker that implements redeven-wasm-worker-v1.\n" +
+		"  (func $redeven_worker_invoke (export \"redeven_worker_invoke\")\n" +
+		"    nop)\n" +
+		")\n"
+}
+
+func scaffoldWorkerABIJSON() string {
+	return "{\n" +
+		"  \"abi_version\": \"redeven-wasm-worker-v1\",\n" +
+		"  \"exports\": [\"redeven_worker_invoke\"],\n" +
+		"  \"imports\": [\"redeven.log\", \"redeven.storage\", \"redeven.network\", \"redeven.operation\", \"redeven.clock\"]\n" +
+		"}\n"
+}
+
+func minimalWorkerWASM() []byte {
+	return []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+		0x03, 0x02, 0x01, 0x00,
+		0x07, 0x18, 0x01, 0x15,
+		0x72, 0x65, 0x64, 0x65, 0x76, 0x65, 0x6e, 0x5f,
+		0x77, 0x6f, 0x72, 0x6b, 0x65, 0x72, 0x5f, 0x69,
+		0x6e, 0x76, 0x6f, 0x6b, 0x65,
+		0x00, 0x00,
+		0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+	}
 }
 
 func htmlEscape(value string) string {

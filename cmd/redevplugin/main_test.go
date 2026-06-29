@@ -119,12 +119,26 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 4 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 7 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
 	if _, err := captureCLIOutput(t, "validate", filepath.Join(scaffoldDir, "manifest.json")); err != nil {
 		t.Fatalf("validate scaffold manifest error = %v", err)
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(manifestRaw, []byte(`"workers"`)) || !bytes.Contains(manifestRaw, []byte(`"worker.echo"`)) {
+		t.Fatalf("scaffold manifest missing worker contract: %s", manifestRaw)
+	}
+	wasmRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "backend.wasm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wasmRaw) < 8 || !bytes.Equal(wasmRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
+		t.Fatalf("scaffold wasm artifact is invalid: %x", wasmRaw[:prefixLen(len(wasmRaw), 8)])
 	}
 	packageFile := filepath.Join(dir, "generated.redeven-plugin")
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
@@ -183,4 +197,11 @@ func writeCLITestFile(t *testing.T, filename string, content string) {
 	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func prefixLen(length int, maxLength int) int {
+	if length < maxLength {
+		return length
+	}
+	return maxLength
 }
