@@ -14,6 +14,8 @@ const (
 	DefaultAssetSessionTTL = 10 * time.Minute
 	DefaultGatewayTokenTTL = 10 * time.Minute
 	DefaultConfirmationTTL = 2 * time.Minute
+	DefaultRuntimeLeaseTTL = 30 * time.Second
+	MaxRuntimeLeaseTTL     = 5 * time.Minute
 )
 
 var (
@@ -120,6 +122,26 @@ type ValidateConfirmationTokenRequest struct {
 	Audience          Audience        `json:"audience"`
 	Revision          RevisionBinding `json:"revision"`
 	Now               time.Time       `json:"now,omitempty"`
+}
+
+type MintRuntimeExecutionLeaseRequest struct {
+	PluginInstanceID    string          `json:"plugin_instance_id"`
+	ActiveFingerprint   string          `json:"active_fingerprint"`
+	RuntimeInstanceID   string          `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string          `json:"runtime_generation_id"`
+	RuntimeShardID      string          `json:"runtime_shard_id,omitempty"`
+	Method              string          `json:"method"`
+	Revision            RevisionBinding `json:"revision"`
+	Now                 time.Time       `json:"now,omitempty"`
+	ExpiresAt           time.Time       `json:"expires_at,omitempty"`
+}
+
+type RuntimeExecutionLeaseResult struct {
+	LeaseToken          string    `json:"lease_token"`
+	LeaseID             string    `json:"lease_id"`
+	RuntimeGenerationID string    `json:"runtime_generation_id"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
 }
 
 type surfaceState struct {
@@ -394,6 +416,53 @@ func (s *SurfaceTokenService) ValidateConfirmationToken(req ValidateConfirmation
 		Now:      req.Now,
 		Consume:  true,
 	})
+}
+
+func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecutionLeaseRequest) (RuntimeExecutionLeaseResult, error) {
+	if s == nil {
+		return RuntimeExecutionLeaseResult{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.Method) == "" {
+		return RuntimeExecutionLeaseResult{}, ErrMissingTokenAudience
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	expiresAt := req.ExpiresAt
+	if expiresAt.IsZero() {
+		expiresAt = now.Add(DefaultRuntimeLeaseTTL)
+	}
+	if expiresAt.After(now.Add(MaxRuntimeLeaseTTL)) {
+		expiresAt = now.Add(MaxRuntimeLeaseTTL)
+	}
+	minted, err := s.tokens.Mint(MintRequest{
+		Kind: TokenKindRuntimeExecutionLease,
+		Audience: Audience{
+			PluginInstanceID:    req.PluginInstanceID,
+			ActiveFingerprint:   req.ActiveFingerprint,
+			RuntimeInstanceID:   req.RuntimeInstanceID,
+			RuntimeGenerationID: req.RuntimeGenerationID,
+			RuntimeShardID:      req.RuntimeShardID,
+			Method:              req.Method,
+		},
+		Revision:  req.Revision,
+		ExpiresAt: expiresAt,
+		Now:       now,
+	})
+	if err != nil {
+		return RuntimeExecutionLeaseResult{}, err
+	}
+	return RuntimeExecutionLeaseResult{
+		LeaseToken:          minted.Token,
+		LeaseID:             minted.TokenID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		IssuedAt:            minted.IssuedAt,
+		ExpiresAt:           minted.ExpiresAt,
+	}, nil
 }
 
 func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.Time) bool {

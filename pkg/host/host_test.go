@@ -3,6 +3,7 @@ package host
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
@@ -252,6 +254,76 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.operation.started") {
 		t.Fatalf("missing operation audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{"message": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() worker error = %v", err)
+	}
+	if result.Data == nil || runtime.calls != 1 {
+		t.Fatalf("worker result/calls mismatch: result=%#v calls=%d", result, runtime.calls)
+	}
+	if runtime.lastLease.LeaseToken == "" ||
+		runtime.lastLease.RuntimeGenerationID != "runtime_gen_1" ||
+		runtime.lastLease.PolicyRevision != installed.PolicyRevision ||
+		runtime.lastMethod != "worker.echo" {
+		t.Fatalf("runtime lease/method mismatch: lease=%#v method=%s", runtime.lastLease, runtime.lastMethod)
+	}
+	var payload WorkerInvocationPayload
+	if err := json.Unmarshal(runtime.lastPayload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.WorkerID != "echo_worker" ||
+		payload.Export != "redeven_worker_invoke" ||
+		payload.Artifact != "workers/echo.wasm" ||
+		payload.Params["message"] != "hello" ||
+		payload.PluginInstanceID != installed.PluginInstanceID {
+		t.Fatalf("worker payload mismatch: %#v", payload)
+	}
+	if !audits.hasEvent("plugin.method.called") {
+		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+	}); err == nil {
+		t.Fatal("CallPluginMethod() expected runtime supervisor error")
 	}
 }
 
@@ -887,6 +959,7 @@ type testHostOptions struct {
 	policyDecision     PolicyDecision
 	storageBroker      storage.Broker
 	connectivityBroker connectivity.Broker
+	runtimeSupervisor  runtimeclient.Supervisor
 	capabilityID       string
 	capabilityAdapter  capability.Adapter
 }
@@ -910,11 +983,12 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			localGenerated: opts.localGenerated,
 			decision:       decision,
 		},
-		SurfaceCatalog: surfaces,
-		Audit:          audits,
-		Storage:        opts.storageBroker,
-		Connectivity:   opts.connectivityBroker,
-		Capabilities:   capabilities,
+		SurfaceCatalog:    surfaces,
+		Audit:             audits,
+		Storage:           opts.storageBroker,
+		Connectivity:      opts.connectivityBroker,
+		RuntimeSupervisor: opts.runtimeSupervisor,
+		Capabilities:      capabilities,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -975,6 +1049,19 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Operation</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker</title>")
+	writeFile(t, filepath.Join(dir, "workers", "echo.wasm"), "wasm-placeholder")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1185,6 +1272,43 @@ func operationRPCFixtureManifestJSON() string {
 	}`
 }
 
+func workerFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker",
+			"display_name": "Worker",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redeven-wasm-worker-v1",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216,
+				"idle_timeout_ms": 0
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+			}
+		]
+	}`
+}
+
 func networkFixtureManifestJSON(blocked bool) string {
 	httpDestination := "https://api.example.com"
 	if blocked {
@@ -1345,6 +1469,16 @@ type recordingCapabilityAdapter struct {
 	err    error
 }
 
+type recordingRuntimeSupervisor struct {
+	calls       int
+	health      runtimeclient.Health
+	result      capability.Result
+	err         error
+	lastLease   runtimeclient.Lease
+	lastMethod  string
+	lastPayload []byte
+}
+
 func surfaceIDForMethod(method string) string {
 	if method == "images.pull" {
 		return "operation.activity"
@@ -1370,4 +1504,34 @@ func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req cap
 		return capability.Result{}, a.err
 	}
 	return a.result, nil
+}
+
+func (r *recordingRuntimeSupervisor) Start(context.Context, runtimeclient.Target) error {
+	return nil
+}
+
+func (r *recordingRuntimeSupervisor) Stop(context.Context) error {
+	return nil
+}
+
+func (r *recordingRuntimeSupervisor) Health(context.Context) (runtimeclient.Health, error) {
+	if r.health == (runtimeclient.Health{}) {
+		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", Ready: true}
+	}
+	return r.health, nil
+}
+
+func (r *recordingRuntimeSupervisor) InvokeWorker(_ context.Context, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
+	r.calls++
+	r.lastLease = lease
+	r.lastMethod = method
+	r.lastPayload = append([]byte(nil), payload...)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return json.Marshal(r.result)
+}
+
+func (r *recordingRuntimeSupervisor) Revoke(context.Context, string, uint64) error {
+	return nil
 }

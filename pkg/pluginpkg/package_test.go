@@ -113,6 +113,40 @@ func TestReadRejectsDuplicateEntry(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsMissingWorkerArtifact(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+		t.Fatal("BuildFromDir() expected missing worker artifact error")
+	}
+}
+
+func TestReadRejectsMissingWorkerArtifact(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for entryPath, content := range map[string]string{
+		"manifest.json": workerManifestJSON(),
+		"ui/index.html": "<!doctype html><title>Plugin</title>",
+	} {
+		writer, err := zw.Create(entryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+		t.Fatal("Read() expected missing worker artifact error")
+	}
+}
+
 func writeFixturePackageDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -146,6 +180,42 @@ func validManifestJSON() string {
 		},
 		"surfaces": [
 			{"surface_id": "pkg.activity", "kind": "activity", "label": "Package", "entry": "ui/index.html"}
+		]
+	}`
+}
+
+func workerManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker",
+			"display_name": "Worker",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redeven-wasm-worker-v1",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+			}
 		]
 	}`
 }

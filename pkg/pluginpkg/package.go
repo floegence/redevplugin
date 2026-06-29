@@ -82,6 +82,9 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 	if err != nil {
 		return Package{}, fmt.Errorf("manifest.json: %w", err)
 	}
+	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
+		return Package{}, err
+	}
 
 	entries := make([]Entry, 0, len(files))
 	for entryPath, content := range files {
@@ -230,6 +233,9 @@ func packageFromFiles(files map[string][]byte) (Package, error) {
 	if err != nil {
 		return Package{}, fmt.Errorf("manifest.json: %w", err)
 	}
+	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
+		return Package{}, err
+	}
 	entries := make([]Entry, 0, len(files))
 	for entryPath, content := range files {
 		entry, err := makeEntry(entryPath, content)
@@ -327,6 +333,19 @@ func validateEntryPath(entryPath string) (string, error) {
 		return "", fmt.Errorf("hidden entry %q is not allowed", entryPath)
 	}
 	return entryPath, nil
+}
+
+func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) error {
+	for i, worker := range m.Workers {
+		artifact, err := validateEntryPath(worker.Artifact)
+		if err != nil {
+			return fmt.Errorf("workers[%d].artifact: %w", i, err)
+		}
+		if _, ok := files[artifact]; !ok {
+			return fmt.Errorf("workers[%d].artifact %q is not present in package", i, artifact)
+		}
+	}
+	return nil
 }
 
 func makeEntry(entryPath string, content []byte) (Entry, error) {

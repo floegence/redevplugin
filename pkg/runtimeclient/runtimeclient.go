@@ -12,9 +12,11 @@ type Target struct {
 
 type Lease struct {
 	LeaseID             string    `json:"lease_id"`
+	LeaseToken          string    `json:"lease_token"`
 	RuntimeGenerationID string    `json:"runtime_generation_id"`
 	PluginInstanceID    string    `json:"plugin_instance_id"`
 	PolicyRevision      uint64    `json:"policy_revision"`
+	ManagementRevision  uint64    `json:"management_revision"`
 	RevokeEpoch         uint64    `json:"revoke_epoch"`
 	ExpiresAt           time.Time `json:"expires_at"`
 }

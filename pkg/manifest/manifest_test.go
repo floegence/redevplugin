@@ -106,6 +106,105 @@ func TestValidateNetworkConnectors(t *testing.T) {
 	}
 }
 
+func TestValidateWorkers(t *testing.T) {
+	m := validManifest()
+	m.Workers = []WorkerSpec{{
+		WorkerID:         "echo_worker",
+		Artifact:         "workers/echo.wasm",
+		ABI:              "redeven-wasm-worker-v1",
+		Mode:             WorkerModeJob,
+		Scope:            "user",
+		MemoryLimitBytes: 16 << 20,
+	}}
+	m.Methods = append(m.Methods, MethodSpec{
+		Method:    "worker.echo",
+		Effect:    MethodEffectRead,
+		Execution: MethodExecutionSync,
+		Route:     MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redeven_worker_invoke"},
+	})
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() worker manifest error = %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*Manifest)
+		field  string
+	}{
+		{
+			name: "duplicate worker id",
+			mutate: func(m *Manifest) {
+				m.Workers = append(m.Workers, m.Workers[0])
+			},
+			field: "workers[1].worker_id",
+		},
+		{
+			name: "missing artifact",
+			mutate: func(m *Manifest) {
+				m.Workers[0].Artifact = ""
+			},
+			field: "workers[0].artifact",
+		},
+		{
+			name: "invalid abi",
+			mutate: func(m *Manifest) {
+				m.Workers[0].ABI = "other-abi"
+			},
+			field: "workers[0].abi",
+		},
+		{
+			name: "invalid mode",
+			mutate: func(m *Manifest) {
+				m.Workers[0].Mode = WorkerMode("daemon")
+			},
+			field: "workers[0].mode",
+		},
+		{
+			name: "invalid scope",
+			mutate: func(m *Manifest) {
+				m.Workers[0].Scope = "global"
+			},
+			field: "workers[0].scope",
+		},
+		{
+			name: "invalid memory",
+			mutate: func(m *Manifest) {
+				m.Workers[0].MemoryLimitBytes = 0
+			},
+			field: "workers[0].memory_limit_bytes",
+		},
+		{
+			name: "route references missing worker",
+			mutate: func(m *Manifest) {
+				m.Methods[1].Route.WorkerID = "missing_worker"
+			},
+			field: "methods[1].route.worker_id",
+		},
+		{
+			name: "worker route requires export",
+			mutate: func(m *Manifest) {
+				m.Methods[1].Route.Export = ""
+			},
+			field: "methods[1].route.export",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := m
+			candidate.Workers = append([]WorkerSpec(nil), m.Workers...)
+			candidate.Methods = append([]MethodSpec(nil), m.Methods...)
+			tc.mutate(&candidate)
+			err := Validate(candidate)
+			if err == nil {
+				t.Fatal("Validate() expected worker validation error")
+			}
+			if validationErr, ok := err.(ValidationError); !ok || validationErr.Field != tc.field {
+				t.Fatalf("Validate() error = %v, want field %s", err, tc.field)
+			}
+		})
+	}
+}
+
 func validManifest() Manifest {
 	return Manifest{
 		SchemaVersion: "redeven.plugin.manifest.v1",

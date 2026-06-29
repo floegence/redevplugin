@@ -284,6 +284,32 @@ func Validate(m Manifest) error {
 		bindings[binding.BindingID] = struct{}{}
 	}
 
+	workers := map[string]struct{}{}
+	for i, worker := range m.Workers {
+		if strings.TrimSpace(worker.WorkerID) == "" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].worker_id", i), Message: "is required"}
+		}
+		if _, ok := workers[worker.WorkerID]; ok {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].worker_id", i), Message: "must be unique"}
+		}
+		workers[worker.WorkerID] = struct{}{}
+		if strings.TrimSpace(worker.Artifact) == "" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].artifact", i), Message: "is required"}
+		}
+		if worker.ABI != "redeven-wasm-worker-v1" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redeven-wasm-worker-v1"}
+		}
+		if worker.Mode != WorkerModeJob && worker.Mode != WorkerModeActor {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].mode", i), Message: "must be job or actor"}
+		}
+		if worker.Scope != "user" && worker.Scope != "environment" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].scope", i), Message: "must be user or environment"}
+		}
+		if worker.MemoryLimitBytes <= 0 {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].memory_limit_bytes", i), Message: "must be positive"}
+		}
+	}
+
 	methods := map[string]MethodSpec{}
 	for i, method := range m.Methods {
 		if method.Method == "" {
@@ -304,6 +330,14 @@ func Validate(m Manifest) error {
 		if method.Route.Kind == MethodRouteCapability {
 			if _, ok := bindings[method.Route.BindingID]; !ok {
 				return ValidationError{Field: fmt.Sprintf("methods[%d].route.binding_id", i), Message: "must reference a declared capability binding"}
+			}
+		}
+		if method.Route.Kind == MethodRouteWorker {
+			if _, ok := workers[method.Route.WorkerID]; !ok {
+				return ValidationError{Field: fmt.Sprintf("methods[%d].route.worker_id", i), Message: "must reference a declared worker"}
+			}
+			if strings.TrimSpace(method.Route.Export) == "" {
+				return ValidationError{Field: fmt.Sprintf("methods[%d].route.export", i), Message: "is required for worker routes"}
 			}
 		}
 		if method.Execution != MethodExecutionSync && method.CancelPolicy == nil {
@@ -331,15 +365,6 @@ func Validate(m Manifest) error {
 	for i, intent := range m.Intents {
 		if _, ok := methods[intent.Method]; !ok {
 			return ValidationError{Field: fmt.Sprintf("intents[%d].method", i), Message: "must reference a declared method"}
-		}
-	}
-
-	for i, worker := range m.Workers {
-		if strings.TrimSpace(worker.WorkerID) == "" {
-			return ValidationError{Field: fmt.Sprintf("workers[%d].worker_id", i), Message: "is required"}
-		}
-		if worker.ABI != "" && worker.ABI != "redeven-wasm-worker-v1" {
-			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redeven-wasm-worker-v1"}
 		}
 	}
 

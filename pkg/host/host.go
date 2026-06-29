@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
@@ -106,6 +107,7 @@ type Adapters struct {
 	Diagnostics             DiagnosticsSink
 	Secrets                 SecretStoreAdapter
 	RuntimeArtifactResolver RuntimeArtifactResolver
+	RuntimeSupervisor       runtimeclient.Supervisor
 	SurfaceCatalog          SurfaceCatalogSink
 	Capabilities            *capability.Registry
 	SurfaceTokens           *bridge.SurfaceTokenService
@@ -202,6 +204,25 @@ type CallMethodResult struct {
 	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
 	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
 	RequestHash          string `json:"request_hash,omitempty"`
+}
+
+type WorkerInvocationPayload struct {
+	PluginID             string         `json:"plugin_id"`
+	PluginInstanceID     string         `json:"plugin_instance_id"`
+	ActiveFingerprint    string         `json:"active_fingerprint"`
+	WorkerID             string         `json:"worker_id"`
+	WorkerMode           string         `json:"worker_mode"`
+	WorkerScope          string         `json:"worker_scope"`
+	Artifact             string         `json:"artifact"`
+	ABI                  string         `json:"abi"`
+	Method               string         `json:"method"`
+	Export               string         `json:"export"`
+	Effect               string         `json:"effect"`
+	Execution            string         `json:"execution"`
+	SurfaceInstanceID    string         `json:"surface_instance_id,omitempty"`
+	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string         `json:"bridge_channel_id,omitempty"`
+	Params               map[string]any `json:"params,omitempty"`
 }
 
 type ConfirmMethodRequest = CallMethodRequest
@@ -789,31 +810,131 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err := validateExecutionResult(method, result); err != nil {
 			return CallMethodResult{}, err
 		}
-		if result.OperationID != "" {
-			if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
-				OperationID:          result.OperationID,
-				PluginID:             record.PluginID,
-				PluginInstanceID:     record.PluginInstanceID,
-				Method:               method.Method,
-				Effect:               string(method.Effect),
-				Execution:            string(method.Execution),
-				SurfaceInstanceID:    req.SurfaceInstanceID,
-				SessionChannelIDHash: req.SessionChannelIDHash,
-				BridgeChannelID:      req.BridgeChannelID,
-				DisableBehavior:      cancelPolicyDisableBehavior(method.CancelPolicy),
-				UninstallBehavior:    cancelPolicyUninstallBehavior(method.CancelPolicy),
-				Now:                  req.Now,
-			}); err != nil {
-				return CallMethodResult{}, err
-			}
-			h.audit(ctx, AuditEvent{Type: "plugin.operation.started", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
+			return CallMethodResult{}, err
 		}
 		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
-	case manifest.MethodRouteWorker, manifest.MethodRouteCoreAction:
+	case manifest.MethodRouteWorker:
+		result, err := h.invokeWorker(ctx, record, method, req)
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+		if err := validateExecutionResult(method, result); err != nil {
+			return CallMethodResult{}, err
+		}
+		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
+			return CallMethodResult{}, err
+		}
+		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
+	case manifest.MethodRouteCoreAction:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is not implemented", method.Route.Kind)
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
 	}
+}
+
+func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (capability.Result, error) {
+	if h.adapters.RuntimeSupervisor == nil {
+		return capability.Result{}, errors.New("runtime supervisor is required for worker methods")
+	}
+	worker, ok := manifestWorker(record.Manifest, method.Route.WorkerID)
+	if !ok {
+		return capability.Result{}, fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
+	}
+	health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+	if err != nil {
+		return capability.Result{}, err
+	}
+	if !health.Ready {
+		return capability.Result{}, errors.New("runtime supervisor is not ready")
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	revision := bridge.RevisionBinding{
+		PolicyRevision:     record.PolicyRevision,
+		ManagementRevision: record.ManagementRevision,
+		RevokeEpoch:        record.RevokeEpoch,
+	}
+	lease, err := h.surfaceTokens.MintRuntimeExecutionLease(bridge.MintRuntimeExecutionLeaseRequest{
+		PluginInstanceID:    record.PluginInstanceID,
+		ActiveFingerprint:   record.ActiveFingerprint,
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Method:              method.Method,
+		Revision:            revision,
+		Now:                 now,
+	})
+	if err != nil {
+		return capability.Result{}, err
+	}
+	payload := WorkerInvocationPayload{
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		ActiveFingerprint:    record.ActiveFingerprint,
+		WorkerID:             worker.WorkerID,
+		WorkerMode:           string(worker.Mode),
+		WorkerScope:          worker.Scope,
+		Artifact:             worker.Artifact,
+		ABI:                  worker.ABI,
+		Method:               method.Method,
+		Export:               method.Route.Export,
+		Effect:               string(method.Effect),
+		Execution:            string(method.Execution),
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		Params:               cloneParams(req.Params),
+	}
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return capability.Result{}, err
+	}
+	rawResult, err := h.adapters.RuntimeSupervisor.InvokeWorker(ctx, runtimeclient.Lease{
+		LeaseID:             lease.LeaseID,
+		LeaseToken:          lease.LeaseToken,
+		RuntimeGenerationID: lease.RuntimeGenerationID,
+		PluginInstanceID:    record.PluginInstanceID,
+		PolicyRevision:      record.PolicyRevision,
+		ManagementRevision:  record.ManagementRevision,
+		RevokeEpoch:         record.RevokeEpoch,
+		ExpiresAt:           lease.ExpiresAt,
+	}, method.Method, rawPayload)
+	if err != nil {
+		return capability.Result{}, err
+	}
+	var result capability.Result
+	if len(rawResult) > 0 {
+		if err := json.Unmarshal(rawResult, &result); err != nil {
+			return capability.Result{}, fmt.Errorf("decode worker result: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func (h *Host) registerOperationIfNeeded(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest, operationID string) error {
+	if operationID == "" {
+		return nil
+	}
+	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
+		OperationID:          operationID,
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		Method:               method.Method,
+		Effect:               string(method.Effect),
+		Execution:            string(method.Execution),
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		DisableBehavior:      cancelPolicyDisableBehavior(method.CancelPolicy),
+		UninstallBehavior:    cancelPolicyUninstallBehavior(method.CancelPolicy),
+		Now:                  req.Now,
+	}); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.operation.started", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
 }
 
 func validateExecutionResult(method manifest.MethodSpec, result capability.Result) error {
@@ -882,6 +1003,15 @@ func manifestCapabilityBinding(m manifest.Manifest, bindingID string) (manifest.
 		}
 	}
 	return manifest.CapabilityBinding{}, false
+}
+
+func manifestWorker(m manifest.Manifest, workerID string) (manifest.WorkerSpec, bool) {
+	for _, worker := range m.Workers {
+		if worker.WorkerID == workerID {
+			return worker, true
+		}
+	}
+	return manifest.WorkerSpec{}, false
 }
 
 func cloneParams(params map[string]any) map[string]any {

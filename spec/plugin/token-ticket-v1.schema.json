@@ -119,6 +119,23 @@
       }
     },
     {
+      "if": { "properties": { "token_kind": { "const": "runtime_execution_lease" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "runtime_generation_id",
+              "method"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
       "if": { "properties": { "token_kind": { "const": "stream_ticket" } }, "required": ["token_kind"] },
       "then": {
         "properties": { "use": { "const": "single_use" } },

@@ -95,7 +95,21 @@
               "worker_id": { "type": "string" },
               "export": { "type": "string" },
               "action_id": { "type": "string" }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "kind": { "const": "capability" } }, "required": ["kind"] },
+                "then": { "required": ["binding_id"] }
+              },
+              {
+                "if": { "properties": { "kind": { "const": "worker" } }, "required": ["kind"] },
+                "then": { "required": ["worker_id", "export"] }
+              },
+              {
+                "if": { "properties": { "kind": { "const": "core_action" } }, "required": ["kind"] },
+                "then": { "required": ["action_id"] }
+              }
+            ]
           },
           "confirmation": {
             "type": "object",

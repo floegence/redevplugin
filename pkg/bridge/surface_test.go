@@ -218,6 +218,101 @@ func TestAssetTicketTTLIsClamped(t *testing.T) {
 	}
 }
 
+func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	revision := testRevision(8)
+	result, err := service.MintRuntimeExecutionLease(MintRuntimeExecutionLeaseRequest{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		Method:              "worker.echo",
+		Revision:            revision,
+		Now:                 now,
+	})
+	if err != nil {
+		t.Fatalf("MintRuntimeExecutionLease() error = %v", err)
+	}
+	if result.LeaseToken == "" || result.LeaseID == "" || result.RuntimeGenerationID != "runtime_gen_1" {
+		t.Fatalf("runtime lease result mismatch: %#v", result)
+	}
+
+	managerRecordAudience := Audience{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		Method:              "worker.echo",
+	}
+	record, err := service.tokens.Validate(ValidateRequest{
+		Kind:     TokenKindRuntimeExecutionLease,
+		Token:    result.LeaseToken,
+		Audience: managerRecordAudience,
+		Revision: revision,
+		Now:      now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("Validate(runtime lease) error = %v", err)
+	}
+	if record.Use != TokenUseReusable {
+		t.Fatalf("runtime lease use = %s, want %s", record.Use, TokenUseReusable)
+	}
+
+	wrongAudience := managerRecordAudience
+	wrongAudience.Method = "worker.other"
+	if _, err := service.tokens.Validate(ValidateRequest{
+		Kind:     TokenKindRuntimeExecutionLease,
+		Token:    result.LeaseToken,
+		Audience: wrongAudience,
+		Revision: revision,
+		Now:      now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("Validate(runtime lease wrong method) error = %v, want %v", err, ErrTokenAudience)
+	}
+}
+
+func TestRuntimeExecutionLeaseRequiresGenerationAndMethod(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	req := MintRuntimeExecutionLeaseRequest{
+		PluginInstanceID:  "plugini_test",
+		ActiveFingerprint: "sha256:package",
+		Method:            "worker.echo",
+		Revision:          testRevision(8),
+		Now:               testNow(),
+	}
+	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintRuntimeExecutionLease() missing generation error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	req.RuntimeGenerationID = "runtime_gen_1"
+	req.Method = ""
+	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintRuntimeExecutionLease() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+}
+
+func TestRuntimeExecutionLeaseTTLIsClamped(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	result, err := service.MintRuntimeExecutionLease(MintRuntimeExecutionLeaseRequest{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeGenerationID: "runtime_gen_1",
+		Method:              "worker.echo",
+		Revision:            testRevision(8),
+		Now:                 now,
+		ExpiresAt:           now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("MintRuntimeExecutionLease() error = %v", err)
+	}
+	if got := result.ExpiresAt.Sub(now); got != MaxRuntimeLeaseTTL {
+		t.Fatalf("runtime lease ttl = %s, want %s", got, MaxRuntimeLeaseTTL)
+	}
+}
+
 func mintTestGatewayToken(t *testing.T, service *SurfaceTokenService, now time.Time) (SurfaceBootstrap, GatewayTokenResult) {
 	t.Helper()
 	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))
