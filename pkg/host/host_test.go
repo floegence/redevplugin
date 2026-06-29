@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -166,6 +167,101 @@ func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodDispatchesCapability(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+		Params:               map[string]any{"message": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if result.Data == nil {
+		t.Fatalf("CallPluginMethod() result missing data: %#v", result)
+	}
+	if capabilityAdapter.last.CapabilityID != "example.capability.echo" ||
+		capabilityAdapter.last.BindingID != "echo" ||
+		capabilityAdapter.last.Method != "echo.ping" ||
+		capabilityAdapter.last.TargetMethod != "echo.ping" ||
+		capabilityAdapter.last.PluginInstanceID != installed.PluginInstanceID ||
+		capabilityAdapter.last.BridgeChannelID != "bridge_rpc" {
+		t.Fatalf("capability invocation mismatch: %#v", capabilityAdapter.last)
+	}
+	if !audits.hasEvent("plugin.method.called") {
+		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         "plugin_gateway_token.invalid",
+		Method:               "echo.ping",
+	}); err == nil {
+		t.Fatal("CallPluginMethod() expected token error")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		policyDecision:    PolicyDeny,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+	}); err == nil {
+		t.Fatal("CallPluginMethod() expected local policy deny")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
 func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	storageBroker := storage.NewMemoryBroker()
 	host, _, _ := newTestHostWithStorage(t, true, true, storageBroker)
@@ -306,22 +402,45 @@ func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
 }
 
 func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
-	return newTestHostWithStorage(t, developerMode, localGenerated, nil)
+	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated})
 }
 
 func newTestHostWithStorage(t *testing.T, developerMode bool, localGenerated bool, storageBroker storage.Broker) (*Host, *surfaceSink, *auditSink) {
+	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated, storageBroker: storageBroker})
+}
+
+type testHostOptions struct {
+	developerMode     bool
+	localGenerated    bool
+	policyDecision    PolicyDecision
+	storageBroker     storage.Broker
+	capabilityID      string
+	capabilityAdapter capability.Adapter
+}
+
+func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
 	t.Helper()
 	surfaces := &surfaceSink{}
 	audits := &auditSink{}
+	capabilities := capability.NewRegistry()
+	if opts.capabilityID != "" && opts.capabilityAdapter != nil {
+		capabilities.Register(opts.capabilityID, opts.capabilityAdapter)
+	}
+	decision := opts.policyDecision
+	if decision == "" {
+		decision = PolicyAllow
+	}
 	host, err := New(Adapters{
 		SessionResolver: fakeSessionResolver{},
 		Policy: policyAdapter{
-			developerMode:  developerMode,
-			localGenerated: localGenerated,
+			developerMode:  opts.developerMode,
+			localGenerated: opts.localGenerated,
+			decision:       decision,
 		},
 		SurfaceCatalog: surfaces,
 		Audit:          audits,
-		Storage:        storageBroker,
+		Storage:        opts.storageBroker,
+		Capabilities:   capabilities,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,6 +465,18 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), storageFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Storage</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), rpcFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>RPC</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -437,6 +568,83 @@ func storageFixtureManifestJSON() string {
 	}`
 }
 
+func rpcFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.rpc",
+			"display_name": "RPC",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "rpc.activity", "kind": "activity", "label": "RPC", "entry": "ui/index.html", "method": "echo.ping"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+		],
+		"methods": [
+			{
+				"method": "echo.ping",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
+			}
+		]
+	}`
+}
+
+func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	installed, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            surfaceID,
+		SurfaceInstanceID:    "surface_rpc",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ExchangeAssetTicket(ctx, ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
+		Handshake: bridge.Handshake{
+			PluginID:          bootstrap.PluginID,
+			SurfaceID:         bootstrap.SurfaceID,
+			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+			ActiveFingerprint: bootstrap.ActiveFingerprint,
+			BridgeNonce:       bootstrap.BridgeNonce,
+			UIProtocolVersion: "plugin-ui-v1",
+		},
+		BridgeChannelID: "bridge_rpc",
+		Now:             now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return installed, gateway
+}
+
 type fakeSessionResolver struct{}
 
 func (fakeSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
@@ -446,10 +654,14 @@ func (fakeSessionResolver) ResolveSession(context.Context, string) (sessionctx.C
 type policyAdapter struct {
 	developerMode  bool
 	localGenerated bool
+	decision       PolicyDecision
 }
 
 func (p policyAdapter) EvaluateLocalPolicy(context.Context, sessionctx.Context, PluginRef, manifest.MethodSpec) (PolicyDecision, error) {
-	return PolicyAllow, nil
+	if p.decision == "" {
+		return PolicyAllow, nil
+	}
+	return p.decision, nil
 }
 
 func (p policyAdapter) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
@@ -485,4 +697,20 @@ func (s *auditSink) hasEvent(eventType string) bool {
 		}
 	}
 	return false
+}
+
+type recordingCapabilityAdapter struct {
+	calls  int
+	last   capability.Invocation
+	result capability.Result
+	err    error
+}
+
+func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+	a.calls++
+	a.last = req
+	if a.err != nil {
+		return capability.Result{}, a.err
+	}
+	return a.result, nil
 }

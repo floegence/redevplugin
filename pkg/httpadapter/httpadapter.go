@@ -48,6 +48,18 @@ type bridgeTokenRequest struct {
 	BridgeChannelID string           `json:"bridge_channel_id"`
 }
 
+type rpcRequest struct {
+	PluginInstanceID     string         `json:"plugin_instance_id"`
+	SurfaceInstanceID    string         `json:"surface_instance_id"`
+	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
+	BridgeChannelID      string         `json:"bridge_channel_id"`
+	GatewayToken         string         `json:"plugin_gateway_token"`
+	Method               string         `json:"method"`
+	Params               map[string]any `json:"params,omitempty"`
+}
+
 type exportDataRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	IncludeSecrets   bool   `json:"include_secrets,omitempty"`
@@ -67,6 +79,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleExchangeAssetTicket(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bridge-token"):
 		h.handleBridgeToken(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/rpc":
+		h.handleRPC(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/export":
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
@@ -200,6 +214,34 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
 }
 
+func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req rpcRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.CallPluginMethod(r.Context(), host.CallMethodRequest{
+		PluginInstanceID:     req.PluginInstanceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		GatewayToken:         req.GatewayToken,
+		Method:               req.Method,
+		Params:               req.Params,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForRPCError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -279,6 +321,30 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 		return security.ErrGatewayTokenChannelMismatch
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func errorCodeForRPCError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, bridge.ErrTokenExpired):
+		return security.ErrTokenExpired
+	case errors.Is(err, bridge.ErrTokenReplay):
+		return security.ErrTokenReplay
+	case errors.Is(err, bridge.ErrTokenAlreadyBound):
+		return security.ErrGatewayTokenChannelMismatch
+	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
+		return security.ErrPermissionDenied
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForRPCError(err error) int {
+	switch {
+	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
+		return http.StatusForbidden
+	default:
+		return http.StatusForbidden
 	}
 }
 

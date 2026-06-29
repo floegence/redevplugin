@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -89,6 +90,63 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerRPCFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_id":              "http.rpc.activity",
+		"surface_instance_id":     "surface_http_rpc",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_rpc/bootstrap", map[string]any{
+		"asset_ticket": openResp.AssetTicket,
+	})
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_rpc/bridge-token", map[string]any{
+		"bridge_channel_id": "bridge_http_rpc",
+		"handshake": map[string]any{
+			"plugin_id":           openResp.PluginID,
+			"surface_id":          openResp.SurfaceID,
+			"surface_instance_id": openResp.SurfaceInstanceID,
+			"active_fingerprint":  openResp.ActiveFingerprint,
+			"bridge_nonce":        openResp.BridgeNonce,
+			"ui_protocol_version": "plugin-ui-v1",
+		},
+	})
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_rpc",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_rpc",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "echo.ping",
+		"params":                  map[string]any{"message": "hello"},
+	})
+	if result.Data == nil {
+		t.Fatalf("rpc result missing data: %#v", result)
+	}
+	if adapter.last.PluginInstanceID != installed.PluginInstanceID || adapter.last.Method != "echo.ping" {
+		t.Fatalf("capability invocation mismatch: %#v", adapter.last)
+	}
+}
+
 func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	h := newHTTPTestHost(t)
 	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
@@ -158,15 +216,30 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 }
 
 func newHTTPTestHost(t *testing.T) *host.Host {
-	return newHTTPTestHostWithStorage(t, nil)
+	return newHTTPTestHostWithOptions(t, httpTestHostOptions{})
 }
 
 func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *host.Host {
+	return newHTTPTestHostWithOptions(t, httpTestHostOptions{storageBroker: storageBroker})
+}
+
+type httpTestHostOptions struct {
+	storageBroker     storage.Broker
+	capabilityID      string
+	capabilityAdapter capability.Adapter
+}
+
+func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
 	t.Helper()
+	capabilities := capability.NewRegistry()
+	if opts.capabilityID != "" && opts.capabilityAdapter != nil {
+		capabilities.Register(opts.capabilityID, opts.capabilityAdapter)
+	}
 	h, err := host.New(host.Adapters{
 		SessionResolver: httpTestSessionResolver{},
 		Policy:          httpTestPolicy{},
-		Storage:         storageBroker,
+		Storage:         opts.storageBroker,
+		Capabilities:    capabilities,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,6 +264,18 @@ func buildHTTPStorageFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpStorageFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Storage</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpRPCFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP RPC</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -265,6 +350,35 @@ func httpStorageFixtureManifestJSON() string {
 	}`
 }
 
+func httpRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.rpc",
+			"display_name": "HTTP RPC",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.rpc.activity", "kind": "activity", "label": "HTTP RPC", "entry": "ui/index.html", "method": "echo.ping"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+		],
+		"methods": [
+			{
+				"method": "echo.ping",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
+			}
+		]
+	}`
+}
+
 type httpTestSessionResolver struct{}
 
 func (httpTestSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
@@ -283,4 +397,14 @@ func (httpTestPolicy) DeveloperModeEnabled(context.Context, sessionctx.Context) 
 
 func (httpTestPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
 	return true, nil
+}
+
+type httpRecordingCapabilityAdapter struct {
+	last   capability.Invocation
+	result capability.Result
+}
+
+func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+	a.last = req
+	return a.result, nil
 }

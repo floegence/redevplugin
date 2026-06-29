@@ -13,11 +13,17 @@ const (
 )
 
 type Invocation struct {
-	CapabilityID     string         `json:"capability_id"`
-	Method           string         `json:"method"`
-	Effect           Effect         `json:"effect"`
-	PluginInstanceID string         `json:"plugin_instance_id"`
-	Arguments        map[string]any `json:"arguments,omitempty"`
+	CapabilityID         string         `json:"capability_id"`
+	BindingID            string         `json:"binding_id,omitempty"`
+	Method               string         `json:"method"`
+	TargetMethod         string         `json:"target_method,omitempty"`
+	Effect               Effect         `json:"effect"`
+	PluginID             string         `json:"plugin_id"`
+	PluginInstanceID     string         `json:"plugin_instance_id"`
+	SurfaceInstanceID    string         `json:"surface_instance_id,omitempty"`
+	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string         `json:"bridge_channel_id,omitempty"`
+	Arguments            map[string]any `json:"arguments,omitempty"`
 }
 
 type Result struct {

@@ -176,6 +176,25 @@ type MintBridgeTokenRequest struct {
 	Now             time.Time
 }
 
+type CallMethodRequest struct {
+	PluginInstanceID     string         `json:"plugin_instance_id"`
+	SurfaceInstanceID    string         `json:"surface_instance_id"`
+	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
+	BridgeChannelID      string         `json:"bridge_channel_id"`
+	GatewayToken         string         `json:"plugin_gateway_token"`
+	Method               string         `json:"method"`
+	Params               map[string]any `json:"params,omitempty"`
+	Now                  time.Time      `json:"now,omitempty"`
+}
+
+type CallMethodResult struct {
+	Data        any    `json:"data,omitempty"`
+	OperationID string `json:"operation_id,omitempty"`
+	StreamID    string `json:"stream_id,omitempty"`
+}
+
 func New(adapters Adapters) (*Host, error) {
 	if adapters.SessionResolver == nil {
 		return nil, errors.New("session resolver is required")
@@ -261,6 +280,57 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 		return bridge.GatewayTokenResult{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.bridge_token.minted", PluginID: req.Handshake.PluginID})
+	return result, nil
+}
+
+func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (CallMethodResult, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return CallMethodResult{}, errors.New("plugin is not enabled")
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return CallMethodResult{}, err
+	}
+	method, ok := manifestMethod(record.Manifest, req.Method)
+	if !ok {
+		return CallMethodResult{}, fmt.Errorf("method %q is not declared", req.Method)
+	}
+	audience := bridge.Audience{
+		PluginInstanceID:     record.PluginInstanceID,
+		ActiveFingerprint:    record.ActiveFingerprint,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+	}
+	revision := bridge.RevisionBinding{
+		PolicyRevision:     record.PolicyRevision,
+		ManagementRevision: record.ManagementRevision,
+		RevokeEpoch:        record.RevokeEpoch,
+	}
+	if _, err := h.surfaceTokens.ValidateGatewayToken(req.GatewayToken, audience, revision, req.Now); err != nil {
+		return CallMethodResult{}, err
+	}
+	session := sessionctx.Context{
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerUserHash:        req.OwnerUserHash,
+	}
+	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, session, pluginRefFromRecord(record), method)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	if decision != PolicyAllow {
+		return CallMethodResult{}, errors.New("plugin method denied by local policy")
+	}
+	result, err := h.dispatchMethod(ctx, record, method, req)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.method.called", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return result, nil
 }
 
@@ -431,6 +501,79 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) erro
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.data.imported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
+}
+
+func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (CallMethodResult, error) {
+	switch method.Route.Kind {
+	case manifest.MethodRouteCapability:
+		binding, ok := manifestCapabilityBinding(record.Manifest, method.Route.BindingID)
+		if !ok {
+			return CallMethodResult{}, fmt.Errorf("capability binding %q is not declared", method.Route.BindingID)
+		}
+		adapter, ok := h.adapters.Capabilities.Adapter(binding.CapabilityID)
+		if !ok {
+			return CallMethodResult{}, fmt.Errorf("capability %q is unavailable", binding.CapabilityID)
+		}
+		result, err := adapter.InvokeCapability(ctx, capability.Invocation{
+			CapabilityID:         binding.CapabilityID,
+			BindingID:            binding.BindingID,
+			Method:               method.Method,
+			TargetMethod:         method.Route.TargetMethod,
+			Effect:               capability.Effect(method.Effect),
+			PluginID:             record.PluginID,
+			PluginInstanceID:     record.PluginInstanceID,
+			SurfaceInstanceID:    req.SurfaceInstanceID,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			BridgeChannelID:      req.BridgeChannelID,
+			Arguments:            cloneParams(req.Params),
+		})
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
+	case manifest.MethodRouteWorker, manifest.MethodRouteCoreAction:
+		return CallMethodResult{}, fmt.Errorf("method route kind %q is not implemented", method.Route.Kind)
+	default:
+		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
+	}
+}
+
+func pluginRefFromRecord(record registry.PluginRecord) PluginRef {
+	return PluginRef{
+		PluginID:          record.PluginID,
+		PluginInstanceID:  record.PluginInstanceID,
+		Version:           record.Version,
+		ActiveFingerprint: record.ActiveFingerprint,
+	}
+}
+
+func manifestMethod(m manifest.Manifest, methodName string) (manifest.MethodSpec, bool) {
+	for _, method := range m.Methods {
+		if method.Method == methodName {
+			return method, true
+		}
+	}
+	return manifest.MethodSpec{}, false
+}
+
+func manifestCapabilityBinding(m manifest.Manifest, bindingID string) (manifest.CapabilityBinding, bool) {
+	for _, binding := range m.CapabilityBindings {
+		if binding.BindingID == bindingID {
+			return binding, true
+		}
+	}
+	return manifest.CapabilityBinding{}, false
+}
+
+func cloneParams(params map[string]any) map[string]any {
+	if params == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(params))
+	for key, value := range params {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
