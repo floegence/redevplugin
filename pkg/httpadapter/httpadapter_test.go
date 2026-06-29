@@ -34,6 +34,9 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
 		"POST /_redeven_proxy/api/plugins/rpc":                                         false,
 		"POST /_redeven_proxy/api/plugins/data/export":                                 false,
+		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":                false,
+		"PATCH /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":              false,
+		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":         false,
 		"POST /_redeven_plugin/bootstrap":                                              false,
 		"GET /_redeven_plugin/assets/{asset_path...}":                                  false,
 		"POST /_redeven_plugin/csp-report":                                             false,
@@ -591,6 +594,49 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerSettingsFlow(t *testing.T) {
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: &httpRecordingSecretStore{}})
+	handler := Handler{Host: h}
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+
+	schema := getJSON[host.SettingsSchemaResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings/schema")
+	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.SettingsRevision == 0 {
+		t.Fatalf("settings schema mismatch: %#v", schema)
+	}
+	initial := getJSON[host.SettingsResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings")
+	if initial.Values["default_engine"] != "docker" {
+		t.Fatalf("settings defaults mismatch: %#v", initial)
+	}
+	secretRaw, ok := initial.Values["api_token"].(map[string]any)
+	if !ok || secretRaw["set"] != false {
+		t.Fatalf("secret setting should be redacted unset state: %#v", initial.Values["api_token"])
+	}
+
+	patched := patchJSON[host.SettingsResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+		"values": map[string]any{"default_engine": "podman"},
+	})
+	if patched.SettingsRevision <= initial.SettingsRevision || patched.Values["default_engine"] != "podman" {
+		t.Fatalf("patched settings mismatch: before=%#v after=%#v", initial, patched)
+	}
+
+	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/bind", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	})
+	withSecret := getJSON[host.SettingsResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings")
+	secretRaw, ok = withSecret.Values["api_token"].(map[string]any)
+	if !ok || secretRaw["set"] != true {
+		t.Fatalf("secret setting should be redacted set state: %#v", withSecret.Values["api_token"])
+	}
+}
+
 func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_block_delete"}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -681,7 +727,7 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	secrets := &httpRecordingSecretStore{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secrets})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t), registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,6 +845,10 @@ func samplePathForRoute(path string) string {
 		return "/_redeven_proxy/api/plugins/operations/op_test"
 	case "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel":
 		return "/_redeven_proxy/api/plugins/operations/op_test/cancel"
+	case "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":
+		return "/_redeven_proxy/api/plugins/plugini_test/settings/schema"
+	case "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings":
+		return "/_redeven_proxy/api/plugins/plugini_test/settings"
 	case "/_redeven_plugin/assets/{asset_path...}":
 		return "/_redeven_plugin/assets/ui/index.html"
 	case "/_redeven_plugin/stream/{stream_id}":
@@ -935,6 +985,18 @@ func buildHTTPCoreActionFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpCoreActionFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Core Action</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPSettingsFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSettingsFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Settings</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1184,6 +1246,42 @@ func httpCoreActionFixtureManifestJSON() string {
 	}`
 }
 
+func httpSettingsFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.settings",
+			"display_name": "HTTP Settings",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.settings.activity", "kind": "activity", "label": "HTTP Settings", "entry": "ui/index.html"}
+		],
+		"settings": {
+			"schema_version": 1,
+			"migration": {
+				"from_version": 1,
+				"to_version": 1,
+				"reversible": true,
+				"requires_worker": false,
+				"estimated_bytes": 0,
+				"max_duration_ms": 0,
+				"data_loss_risk": false,
+				"steps_hash": "sha256:test"
+			},
+			"fields": [
+				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]},
+				{"key": "show_stopped", "type": "boolean", "scope": "user", "label": "Show stopped", "default": true},
+				{"key": "api_token", "type": "secret", "scope": "user", "label": "API token", "secret_ref": "api_token"}
+			]
+		}
+	}`
+}
+
 func httpBlockedNetworkFixtureManifestJSON() string {
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
@@ -1226,6 +1324,35 @@ func httpBlockedNetworkFixtureManifestJSON() string {
 			]
 		}
 	}`
+}
+
+func patchJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code < 200 || rec.Code >= 300 {
+		t.Fatalf("PATCH %s status = %d body = %s", path, rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		OK   bool            `json:"ok"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatalf("PATCH %s returned not ok: %s", path, rec.Body.String())
+	}
+	var data T
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 type httpTestSessionResolver struct{}

@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
@@ -127,6 +128,7 @@ type Adapters struct {
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
 	Operations              operation.Store
+	Settings                settings.Store
 	Streams                 stream.Store
 }
 
@@ -188,6 +190,32 @@ type ImportDataRequest struct {
 
 type ExportDataResult struct {
 	ArchiveRef string `json:"archive_ref"`
+}
+
+type GetSettingsRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+}
+
+type PatchSettingsRequest struct {
+	PluginInstanceID string         `json:"plugin_instance_id"`
+	Values           map[string]any `json:"values"`
+	Now              time.Time      `json:"now,omitempty"`
+}
+
+type SettingsSchemaResult struct {
+	PluginInstanceID string                      `json:"plugin_instance_id"`
+	SchemaVersion    int                         `json:"schema_version"`
+	Migration        manifest.MigrationSpec      `json:"migration"`
+	Fields           []manifest.SettingFieldSpec `json:"fields"`
+	SettingsRevision uint64                      `json:"settings_revision"`
+}
+
+type SettingsResult struct {
+	PluginInstanceID string         `json:"plugin_instance_id"`
+	SchemaVersion    int            `json:"schema_version"`
+	SettingsRevision uint64         `json:"settings_revision"`
+	Values           map[string]any `json:"values"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 type OpenSurfaceRequest struct {
@@ -373,6 +401,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
+	}
+	if adapters.Settings == nil {
+		adapters.Settings = settings.NewMemoryStore()
 	}
 	if adapters.Streams == nil {
 		adapters.Streams = stream.NewMemoryStore()
@@ -845,6 +876,9 @@ func (h *Host) validateEnabledRuntimeState(ctx context.Context, record registry.
 	if record.Manifest.Storage != nil && len(record.Manifest.Storage.Stores) > 0 && h.adapters.Storage == nil {
 		return errors.New("storage broker is required for plugins that declare storage")
 	}
+	if record.Manifest.Settings != nil && h.adapters.Settings == nil {
+		return errors.New("settings store is required for plugins that declare settings")
+	}
 	return nil
 }
 
@@ -853,6 +887,9 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 		return nil
 	}
 	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
+		return err
+	}
+	if _, err := h.ensureSettings(ctx, record, time.Time{}, true); err != nil {
 		return err
 	}
 	connectivityPolicy, hasConnectivityPolicy, err := compileConnectivityPolicy(record)
@@ -1028,6 +1065,9 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if _, err := h.ensureSettings(ctx, record, req.Now, true); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	enabled, err := h.adapters.Registry.SetEnableState(ctx, req.PluginInstanceID, registry.EnableEnabled, "", req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -1124,6 +1164,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	if err := h.deleteOrRetainStorage(ctx, record, req.DeleteData); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := h.deleteOrRetainSettings(ctx, record, req.DeleteData, req.Now); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if h.adapters.Connectivity != nil {
 		_ = h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID)
 	}
@@ -1181,6 +1224,65 @@ func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (Exp
 	return ExportDataResult{ArchiveRef: archiveRef}, nil
 }
 
+func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (SettingsSchemaResult, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return SettingsSchemaResult{}, err
+	}
+	if record.Manifest.Settings == nil {
+		return SettingsSchemaResult{}, settings.ErrNotDeclared
+	}
+	snapshot, err := h.ensureSettings(ctx, record, time.Time{}, false)
+	if err != nil {
+		return SettingsSchemaResult{}, err
+	}
+	return SettingsSchemaResult{
+		PluginInstanceID: record.PluginInstanceID,
+		SchemaVersion:    record.Manifest.Settings.SchemaVersion,
+		Migration:        record.Manifest.Settings.Migration,
+		Fields:           cloneSettingFields(record.Manifest.Settings.Fields),
+		SettingsRevision: snapshot.SettingsRevision,
+	}, nil
+}
+
+func (h *Host) GetPluginSettings(ctx context.Context, req GetSettingsRequest) (SettingsResult, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	if record.Manifest.Settings == nil {
+		return SettingsResult{}, settings.ErrNotDeclared
+	}
+	snapshot, err := h.ensureSettings(ctx, record, time.Time{}, false)
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	return settingsResult(snapshot), nil
+}
+
+func (h *Host) PatchPluginSettings(ctx context.Context, req PatchSettingsRequest) (SettingsResult, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	if record.Manifest.Settings == nil {
+		return SettingsResult{}, settings.ErrNotDeclared
+	}
+	if _, err := h.ensureSettings(ctx, record, req.Now, false); err != nil {
+		return SettingsResult{}, err
+	}
+	snapshot, err := h.adapters.Settings.Patch(ctx, settings.PatchRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		Values:           cloneParams(req.Values),
+		Now:              req.Now,
+	})
+	if err != nil {
+		return SettingsResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.settings.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return settingsResult(snapshot), nil
+}
+
 func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) error {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -1221,6 +1323,9 @@ func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) error {
 	if err := h.adapters.Secrets.BindSecretRef(ctx, normalized); err != nil {
 		return err
 	}
+	if err := h.markSettingsSecret(ctx, record, normalized.SecretRef, true, "", time.Time{}); err != nil {
+		return err
+	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secret.bound", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
@@ -1233,6 +1338,9 @@ func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) error {
 	if err := h.adapters.Secrets.TestSecretRef(ctx, SecretTestRequest(normalized)); err != nil {
 		return err
 	}
+	if err := h.markSettingsSecret(ctx, record, normalized.SecretRef, true, "passed", time.Time{}); err != nil {
+		return err
+	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secret.tested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
@@ -1243,6 +1351,9 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) err
 		return err
 	}
 	if err := h.adapters.Secrets.DeleteSecretRef(ctx, SecretDeleteRequest(normalized)); err != nil {
+		return err
+	}
+	if err := h.markSettingsSecret(ctx, record, normalized.SecretRef, false, "", time.Time{}); err != nil {
 		return err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.secret.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
@@ -1485,6 +1596,9 @@ func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) 
 	if err != nil {
 		return registry.PluginRecord{}, SecretBindRequest{}, err
 	}
+	if !secretRefDeclared(record.Manifest, req.SecretRef) {
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: secret_ref %q is not declared", ErrInvalidSecretRef, req.SecretRef)
+	}
 	return record, req, nil
 }
 
@@ -1701,6 +1815,44 @@ func (h *Host) ensureStorageNamespaces(ctx context.Context, record registry.Plug
 	return nil
 }
 
+func (h *Host) ensureSettings(ctx context.Context, record registry.PluginRecord, now time.Time, audit bool) (settings.Snapshot, error) {
+	if record.Manifest.Settings == nil {
+		return settings.Snapshot{}, nil
+	}
+	if h.adapters.Settings == nil {
+		return settings.Snapshot{}, errors.New("settings store is required for plugins that declare settings")
+	}
+	snapshot, err := h.adapters.Settings.Ensure(ctx, settings.EnsureRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		Spec:             record.Manifest.Settings,
+		Now:              now,
+	})
+	if err != nil {
+		return settings.Snapshot{}, err
+	}
+	if audit {
+		h.audit(ctx, AuditEvent{Type: "plugin.settings.ensured", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	}
+	return snapshot, nil
+}
+
+func (h *Host) markSettingsSecret(ctx context.Context, record registry.PluginRecord, secretRef string, set bool, lastTestStatus string, now time.Time) error {
+	if record.Manifest.Settings == nil || h.adapters.Settings == nil || !settingsSecretRefDeclared(record.Manifest.Settings.Fields, secretRef) {
+		return nil
+	}
+	if _, err := h.ensureSettings(ctx, record, now, false); err != nil {
+		return err
+	}
+	_, err := h.adapters.Settings.MarkSecret(ctx, settings.MarkSecretRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		SecretRef:        secretRef,
+		Set:              set,
+		LastTestStatus:   lastTestStatus,
+		Now:              now,
+	})
+	return err
+}
+
 func compileConnectivityPolicy(record registry.PluginRecord) (connectivity.PolicySet, bool, error) {
 	if record.Manifest.NetworkAccess == nil || len(record.Manifest.NetworkAccess.Connectors) == 0 {
 		return connectivity.PolicySet{}, false, nil
@@ -1751,6 +1903,28 @@ func (h *Host) deleteOrRetainStorage(ctx context.Context, record registry.Plugin
 	return nil
 }
 
+func (h *Host) deleteOrRetainSettings(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) error {
+	if record.Manifest.Settings == nil {
+		return nil
+	}
+	if h.adapters.Settings == nil {
+		return errors.New("settings store is required for plugins that declare settings")
+	}
+	if err := h.adapters.Settings.Delete(ctx, settings.DeleteRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		DeleteData:       deleteData,
+		Now:              now,
+	}); err != nil {
+		return err
+	}
+	eventType := "plugin.settings.retained"
+	if deleteData {
+		eventType = "plugin.settings.deleted"
+	}
+	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
 func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Namespace, error) {
 	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
 		return nil, nil
@@ -1767,6 +1941,60 @@ func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Name
 		})
 	}
 	return namespaces, nil
+}
+
+func settingsResult(snapshot settings.Snapshot) SettingsResult {
+	return SettingsResult{
+		PluginInstanceID: snapshot.PluginInstanceID,
+		SchemaVersion:    snapshot.SchemaVersion,
+		SettingsRevision: snapshot.SettingsRevision,
+		Values:           cloneParams(snapshot.Values),
+		UpdatedAt:        snapshot.UpdatedAt,
+	}
+}
+
+func cloneSettingFields(fields []manifest.SettingFieldSpec) []manifest.SettingFieldSpec {
+	cloned := make([]manifest.SettingFieldSpec, len(fields))
+	copy(cloned, fields)
+	return cloned
+}
+
+func secretRefDeclared(m manifest.Manifest, secretRef string) bool {
+	if m.Settings != nil && settingsSecretRefDeclared(m.Settings.Fields, secretRef) {
+		return true
+	}
+	if m.NetworkAccess != nil {
+		for _, connector := range m.NetworkAccess.Connectors {
+			if secretRefInMap(connector.Auth, secretRef) || secretRefInMap(connector.TLS, secretRef) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func settingsSecretRefDeclared(fields []manifest.SettingFieldSpec, secretRef string) bool {
+	secretRef = strings.TrimSpace(secretRef)
+	for _, field := range fields {
+		if field.Type == settings.FieldSecret && strings.TrimSpace(field.SecretRef) == secretRef {
+			return true
+		}
+	}
+	return false
+}
+
+func secretRefInMap(values map[string]any, secretRef string) bool {
+	for key, value := range values {
+		if strings.EqualFold(key, "secret_ref") {
+			if text, ok := value.(string); ok && strings.TrimSpace(text) == secretRef {
+				return true
+			}
+		}
+		if nested, ok := value.(map[string]any); ok && secretRefInMap(nested, secretRef) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Host) audit(ctx context.Context, event AuditEvent) {

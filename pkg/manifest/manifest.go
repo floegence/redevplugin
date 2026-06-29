@@ -375,6 +375,31 @@ func Validate(m Manifest) error {
 		if m.Settings.SchemaVersion <= 0 {
 			return ValidationError{Field: "settings.schema_version", Message: "must be positive"}
 		}
+		settingsFields := map[string]struct{}{}
+		for i, field := range m.Settings.Fields {
+			if strings.TrimSpace(field.Key) == "" {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].key", i), Message: "is required"}
+			}
+			if _, ok := settingsFields[field.Key]; ok {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].key", i), Message: "must be unique"}
+			}
+			settingsFields[field.Key] = struct{}{}
+			if field.Scope != "user" && field.Scope != "environment" {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].scope", i), Message: "must be user or environment"}
+			}
+			if !validSettingType(field.Type) {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].type", i), Message: "must be string, boolean, number, integer, enum, select, or secret"}
+			}
+			if (field.Type == "enum" || field.Type == "select") && len(field.Options) == 0 {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].options", i), Message: "is required for option settings"}
+			}
+			if field.Type == "secret" && strings.TrimSpace(field.SecretRef) == "" {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].secret_ref", i), Message: "is required for secret settings"}
+			}
+			if field.Type != "secret" && strings.TrimSpace(field.SecretRef) != "" {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].secret_ref", i), Message: "is only allowed for secret settings"}
+			}
+		}
 	}
 	if m.Storage != nil {
 		for i, store := range m.Storage.Stores {
@@ -463,6 +488,15 @@ func validExecutionMode(mode MethodExecutionMode) bool {
 func validNetworkTransport(transport string) bool {
 	switch transport {
 	case "http", "websocket", "tcp", "udp":
+		return true
+	default:
+		return false
+	}
+}
+
+func validSettingType(fieldType string) bool {
+	switch fieldType {
+	case "string", "boolean", "number", "integer", "enum", "select", "secret":
 		return true
 	default:
 		return false

@@ -112,6 +112,26 @@ paths:
       operationId: deletePluginSecret
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema:
+    get:
+      operationId: getPluginSettingsSchema
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/{plugin_instance_id}/settings:
+    get:
+      operationId: getPluginSettings
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+    patch:
+      operationId: patchPluginSettings
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
   /_redeven_plugin/bootstrap:
     post:
       operationId: exchangePluginAssetTicket
@@ -153,6 +173,11 @@ components:
   parameters:
     OperationID:
       name: operation_id
+      in: path
+      required: true
+      schema: { type: string }
+    PluginInstanceID:
+      name: plugin_instance_id
       in: path
       required: true
       schema: { type: string }

@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
 
@@ -1228,7 +1229,7 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 		localGenerated: true,
 		secrets:        secrets,
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := InstallPackageBytes(context.Background(), h, buildSettingsFixturePackage(t), registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1257,6 +1258,84 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 	}
 }
 
+func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
+	secrets := &recordingSecretStore{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		secrets:        secrets,
+	})
+	ctx := context.Background()
+	installed, err := InstallPackageBytes(ctx, h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	schema, err := h.GetSettingsSchema(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("GetSettingsSchema() error = %v", err)
+	}
+	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.SettingsRevision == 0 {
+		t.Fatalf("settings schema mismatch: %#v", schema)
+	}
+
+	initial, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("GetPluginSettings() error = %v", err)
+	}
+	if initial.Values["default_engine"] != "docker" {
+		t.Fatalf("default settings mismatch: %#v", initial)
+	}
+	secret, ok := initial.Values["api_token"].(settings.SecretValue)
+	if !ok || secret.Set {
+		t.Fatalf("secret setting should be redacted unset state: %#v", initial.Values["api_token"])
+	}
+
+	patched, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		Values:           map[string]any{"default_engine": "podman"},
+	})
+	if err != nil {
+		t.Fatalf("PatchPluginSettings() error = %v", err)
+	}
+	if patched.SettingsRevision <= initial.SettingsRevision || patched.Values["default_engine"] != "podman" {
+		t.Fatalf("patched settings mismatch: before=%#v after=%#v", initial, patched)
+	}
+	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		Values:           map[string]any{"api_token": "plaintext"},
+	}); !errors.Is(err, settings.ErrInvalidSetting) {
+		t.Fatalf("PatchPluginSettings(secret) error = %v, want ErrInvalidSetting", err)
+	}
+
+	if err := h.BindSecretRef(ctx, SecretBindRequest{PluginInstanceID: installed.PluginInstanceID, SecretRef: "api_token", Scope: "user"}); err != nil {
+		t.Fatalf("BindSecretRef() error = %v", err)
+	}
+	if err := h.TestSecretRef(ctx, SecretTestRequest{PluginInstanceID: installed.PluginInstanceID, SecretRef: "api_token", Scope: "user"}); err != nil {
+		t.Fatalf("TestSecretRef() error = %v", err)
+	}
+	withSecret, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, ok = withSecret.Values["api_token"].(settings.SecretValue)
+	if !ok || !secret.Set || secret.LastTestStatus != "passed" {
+		t.Fatalf("secret setting state mismatch: %#v", withSecret.Values["api_token"])
+	}
+
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
+	}
+	if _, err := h.adapters.Settings.Get(ctx, settings.GetRequest{PluginInstanceID: installed.PluginInstanceID}); !errors.Is(err, settings.ErrNotDeclared) {
+		t.Fatalf("settings should be deleted after uninstall delete data: %v", err)
+	}
+	if !audits.hasEvent("plugin.settings.updated") || !audits.hasEvent("plugin.settings.deleted") {
+		t.Fatalf("missing settings audit events: %#v", audits.events)
+	}
+}
+
 func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
@@ -1282,6 +1361,17 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 		Scope:            "user",
 	}); !errors.Is(err, ErrSecretStoreRequired) {
 		t.Fatalf("BindSecretRef() error = %v, want ErrSecretStoreRequired", err)
+	}
+	withSecretsInstalled, err := InstallPackageBytes(context.Background(), withSecrets, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withSecrets.BindSecretRef(context.Background(), SecretBindRequest{
+		PluginInstanceID: withSecretsInstalled.PluginInstanceID,
+		SecretRef:        "token",
+		Scope:            "user",
+	}); !errors.Is(err, ErrInvalidSecretRef) {
+		t.Fatalf("BindSecretRef(undeclared) error = %v, want ErrInvalidSecretRef", err)
 	}
 }
 
@@ -1400,6 +1490,18 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), storageFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Storage</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildSettingsFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), settingsFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Settings</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1595,6 +1697,42 @@ func storageFixtureManifestJSON() string {
 						"steps_hash": "sha256:test"
 					}
 				}
+			]
+		}
+	}`
+}
+
+func settingsFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.settings",
+			"display_name": "Settings",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "settings.activity", "kind": "activity", "label": "Settings", "entry": "ui/index.html"}
+		],
+		"settings": {
+			"schema_version": 1,
+			"migration": {
+				"from_version": 1,
+				"to_version": 1,
+				"reversible": true,
+				"requires_worker": false,
+				"estimated_bytes": 0,
+				"max_duration_ms": 0,
+				"data_loss_risk": false,
+				"steps_hash": "sha256:test"
+			},
+			"fields": [
+				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]},
+				{"key": "show_stopped", "type": "boolean", "scope": "user", "label": "Show stopped", "default": true},
+				{"key": "api_token", "type": "secret", "scope": "user", "label": "API token", "secret_ref": "api_token"}
 			]
 		}
 	}`

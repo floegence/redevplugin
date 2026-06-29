@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
@@ -118,6 +119,10 @@ type secretRefRequest struct {
 	Scope            string `json:"scope"`
 }
 
+type patchSettingsRequest struct {
+	Values map[string]any `json:"values"`
+}
+
 type sandboxBootstrapRequest struct {
 	SurfaceInstanceID string `json:"surface_instance_id"`
 	AssetTicket       string `json:"asset_ticket"`
@@ -175,6 +180,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleTestSecret(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/delete":
 		h.handleDeleteSecret(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings/schema"):
+		h.handleGetSettingsSchema(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
+		h.handleGetSettings(w, r)
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
+		h.handlePatchSettings(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/bootstrap":
 		h.handleSandboxBootstrap(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/assets/"):
@@ -210,6 +221,9 @@ func RouteSet() []Route {
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/bind"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/test"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/delete"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings"},
+		{Method: http.MethodPatch, Path: "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings"},
 		{Method: http.MethodPost, Path: "/_redeven_plugin/bootstrap"},
 		{Method: http.MethodGet, Path: "/_redeven_plugin/assets/{asset_path...}"},
 		{Method: http.MethodGet, Path: "/_redeven_plugin/stream/{stream_id}"},
@@ -666,6 +680,68 @@ func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"deleted": true}})
 }
 
+func (h Handler) handleGetSettingsSchema(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings/schema")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.GetSettingsSchema(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	if err != nil {
+		WriteJSON(w, httpStatusForSettingsError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSettingsError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
+func (h Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.GetPluginSettings(r.Context(), host.GetSettingsRequest{PluginInstanceID: pluginInstanceID})
+	if err != nil {
+		WriteJSON(w, httpStatusForSettingsError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSettingsError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
+func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	pluginInstanceID, ok := pluginInstanceIDFromSettingsPath(r.URL.Path, "/settings")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req patchSettingsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.PatchPluginSettings(r.Context(), host.PatchSettingsRequest{
+		PluginInstanceID: pluginInstanceID,
+		Values:           req.Values,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForSettingsError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSettingsError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
 func (h Handler) handleSandboxBootstrap(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -845,6 +921,19 @@ func operationIDFromPath(path string, suffix string) (string, bool) {
 		return "", false
 	}
 	return operationID, true
+}
+
+func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string, bool) {
+	const prefix = "/_redeven_proxy/api/plugins/"
+	if !strings.HasPrefix(requestPath, prefix) || !strings.HasSuffix(requestPath, suffix) {
+		return "", false
+	}
+	pluginInstanceID := strings.TrimSuffix(strings.TrimPrefix(requestPath, prefix), suffix)
+	pluginInstanceID = strings.Trim(pluginInstanceID, "/")
+	if pluginInstanceID == "" || strings.Contains(pluginInstanceID, "/") || strings.HasPrefix(pluginInstanceID, ".") {
+		return "", false
+	}
+	return pluginInstanceID, true
 }
 
 func assetPathFromSandboxPath(requestPath string) (string, bool) {
@@ -1103,6 +1192,24 @@ func errorCodeForSecretError(err error) security.ErrorCode {
 		return security.ErrRuntimeUnavailable
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func errorCodeForSettingsError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+		return security.ErrInvalidRequest
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForSettingsError(err error) int {
+	switch {
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+		return http.StatusBadRequest
+	default:
+		return http.StatusForbidden
 	}
 }
 

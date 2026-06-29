@@ -88,6 +88,8 @@ func readOpenAPIRoutes(path string) ([]routeFixture, error) {
 		switch line {
 		case "    get:":
 			routes = append(routes, routeFixture{Method: "GET", Path: currentPath})
+		case "    patch:":
+			routes = append(routes, routeFixture{Method: "PATCH", Path: currentPath})
 		case "    post:":
 			routes = append(routes, routeFixture{Method: "POST", Path: currentPath})
 		}
