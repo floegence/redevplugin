@@ -342,6 +342,152 @@ func TestRuntimeExecutionLeaseTTLIsClamped(t *testing.T) {
 	}
 }
 
+func TestHandleGrantBindsRuntimeGenerationHandleAndMethod(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	revision := testRevision(9)
+	limits := Limits{MaxBytesPerSecond: 4096, MaxTotalBytes: 32768}
+	result, err := service.MintHandleGrant(MintHandleGrantRequest{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		HandleID:            "handle_network_1",
+		Method:              "network.open",
+		Revision:            revision,
+		Limits:              limits,
+		Now:                 now,
+	})
+	if err != nil {
+		t.Fatalf("MintHandleGrant() error = %v", err)
+	}
+	if result.HandleGrantToken == "" || result.HandleGrantID == "" ||
+		result.RuntimeGenerationID != "runtime_gen_1" || result.HandleID != "handle_network_1" {
+		t.Fatalf("handle grant result mismatch: %#v", result)
+	}
+	if result.Limits != limits {
+		t.Fatalf("handle grant limits = %#v, want %#v", result.Limits, limits)
+	}
+
+	audience := Audience{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		HandleID:            "handle_network_1",
+		Method:              "network.open",
+	}
+	record, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrantToken,
+		Audience:         audience,
+		Revision:         revision,
+		Now:              now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ValidateHandleGrant() error = %v", err)
+	}
+	if record.Use != TokenUseReusable || record.Limits != limits {
+		t.Fatalf("handle grant record mismatch: %#v", record)
+	}
+
+	wrongHandle := audience
+	wrongHandle.HandleID = "handle_network_2"
+	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrantToken,
+		Audience:         wrongHandle,
+		Revision:         revision,
+		Now:              now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("ValidateHandleGrant() wrong handle error = %v, want %v", err, ErrTokenAudience)
+	}
+}
+
+func TestHandleGrantRequiresRuntimeGenerationHandleAndMethod(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	req := MintHandleGrantRequest{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeGenerationID: "runtime_gen_1",
+		HandleID:            "handle_network_1",
+		Method:              "network.open",
+		Revision:            testRevision(9),
+		Now:                 testNow(),
+	}
+	missingGeneration := req
+	missingGeneration.RuntimeGenerationID = ""
+	if _, err := service.MintHandleGrant(missingGeneration); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintHandleGrant() missing generation error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	missingHandle := req
+	missingHandle.HandleID = ""
+	if _, err := service.MintHandleGrant(missingHandle); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintHandleGrant() missing handle error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	missingMethod := req
+	missingMethod.Method = ""
+	if _, err := service.MintHandleGrant(missingMethod); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintHandleGrant() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+
+	result, err := service.MintHandleGrant(req)
+	if err != nil {
+		t.Fatalf("MintHandleGrant() error = %v", err)
+	}
+	audience := Audience{
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		HandleID:            req.HandleID,
+	}
+	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrantToken,
+		Audience:         audience,
+		Revision:         req.Revision,
+		Now:              req.Now.Add(time.Second),
+	}); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("ValidateHandleGrant() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+}
+
+func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	result, err := service.MintHandleGrant(MintHandleGrantRequest{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeGenerationID: "runtime_gen_1",
+		HandleID:            "handle_storage_1",
+		Method:              "storage.read",
+		Revision:            testRevision(9),
+		Now:                 now,
+		ExpiresAt:           now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("MintHandleGrant() error = %v", err)
+	}
+	if got := result.ExpiresAt.Sub(now); got != MaxHandleGrantTTL {
+		t.Fatalf("handle grant ttl = %s, want %s", got, MaxHandleGrantTTL)
+	}
+
+	audience := Audience{
+		PluginInstanceID:    "plugini_test",
+		ActiveFingerprint:   "sha256:package",
+		RuntimeGenerationID: "runtime_gen_1",
+		HandleID:            "handle_storage_1",
+		Method:              "storage.read",
+	}
+	if _, err := service.ValidateHandleGrant(ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrantToken,
+		Audience:         audience,
+		Revision:         testRevision(10),
+		Now:              now.Add(time.Second),
+	}); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("ValidateHandleGrant() stale revision error = %v, want %v", err, ErrTokenRevoked)
+	}
+}
+
 func mintTestGatewayToken(t *testing.T, service *SurfaceTokenService, now time.Time) (SurfaceBootstrap, GatewayTokenResult) {
 	t.Helper()
 	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))

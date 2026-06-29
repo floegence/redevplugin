@@ -16,6 +16,8 @@ const (
 	DefaultConfirmationTTL = 2 * time.Minute
 	DefaultRuntimeLeaseTTL = 30 * time.Second
 	MaxRuntimeLeaseTTL     = 5 * time.Minute
+	DefaultHandleGrantTTL  = 30 * time.Second
+	MaxHandleGrantTTL      = 60 * time.Second
 )
 
 var (
@@ -152,6 +154,37 @@ type RuntimeExecutionLeaseResult struct {
 	RuntimeGenerationID string    `json:"runtime_generation_id"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
+}
+
+type MintHandleGrantRequest struct {
+	PluginInstanceID    string          `json:"plugin_instance_id"`
+	ActiveFingerprint   string          `json:"active_fingerprint"`
+	RuntimeInstanceID   string          `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string          `json:"runtime_generation_id"`
+	RuntimeShardID      string          `json:"runtime_shard_id,omitempty"`
+	HandleID            string          `json:"handle_id"`
+	Method              string          `json:"method"`
+	Revision            RevisionBinding `json:"revision"`
+	Limits              Limits          `json:"limits,omitempty"`
+	Now                 time.Time       `json:"now,omitempty"`
+	ExpiresAt           time.Time       `json:"expires_at,omitempty"`
+}
+
+type HandleGrantResult struct {
+	HandleGrantToken    string    `json:"handle_grant_token"`
+	HandleGrantID       string    `json:"handle_grant_id"`
+	RuntimeGenerationID string    `json:"runtime_generation_id"`
+	HandleID            string    `json:"handle_id"`
+	Limits              Limits    `json:"limits,omitempty"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
+}
+
+type ValidateHandleGrantRequest struct {
+	HandleGrantToken string          `json:"handle_grant_token"`
+	Audience         Audience        `json:"audience"`
+	Revision         RevisionBinding `json:"revision"`
+	Now              time.Time       `json:"now,omitempty"`
 }
 
 type surfaceState struct {
@@ -505,6 +538,78 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		IssuedAt:            minted.IssuedAt,
 		ExpiresAt:           minted.ExpiresAt,
 	}, nil
+}
+
+func (s *SurfaceTokenService) MintHandleGrant(req MintHandleGrantRequest) (HandleGrantResult, error) {
+	if s == nil {
+		return HandleGrantResult{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.HandleID) == "" ||
+		strings.TrimSpace(req.Method) == "" {
+		return HandleGrantResult{}, ErrMissingTokenAudience
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	expiresAt := req.ExpiresAt
+	if expiresAt.IsZero() {
+		expiresAt = now.Add(DefaultHandleGrantTTL)
+	}
+	if expiresAt.After(now.Add(MaxHandleGrantTTL)) {
+		expiresAt = now.Add(MaxHandleGrantTTL)
+	}
+	minted, err := s.tokens.Mint(MintRequest{
+		Kind: TokenKindHandleGrant,
+		Audience: Audience{
+			PluginInstanceID:    req.PluginInstanceID,
+			ActiveFingerprint:   req.ActiveFingerprint,
+			RuntimeInstanceID:   req.RuntimeInstanceID,
+			RuntimeGenerationID: req.RuntimeGenerationID,
+			RuntimeShardID:      req.RuntimeShardID,
+			HandleID:            req.HandleID,
+			Method:              req.Method,
+		},
+		Revision:  req.Revision,
+		ExpiresAt: expiresAt,
+		Now:       now,
+		Limits:    req.Limits,
+	})
+	if err != nil {
+		return HandleGrantResult{}, err
+	}
+	return HandleGrantResult{
+		HandleGrantToken:    minted.Token,
+		HandleGrantID:       minted.TokenID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		HandleID:            req.HandleID,
+		Limits:              minted.Limits,
+		IssuedAt:            minted.IssuedAt,
+		ExpiresAt:           minted.ExpiresAt,
+	}, nil
+}
+
+func (s *SurfaceTokenService) ValidateHandleGrant(req ValidateHandleGrantRequest) (TokenRecord, error) {
+	if s == nil {
+		return TokenRecord{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.Audience.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.Audience.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.Audience.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.Audience.HandleID) == "" ||
+		strings.TrimSpace(req.Audience.Method) == "" {
+		return TokenRecord{}, ErrMissingTokenAudience
+	}
+	return s.tokens.Validate(ValidateRequest{
+		Kind:     TokenKindHandleGrant,
+		Token:    req.HandleGrantToken,
+		Audience: req.Audience,
+		Revision: req.Revision,
+		Now:      req.Now,
+	})
 }
 
 func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.Time) bool {
