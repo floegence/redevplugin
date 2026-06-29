@@ -120,6 +120,92 @@ func TestSurfaceDisposeRevokesGatewayToken(t *testing.T) {
 	}
 }
 
+func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.Method = "danger.run"
+	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
+		PluginInstanceID:     audience.PluginInstanceID,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		Method:               audience.Method,
+		RequestHash:          audience.RequestHash,
+		Revision:             testRevision(4),
+		Now:                  now,
+	})
+	if err != nil {
+		t.Fatalf("MintConfirmationToken() error = %v", err)
+	}
+	if result.ConfirmationToken == "" || result.RequestHash != audience.RequestHash {
+		t.Fatalf("confirmation result mismatch: %#v", result)
+	}
+
+	wrongAudience := audience
+	wrongAudience.RequestHash = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	if _, err := service.ValidateConfirmationToken(ValidateConfirmationTokenRequest{
+		ConfirmationToken: result.ConfirmationToken,
+		Audience:          wrongAudience,
+		Revision:          testRevision(4),
+		Now:               now.Add(time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("ValidateConfirmationToken() wrong hash error = %v, want %v", err, ErrTokenAudience)
+	}
+
+	if _, err := service.ValidateConfirmationToken(ValidateConfirmationTokenRequest{
+		ConfirmationToken: result.ConfirmationToken,
+		Audience:          audience,
+		Revision:          testRevision(4),
+		Now:               now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("ValidateConfirmationToken() error = %v", err)
+	}
+	if _, err := service.ValidateConfirmationToken(ValidateConfirmationTokenRequest{
+		ConfirmationToken: result.ConfirmationToken,
+		Audience:          audience,
+		Revision:          testRevision(4),
+		Now:               now.Add(3 * time.Second),
+	}); !errors.Is(err, ErrTokenReplay) {
+		t.Fatalf("ValidateConfirmationToken() replay error = %v, want %v", err, ErrTokenReplay)
+	}
+}
+
+func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.Method = "danger.run"
+	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	req := MintConfirmationTokenRequest{
+		PluginInstanceID:     audience.PluginInstanceID,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		Method:               audience.Method,
+		RequestHash:          audience.RequestHash,
+		Revision:             testRevision(4),
+		Now:                  now,
+	}
+	missingMethod := req
+	missingMethod.Method = ""
+	if _, err := service.MintConfirmationToken(missingMethod); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintConfirmationToken() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	badHash := req
+	badHash.RequestHash = "sha256:not-a-real-hash"
+	if _, err := service.MintConfirmationToken(badHash); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("MintConfirmationToken() invalid hash error = %v, want %v", err, ErrTokenAudience)
+	}
+}
+
 func TestAssetTicketTTLIsClamped(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{AssetTicketTTL: 5 * time.Minute})
 	now := testNow()

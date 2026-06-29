@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -184,15 +185,28 @@ type CallMethodRequest struct {
 	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
 	BridgeChannelID      string         `json:"bridge_channel_id"`
 	GatewayToken         string         `json:"plugin_gateway_token"`
+	ConfirmationToken    string         `json:"confirmation_token,omitempty"`
 	Method               string         `json:"method"`
 	Params               map[string]any `json:"params,omitempty"`
 	Now                  time.Time      `json:"now,omitempty"`
 }
 
 type CallMethodResult struct {
-	Data        any    `json:"data,omitempty"`
-	OperationID string `json:"operation_id,omitempty"`
-	StreamID    string `json:"stream_id,omitempty"`
+	Data                 any    `json:"data,omitempty"`
+	OperationID          string `json:"operation_id,omitempty"`
+	StreamID             string `json:"stream_id,omitempty"`
+	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
+	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
+	RequestHash          string `json:"request_hash,omitempty"`
+}
+
+type ConfirmMethodRequest = CallMethodRequest
+
+type ConfirmMethodResult struct {
+	ConfirmationToken   string    `json:"confirmation_token"`
+	ConfirmationTokenID string    `json:"confirmation_token_id"`
+	RequestHash         string    `json:"request_hash"`
+	ExpiresAt           time.Time `json:"expires_at"`
 }
 
 func New(adapters Adapters) (*Host, error) {
@@ -284,19 +298,112 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 }
 
 func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (CallMethodResult, error) {
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	call, err := h.resolveMethodCall(ctx, req)
 	if err != nil {
 		return CallMethodResult{}, err
 	}
+	if methodRequiresConfirmation(call.method) {
+		requestHash, err := methodRequestHash(call.method, req.Params)
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+		if req.ConfirmationToken == "" {
+			return CallMethodResult{
+				ConfirmationRequired: true,
+				RequestHash:          requestHash,
+			}, ErrConfirmationRequired
+		}
+		confirmationAudience := call.audience
+		confirmationAudience.Method = call.method.Method
+		confirmationAudience.RequestHash = requestHash
+		if _, err := h.surfaceTokens.ValidateConfirmationToken(bridge.ValidateConfirmationTokenRequest{
+			ConfirmationToken: req.ConfirmationToken,
+			Audience:          confirmationAudience,
+			Revision:          call.revision,
+			Now:               req.Now,
+		}); err != nil {
+			return CallMethodResult{}, err
+		}
+	}
+	result, err := h.dispatchMethod(ctx, call.record, call.method, req)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.method.called", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
+	return result, nil
+}
+
+func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodRequest) (ConfirmMethodResult, error) {
+	call, err := h.resolveMethodCall(ctx, CallMethodRequest{
+		PluginInstanceID:     req.PluginInstanceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		GatewayToken:         req.GatewayToken,
+		Method:               req.Method,
+		Params:               req.Params,
+		Now:                  req.Now,
+	})
+	if err != nil {
+		return ConfirmMethodResult{}, err
+	}
+	if !methodRequiresConfirmation(call.method) {
+		return ConfirmMethodResult{}, errors.New("method does not require confirmation")
+	}
+	requestHash, err := methodRequestHash(call.method, req.Params)
+	if err != nil {
+		return ConfirmMethodResult{}, err
+	}
+	result, err := h.surfaceTokens.MintConfirmationToken(bridge.MintConfirmationTokenRequest{
+		PluginInstanceID:     call.record.PluginInstanceID,
+		ActiveFingerprint:    call.record.ActiveFingerprint,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		Method:               call.method.Method,
+		RequestHash:          requestHash,
+		Revision:             call.revision,
+		Now:                  req.Now,
+	})
+	if err != nil {
+		return ConfirmMethodResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.confirmation.issued", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
+	return ConfirmMethodResult{
+		ConfirmationToken:   result.ConfirmationToken,
+		ConfirmationTokenID: result.ConfirmationTokenID,
+		RequestHash:         result.RequestHash,
+		ExpiresAt:           result.ExpiresAt,
+	}, nil
+}
+
+type resolvedMethodCall struct {
+	record   registry.PluginRecord
+	method   manifest.MethodSpec
+	audience bridge.Audience
+	revision bridge.RevisionBinding
+}
+
+var ErrConfirmationRequired = errors.New("plugin method confirmation required")
+
+func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (resolvedMethodCall, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return resolvedMethodCall{}, err
+	}
 	if record.EnableState != registry.EnableEnabled {
-		return CallMethodResult{}, errors.New("plugin is not enabled")
+		return resolvedMethodCall{}, errors.New("plugin is not enabled")
 	}
 	if err := h.canRun(ctx, record); err != nil {
-		return CallMethodResult{}, err
+		return resolvedMethodCall{}, err
 	}
 	method, ok := manifestMethod(record.Manifest, req.Method)
 	if !ok {
-		return CallMethodResult{}, fmt.Errorf("method %q is not declared", req.Method)
+		return resolvedMethodCall{}, fmt.Errorf("method %q is not declared", req.Method)
 	}
 	audience := bridge.Audience{
 		PluginInstanceID:     record.PluginInstanceID,
@@ -313,7 +420,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 		RevokeEpoch:        record.RevokeEpoch,
 	}
 	if _, err := h.surfaceTokens.ValidateGatewayToken(req.GatewayToken, audience, revision, req.Now); err != nil {
-		return CallMethodResult{}, err
+		return resolvedMethodCall{}, err
 	}
 	session := sessionctx.Context{
 		SessionChannelIDHash: req.SessionChannelIDHash,
@@ -321,17 +428,12 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 	}
 	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, session, pluginRefFromRecord(record), method)
 	if err != nil {
-		return CallMethodResult{}, err
+		return resolvedMethodCall{}, err
 	}
 	if decision != PolicyAllow {
-		return CallMethodResult{}, errors.New("plugin method denied by local policy")
+		return resolvedMethodCall{}, errors.New("plugin method denied by local policy")
 	}
-	result, err := h.dispatchMethod(ctx, record, method, req)
-	if err != nil {
-		return CallMethodResult{}, err
-	}
-	h.audit(ctx, AuditEvent{Type: "plugin.method.called", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return result, nil
+	return resolvedMethodCall{record: record, method: method, audience: audience, revision: revision}, nil
 }
 
 func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry.PluginRecord, error) {
@@ -578,6 +680,37 @@ func cloneParams(params map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func methodRequiresConfirmation(method manifest.MethodSpec) bool {
+	if method.Dangerous {
+		return true
+	}
+	if method.Confirmation == nil {
+		return false
+	}
+	switch method.Confirmation.Mode {
+	case manifest.ConfirmationRequired, manifest.ConfirmationRiskBased:
+		return true
+	default:
+		return false
+	}
+}
+
+func methodRequestHash(method manifest.MethodSpec, params map[string]any) (string, error) {
+	payload := struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params,omitempty"`
+	}{
+		Method: method.Method,
+		Params: params,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {

@@ -114,6 +114,8 @@ type Audience struct {
 	StreamDirection      string `json:"stream_direction,omitempty"`
 	HandleID             string `json:"handle_id,omitempty"`
 	ConfirmationID       string `json:"confirmation_id,omitempty"`
+	Method               string `json:"method,omitempty"`
+	RequestHash          string `json:"request_hash,omitempty"`
 }
 
 type RevisionBinding struct {
@@ -425,7 +427,9 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.StreamID == got.StreamID &&
 		expected.StreamDirection == got.StreamDirection &&
 		expected.HandleID == got.HandleID &&
-		expected.ConfirmationID == got.ConfirmationID
+		expected.ConfirmationID == got.ConfirmationID &&
+		expected.Method == got.Method &&
+		expected.RequestHash == got.RequestHash
 }
 
 func prefixedID(kind TokenKind) (string, error) {

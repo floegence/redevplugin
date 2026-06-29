@@ -3,6 +3,7 @@ package host
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -262,6 +263,127 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+
+	result, err := h.CallPluginMethod(context.Background(), call)
+	if !errors.Is(err, ErrConfirmationRequired) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationRequired", err)
+	}
+	if !result.ConfirmationRequired || result.RequestHash == "" {
+		t.Fatalf("confirmation response mismatch: %#v", result)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	if confirmation.ConfirmationToken == "" || confirmation.RequestHash != result.RequestHash {
+		t.Fatalf("confirmation result mismatch: %#v vs request hash %q", confirmation, result.RequestHash)
+	}
+	if !audits.hasEvent("plugin.confirmation.issued") {
+		t.Fatalf("missing confirmation audit event: %#v", audits.events)
+	}
+
+	call.ConfirmationToken = confirmation.ConfirmationToken
+	confirmed, err := h.CallPluginMethod(context.Background(), call)
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
+	}
+	if confirmed.Data == nil || capabilityAdapter.calls != 1 {
+		t.Fatalf("confirmed call mismatch: result=%#v calls=%d", confirmed, capabilityAdapter.calls)
+	}
+}
+
+func TestConfirmationTokenCannotBeReusedForDifferentParams(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Params = map[string]any{"target": "other"}
+	call.ConfirmationToken = confirmation.ConfirmationToken
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() expected confirmation audience error")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestConfirmationTokenBindsFullParamsBeyondManifestHashFieldHints(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db", "ui_note": "original"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Params = map[string]any{"target": "db", "ui_note": "changed"}
+	call.ConfirmationToken = confirmation.ConfirmationToken
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() expected confirmation token to bind full params")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
 func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	storageBroker := storage.NewMemoryBroker()
 	host, _, _ := newTestHostWithStorage(t, true, true, storageBroker)
@@ -484,6 +606,18 @@ func buildRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildDangerousRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), dangerousRPCFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Danger</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func writeFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
@@ -592,6 +726,37 @@ func rpcFixtureManifestJSON() string {
 				"effect": "read",
 				"execution": "sync",
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
+			}
+		]
+	}`
+}
+
+func dangerousRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.danger",
+			"display_name": "Danger",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "danger.activity", "kind": "activity", "label": "Danger", "entry": "ui/index.html", "method": "danger.run"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+		],
+		"methods": [
+			{
+				"method": "danger.run",
+				"effect": "execute",
+				"execution": "sync",
+				"dangerous": true,
+				"confirmation": {"mode": "required", "request_hash_fields": ["target"]},
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "danger.run"}
 			}
 		]
 	}`

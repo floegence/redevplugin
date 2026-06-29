@@ -79,6 +79,7 @@ type rpcRequest struct {
 	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
 	BridgeChannelID      string         `json:"bridge_channel_id"`
 	GatewayToken         string         `json:"plugin_gateway_token"`
+	ConfirmationToken    string         `json:"confirmation_token,omitempty"`
 	Method               string         `json:"method"`
 	Params               map[string]any `json:"params,omitempty"`
 }
@@ -114,6 +115,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleBridgeToken(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/rpc":
 		h.handleRPC(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/confirm":
+		h.handleConfirm(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/export":
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
@@ -360,6 +363,35 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		OwnerUserHash:        req.OwnerUserHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		GatewayToken:         req.GatewayToken,
+		ConfirmationToken:    req.ConfirmationToken,
+		Method:               req.Method,
+		Params:               req.Params,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForRPCError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
+func (h Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req rpcRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.PrepareMethodConfirmation(r.Context(), host.ConfirmMethodRequest{
+		PluginInstanceID:     req.PluginInstanceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		GatewayToken:         req.GatewayToken,
 		Method:               req.Method,
 		Params:               req.Params,
 	})
@@ -454,6 +486,8 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrConfirmationRequired):
+		return security.ErrConfirmationRequired
 	case errors.Is(err, bridge.ErrTokenExpired):
 		return security.ErrTokenExpired
 	case errors.Is(err, bridge.ErrTokenReplay):
@@ -491,6 +525,8 @@ func httpStatusForManagementError(err error) int {
 
 func httpStatusForRPCError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrConfirmationRequired):
+		return http.StatusConflict
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
 		return http.StatusForbidden
 	default:

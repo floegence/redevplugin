@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
@@ -225,6 +226,86 @@ func TestHandlerRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerRPCConfirmationFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"done": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPDangerousRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_id":              "http.danger.activity",
+		"surface_instance_id":     "surface_http_danger",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_danger/bootstrap", map[string]any{
+		"asset_ticket": openResp.AssetTicket,
+	})
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_danger/bridge-token", map[string]any{
+		"bridge_channel_id": "bridge_http_danger",
+		"handshake": map[string]any{
+			"plugin_id":           openResp.PluginID,
+			"surface_id":          openResp.SurfaceID,
+			"surface_instance_id": openResp.SurfaceInstanceID,
+			"active_fingerprint":  openResp.ActiveFingerprint,
+			"bridge_nonce":        openResp.BridgeNonce,
+			"ui_protocol_version": "plugin-ui-v1",
+		},
+	})
+	body := map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_danger",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_danger",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "danger.run",
+		"params":                  map[string]any{"target": "db"},
+	}
+
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("danger rpc status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var conflict Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &conflict); err != nil {
+		t.Fatal(err)
+	}
+	if conflict.ErrorCode != string(security.ErrConfirmationRequired) {
+		t.Fatalf("danger rpc error code = %s body = %s", conflict.ErrorCode, rec.Body.String())
+	}
+	if adapter.last.Method != "" {
+		t.Fatalf("capability adapter should not be called before confirmation: %#v", adapter.last)
+	}
+
+	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redeven_proxy/api/plugins/confirm", body)
+	if confirmation.ConfirmationToken == "" || confirmation.RequestHash == "" {
+		t.Fatalf("confirmation response mismatch: %#v", confirmation)
+	}
+	body["confirmation_token"] = confirmation.ConfirmationToken
+	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", body)
+	if result.Data == nil || adapter.last.Method != "danger.run" {
+		t.Fatalf("confirmed rpc mismatch: result=%#v invocation=%#v", result, adapter.last)
+	}
+}
+
 func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	h := newHTTPTestHost(t)
 	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
@@ -386,6 +467,18 @@ func buildHTTPRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPDangerousRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpDangerousRPCFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Danger</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func writeHTTPFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
@@ -477,6 +570,37 @@ func httpRPCFixtureManifestJSON() string {
 				"effect": "read",
 				"execution": "sync",
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
+			}
+		]
+	}`
+}
+
+func httpDangerousRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.danger",
+			"display_name": "HTTP Danger",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.danger.activity", "kind": "activity", "label": "HTTP Danger", "entry": "ui/index.html", "method": "danger.run"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+		],
+		"methods": [
+			{
+				"method": "danger.run",
+				"effect": "execute",
+				"execution": "sync",
+				"dangerous": true,
+				"confirmation": {"mode": "required", "request_hash_fields": ["target"]},
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "danger.run"}
 			}
 		]
 	}`
