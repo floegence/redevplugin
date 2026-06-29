@@ -136,6 +136,21 @@ type InstallRequest struct {
 	Now              time.Time
 }
 
+type UpdateRequest struct {
+	PluginInstanceID string
+	PackageReader    io.ReaderAt
+	PackageSize      int64
+	TrustState       registry.TrustState
+	Now              time.Time
+}
+
+type DowngradeRequest struct {
+	PluginInstanceID string
+	Version          string
+	PackageHash      string
+	Now              time.Time
+}
+
 type EnableRequest struct {
 	PluginInstanceID string
 	Now              time.Time
@@ -579,15 +594,100 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
-	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadOptions())
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
 	trust := req.TrustState
 	if trust == "" {
 		trust = registry.TrustUntrusted
 	}
-	instanceID := req.PluginInstanceID
+	pkg, record, err := h.readPackageRecord(ctx, req.PackageReader, req.PackageSize, trust, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record.EnableState = registry.EnableDisabled
+	record.RetainedDataState = registry.RetainedDataNone
+	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: req.Now})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.installed", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
+	return stored, nil
+}
+
+func (h *Host) UpdatePlugin(ctx context.Context, req UpdateRequest) (registry.PluginRecord, error) {
+	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if req.PackageReader == nil {
+		return registry.PluginRecord{}, errors.New("package reader is required")
+	}
+	trust := req.TrustState
+	if trust == "" {
+		trust = current.TrustState
+	}
+	pkg, next, err := h.readPackageRecord(ctx, req.PackageReader, req.PackageSize, trust, current.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := validateSamePluginIdentity(current, next); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	next.VersionHistory = current.VersionHistory
+	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, req.Now), req.Now)
+	if next.EnableState == registry.EnableEnabled {
+		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
+			return registry.PluginRecord{}, err
+		}
+	}
+	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: req.Now})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.updated", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
+	return stored, nil
+}
+
+func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (registry.PluginRecord, error) {
+	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	snapshot, remaining, err := selectVersionSnapshot(current.VersionHistory, req.Version, req.PackageHash)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	next := recordFromVersionSnapshot(current, snapshot)
+	next.VersionHistory = remaining
+	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, req.Now), req.Now)
+	if next.EnableState == registry.EnableEnabled {
+		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
+			return registry.PluginRecord{}, err
+		}
+	}
+	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: req.Now})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.downgraded", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
+	return stored, nil
+}
+
+func (h *Host) readPackageRecord(ctx context.Context, reader io.ReaderAt, size int64, trust registry.TrustState, instanceID string) (pluginpkg.Package, registry.PluginRecord, error) {
+	pkg, err := pluginpkg.Read(ctx, reader, size, pluginpkg.DefaultReadOptions())
+	if err != nil {
+		return pluginpkg.Package{}, registry.PluginRecord{}, err
+	}
 	if instanceID == "" {
 		instanceID = defaultPluginInstanceID(pkg)
 	}
@@ -606,15 +706,166 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 		PackageEntries:    pkg.Entries,
 		RetainedDataState: registry.RetainedDataNone,
 	}
-	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
-		return registry.PluginRecord{}, err
+	return pkg, record, nil
+}
+
+func validateSamePluginIdentity(current registry.PluginRecord, next registry.PluginRecord) error {
+	if current.PublisherID != next.PublisherID || current.PluginID != next.PluginID {
+		return fmt.Errorf("package identity mismatch: got %s/%s, want %s/%s", next.PublisherID, next.PluginID, current.PublisherID, current.PluginID)
 	}
-	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: req.Now})
+	return nil
+}
+
+func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.PluginRecord, previous registry.PluginVersion, now time.Time) registry.PluginRecord {
+	next.PluginInstanceID = current.PluginInstanceID
+	next.EnableState = current.EnableState
+	next.DisabledReason = current.DisabledReason
+	next.RetainedDataState = current.RetainedDataState
+	next.PolicyRevision = current.PolicyRevision
+	next.ManagementRevision = current.ManagementRevision
+	next.RevokeEpoch = current.RevokeEpoch
+	next.InstalledAt = current.InstalledAt
+	next.EnabledAt = cloneTimePtr(current.EnabledAt)
+	next.DeletedAt = cloneTimePtr(current.DeletedAt)
+	next.Metadata = cloneStringMap(current.Metadata)
+	if previous.PackageHash != "" && previous.PackageHash != next.PackageHash {
+		next.VersionHistory = appendVersionSnapshot(next.VersionHistory, previous)
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	next.UpdatedAt = now
+	return next
+}
+
+func versionSnapshot(record registry.PluginRecord, now time.Time) registry.PluginVersion {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return registry.PluginVersion{
+		Version:           record.Version,
+		ActiveFingerprint: record.ActiveFingerprint,
+		PackageHash:       record.PackageHash,
+		ManifestHash:      record.ManifestHash,
+		EntriesHash:       record.EntriesHash,
+		TrustState:        record.TrustState,
+		Manifest:          record.Manifest,
+		PackageEntries:    cloneEntries(record.PackageEntries),
+		ActivatedAt:       now,
+		Metadata:          cloneStringMap(record.Metadata),
+	}
+}
+
+func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.PluginVersion) registry.PluginRecord {
+	next := current
+	next.Version = snapshot.Version
+	next.ActiveFingerprint = snapshot.ActiveFingerprint
+	next.PackageHash = snapshot.PackageHash
+	next.ManifestHash = snapshot.ManifestHash
+	next.EntriesHash = snapshot.EntriesHash
+	next.TrustState = snapshot.TrustState
+	next.Manifest = snapshot.Manifest
+	next.PackageEntries = cloneEntries(snapshot.PackageEntries)
+	next.Metadata = cloneStringMap(snapshot.Metadata)
+	return next
+}
+
+func selectVersionSnapshot(history []registry.PluginVersion, version string, packageHash string) (registry.PluginVersion, []registry.PluginVersion, error) {
+	version = strings.TrimSpace(version)
+	packageHash = strings.TrimSpace(packageHash)
+	if version == "" && packageHash == "" {
+		return registry.PluginVersion{}, nil, errors.New("version or package_hash is required")
+	}
+	for i, snapshot := range history {
+		if (version == "" || snapshot.Version == version) && (packageHash == "" || snapshot.PackageHash == packageHash) {
+			remaining := make([]registry.PluginVersion, 0, len(history)-1)
+			remaining = append(remaining, history[:i]...)
+			remaining = append(remaining, history[i+1:]...)
+			return snapshot, remaining, nil
+		}
+	}
+	return registry.PluginVersion{}, nil, registry.ErrNotFound
+}
+
+func appendVersionSnapshot(history []registry.PluginVersion, snapshot registry.PluginVersion) []registry.PluginVersion {
+	next := make([]registry.PluginVersion, 0, len(history)+1)
+	for _, existing := range history {
+		if existing.PackageHash == snapshot.PackageHash {
+			continue
+		}
+		next = append(next, existing)
+	}
+	next = append(next, snapshot)
+	return next
+}
+
+func (h *Host) validateEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
+	if err := h.canRun(ctx, record); err != nil {
+		return err
+	}
+	if _, _, err := compileConnectivityPolicy(record); err != nil {
+		return err
+	}
+	if record.Manifest.Storage != nil && len(record.Manifest.Storage.Stores) > 0 && h.adapters.Storage == nil {
+		return errors.New("storage broker is required for plugins that declare storage")
+	}
+	return nil
+}
+
+func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
+	if record.EnableState != registry.EnableEnabled {
+		return nil
+	}
+	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
+		return err
+	}
+	connectivityPolicy, hasConnectivityPolicy, err := compileConnectivityPolicy(record)
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return err
 	}
-	h.audit(ctx, AuditEvent{Type: "plugin.installed", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
-	return stored, nil
+	if err := h.installConnectivityPolicy(ctx, record, connectivityPolicy, hasConnectivityPolicy); err != nil {
+		_, _ = h.adapters.Registry.SetEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, "connectivity policy installation failed", time.Now().UTC())
+		if h.adapters.Connectivity != nil {
+			_ = h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID)
+		}
+		return err
+	}
+	if h.adapters.SurfaceCatalog != nil {
+		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
+			PluginInstanceID:  record.PluginInstanceID,
+			ActiveFingerprint: record.ActiveFingerprint,
+			Surfaces:          record.Manifest.Surfaces,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloneTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {
+	if entries == nil {
+		return nil
+	}
+	return append([]pluginpkg.Entry(nil), entries...)
 }
 
 func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {

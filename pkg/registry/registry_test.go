@@ -53,6 +53,37 @@ func TestMemoryStoreRevisionsAndList(t *testing.T) {
 	}
 }
 
+func TestMemoryStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
+	record := PluginRecord{
+		PluginInstanceID:  "plugini_test",
+		PublisherID:       "example",
+		PluginID:          "com.example.test",
+		Version:           "1.0.0",
+		ActiveFingerprint: "sha256:v1",
+		PackageHash:       "sha256:v1",
+		TrustState:        TrustVerified,
+		EnableState:       EnableEnabled,
+		Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.test", Version: "1.0.0"}},
+	}
+	stored, err := store.PutPlugin(context.Background(), record, PutOptions{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Version = "2.0.0"
+	stored.ActiveFingerprint = "sha256:v2"
+	stored.PackageHash = "sha256:v2"
+	stored.VersionHistory = []PluginVersion{{Version: "1.0.0", PackageHash: "sha256:v1"}}
+	updated, err := store.PutPlugin(context.Background(), stored, PutOptions{Now: now.Add(time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ManagementRevision != 2 || updated.RevokeEpoch != 1 || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
+		t.Fatalf("updated record mismatch: %#v", updated)
+	}
+}
+
 func TestRunnableTrustState(t *testing.T) {
 	for _, state := range []TrustState{TrustBundled, TrustVerified, TrustUnsignedLocal} {
 		if !RunnableTrustState(state) {

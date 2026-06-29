@@ -43,6 +43,18 @@ type installRequest struct {
 	PluginInstanceID string              `json:"plugin_instance_id,omitempty"`
 }
 
+type updateRequest struct {
+	PluginInstanceID string              `json:"plugin_instance_id"`
+	PackageBase64    string              `json:"package_base64"`
+	TrustState       registry.TrustState `json:"trust_state,omitempty"`
+}
+
+type downgradeRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	Version          string `json:"version,omitempty"`
+	PackageHash      string `json:"package_hash,omitempty"`
+}
+
 type enableRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 }
@@ -129,9 +141,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/uninstall":
 		h.handleUninstall(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/update":
-		h.handleNotImplemented(w, "updatePlugin")
+		h.handleUpdate(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/downgrade":
-		h.handleNotImplemented(w, "downgradePlugin")
+		h.handleDowngrade(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/catalog":
 		h.handleCatalog(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/surfaces/open":
@@ -291,6 +303,56 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record, err := h.Host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, DeleteData: req.DeleteData})
+	if err != nil {
+		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req updateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
+	if err != nil || len(packageBytes) == 0 {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.UpdatePlugin(r.Context(), host.UpdateRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+		TrustState:       req.TrustState,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req downgradeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.DowngradePlugin(r.Context(), host.DowngradeRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		Version:          req.Version,
+		PackageHash:      req.PackageHash,
+	})
 	if err != nil {
 		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
 		return

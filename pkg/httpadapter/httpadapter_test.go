@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -117,6 +118,40 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	}](t, handler, "/_redeven_proxy/api/plugins/catalog")
 	if len(emptyCatalog.Plugins) != 0 {
 		t.Fatalf("catalog after uninstall mismatch: %#v", emptyCatalog)
+	}
+}
+
+func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h}
+	v1 := buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP")
+	v2 := buildHTTPVersionedFixturePackage(t, "2.0.0", "HTTP v2")
+
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(v1),
+		"trust_state":    "verified",
+	})
+	enabled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if enabled.EnableState != registry.EnableEnabled {
+		t.Fatalf("enable response mismatch: %#v", enabled)
+	}
+
+	updated := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/update", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"package_base64":     base64.StdEncoding.EncodeToString(v2),
+	})
+	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
+		t.Fatalf("update response mismatch: %#v", updated)
+	}
+
+	downgraded := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/downgrade", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"version":            "1.0.0",
+	})
+	if downgraded.Version != "1.0.0" || downgraded.ActiveFingerprint != installed.ActiveFingerprint || len(downgraded.VersionHistory) != 1 || downgraded.VersionHistory[0].Version != "2.0.0" {
+		t.Fatalf("downgrade response mismatch: %#v", downgraded)
 	}
 }
 
@@ -617,8 +652,6 @@ func TestHandlerDeclaredRoutesReturnContractMismatchWhenNotImplemented(t *testin
 		path   string
 		body   string
 	}{
-		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/update", body: `{}`},
-		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/downgrade", body: `{}`},
 		{method: http.MethodGet, path: "/_redeven_plugin/stream/stream_1"},
 	}
 	for _, tc := range cases {
@@ -761,6 +794,18 @@ func buildHTTPFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPVersionedFixturePackage(t *testing.T, version string, title string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpVersionedFixtureManifestJSON(version, title))
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildHTTPStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -832,13 +877,20 @@ func writeHTTPFile(t *testing.T, filename string, content string) {
 }
 
 func httpFixtureManifestJSON() string {
+	return httpVersionedFixtureManifestJSON("1.0.0", "HTTP")
+}
+
+func httpVersionedFixtureManifestJSON(version string, title string) string {
+	if title == "" {
+		title = "HTTP"
+	}
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http",
-			"display_name": "HTTP",
-			"version": "1.0.0",
+			"display_name": ` + strconv.Quote(title) + `,
+			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
 			"ui_protocol_version": "plugin-ui-v1"

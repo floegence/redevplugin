@@ -57,11 +57,25 @@ type PluginRecord struct {
 	RevokeEpoch        uint64            `json:"revoke_epoch"`
 	Manifest           manifest.Manifest `json:"manifest"`
 	PackageEntries     []pluginpkg.Entry `json:"package_entries"`
+	VersionHistory     []PluginVersion   `json:"version_history,omitempty"`
 	InstalledAt        time.Time         `json:"installed_at"`
 	EnabledAt          *time.Time        `json:"enabled_at,omitempty"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 	DeletedAt          *time.Time        `json:"deleted_at,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty"`
+}
+
+type PluginVersion struct {
+	Version           string            `json:"version"`
+	ActiveFingerprint string            `json:"active_fingerprint"`
+	PackageHash       string            `json:"package_hash"`
+	ManifestHash      string            `json:"manifest_hash"`
+	EntriesHash       string            `json:"entries_hash"`
+	TrustState        TrustState        `json:"trust_state"`
+	Manifest          manifest.Manifest `json:"manifest"`
+	PackageEntries    []pluginpkg.Entry `json:"package_entries"`
+	ActivatedAt       time.Time         `json:"activated_at"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
 }
 
 type PutOptions struct {

@@ -75,6 +75,127 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	}
 }
 
+func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) {
+	ctx := context.Background()
+	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
+	})
+	v1 := buildVersionedRPCPackage(t, "1.0.0", "RPC")
+	v2 := buildVersionedRPCPackage(t, "2.0.0", "RPC v2")
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+
+	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	if err != nil {
+		t.Fatalf("InstallPackageBytes() error = %v", err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "rpc.activity",
+		SurfaceInstanceID:    "surface_update",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("OpenSurface() error = %v", err)
+	}
+	if _, err := h.ExchangeAssetTicket(ctx, ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	}
+	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
+		Handshake: bridge.Handshake{
+			PluginID:          bootstrap.PluginID,
+			SurfaceID:         bootstrap.SurfaceID,
+			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+			ActiveFingerprint: bootstrap.ActiveFingerprint,
+			BridgeNonce:       bootstrap.BridgeNonce,
+			UIProtocolVersion: "plugin-ui-v1",
+		},
+		BridgeChannelID: "bridge_update",
+		Now:             now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("MintBridgeToken() error = %v", err)
+	}
+
+	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(v2),
+		PackageSize:      int64(len(v2)),
+		Now:              now.Add(4 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlugin() error = %v", err)
+	}
+	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
+		t.Fatalf("updated record mismatch: %#v", updated)
+	}
+	if updated.ManagementRevision <= installed.ManagementRevision || updated.RevokeEpoch <= installed.RevokeEpoch {
+		t.Fatalf("update did not bump revision/revoke epoch: before=%#v after=%#v", installed, updated)
+	}
+	if len(surfaces.snapshots) < 2 || surfaces.snapshots[len(surfaces.snapshots)-1].ActiveFingerprint != updated.ActiveFingerprint {
+		t.Fatalf("surface catalog was not refreshed: %#v", surfaces.snapshots)
+	}
+	if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
+		PluginInstanceID:     updated.PluginInstanceID,
+		ActiveFingerprint:    bootstrap.ActiveFingerprint,
+		SurfaceInstanceID:    "surface_update",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_update",
+	}, bridge.RevisionBinding{
+		PolicyRevision:     updated.PolicyRevision,
+		ManagementRevision: updated.ManagementRevision,
+		RevokeEpoch:        updated.RevokeEpoch,
+	}, now.Add(5*time.Second)); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken() old token error = %v, want ErrTokenRevoked", err)
+	}
+
+	downgraded, err := h.DowngradePlugin(ctx, DowngradeRequest{
+		PluginInstanceID: updated.PluginInstanceID,
+		Version:          "1.0.0",
+		Now:              now.Add(6 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("DowngradePlugin() error = %v", err)
+	}
+	if downgraded.Version != "1.0.0" || downgraded.ActiveFingerprint != installed.ActiveFingerprint || len(downgraded.VersionHistory) != 1 || downgraded.VersionHistory[0].Version != "2.0.0" {
+		t.Fatalf("downgraded record mismatch: %#v", downgraded)
+	}
+	if !audits.hasEvent("plugin.updated") || !audits.hasEvent("plugin.downgraded") {
+		t.Fatalf("missing update/downgrade audit events: %#v", audits.events)
+	}
+}
+
+func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
+	ctx := context.Background()
+	h, _, _ := newTestHost(t, true, true)
+	installed, err := InstallPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := buildStorageFixturePackage(t)
+	if _, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(other),
+		PackageSize:      int64(len(other)),
+	}); err == nil {
+		t.Fatal("UpdatePlugin() expected identity mismatch error")
+	}
+}
+
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustUntrusted)
@@ -1155,6 +1276,18 @@ func buildFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildVersionedLifecyclePackage(t *testing.T, version string, title string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), lifecycleManifestJSON(version, title))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -1169,9 +1302,14 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 
 func buildRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
+	return buildVersionedRPCPackage(t, "1.0.0", "RPC")
+}
+
+func buildVersionedRPCPackage(t *testing.T, version string, title string) []byte {
+	t.Helper()
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), rpcFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>RPC</title>")
+	writeFile(t, filepath.Join(dir, "manifest.json"), rpcFixtureManifestJSON(version, title))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1251,13 +1389,20 @@ func writeFile(t *testing.T, filename string, content string) {
 }
 
 func fixtureManifestJSON() string {
+	return lifecycleManifestJSON("1.0.0", "Lifecycle")
+}
+
+func lifecycleManifestJSON(version string, title string) string {
+	if title == "" {
+		title = "Lifecycle"
+	}
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
-			"display_name": "Lifecycle",
-			"version": "1.0.0",
+			"display_name": ` + strconv.Quote(title) + `,
+			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
 			"ui_protocol_version": "plugin-ui-v1"
@@ -1324,14 +1469,17 @@ func storageFixtureManifestJSON() string {
 	}`
 }
 
-func rpcFixtureManifestJSON() string {
+func rpcFixtureManifestJSON(version string, title string) string {
+	if title == "" {
+		title = "RPC"
+	}
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
-			"display_name": "RPC",
-			"version": "1.0.0",
+			"display_name": ` + strconv.Quote(title) + `,
+			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
 			"ui_protocol_version": "plugin-ui-v1"
