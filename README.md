@@ -32,7 +32,9 @@ capabilities.
   registries, or enterprise policies are trusted, but they can reuse the common
   canonical signature payload and verification checks.
 - The CLI can generate local Ed25519 signing keys and produce signed package
-  artifacts without placing private keys in shell arguments:
+  artifacts without placing private keys in shell arguments. Start with
+  `redevplugin scaffold <plugin-id> <display-name> <out-dir>`, package the
+  generated directory, then sign it:
   `redevplugin keygen <key-id> <private.json> <public.json>` followed by
   `redevplugin sign <unsigned.redeven-plugin> <private.json> <signed.redeven-plugin>`.
   Development harnesses can then run

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,6 +60,16 @@ type keygenSummary struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+type scaffoldSummary struct {
+	OK          bool           `json:"ok"`
+	Kind        string         `json:"kind"`
+	PluginID    string         `json:"plugin_id"`
+	Version     string         `json:"version"`
+	OutputDir   string         `json:"output_dir"`
+	Files       []string       `json:"files"`
+	VersionInfo version.Matrix `json:"version_matrix"`
+}
+
 type signingPrivateKeyFile struct {
 	SchemaVersion string `json:"schema_version"`
 	Algorithm     string `json:"algorithm"`
@@ -102,6 +113,11 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return buildPackage(ctx, args[1], args[2])
+	case "scaffold":
+		if len(args) != 4 {
+			return usage()
+		}
+		return scaffoldPlugin(args[1], args[2], args[3])
 	case "keygen":
 		if len(args) != 4 {
 			return usage()
@@ -209,6 +225,81 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 		SignatureKey:  signatureKey,
 		SignatureAlgo: signatureAlgo,
 		VersionMatrix: version.CurrentMatrix(),
+	})
+}
+
+func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
+	pluginID = strings.TrimSpace(pluginID)
+	displayName = strings.TrimSpace(displayName)
+	outDir = strings.TrimSpace(outDir)
+	if pluginID == "" {
+		return fmt.Errorf("plugin_id is required")
+	}
+	if displayName == "" {
+		return fmt.Errorf("display_name is required")
+	}
+	if outDir == "" {
+		return fmt.Errorf("output directory is required")
+	}
+	manifestDoc := manifest.Manifest{
+		SchemaVersion: "redeven.plugin.manifest.v1",
+		Publisher: manifest.Publisher{
+			PublisherID: "local.generated",
+			DisplayName: "Local Generated",
+		},
+		Plugin: manifest.Plugin{
+			PluginID:          pluginID,
+			DisplayName:       displayName,
+			Version:           "0.1.0",
+			APIVersion:        "plugin-v1",
+			MinRuntimeVersion: "0.1.0",
+			UIProtocolVersion: "plugin-ui-v1",
+		},
+		Surfaces: []manifest.SurfaceSpec{{
+			SurfaceID: pluginID + ".activity",
+			Kind:      manifest.SurfaceActivity,
+			Label:     displayName,
+			Entry:     "ui/index.html",
+		}},
+	}
+	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
+	if err != nil {
+		return err
+	}
+	files := map[string][]byte{
+		"manifest.json":        append(rawManifest, '\n'),
+		"ui/index.html":        []byte(scaffoldIndexHTML(displayName)),
+		"ui/assets/app.js":     []byte(scaffoldAppJS(displayName)),
+		"ui/assets/styles.css": []byte(scaffoldStylesCSS()),
+	}
+	if _, err := os.Stat(outDir); err == nil {
+		entries, err := os.ReadDir(outDir)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("output directory %q is not empty", outDir)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	created := make([]string, 0, len(files))
+	for entryPath, content := range files {
+		filename := filepath.Join(outDir, filepath.FromSlash(entryPath))
+		if err := writeBytesFile(filename, content, 0o644); err != nil {
+			return err
+		}
+		created = append(created, entryPath)
+	}
+	sortStrings(created)
+	return writeJSON(scaffoldSummary{
+		OK:          true,
+		Kind:        "plugin_scaffold",
+		PluginID:    pluginID,
+		Version:     manifestDoc.Plugin.Version,
+		OutputDir:   outDir,
+		Files:       created,
+		VersionInfo: version.CurrentMatrix(),
 	})
 }
 
@@ -368,7 +459,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -480,6 +571,90 @@ func readSigningPublicKey(filename string) (signingPublicKeyFile, ed25519.Public
 		return signingPublicKeyFile{}, nil, fmt.Errorf("public_key is not a valid ed25519 public key")
 	}
 	return doc, ed25519.PublicKey(publicKey), nil
+}
+
+func scaffoldIndexHTML(displayName string) string {
+	title := htmlEscape(displayName)
+	return "<!doctype html>\n" +
+		"<html>\n" +
+		"  <head>\n" +
+		"    <meta charset=\"utf-8\">\n" +
+		"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
+		"    <title>" + title + "</title>\n" +
+		"    <link rel=\"stylesheet\" href=\"assets/styles.css\">\n" +
+		"    <script src=\"assets/app.js\" defer></script>\n" +
+		"  </head>\n" +
+		"  <body>\n" +
+		"    <main id=\"app\" data-plugin-title=\"" + title + "\">\n" +
+		"      <section class=\"surface\">\n" +
+		"        <p class=\"eyebrow\">Plugin surface</p>\n" +
+		"        <h1>" + title + "</h1>\n" +
+		"        <p class=\"status\" id=\"status\">Ready</p>\n" +
+		"      </section>\n" +
+		"    </main>\n" +
+		"  </body>\n" +
+		"</html>\n"
+}
+
+func scaffoldAppJS(displayName string) string {
+	message, _ := json.Marshal(displayName + " loaded")
+	return "const status = document.getElementById('status');\n" +
+		"if (status) {\n" +
+		"  status.textContent = " + string(message) + ";\n" +
+		"}\n"
+}
+
+func scaffoldStylesCSS() string {
+	return ":root {\n" +
+		"  color-scheme: light dark;\n" +
+		"  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n" +
+		"}\n\n" +
+		"* {\n" +
+		"  box-sizing: border-box;\n" +
+		"}\n\n" +
+		"body {\n" +
+		"  margin: 0;\n" +
+		"  min-height: 100vh;\n" +
+		"  background: Canvas;\n" +
+		"  color: CanvasText;\n" +
+		"}\n\n" +
+		".surface {\n" +
+		"  display: grid;\n" +
+		"  gap: 8px;\n" +
+		"  min-height: 100vh;\n" +
+		"  align-content: start;\n" +
+		"  padding: 20px;\n" +
+		"}\n\n" +
+		".eyebrow {\n" +
+		"  margin: 0;\n" +
+		"  font-size: 12px;\n" +
+		"  opacity: 0.68;\n" +
+		"  text-transform: uppercase;\n" +
+		"}\n\n" +
+		"h1 {\n" +
+		"  margin: 0;\n" +
+		"  font-size: 24px;\n" +
+		"  font-weight: 650;\n" +
+		"}\n\n" +
+		".status {\n" +
+		"  margin: 0;\n" +
+		"  font-size: 14px;\n" +
+		"}\n"
+}
+
+func htmlEscape(value string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		"\"", "&quot;",
+		"'", "&#39;",
+	)
+	return replacer.Replace(value)
+}
+
+func sortStrings(values []string) {
+	sort.Strings(values)
 }
 
 type staticSessionResolver struct{}

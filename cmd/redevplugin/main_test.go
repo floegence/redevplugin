@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +108,37 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	}
 }
 
+func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	output, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir)
+	if err != nil {
+		t.Fatalf("scaffold command error = %v", err)
+	}
+	var summary scaffoldSummary
+	if err := json.Unmarshal(output, &summary); err != nil {
+		t.Fatalf("scaffold output decode error = %v: %s", err, output)
+	}
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 4 {
+		t.Fatalf("scaffold summary mismatch: %#v", summary)
+	}
+
+	if _, err := captureCLIOutput(t, "validate", filepath.Join(scaffoldDir, "manifest.json")); err != nil {
+		t.Fatalf("validate scaffold manifest error = %v", err)
+	}
+	packageFile := filepath.Join(dir, "generated.redeven-plugin")
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatalf("package scaffold error = %v", err)
+	}
+	if _, err := captureCLIOutput(t, "install-local", packageFile); err != nil {
+		t.Fatalf("install-local scaffold package error = %v", err)
+	}
+
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("scaffold non-empty dir error = %v, want not empty", err)
+	}
+}
+
 func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
 	t.Helper()
 	originalStdout := os.Stdout
@@ -127,7 +160,10 @@ func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
 	if runErr != nil {
 		return buf.Bytes(), runErr
 	}
-	return buf.Bytes(), closeErr
+	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+		return buf.Bytes(), closeErr
+	}
+	return buf.Bytes(), nil
 }
 
 func readCLITestPublicKey(t *testing.T, filename string) ed25519.PublicKey {
