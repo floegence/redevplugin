@@ -110,6 +110,7 @@ type Adapters struct {
 	RuntimeArtifactResolver RuntimeArtifactResolver
 	RuntimeSupervisor       runtimeclient.Supervisor
 	SurfaceCatalog          SurfaceCatalogSink
+	Assets                  pluginpkg.AssetStore
 	Capabilities            *capability.Registry
 	SurfaceTokens           *bridge.SurfaceTokenService
 	Storage                 storage.Broker
@@ -176,6 +177,18 @@ type ExchangeAssetTicketRequest struct {
 	SurfaceInstanceID string
 	AssetTicket       string
 	Now               time.Time
+}
+
+type ReadSurfaceAssetRequest struct {
+	AssetSession string
+	AssetPath    string
+	Now          time.Time
+}
+
+type ReadSurfaceAssetResult struct {
+	Entry   pluginpkg.Entry
+	Content []byte
+	Session bridge.SurfaceSession
 }
 
 type MintBridgeTokenRequest struct {
@@ -289,6 +302,9 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
 	}
+	if adapters.Assets == nil {
+		adapters.Assets = pluginpkg.NewMemoryAssetStore()
+	}
 	return &Host{adapters: adapters, surfaceTokens: adapters.SurfaceTokens}, nil
 }
 
@@ -346,6 +362,41 @@ func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketR
 		return bridge.AssetSessionResult{}, err
 	}
 	return result, nil
+}
+
+func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest) (ReadSurfaceAssetResult, error) {
+	if h.adapters.Assets == nil {
+		return ReadSurfaceAssetResult{}, errors.New("package asset store is required")
+	}
+	validation, err := h.surfaceTokens.ValidateAssetSession(bridge.ValidateAssetSessionRequest{
+		AssetSession: req.AssetSession,
+		Now:          req.Now,
+	})
+	if err != nil {
+		return ReadSurfaceAssetResult{}, err
+	}
+	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
+	if err != nil {
+		return ReadSurfaceAssetResult{}, err
+	}
+	if record.ActiveFingerprint != validation.Session.ActiveFingerprint {
+		return ReadSurfaceAssetResult{}, bridge.ErrTokenRevoked
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return ReadSurfaceAssetResult{}, errors.New("plugin is not enabled")
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return ReadSurfaceAssetResult{}, err
+	}
+	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, req.AssetPath)
+	if err != nil {
+		return ReadSurfaceAssetResult{}, err
+	}
+	return ReadSurfaceAssetResult{
+		Entry:   asset.Entry,
+		Content: asset.Content,
+		Session: validation.Session,
+	}, nil
 }
 
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (bridge.GatewayTokenResult, error) {
@@ -530,6 +581,9 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 		Manifest:          pkg.Manifest,
 		PackageEntries:    pkg.Entries,
 		RetainedDataState: registry.RetainedDataNone,
+	}
+	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
+		return registry.PluginRecord{}, err
 	}
 	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: req.Now})
 	if err != nil {

@@ -30,6 +30,11 @@ type Entry struct {
 	ContentType string `json:"content_type,omitempty"`
 }
 
+type Asset struct {
+	Entry   Entry  `json:"entry"`
+	Content []byte `json:"-"`
+}
+
 type Package struct {
 	Manifest          manifest.Manifest `json:"manifest"`
 	PackageHash       string            `json:"package_hash"`
@@ -37,6 +42,7 @@ type Package struct {
 	CanonicalManifest string            `json:"canonical_manifest"`
 	Entries           []Entry           `json:"entries"`
 	EntriesHash       string            `json:"entries_hash"`
+	Files             map[string][]byte `json:"-"`
 }
 
 type ReadOptions struct {
@@ -141,6 +147,7 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 		CanonicalManifest: string(canonicalManifest),
 		Entries:           entries,
 		EntriesHash:       entriesHash,
+		Files:             cloneFiles(files),
 	}, nil
 }
 
@@ -261,6 +268,7 @@ func packageFromFiles(files map[string][]byte) (Package, error) {
 		CanonicalManifest: string(canonicalManifest),
 		Entries:           entries,
 		EntriesHash:       entriesHash,
+		Files:             cloneFiles(files),
 	}, nil
 }
 
@@ -398,6 +406,17 @@ func sortEntries(entries []Entry) {
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Path < entries[j].Path
 	})
+}
+
+func cloneFiles(files map[string][]byte) map[string][]byte {
+	if files == nil {
+		return nil
+	}
+	cloned := make(map[string][]byte, len(files))
+	for entryPath, content := range files {
+		cloned[entryPath] = append([]byte(nil), content...)
+	}
+	return cloned
 }
 
 func contentType(entryPath string) string {

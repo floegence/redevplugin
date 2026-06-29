@@ -7,8 +7,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
@@ -103,9 +105,16 @@ type secretRefRequest struct {
 	Scope            string `json:"scope"`
 }
 
+type sandboxBootstrapRequest struct {
+	SurfaceInstanceID string `json:"surface_instance_id"`
+	AssetTicket       string `json:"asset_ticket"`
+}
+
 type cancelOperationRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
+
+const assetSessionCookieName = "__Host-redevplugin-asset-session"
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -150,9 +159,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/delete":
 		h.handleDeleteSecret(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/bootstrap":
-		h.handleNotImplemented(w, "exchangePluginAssetTicket")
+		h.handleSandboxBootstrap(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/assets/"):
-		h.handleNotImplemented(w, "getPluginAsset")
+		h.handlePluginAsset(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/stream/"):
 		h.handleNotImplemented(w, "getPluginStream")
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/csp-report":
@@ -590,6 +599,79 @@ func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"deleted": true}})
 }
 
+func (h Handler) handleSandboxBootstrap(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req sandboxBootstrapRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if strings.TrimSpace(req.SurfaceInstanceID) == "" || strings.TrimSpace(req.AssetTicket) == "" {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "surface_instance_id and asset_ticket are required", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.ExchangeAssetTicket(r.Context(), host.ExchangeAssetTicketRequest{
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		AssetTicket:       req.AssetTicket,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     assetSessionCookieName,
+		Value:    result.AssetSession,
+		Path:     "/",
+		Expires:  result.ExpiresAt,
+		MaxAge:   maxAgeSeconds(time.Until(result.ExpiresAt)),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{
+		"asset_session_id": result.AssetSessionID,
+		"issued_at":        result.IssuedAt,
+		"expires_at":       result.ExpiresAt,
+	}})
+}
+
+func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	assetPath, ok := assetPathFromSandboxPath(r.URL.Path)
+	if !ok {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "asset path is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	cookie, err := r.Cookie(assetSessionCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "asset session is required", ErrorCode: string(security.ErrPermissionDenied)})
+		return
+	}
+	result, err := h.Host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
+		AssetSession: cookie.Value,
+		AssetPath:    assetPath,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
+		return
+	}
+	contentType := result.Entry.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result.Content)
+}
+
 func (h Handler) handleNotImplemented(w http.ResponseWriter, operation string) {
 	WriteJSON(w, http.StatusNotImplemented, Envelope{
 		OK:        false,
@@ -644,6 +726,32 @@ func operationIDFromPath(path string, suffix string) (string, bool) {
 	return operationID, true
 }
 
+func assetPathFromSandboxPath(requestPath string) (string, bool) {
+	const prefix = "/_redeven_plugin/assets/"
+	if !strings.HasPrefix(requestPath, prefix) {
+		return "", false
+	}
+	assetPath := strings.TrimPrefix(requestPath, prefix)
+	if assetPath == "" {
+		return "", false
+	}
+	clean := path.Clean(assetPath)
+	if clean != assetPath || clean == "." || strings.HasPrefix(assetPath, "../") || strings.Contains(assetPath, "/../") || strings.HasPrefix(assetPath, ".") || strings.Contains(assetPath, "/.") {
+		return "", false
+	}
+	if !strings.HasPrefix(assetPath, "ui/") {
+		return "", false
+	}
+	return assetPath, true
+}
+
+func maxAgeSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	return int(d.Seconds())
+}
+
 func errorCodeForBridgeError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, bridge.ErrTokenExpired):
@@ -652,8 +760,19 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 		return security.ErrTokenReplay
 	case errors.Is(err, bridge.ErrTokenAlreadyBound):
 		return security.ErrGatewayTokenChannelMismatch
+	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
+		return security.ErrPermissionDenied
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForBridgeError(err error) int {
+	switch {
+	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
+		return http.StatusForbidden
+	default:
+		return http.StatusForbidden
 	}
 }
 
@@ -761,6 +880,32 @@ func httpStatusForSecretError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrSecretStoreRequired):
 		return http.StatusServiceUnavailable
+	default:
+		return http.StatusForbidden
+	}
+}
+
+func errorCodeForAssetError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, bridge.ErrTokenExpired):
+		return security.ErrTokenExpired
+	case errors.Is(err, bridge.ErrTokenReplay):
+		return security.ErrTokenReplay
+	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
+		return security.ErrPermissionDenied
+	case errors.Is(err, registry.ErrNotFound):
+		return security.ErrInvalidRequest
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForAssetError(err error) int {
+	switch {
+	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
+		return http.StatusForbidden
+	case errors.Is(err, registry.ErrNotFound):
+		return http.StatusBadRequest
 	default:
 		return http.StatusForbidden
 	}

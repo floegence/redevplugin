@@ -81,6 +81,16 @@ type AssetSessionResult struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
+type ValidateAssetSessionRequest struct {
+	AssetSession string    `json:"asset_session"`
+	Now          time.Time `json:"now,omitempty"`
+}
+
+type AssetSessionValidation struct {
+	Session SurfaceSession `json:"session"`
+	TokenID string         `json:"token_id"`
+}
+
 type MintGatewayTokenRequest struct {
 	Handshake       Handshake `json:"handshake"`
 	BridgeChannelID string    `json:"bridge_channel_id"`
@@ -289,6 +299,38 @@ func (s *SurfaceTokenService) ExchangeAssetTicket(req ExchangeAssetTicketRequest
 		IssuedAt:       assetSession.IssuedAt,
 		ExpiresAt:      assetSession.ExpiresAt,
 	}, nil
+}
+
+func (s *SurfaceTokenService) ValidateAssetSession(req ValidateAssetSessionRequest) (AssetSessionValidation, error) {
+	if s == nil {
+		return AssetSessionValidation{}, errors.New("surface token service is nil")
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	record, err := s.tokens.Inspect(InspectRequest{
+		Kind:  TokenKindAssetSession,
+		Token: req.AssetSession,
+		Now:   now,
+	})
+	if err != nil {
+		return AssetSessionValidation{}, err
+	}
+	state, err := s.getState(record.Audience.SurfaceInstanceID, now)
+	if err != nil {
+		return AssetSessionValidation{}, err
+	}
+	if !state.assetSessionIssued {
+		return AssetSessionValidation{}, ErrAssetSessionRequired
+	}
+	if state.session.audience("") != record.Audience {
+		return AssetSessionValidation{}, ErrTokenAudience
+	}
+	if state.session.revision() != record.Revision {
+		return AssetSessionValidation{}, ErrTokenRevoked
+	}
+	return AssetSessionValidation{Session: state.session, TokenID: record.TokenID}, nil
 }
 
 func (s *SurfaceTokenService) MintGatewayToken(req MintGatewayTokenRequest) (GatewayTokenResult, error) {

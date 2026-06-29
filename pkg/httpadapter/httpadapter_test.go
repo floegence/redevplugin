@@ -215,6 +215,70 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
+	h := newHTTPTestHost(t)
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_id":              "http.activity",
+		"surface_instance_id":     "surface_http_asset",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+
+	raw, err := json.Marshal(map[string]any{
+		"surface_instance_id": openResp.SurfaceInstanceID,
+		"asset_ticket":        openResp.AssetTicket,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_plugin/bootstrap", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sandbox bootstrap status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != assetSessionCookieName || cookies[0].Value == "" || cookies[0].Path != "/" || !cookies[0].HttpOnly || !cookies[0].Secure {
+		t.Fatalf("asset session cookie mismatch: %#v", cookies)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/assets/ui/index.html", nil)
+	req.AddCookie(cookies[0])
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("asset status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "<!doctype html><title>HTTP</title>" {
+		t.Fatalf("asset body = %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("asset content-type = %q", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("asset nosniff = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/assets/manifest.json", nil)
+	req.AddCookie(cookies[0])
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("manifest asset status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandlerRPCFlow(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -528,8 +592,6 @@ func TestHandlerDeclaredRoutesReturnContractMismatchWhenNotImplemented(t *testin
 	}{
 		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/update", body: `{}`},
 		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/downgrade", body: `{}`},
-		{method: http.MethodPost, path: "/_redeven_plugin/bootstrap", body: `{}`},
-		{method: http.MethodGet, path: "/_redeven_plugin/assets/ui/index.html"},
 		{method: http.MethodGet, path: "/_redeven_plugin/stream/stream_1"},
 		{method: http.MethodPost, path: "/_redeven_plugin/csp-report", body: `{}`},
 	}

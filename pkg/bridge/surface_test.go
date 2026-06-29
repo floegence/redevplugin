@@ -78,6 +78,35 @@ func TestSurfaceGatewayRequiresAssetSession(t *testing.T) {
 	}
 }
 
+func TestValidateAssetSessionReturnsSurfaceSession(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation, err := service.ValidateAssetSession(ValidateAssetSessionRequest{
+		AssetSession: result.AssetSession,
+		Now:          now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ValidateAssetSession() error = %v", err)
+	}
+	if validation.Session.PluginInstanceID != bootstrap.PluginInstanceID ||
+		validation.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID ||
+		validation.Session.BridgeNonce != bootstrap.BridgeNonce {
+		t.Fatalf("asset session validation mismatch: %#v", validation)
+	}
+}
+
 func TestSurfaceHandshakeMismatchFailsClosed(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()

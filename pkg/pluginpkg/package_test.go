@@ -147,6 +147,41 @@ func TestReadRejectsMissingWorkerArtifact(t *testing.T) {
 	}
 }
 
+func TestMemoryAssetStoreReadsPackageAssets(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var buf bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryAssetStore()
+	if err := store.PutPackage(context.Background(), pkg); err != nil {
+		t.Fatalf("PutPackage() error = %v", err)
+	}
+	asset, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+	if err != nil {
+		t.Fatalf("ReadAsset() error = %v", err)
+	}
+	if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Entry.ContentType != "text/html; charset=utf-8" {
+		t.Fatalf("asset mismatch: %#v content=%q", asset.Entry, string(asset.Content))
+	}
+	asset.Content[0] = 'x'
+	again, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again.Content) != "<!doctype html><title>Plugin</title>" {
+		t.Fatalf("asset content was not cloned: %q", string(again.Content))
+	}
+}
+
+func TestMemoryAssetStoreRejectsUnsafeAssetPath(t *testing.T) {
+	store := NewMemoryAssetStore()
+	if _, err := store.ReadAsset(context.Background(), "sha256:test", "../manifest.json"); err == nil {
+		t.Fatal("ReadAsset() expected unsafe path error")
+	}
+}
+
 func writeFixturePackageDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

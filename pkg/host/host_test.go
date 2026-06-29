@@ -159,6 +159,56 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 	}
 }
 
+func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "lifecycle.activity",
+		SurfaceInstanceID:    "surface_asset",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		SessionChannelIDHash: "session_channel_hash",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
+		AssetSession: "not-a-session",
+		AssetPath:    "ui/index.html",
+		Now:          now.Add(2 * time.Second),
+	}); !errors.Is(err, bridge.ErrTokenInvalid) {
+		t.Fatalf("ReadSurfaceAsset() error = %v, want ErrTokenInvalid", err)
+	}
+	session, err := h.ExchangeAssetTicket(context.Background(), ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
+		AssetSession: session.AssetSession,
+		AssetPath:    "ui/index.html",
+		Now:          now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ReadSurfaceAsset() error = %v", err)
+	}
+	if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
+		t.Fatalf("asset mismatch: session=%#v entry=%#v content=%q", asset.Session, asset.Entry, string(asset.Content))
+	}
+}
+
 func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustVerified)
