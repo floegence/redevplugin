@@ -28,6 +28,14 @@ func TestDecodeRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsTrailingJSONValue(t *testing.T) {
+	raw := validManifestJSON() + `{}`
+
+	if _, err := Decode(strings.NewReader(raw)); err == nil {
+		t.Fatal("Decode() expected trailing JSON error")
+	}
+}
+
 func TestValidateRejectsIntentMissingMethod(t *testing.T) {
 	m := validManifest()
 	m.Intents = []IntentSpec{{IntentID: "missing", Method: "containers.inspect"}}

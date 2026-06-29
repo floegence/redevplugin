@@ -10,6 +10,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -103,10 +104,12 @@ type Adapters struct {
 	RuntimeArtifactResolver RuntimeArtifactResolver
 	SurfaceCatalog          SurfaceCatalogSink
 	Capabilities            *capability.Registry
+	SurfaceTokens           *bridge.SurfaceTokenService
 }
 
 type Host struct {
-	adapters Adapters
+	adapters      Adapters
+	surfaceTokens *bridge.SurfaceTokenService
 }
 
 type InstallRequest struct {
@@ -134,6 +137,28 @@ type UninstallRequest struct {
 	Now              time.Time
 }
 
+type OpenSurfaceRequest struct {
+	PluginInstanceID     string
+	SurfaceID            string
+	SurfaceInstanceID    string
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	SessionChannelIDHash string
+	Now                  time.Time
+}
+
+type ExchangeAssetTicketRequest struct {
+	SurfaceInstanceID string
+	AssetTicket       string
+	Now               time.Time
+}
+
+type MintBridgeTokenRequest struct {
+	Handshake       bridge.Handshake
+	BridgeChannelID string
+	Now             time.Time
+}
+
 func New(adapters Adapters) (*Host, error) {
 	if adapters.SessionResolver == nil {
 		return nil, errors.New("session resolver is required")
@@ -147,11 +172,79 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.Capabilities == nil {
 		adapters.Capabilities = capability.NewRegistry()
 	}
-	return &Host{adapters: adapters}, nil
+	if adapters.SurfaceTokens == nil {
+		adapters.SurfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	}
+	return &Host{adapters: adapters, surfaceTokens: adapters.SurfaceTokens}, nil
 }
 
 func (h *Host) Capabilities() *capability.Registry {
 	return h.adapters.Capabilities
+}
+
+func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.SurfaceBootstrap, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return bridge.SurfaceBootstrap{}, errors.New("plugin is not enabled")
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	if !manifestHasSurface(record.Manifest, req.SurfaceID) {
+		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q is not declared", req.SurfaceID)
+	}
+	if req.SurfaceInstanceID == "" {
+		req.SurfaceInstanceID = defaultSurfaceInstanceID(record, req.SurfaceID, req.OwnerSessionHash)
+	}
+	bootstrap, err := h.surfaceTokens.OpenSurface(bridge.OpenSurfaceRequest{
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		SurfaceID:            req.SurfaceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		ActiveFingerprint:    record.ActiveFingerprint,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     record.PolicyRevision,
+			ManagementRevision: record.ManagementRevision,
+			RevokeEpoch:        record.RevokeEpoch,
+		},
+		Now: req.Now,
+	})
+	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.surface.opened", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return bootstrap, nil
+}
+
+func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketRequest) (bridge.AssetSessionResult, error) {
+	result, err := h.surfaceTokens.ExchangeAssetTicket(bridge.ExchangeAssetTicketRequest{
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		AssetTicket:       req.AssetTicket,
+		Now:               req.Now,
+	})
+	if err != nil {
+		return bridge.AssetSessionResult{}, err
+	}
+	return result, nil
+}
+
+func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (bridge.GatewayTokenResult, error) {
+	result, err := h.surfaceTokens.MintGatewayToken(bridge.MintGatewayTokenRequest{
+		Handshake:       req.Handshake,
+		BridgeChannelID: req.BridgeChannelID,
+		Now:             req.Now,
+	})
+	if err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.bridge_token.minted", PluginID: req.Handshake.PluginID})
+	return result, nil
 }
 
 func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry.PluginRecord, error) {
@@ -292,6 +385,20 @@ func (h *Host) audit(ctx context.Context, event AuditEvent) {
 func defaultPluginInstanceID(pkg pluginpkg.Package) string {
 	sum := sha256.Sum256([]byte(pkg.Manifest.Publisher.PublisherID + "\x00" + pkg.Manifest.PluginID() + "\x00" + pkg.PackageHash))
 	return "plugini_" + hex.EncodeToString(sum[:16])
+}
+
+func defaultSurfaceInstanceID(record registry.PluginRecord, surfaceID string, ownerSessionHash string) string {
+	sum := sha256.Sum256([]byte(record.PluginInstanceID + "\x00" + record.ActiveFingerprint + "\x00" + surfaceID + "\x00" + ownerSessionHash))
+	return "surface_" + hex.EncodeToString(sum[:16])
+}
+
+func manifestHasSurface(m manifest.Manifest, surfaceID string) bool {
+	for _, surface := range m.Surfaces {
+		if surface.SurfaceID == surfaceID {
+			return true
+		}
+	}
+	return false
 }
 
 func InstallPackageBytes(ctx context.Context, h *Host, data []byte, trust registry.TrustState) (registry.PluginRecord, error) {

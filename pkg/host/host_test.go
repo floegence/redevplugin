@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -91,6 +93,75 @@ func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	}
 	if record.EnableState != registry.EnableDisabledByPolicy {
 		t.Fatalf("EnableState = %s", record.EnableState)
+	}
+}
+
+func TestSurfaceBridgeLifecycle(t *testing.T) {
+	host, _, _ := newTestHost(t, true, true)
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	bootstrap, err := host.OpenSurface(context.Background(), OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "lifecycle.activity",
+		SurfaceInstanceID:    "surface_lifecycle",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		SessionChannelIDHash: "session_channel_hash",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("OpenSurface() error = %v", err)
+	}
+	if bootstrap.AssetTicket == "" || bootstrap.BridgeNonce == "" {
+		t.Fatalf("bootstrap missing ticket/nonce: %#v", bootstrap)
+	}
+
+	if _, err := host.ExchangeAssetTicket(context.Background(), ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	}
+
+	gateway, err := host.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
+		Handshake: bridge.Handshake{
+			PluginID:          bootstrap.PluginID,
+			SurfaceID:         bootstrap.SurfaceID,
+			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+			ActiveFingerprint: bootstrap.ActiveFingerprint,
+			BridgeNonce:       bootstrap.BridgeNonce,
+			UIProtocolVersion: "plugin-ui-v1",
+		},
+		BridgeChannelID: "bridge_channel",
+		Now:             now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("MintBridgeToken() error = %v", err)
+	}
+	if gateway.GatewayToken == "" {
+		t.Fatalf("gateway token is empty: %#v", gateway)
+	}
+}
+
+func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
+	host, _, _ := newTestHost(t, true, true)
+	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.OpenSurface(context.Background(), OpenSurfaceRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		SurfaceID:        "lifecycle.activity",
+	}); err == nil {
+		t.Fatal("OpenSurface() expected disabled plugin error")
 	}
 }
 

@@ -6,7 +6,9 @@
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/update"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/downgrade"},
   {"method": "GET", "path": "/_redeven_proxy/api/plugins/catalog"},
-  {"method": "POST", "path": "/_redeven_proxy/api/plugins/surfaces/bootstrap"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/surfaces/open"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/rpc"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/confirm"},
   {"method": "GET", "path": "/_redeven_proxy/api/plugins/operations"},
@@ -22,4 +24,3 @@
   {"method": "GET", "path": "/_redeven_plugin/stream/{stream_id}"},
   {"method": "POST", "path": "/_redeven_plugin/csp-report"}
 ]
-

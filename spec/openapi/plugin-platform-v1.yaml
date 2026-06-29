@@ -39,9 +39,23 @@ paths:
       operationId: listPlugins
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/surfaces/bootstrap:
+  /_redeven_proxy/api/plugins/surfaces/open:
+    post:
+      operationId: openPluginSurface
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap:
     post:
       operationId: createSurfaceBootstrap
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token:
+    post:
+      operationId: createSurfaceBridgeToken
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redeven_proxy/api/plugins/rpc:
@@ -134,6 +148,11 @@ components:
   parameters:
     OperationID:
       name: operation_id
+      in: path
+      required: true
+      schema: { type: string }
+    SurfaceInstanceID:
+      name: surface_instance_id
       in: path
       required: true
       schema: { type: string }

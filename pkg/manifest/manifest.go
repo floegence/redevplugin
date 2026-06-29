@@ -243,7 +243,11 @@ func Decode(r io.Reader) (Manifest, error) {
 	if err := decoder.Decode(&m); err != nil {
 		return Manifest{}, err
 	}
-	if decoder.More() {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return Manifest{}, err
+		}
 		return Manifest{}, errors.New("manifest contains trailing JSON values")
 	}
 	return m, Validate(m)
