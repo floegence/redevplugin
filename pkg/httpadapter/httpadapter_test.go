@@ -39,6 +39,8 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"GET /_redeven_proxy/api/plugins/permissions":                                  false,
 		"POST /_redeven_proxy/api/plugins/permissions/grant":                           false,
 		"POST /_redeven_proxy/api/plugins/permissions/revoke":                          false,
+		"GET /_redeven_proxy/api/plugins/audit":                                        false,
+		"GET /_redeven_proxy/api/plugins/diagnostics":                                  false,
 		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":                false,
 		"PATCH /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":              false,
 		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":         false,
@@ -996,8 +998,7 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 }
 
 func TestHandlerCSPReportFlow(t *testing.T) {
-	diagnostics := &httpDiagnosticSink{}
-	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics})
+	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
 
 	postJSON[map[string]bool](t, handler, "/_redeven_plugin/csp-report", map[string]any{
@@ -1013,12 +1014,45 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 			"line-number":         7,
 		},
 	})
-	if len(diagnostics.events) != 1 {
-		t.Fatalf("diagnostic events = %#v", diagnostics.events)
+
+	var listed struct {
+		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
 	}
-	event := diagnostics.events[0]
+	listed = getJSON[struct {
+		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
+	}](t, handler, "/_redeven_proxy/api/plugins/diagnostics?plugin_instance_id=plugin_http&severity=warning")
+	if len(listed.DiagnosticEvents) != 1 {
+		t.Fatalf("diagnostic events = %#v", listed.DiagnosticEvents)
+	}
+	event := listed.DiagnosticEvents[0]
 	if event.Type != "plugin.csp.violation" || event.PluginID != "com.example.http" || event.SurfaceInstanceID != "surface_http" || event.Details["effective_directive"] != "script-src" {
 		t.Fatalf("diagnostic event mismatch: %#v", event)
+	}
+}
+
+func TestHandlerListsAuditEvents(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
+		"trust_state":    registry.TrustVerified,
+	})
+	postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+
+	var listed struct {
+		AuditEvents []host.AuditEvent `json:"audit_events"`
+	}
+	listed = getJSON[struct {
+		AuditEvents []host.AuditEvent `json:"audit_events"`
+	}](t, handler, "/_redeven_proxy/api/plugins/audit?plugin_instance_id="+installed.PluginInstanceID+"&type=plugin.enabled&limit=5")
+	if len(listed.AuditEvents) != 1 {
+		t.Fatalf("audit events = %#v", listed.AuditEvents)
+	}
+	event := listed.AuditEvents[0]
+	if event.Type != "plugin.enabled" || event.PluginID != installed.PluginID || event.PluginInstanceID != installed.PluginInstanceID || event.OccurredAt.IsZero() {
+		t.Fatalf("audit event mismatch: %#v", event)
 	}
 }
 
@@ -1641,10 +1675,6 @@ type httpRecordingSecretStore struct {
 	delete host.SecretDeleteRequest
 }
 
-type httpDiagnosticSink struct {
-	events []host.DiagnosticEvent
-}
-
 type httpTestWebSecurityGuard struct {
 	decision        websecurity.OriginDecision
 	evaluateErr     error
@@ -1744,10 +1774,5 @@ func (s *httpRecordingSecretStore) TestSecretRef(_ context.Context, req host.Sec
 
 func (s *httpRecordingSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
 	s.delete = req
-	return nil
-}
-
-func (s *httpDiagnosticSink) AppendPluginDiagnostic(_ context.Context, event host.DiagnosticEvent) error {
-	s.events = append(s.events, event)
 	return nil
 }

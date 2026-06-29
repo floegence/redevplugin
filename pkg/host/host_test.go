@@ -1751,6 +1751,55 @@ func TestReportCSPViolationAppendsDiagnostic(t *testing.T) {
 	}
 }
 
+func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
+	h, err := New(Adapters{
+		SessionResolver:      fakeSessionResolver{},
+		Policy:               policyAdapter{developerMode: true, localGenerated: true, decision: PolicyAllow},
+		PackageTrustVerifier: &recordingPackageTrustVerifier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+
+	auditEvents, err := h.ListAuditEvents(context.Background(), ListAuditEventsRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		Type:             "plugin.enabled",
+	})
+	if err != nil {
+		t.Fatalf("ListAuditEvents() error = %v", err)
+	}
+	if len(auditEvents) != 1 || auditEvents[0].PluginID != installed.PluginID || auditEvents[0].OccurredAt.IsZero() {
+		t.Fatalf("audit events mismatch: %#v", auditEvents)
+	}
+
+	if err := h.ReportCSPViolation(context.Background(), CSPViolationReport{
+		PluginID:           installed.PluginID,
+		PluginInstanceID:   installed.PluginInstanceID,
+		SurfaceInstanceID:  "surface_default_observability",
+		EffectiveDirective: "script-src",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	diagnosticEvents, err := h.ListDiagnosticEvents(context.Background(), ListDiagnosticEventsRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_default_observability",
+		Severity:          "warning",
+	})
+	if err != nil {
+		t.Fatalf("ListDiagnosticEvents() error = %v", err)
+	}
+	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.csp.violation" || diagnosticEvents[0].Message != "script-src" {
+		t.Fatalf("diagnostic events mismatch: %#v", diagnosticEvents)
+	}
+}
+
 func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
 	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated})
 }

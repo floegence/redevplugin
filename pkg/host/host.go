@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -29,34 +30,23 @@ import (
 	"github.com/floegence/redevplugin/pkg/stream"
 )
 
-type AuditSink interface {
-	AppendPluginAudit(ctx context.Context, event AuditEvent) error
-}
+type AuditSink = observability.AuditSink
+
+type DiagnosticsSink = observability.DiagnosticsSink
+
+type AuditLister = observability.AuditLister
+
+type DiagnosticLister = observability.DiagnosticLister
+
+type AuditEvent = observability.AuditEvent
+
+type DiagnosticEvent = observability.DiagnosticEvent
+
+type ListAuditEventsRequest = observability.ListAuditRequest
+
+type ListDiagnosticEventsRequest = observability.ListDiagnosticRequest
 
 var ErrStreamTicketRequired = errors.New("stream ticket is required")
-
-type DiagnosticsSink interface {
-	AppendPluginDiagnostic(ctx context.Context, event DiagnosticEvent) error
-}
-
-type AuditEvent struct {
-	Type             string `json:"type"`
-	PluginID         string `json:"plugin_id"`
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
-}
-
-type DiagnosticEvent struct {
-	Type              string         `json:"type"`
-	Severity          string         `json:"severity"`
-	Message           string         `json:"message"`
-	PluginID          string         `json:"plugin_id,omitempty"`
-	PluginInstanceID  string         `json:"plugin_instance_id,omitempty"`
-	SurfaceID         string         `json:"surface_id,omitempty"`
-	SurfaceInstanceID string         `json:"surface_instance_id,omitempty"`
-	ActiveFingerprint string         `json:"active_fingerprint,omitempty"`
-	RequestID         string         `json:"request_id,omitempty"`
-	Details           map[string]any `json:"details,omitempty"`
-}
 
 type PolicyAdapter interface {
 	EvaluateLocalPolicy(ctx context.Context, session sessionctx.Context, plugin PluginRef, method manifest.MethodSpec) (PolicyDecision, error)
@@ -473,6 +463,15 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Registry == nil {
 		adapters.Registry = registry.NewMemoryStore()
+	}
+	if adapters.Audit == nil || adapters.Diagnostics == nil {
+		store := observability.NewMemoryStore()
+		if adapters.Audit == nil {
+			adapters.Audit = store
+		}
+		if adapters.Diagnostics == nil {
+			adapters.Diagnostics = store
+		}
 	}
 	if adapters.Capabilities == nil {
 		adapters.Capabilities = capability.NewRegistry()
@@ -1186,6 +1185,22 @@ func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrant
 		PluginInstanceID: req.PluginInstanceID,
 		ActiveOnly:       req.ActiveOnly,
 	})
+}
+
+func (h *Host) ListAuditEvents(ctx context.Context, req ListAuditEventsRequest) ([]AuditEvent, error) {
+	lister, ok := h.adapters.Audit.(AuditLister)
+	if !ok {
+		return nil, errors.New("audit event lister is unavailable")
+	}
+	return lister.ListPluginAudit(ctx, observability.ListAuditRequest(req))
+}
+
+func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEventsRequest) ([]DiagnosticEvent, error) {
+	lister, ok := h.adapters.Diagnostics.(DiagnosticLister)
+	if !ok {
+		return nil, errors.New("diagnostic event lister is unavailable")
+	}
+	return lister.ListPluginDiagnostics(ctx, observability.ListDiagnosticRequest(req))
 }
 
 func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) ([]operation.Record, error) {

@@ -204,6 +204,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleGrantPermission(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/permissions/revoke":
 		h.handleRevokePermission(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/audit":
+		h.handleListAudit(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/diagnostics":
+		h.handleListDiagnostics(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/bind":
 		h.handleBindSecret(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/test":
@@ -284,6 +288,8 @@ func RouteSet() []Route {
 		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/permissions"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/permissions/grant"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/permissions/revoke"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/audit"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/diagnostics"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/bind"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/test"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/delete"},
@@ -757,6 +763,44 @@ func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) 
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
 }
 
+func (h Handler) handleListAudit(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	events, err := h.Host.ListAuditEvents(r.Context(), host.ListAuditEventsRequest{
+		PluginID:         r.URL.Query().Get("plugin_id"),
+		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
+		Type:             r.URL.Query().Get("type"),
+		Limit:            intQuery(r, "limit"),
+	})
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"audit_events": events}})
+}
+
+func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	events, err := h.Host.ListDiagnosticEvents(r.Context(), host.ListDiagnosticEventsRequest{
+		PluginID:          r.URL.Query().Get("plugin_id"),
+		PluginInstanceID:  r.URL.Query().Get("plugin_instance_id"),
+		SurfaceInstanceID: r.URL.Query().Get("surface_instance_id"),
+		Type:              r.URL.Query().Get("type"),
+		Severity:          r.URL.Query().Get("severity"),
+		Limit:             intQuery(r, "limit"),
+	})
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"diagnostic_events": events}})
+}
+
 func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -1104,6 +1148,21 @@ func streamIDFromPath(requestPath string) (string, bool) {
 func boolQuery(r *http.Request, key string) bool {
 	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
 	return value == "1" || value == "true" || value == "yes"
+}
+
+func intQuery(r *http.Request, key string) int {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return 0
+	}
+	var parsed int
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return 0
+		}
+		parsed = parsed*10 + int(ch-'0')
+	}
+	return parsed
 }
 
 func maxAgeSeconds(d time.Duration) int {

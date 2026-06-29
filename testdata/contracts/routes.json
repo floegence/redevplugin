@@ -19,6 +19,8 @@
   {"method": "GET", "path": "/_redeven_proxy/api/plugins/permissions"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/permissions/grant"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/permissions/revoke"},
+  {"method": "GET", "path": "/_redeven_proxy/api/plugins/audit"},
+  {"method": "GET", "path": "/_redeven_proxy/api/plugins/diagnostics"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/secrets/bind"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/secrets/test"},
   {"method": "POST", "path": "/_redeven_proxy/api/plugins/secrets/delete"},

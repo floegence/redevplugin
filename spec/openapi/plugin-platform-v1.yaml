@@ -141,6 +141,16 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/audit:
+    get:
+      operationId: listPluginAuditEvents
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/diagnostics:
+    get:
+      operationId: listPluginDiagnosticEvents
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
   /_redeven_proxy/api/plugins/secrets/bind:
     post:
       operationId: bindPluginSecret
