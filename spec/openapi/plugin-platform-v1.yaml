@@ -138,7 +138,12 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Plugin stream bytes.
+          description: Plugin stream events drained as newline-delimited JSON.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: One JSON StreamEvent object per line.
   /_redeven_plugin/csp-report:
     post:
       operationId: reportPluginCSPViolation

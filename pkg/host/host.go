@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 )
 
 type AuditSink interface {
@@ -121,6 +122,7 @@ type Adapters struct {
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
 	Operations              operation.Store
+	Streams                 stream.Store
 }
 
 type Host struct {
@@ -309,6 +311,32 @@ type FinishOperationRequest struct {
 	Now         time.Time
 }
 
+type AppendStreamEventRequest struct {
+	StreamID string    `json:"stream_id"`
+	Kind     string    `json:"kind,omitempty"`
+	Data     []byte    `json:"data,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	Now      time.Time `json:"now,omitempty"`
+}
+
+type ReadStreamRequest struct {
+	StreamID  string `json:"stream_id"`
+	MaxEvents int    `json:"max_events,omitempty"`
+	MaxBytes  int64  `json:"max_bytes,omitempty"`
+}
+
+type ReadStreamResult struct {
+	Record stream.Record  `json:"record"`
+	Events []stream.Event `json:"events,omitempty"`
+}
+
+type CloseStreamRequest struct {
+	StreamID string        `json:"stream_id"`
+	Status   stream.Status `json:"status,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Now      time.Time     `json:"now,omitempty"`
+}
+
 type MintConnectionGrantRequest struct {
 	PluginInstanceID    string                 `json:"plugin_instance_id"`
 	ConnectorID         string                 `json:"connector_id"`
@@ -340,6 +368,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
+	}
+	if adapters.Streams == nil {
+		adapters.Streams = stream.NewMemoryStore()
 	}
 	if adapters.Assets == nil {
 		adapters.Assets = pluginpkg.NewMemoryAssetStore()
@@ -907,6 +938,46 @@ func (h *Host) FinishOperation(ctx context.Context, req FinishOperationRequest) 
 	return record, nil
 }
 
+func (h *Host) AppendStreamEvent(ctx context.Context, req AppendStreamEventRequest) (stream.Event, error) {
+	event, err := h.adapters.Streams.Append(ctx, stream.AppendRequest{
+		StreamID: req.StreamID,
+		Kind:     req.Kind,
+		Data:     req.Data,
+		Error:    req.Error,
+		Now:      req.Now,
+	})
+	if err != nil {
+		return stream.Event{}, err
+	}
+	return event, nil
+}
+
+func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStreamResult, error) {
+	record, events, err := h.adapters.Streams.Read(ctx, stream.ReadRequest{
+		StreamID:  req.StreamID,
+		MaxEvents: req.MaxEvents,
+		MaxBytes:  req.MaxBytes,
+	})
+	if err != nil {
+		return ReadStreamResult{}, err
+	}
+	return ReadStreamResult{Record: record, Events: events}, nil
+}
+
+func (h *Host) CloseStream(ctx context.Context, req CloseStreamRequest) (stream.Record, error) {
+	record, err := h.adapters.Streams.Close(ctx, stream.CloseRequest{
+		StreamID: req.StreamID,
+		Status:   req.Status,
+		Reason:   req.Reason,
+		Now:      req.Now,
+	})
+	if err != nil {
+		return stream.Record{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.stream.closed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return record, nil
+}
+
 func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (connectivity.ConnectionGrant, error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -1011,6 +1082,17 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 	if len(operations) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
 	}
+	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
+		PluginInstanceID: disabled.PluginInstanceID,
+		Status:           stream.StatusOrphanedDisabled,
+		Now:              req.Now,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if len(streams) > 0 {
+		h.audit(ctx, AuditEvent{Type: "plugin.streams.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
+	}
 	if h.adapters.Connectivity != nil {
 		_ = h.adapters.Connectivity.RemovePolicy(ctx, disabled.PluginInstanceID)
 	}
@@ -1060,6 +1142,17 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	h.audit(ctx, AuditEvent{Type: "plugin.uninstalled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if len(operations) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	}
+	streams, err := h.adapters.Streams.MarkPluginTransition(ctx, stream.PluginTransitionRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		Status:           stream.StatusOrphanedRemoved,
+		Now:              req.Now,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if len(streams) > 0 {
+		h.audit(ctx, AuditEvent{Type: "plugin.streams.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	}
 	return record, nil
 }
@@ -1226,6 +1319,9 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
 			return CallMethodResult{}, err
 		}
+		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
+			return CallMethodResult{}, err
+		}
 		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
 	case manifest.MethodRouteWorker:
 		result, err := h.invokeWorker(ctx, record, method, req)
@@ -1236,6 +1332,9 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 			return CallMethodResult{}, err
 		}
 		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
+			return CallMethodResult{}, err
+		}
+		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
 			return CallMethodResult{}, err
 		}
 		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
@@ -1370,6 +1469,29 @@ func (h *Host) registerOperationIfNeeded(ctx context.Context, record registry.Pl
 		return err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.operation.started", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func (h *Host) registerStreamIfNeeded(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest, streamID string) error {
+	if streamID == "" {
+		return nil
+	}
+	if _, err := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
+		StreamID:             streamID,
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		Method:               method.Method,
+		Effect:               string(method.Effect),
+		Execution:            string(method.Execution),
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		Direction:            stream.DirectionRead,
+		Now:                  req.Now,
+	}); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.stream.started", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil
 }
 

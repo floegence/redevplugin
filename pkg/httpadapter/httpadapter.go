@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 )
 
 type Envelope struct {
@@ -129,6 +130,8 @@ type cancelOperationRequest struct {
 const assetSessionCookieName = "__Host-redevplugin-asset-session"
 
 const maxCSPReportBytes = 64 << 10
+const defaultStreamReadMaxEvents = 256
+const defaultStreamReadMaxBytes = 1 << 20
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -177,7 +180,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/assets/"):
 		h.handlePluginAsset(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/stream/"):
-		h.handleNotImplemented(w, "getPluginStream")
+		h.handlePluginStream(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/csp-report":
 		h.handleCSPReport(w, r)
 	default:
@@ -736,6 +739,41 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(result.Content)
 }
 
+func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	streamID, ok := streamIDFromPath(r.URL.Path)
+	if !ok {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "stream_id is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
+		StreamID:  streamID,
+		MaxEvents: defaultStreamReadMaxEvents,
+		MaxBytes:  defaultStreamReadMaxBytes,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStreamError(err))})
+		return
+	}
+	contentType := result.Record.ContentType
+	if contentType == "" {
+		contentType = "application/x-ndjson"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	encoder := json.NewEncoder(w)
+	for _, event := range result.Events {
+		if err := encoder.Encode(event); err != nil {
+			return
+		}
+	}
+}
+
 func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -761,14 +799,6 @@ func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"reported": true}})
-}
-
-func (h Handler) handleNotImplemented(w http.ResponseWriter, operation string) {
-	WriteJSON(w, http.StatusNotImplemented, Envelope{
-		OK:        false,
-		Error:     operation + " is declared but not implemented by this adapter",
-		ErrorCode: string(security.ErrContractMismatch),
-	})
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -834,6 +864,18 @@ func assetPathFromSandboxPath(requestPath string) (string, bool) {
 		return "", false
 	}
 	return assetPath, true
+}
+
+func streamIDFromPath(requestPath string) (string, bool) {
+	const prefix = "/_redeven_plugin/stream/"
+	if !strings.HasPrefix(requestPath, prefix) {
+		return "", false
+	}
+	streamID := strings.Trim(strings.TrimPrefix(requestPath, prefix), "/")
+	if streamID == "" || strings.Contains(streamID, "/") || strings.HasPrefix(streamID, ".") {
+		return "", false
+	}
+	return streamID, true
 }
 
 func maxAgeSeconds(d time.Duration) int {
@@ -1004,6 +1046,28 @@ func httpStatusForOperationError(err error) int {
 	switch {
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return http.StatusBadRequest
+	default:
+		return http.StatusForbidden
+	}
+}
+
+func errorCodeForStreamError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
+		return security.ErrInvalidRequest
+	case errors.Is(err, stream.ErrBackpressure):
+		return security.ErrOperationBlocked
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForStreamError(err error) int {
+	switch {
+	case errors.Is(err, stream.ErrNotFound), errors.Is(err, stream.ErrInvalidStream):
+		return http.StatusBadRequest
+	case errors.Is(err, stream.ErrBackpressure):
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusForbidden
 	}

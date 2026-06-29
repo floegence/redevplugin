@@ -428,6 +428,50 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodRegistersStream(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{StreamID: "stream_logs_1"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.activity")
+
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "logs.tail",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if result.StreamID != "stream_logs_1" {
+		t.Fatalf("CallPluginMethod() stream result mismatch: %#v", result)
+	}
+	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
+		StreamID: "stream_logs_1",
+		Data:     []byte("line 1"),
+	}); err != nil {
+		t.Fatalf("AppendStreamEvent() error = %v", err)
+	}
+	streamResult, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1"})
+	if err != nil {
+		t.Fatalf("ReadStream() error = %v", err)
+	}
+	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != "line 1" {
+		t.Fatalf("stream read mismatch: %#v", streamResult)
+	}
+	if !audits.hasEvent("plugin.stream.started") {
+		t.Fatalf("missing stream audit event: %#v", audits.events)
+	}
+}
+
 func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
@@ -516,6 +560,12 @@ func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
 			packageBytes: buildRPCFixturePackage(t),
 			method:       "echo.ping",
 			result:       capability.Result{OperationID: "op_unexpected"},
+		},
+		{
+			name:         "subscription requires stream or operation id",
+			packageBytes: buildSubscriptionRPCFixturePackage(t),
+			method:       "logs.tail",
+			result:       capability.Result{Data: map[string]any{"started": true}},
 		},
 	}
 	for _, tc := range cases {
@@ -1341,6 +1391,18 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildSubscriptionRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), subscriptionRPCFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Subscription</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -1562,6 +1624,41 @@ func operationRPCFixtureManifestJSON() string {
 					"ack_timeout_ms": 2000
 				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
+			}
+		]
+	}`
+}
+
+func subscriptionRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.subscription",
+			"display_name": "Subscription",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "subscription.activity", "kind": "activity", "label": "Subscription", "entry": "ui/index.html", "method": "logs.tail"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+		],
+		"methods": [
+			{
+				"method": "logs.tail",
+				"effect": "read",
+				"execution": "subscription",
+				"cancel_policy": {
+					"cancelable": true,
+					"disable_behavior": "orphan",
+					"uninstall_behavior": "force_cleanup_allowed",
+					"ack_timeout_ms": 2000
+				},
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "logs.tail"}
 			}
 		]
 	}`
@@ -1792,6 +1889,9 @@ type recordingRuntimeSupervisor struct {
 func surfaceIDForMethod(method string) string {
 	if method == "images.pull" {
 		return "operation.activity"
+	}
+	if method == "logs.tail" {
+		return "subscription.activity"
 	}
 	return "rpc.activity"
 }

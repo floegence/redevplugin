@@ -501,6 +501,64 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerPluginStreamFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{StreamID: "stream_http_1"}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSubscriptionRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.subscription.activity", "surface_http_stream", "bridge_http_stream")
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_stream",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_stream",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "logs.tail",
+	})
+	if result.StreamID != "stream_http_1" {
+		t.Fatalf("rpc stream result mismatch: %#v", result)
+	}
+	if _, err := h.AppendStreamEvent(context.Background(), host.AppendStreamEventRequest{
+		StreamID: "stream_http_1",
+		Data:     []byte("line 1"),
+	}); err != nil {
+		t.Fatalf("AppendStreamEvent() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/x-ndjson" {
+		t.Fatalf("Content-Type = %q", got)
+	}
+	var event struct {
+		StreamID string `json:"stream_id"`
+		Sequence uint64 `json:"sequence"`
+		Data     []byte `json:"data"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(rec.Body.Bytes()), &event); err != nil {
+		t.Fatalf("decode stream event: %v body = %s", err, rec.Body.String())
+	}
+	if event.StreamID != "stream_http_1" || event.Sequence != 1 || string(event.Data) != "line 1" {
+		t.Fatalf("stream event mismatch: %#v body = %s", event, rec.Body.String())
+	}
+}
+
 func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_block_delete"}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -642,34 +700,6 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 	event := diagnostics.events[0]
 	if event.Type != "plugin.csp.violation" || event.PluginID != "com.example.http" || event.SurfaceInstanceID != "surface_http" || event.Details["effective_directive"] != "script-src" {
 		t.Fatalf("diagnostic event mismatch: %#v", event)
-	}
-}
-
-func TestHandlerDeclaredRoutesReturnContractMismatchWhenNotImplemented(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t)}
-	cases := []struct {
-		method string
-		path   string
-		body   string
-	}{
-		{method: http.MethodGet, path: "/_redeven_plugin/stream/stream_1"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-			if rec.Code != http.StatusNotImplemented {
-				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
-			}
-			var envelope Envelope
-			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
-				t.Fatal(err)
-			}
-			if envelope.OK || envelope.ErrorCode != string(security.ErrContractMismatch) {
-				t.Fatalf("envelope mismatch: %#v body = %s", envelope, rec.Body.String())
-			}
-		})
 	}
 }
 
@@ -854,6 +884,18 @@ func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPSubscriptionRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSubscriptionRPCFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Subscription</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildHTTPBlockedNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -1030,6 +1072,41 @@ func httpOperationRPCFixtureManifestJSON() string {
 					"ack_timeout_ms": 2000
 				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
+			}
+		]
+	}`
+}
+
+func httpSubscriptionRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.subscription",
+			"display_name": "HTTP Subscription",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.subscription.activity", "kind": "activity", "label": "HTTP Subscription", "entry": "ui/index.html", "method": "logs.tail"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+		],
+		"methods": [
+			{
+				"method": "logs.tail",
+				"effect": "read",
+				"execution": "subscription",
+				"cancel_policy": {
+					"cancelable": true,
+					"disable_behavior": "orphan",
+					"uninstall_behavior": "force_cleanup_allowed",
+					"ack_timeout_ms": 2000
+				},
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "logs.tail"}
 			}
 		]
 	}`
