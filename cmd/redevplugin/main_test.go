@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -93,6 +92,18 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("VerifyPackageTrust() error = %v", err)
 	}
+
+	installOutput, err := captureCLIOutput(t, "install-verified", signedPackage, publicKeyFile)
+	if err != nil {
+		t.Fatalf("install-verified command error = %v", err)
+	}
+	var installSummary lifecycleSummary
+	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
+		t.Fatalf("install-verified output decode error = %v: %s", err, installOutput)
+	}
+	if installSummary.TrustState != registry.TrustVerified || installSummary.EnableState != registry.EnableDisabled {
+		t.Fatalf("install-verified summary mismatch: %#v", installSummary)
+	}
 }
 
 func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
@@ -121,22 +132,11 @@ func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
 
 func readCLITestPublicKey(t *testing.T, filename string) ed25519.PublicKey {
 	t.Helper()
-	raw, err := os.ReadFile(filename)
+	_, publicKey, err := readSigningPublicKey(filename)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc signingPublicKeyFile
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	publicKey, err := base64.StdEncoding.DecodeString(doc.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(publicKey) != ed25519.PublicKeySize {
-		t.Fatalf("public key size = %d", len(publicKey))
-	}
-	return ed25519.PublicKey(publicKey)
+	return publicKey
 }
 
 func writeCLITestFile(t *testing.T, filename string, content string) {

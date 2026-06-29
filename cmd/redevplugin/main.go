@@ -119,6 +119,11 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return lifecycleHarness(ctx, "install-local", args[1])
+	case "install-verified":
+		if len(args) != 3 {
+			return usage()
+		}
+		return installVerifiedHarness(ctx, args[1], args[2])
 	case "enable":
 		if len(args) != 2 {
 			return usage()
@@ -363,7 +368,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -401,6 +406,38 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	return writeLifecycle(action, record)
 }
 
+func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFile string) error {
+	data, err := os.ReadFile(packageFile)
+	if err != nil {
+		return err
+	}
+	publicDoc, publicKey, err := readSigningPublicKey(publicKeyFile)
+	if err != nil {
+		return err
+	}
+	h, err := host.New(host.Adapters{
+		SessionResolver: staticSessionResolver{},
+		Policy:          staticPolicyAdapter{},
+		PackageTrustVerifier: trust.Ed25519Verifier{
+			Keyring: trust.StaticKeyring{Keys: []trust.SigningKey{{
+				Algorithm:   publicDoc.Algorithm,
+				KeyID:       publicDoc.KeyID,
+				PublisherID: publicDoc.PublisherID,
+				PluginID:    publicDoc.PluginID,
+				PublicKey:   publicKey,
+			}}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	record, err := host.InstallPackageBytes(ctx, h, data, registry.TrustVerified)
+	if err != nil {
+		return err
+	}
+	return writeLifecycle("install-verified", record)
+}
+
 func writeLifecycle(action string, record registry.PluginRecord) error {
 	return writeJSON(lifecycleSummary{
 		OK:                 true,
@@ -415,6 +452,34 @@ func writeLifecycle(action string, record registry.PluginRecord) error {
 		ManagementRevision: record.ManagementRevision,
 		RevokeEpoch:        record.RevokeEpoch,
 	})
+}
+
+func readSigningPublicKey(filename string) (signingPublicKeyFile, ed25519.PublicKey, error) {
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		return signingPublicKeyFile{}, nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var doc signingPublicKeyFile
+	if err := decoder.Decode(&doc); err != nil {
+		return signingPublicKeyFile{}, nil, err
+	}
+	if doc.SchemaVersion != "redevplugin.ed25519_signing_key.v1" {
+		return signingPublicKeyFile{}, nil, fmt.Errorf("unsupported key schema_version %q", doc.SchemaVersion)
+	}
+	if doc.Algorithm != trust.AlgorithmEd25519 {
+		return signingPublicKeyFile{}, nil, fmt.Errorf("unsupported key algorithm %q", doc.Algorithm)
+	}
+	doc.KeyID = strings.TrimSpace(doc.KeyID)
+	if doc.KeyID == "" {
+		return signingPublicKeyFile{}, nil, fmt.Errorf("key_id is required")
+	}
+	publicKey, err := base64.StdEncoding.DecodeString(doc.PublicKey)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+		return signingPublicKeyFile{}, nil, fmt.Errorf("public_key is not a valid ed25519 public key")
+	}
+	return doc, ed25519.PublicKey(publicKey), nil
 }
 
 type staticSessionResolver struct{}

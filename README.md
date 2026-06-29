@@ -35,6 +35,9 @@ capabilities.
   artifacts without placing private keys in shell arguments:
   `redevplugin keygen <key-id> <private.json> <public.json>` followed by
   `redevplugin sign <unsigned.redeven-plugin> <private.json> <signed.redeven-plugin>`.
+  Development harnesses can then run
+  `redevplugin install-verified <signed.redeven-plugin> <public.json>` to prove
+  the Host trust-verifier path accepts the signed package.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
   host product.
