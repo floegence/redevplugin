@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
   version: plugin-platform-v1
-  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes.
+  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Install and update trust_state fields are requested trust outcomes; the Host library must resolve runnable verified/bundled trust through a PackageTrustVerifier before records can become runnable.
 paths:
   /_redeven_proxy/api/plugins/install:
     post:

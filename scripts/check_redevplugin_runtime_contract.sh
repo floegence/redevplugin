@@ -8,6 +8,8 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   go test ./pkg/protocol ./pkg/httpadapter
   grep -q '"target_classifier_version": { "const": "target-classifier-v1" }' spec/plugin/network-grant-v1.schema.json
   grep -q '"transport": { "enum": \["http", "websocket", "tcp", "udp"\] }' spec/plugin/network-grant-v1.schema.json
+  grep -q 'package-signature-v1.schema.json' spec/plugin/package-signature-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.package_signature.v1" }' spec/plugin/package-signature-v1.schema.json
   grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"handle_grant"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"runtime_generation_id",' spec/plugin/token-ticket-v1.schema.json

@@ -142,6 +142,39 @@ func TestHandlerWebSecurityDoesNotRequireCSRFForSandboxBootstrap(t *testing.T) {
 	}
 }
 
+func TestHandlerInstallVerifiedRequiresHostTrustVerifier(t *testing.T) {
+	h, err := host.New(host.Adapters{
+		SessionResolver: httpTestSessionResolver{},
+		Policy:          httpTestPolicy{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	raw, err := json.Marshal(map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
+		"trust_state":    "verified",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/install", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("install status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.Error == "" {
+		t.Fatalf("install envelope = %#v", envelope)
+	}
+}
+
 func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
@@ -965,13 +998,14 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		capabilities.Register(opts.capabilityID, opts.capabilityAdapter)
 	}
 	h, err := host.New(host.Adapters{
-		SessionResolver: httpTestSessionResolver{},
-		Policy:          httpTestPolicy{},
-		Storage:         opts.storageBroker,
-		Secrets:         opts.secrets,
-		Diagnostics:     opts.diagnostics,
-		Capabilities:    capabilities,
-		CoreActions:     opts.coreActions,
+		SessionResolver:      httpTestSessionResolver{},
+		Policy:               httpTestPolicy{},
+		PackageTrustVerifier: httpTestPackageTrustVerifier{},
+		Storage:              opts.storageBroker,
+		Secrets:              opts.secrets,
+		Diagnostics:          opts.diagnostics,
+		Capabilities:         capabilities,
+		CoreActions:          opts.coreActions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1456,6 +1490,12 @@ func (httpTestPolicy) DeveloperModeEnabled(context.Context, sessionctx.Context) 
 
 func (httpTestPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
 	return true, nil
+}
+
+type httpTestPackageTrustVerifier struct{}
+
+func (httpTestPackageTrustVerifier) VerifyPackageTrust(_ context.Context, req host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
+	return host.PackageTrustVerificationResult{TrustState: req.RequestedTrustState}, nil
 }
 
 type httpRecordingCapabilityAdapter struct {

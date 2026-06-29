@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/package-signature-v1.schema.json",
+  "title": "ReDevPlugin package detached signature v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "algorithm",
+    "key_id",
+    "package_hash",
+    "manifest_hash",
+    "entries_hash",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.package_signature.v1" },
+    "algorithm": { "type": "string", "minLength": 1 },
+    "key_id": { "type": "string", "minLength": 1 },
+    "publisher_id": { "type": "string", "minLength": 1 },
+    "plugin_id": { "type": "string", "minLength": 1 },
+    "package_hash": { "$ref": "#/$defs/sha256" },
+    "manifest_hash": { "$ref": "#/$defs/sha256" },
+    "entries_hash": { "$ref": "#/$defs/sha256" },
+    "signature": { "type": "string", "minLength": 1 },
+    "signed_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

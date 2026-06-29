@@ -61,6 +61,31 @@ type PolicyAdapter interface {
 	LocalGeneratedPluginsEnabled(ctx context.Context, session sessionctx.Context) (bool, error)
 }
 
+type PackageTrustVerifier interface {
+	VerifyPackageTrust(ctx context.Context, req PackageTrustVerificationRequest) (PackageTrustVerificationResult, error)
+}
+
+type PackageTrustAction string
+
+const (
+	PackageTrustActionInstall PackageTrustAction = "install"
+	PackageTrustActionUpdate  PackageTrustAction = "update"
+)
+
+type PackageTrustVerificationRequest struct {
+	Action              PackageTrustAction     `json:"action"`
+	Package             pluginpkg.Package      `json:"package"`
+	RequestedTrustState registry.TrustState    `json:"requested_trust_state"`
+	CurrentRecord       *registry.PluginRecord `json:"current_record,omitempty"`
+	PluginInstanceID    string                 `json:"plugin_instance_id,omitempty"`
+	Now                 time.Time              `json:"now,omitempty"`
+}
+
+type PackageTrustVerificationResult struct {
+	TrustState registry.TrustState `json:"trust_state"`
+	Metadata   map[string]string   `json:"metadata,omitempty"`
+}
+
 type PolicyDecision string
 
 const (
@@ -116,6 +141,7 @@ type PluginRef struct {
 type Adapters struct {
 	SessionResolver         sessionctx.Resolver
 	Policy                  PolicyAdapter
+	PackageTrustVerifier    PackageTrustVerifier
 	Registry                registry.Store
 	Audit                   AuditSink
 	Diagnostics             DiagnosticsSink
@@ -327,8 +353,10 @@ type ConfirmMethodResult struct {
 }
 
 var (
-	ErrSecretStoreRequired = errors.New("secret store adapter is required")
-	ErrInvalidSecretRef    = errors.New("secret_ref is invalid")
+	ErrSecretStoreRequired             = errors.New("secret store adapter is required")
+	ErrInvalidSecretRef                = errors.New("secret_ref is invalid")
+	ErrPackageTrustVerifierRequired    = errors.New("package trust verifier is required for requested trust state")
+	ErrPackageTrustVerificationInvalid = errors.New("package trust verifier returned invalid trust state")
 )
 
 type ListOperationsRequest struct {
@@ -709,14 +737,15 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
-	trust := req.TrustState
-	if trust == "" {
-		trust = registry.TrustUntrusted
-	}
-	pkg, record, err := h.readPackageRecord(ctx, req.PackageReader, req.PackageSize, trust, req.PluginInstanceID)
+	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadOptions())
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, req.TrustState, nil, req.PluginInstanceID, req.Now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record := packageRecord(pkg, trust, req.PluginInstanceID, metadata)
 	record.EnableState = registry.EnableDisabled
 	record.RetainedDataState = registry.RetainedDataNone
 	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
@@ -738,14 +767,19 @@ func (h *Host) UpdatePlugin(ctx context.Context, req UpdateRequest) (registry.Pl
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
-	trust := req.TrustState
-	if trust == "" {
-		trust = current.TrustState
-	}
-	pkg, next, err := h.readPackageRecord(ctx, req.PackageReader, req.PackageSize, trust, current.PluginInstanceID)
+	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadOptions())
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	requestedTrust := req.TrustState
+	if requestedTrust == "" {
+		requestedTrust = current.TrustState
+	}
+	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, requestedTrust, &current, current.PluginInstanceID, req.Now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	next := packageRecord(pkg, trust, current.PluginInstanceID, metadata)
 	if err := validateSamePluginIdentity(current, next); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -798,15 +832,59 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 	return stored, nil
 }
 
-func (h *Host) readPackageRecord(ctx context.Context, reader io.ReaderAt, size int64, trust registry.TrustState, instanceID string) (pluginpkg.Package, registry.PluginRecord, error) {
-	pkg, err := pluginpkg.Read(ctx, reader, size, pluginpkg.DefaultReadOptions())
-	if err != nil {
-		return pluginpkg.Package{}, registry.PluginRecord{}, err
+func (h *Host) resolvePackageTrust(ctx context.Context, action PackageTrustAction, pkg pluginpkg.Package, requested registry.TrustState, current *registry.PluginRecord, instanceID string, now time.Time) (registry.TrustState, map[string]string, error) {
+	if requested == "" {
+		requested = registry.TrustUntrusted
 	}
+	if !knownTrustState(requested) {
+		return "", nil, fmt.Errorf("%w: %q", ErrPackageTrustVerificationInvalid, requested)
+	}
+	if h.adapters.PackageTrustVerifier == nil {
+		if trustStateRequiresVerifier(requested) {
+			return "", nil, ErrPackageTrustVerifierRequired
+		}
+		return requested, nil, nil
+	}
+	result, err := h.adapters.PackageTrustVerifier.VerifyPackageTrust(ctx, PackageTrustVerificationRequest{
+		Action:              action,
+		Package:             pkg,
+		RequestedTrustState: requested,
+		CurrentRecord:       current,
+		PluginInstanceID:    instanceID,
+		Now:                 now,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	if !knownTrustState(result.TrustState) {
+		return "", nil, fmt.Errorf("%w: %q", ErrPackageTrustVerificationInvalid, result.TrustState)
+	}
+	return result.TrustState, cloneStringMap(result.Metadata), nil
+}
+
+func knownTrustState(state registry.TrustState) bool {
+	switch state {
+	case registry.TrustBundled, registry.TrustVerified, registry.TrustUnsignedLocal, registry.TrustUntrusted, registry.TrustNeedsReview, registry.TrustBlockedSecurity:
+		return true
+	default:
+		return false
+	}
+}
+
+func trustStateRequiresVerifier(state registry.TrustState) bool {
+	switch state {
+	case registry.TrustBundled, registry.TrustVerified:
+		return true
+	default:
+		return false
+	}
+}
+
+func packageRecord(pkg pluginpkg.Package, trust registry.TrustState, instanceID string, metadata map[string]string) registry.PluginRecord {
 	if instanceID == "" {
 		instanceID = defaultPluginInstanceID(pkg)
 	}
-	record := registry.PluginRecord{
+	return registry.PluginRecord{
 		PluginInstanceID:  instanceID,
 		PublisherID:       pkg.Manifest.Publisher.PublisherID,
 		PluginID:          pkg.Manifest.PluginID(),
@@ -820,8 +898,8 @@ func (h *Host) readPackageRecord(ctx context.Context, reader io.ReaderAt, size i
 		Manifest:          pkg.Manifest,
 		PackageEntries:    pkg.Entries,
 		RetainedDataState: registry.RetainedDataNone,
+		Metadata:          cloneStringMap(metadata),
 	}
-	return pkg, record, nil
 }
 
 func validateSamePluginIdentity(current registry.PluginRecord, next registry.PluginRecord) error {
@@ -842,7 +920,7 @@ func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.Plu
 	next.InstalledAt = current.InstalledAt
 	next.EnabledAt = cloneTimePtr(current.EnabledAt)
 	next.DeletedAt = cloneTimePtr(current.DeletedAt)
-	next.Metadata = cloneStringMap(current.Metadata)
+	next.Metadata = mergeStringMap(current.Metadata, next.Metadata)
 	if previous.PackageHash != "" && previous.PackageHash != next.PackageHash {
 		next.VersionHistory = appendVersionSnapshot(next.VersionHistory, previous)
 	}
@@ -980,6 +1058,20 @@ func cloneStringMap(values map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func mergeStringMap(base map[string]string, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(base)+len(overlay))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
 }
 
 func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {

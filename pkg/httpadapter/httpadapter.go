@@ -309,7 +309,7 @@ func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
 		PluginInstanceID: req.PluginInstanceID,
 	})
 	if err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -1144,6 +1144,10 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
+	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
+		return security.ErrTrustVerificationInvalid
+	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
+		return security.ErrTrustVerificationRequired
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, operation.ErrDeleteBlocked):
@@ -1159,6 +1163,10 @@ func httpStatusForManagementError(err error) int {
 	switch {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest
+	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
+		return http.StatusBadRequest
+	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
+		return http.StatusForbidden
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, operation.ErrDeleteBlocked):

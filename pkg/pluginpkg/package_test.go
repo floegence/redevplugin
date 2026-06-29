@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,7 +61,7 @@ func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "signatures", "package.sig"), []byte("signature"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "signatures", "package.sig"), packageSignatureJSON(t, beforePkg, "test-signature"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var after bytes.Buffer
@@ -70,6 +71,91 @@ func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 	}
 	if beforePkg.PackageHash != afterPkg.PackageHash {
 		t.Fatalf("signature changed canonical package hash: %s != %s", beforePkg.PackageHash, afterPkg.PackageHash)
+	}
+	if afterPkg.PackageSignature == nil || afterPkg.PackageSignature.KeyID != "test-key" {
+		t.Fatalf("package signature was not parsed: %#v", afterPkg.PackageSignature)
+	}
+
+	read, err := Read(context.Background(), bytes.NewReader(after.Bytes()), int64(after.Len()), DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.PackageSignature == nil || read.PackageSignature.PackageHash != beforePkg.PackageHash {
+		t.Fatalf("read package signature mismatch: %#v", read.PackageSignature)
+	}
+	if _, ok := read.SignatureFiles[PackageSignaturePath]; !ok {
+		t.Fatalf("signature file was not retained: %#v", read.SignatureFiles)
+	}
+	if _, ok := read.Files[PackageSignaturePath]; ok {
+		t.Fatal("signature file leaked into canonical file set")
+	}
+}
+
+func TestReadRejectsSignatureHashMismatch(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for entryPath, content := range map[string][]byte{
+		"manifest.json": []byte(validManifestJSON()),
+		"ui/index.html": []byte("<!doctype html><title>Plugin</title>"),
+		PackageSignaturePath: []byte(`{
+			"schema_version": "redevplugin.package_signature.v1",
+			"algorithm": "ed25519",
+			"key_id": "test-key",
+			"package_hash": "sha256:wrong",
+			"manifest_hash": "sha256:wrong",
+			"entries_hash": "sha256:wrong",
+			"signature": "test-signature"
+		}`),
+	} {
+		writer, err := zw.Create(entryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+		t.Fatal("Read() expected signature hash mismatch error")
+	}
+}
+
+func TestBuildRejectsSignatureIdentityMismatch(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var before bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := PackageSignature{
+		SchemaVersion: "redevplugin.package_signature.v1",
+		Algorithm:     "ed25519",
+		KeyID:         "test-key",
+		PublisherID:   "other-publisher",
+		PluginID:      pkg.Manifest.PluginID(),
+		PackageHash:   pkg.PackageHash,
+		ManifestHash:  pkg.ManifestHash,
+		EntriesHash:   pkg.EntriesHash,
+		Signature:     "test-signature",
+	}
+	raw, err := json.Marshal(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, PackageSignaturePath), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var after bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &after, DefaultReadOptions()); err == nil {
+		t.Fatal("BuildFromDir() expected signature identity mismatch error")
 	}
 }
 
@@ -199,6 +285,26 @@ func mustWrite(t *testing.T, filename string, content string) {
 	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(PackageSignature{
+		SchemaVersion: "redevplugin.package_signature.v1",
+		Algorithm:     "ed25519",
+		KeyID:         "test-key",
+		PublisherID:   pkg.Manifest.Publisher.PublisherID,
+		PluginID:      pkg.Manifest.PluginID(),
+		PackageHash:   pkg.PackageHash,
+		ManifestHash:  pkg.ManifestHash,
+		EntriesHash:   pkg.EntriesHash,
+		Signature:     signature,
+		SignedAt:      "2026-06-30T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func validManifestJSON() string {

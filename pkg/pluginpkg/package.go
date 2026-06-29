@@ -42,7 +42,9 @@ type Package struct {
 	CanonicalManifest string            `json:"canonical_manifest"`
 	Entries           []Entry           `json:"entries"`
 	EntriesHash       string            `json:"entries_hash"`
+	PackageSignature  *PackageSignature `json:"package_signature,omitempty"`
 	Files             map[string][]byte `json:"-"`
+	SignatureFiles    map[string][]byte `json:"-"`
 }
 
 type ReadOptions struct {
@@ -50,6 +52,21 @@ type ReadOptions struct {
 	MaxFiles             int   `json:"max_files"`
 	MaxEntryBytes        int64 `json:"max_entry_bytes"`
 	MaxCompressionRatio  int64 `json:"max_compression_ratio"`
+}
+
+const PackageSignaturePath = "signatures/package.sig"
+
+type PackageSignature struct {
+	SchemaVersion string `json:"schema_version"`
+	Algorithm     string `json:"algorithm"`
+	KeyID         string `json:"key_id"`
+	PublisherID   string `json:"publisher_id,omitempty"`
+	PluginID      string `json:"plugin_id,omitempty"`
+	PackageHash   string `json:"package_hash"`
+	ManifestHash  string `json:"manifest_hash"`
+	EntriesHash   string `json:"entries_hash"`
+	Signature     string `json:"signature"`
+	SignedAt      string `json:"signed_at,omitempty"`
 }
 
 type Reader interface {
@@ -75,7 +92,7 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 	if opts == (ReadOptions{}) {
 		opts = DefaultReadOptions()
 	}
-	files, err := collectFiles(srcDir, opts)
+	files, signatureFiles, err := collectFiles(srcDir, opts)
 	if err != nil {
 		return Package{}, err
 	}
@@ -108,6 +125,10 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 	}
 	manifestHash := sha256String(canonicalManifest)
 	entriesHash, packageHash, err := canonicalHashes(entries, manifestHash)
+	if err != nil {
+		return Package{}, err
+	}
+	packageSignature, err := parsePackageSignature(signatureFiles, decodedManifest, manifestHash, entriesHash, packageHash)
 	if err != nil {
 		return Package{}, err
 	}
@@ -136,6 +157,30 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 			return Package{}, err
 		}
 	}
+	signaturePaths := sortedFilePaths(signatureFiles)
+	for _, entryPath := range signaturePaths {
+		select {
+		case <-ctx.Done():
+			_ = zipWriter.Close()
+			return Package{}, ctx.Err()
+		default:
+		}
+		header := &zip.FileHeader{
+			Name:   entryPath,
+			Method: zip.Deflate,
+		}
+		header.SetMode(0o644)
+		header.SetModTime(deterministicModTime)
+		writer, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			_ = zipWriter.Close()
+			return Package{}, err
+		}
+		if _, err := writer.Write(signatureFiles[entryPath]); err != nil {
+			_ = zipWriter.Close()
+			return Package{}, err
+		}
+	}
 	if err := zipWriter.Close(); err != nil {
 		return Package{}, err
 	}
@@ -147,7 +192,9 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 		CanonicalManifest: string(canonicalManifest),
 		Entries:           entries,
 		EntriesHash:       entriesHash,
+		PackageSignature:  packageSignature,
 		Files:             cloneFiles(files),
+		SignatureFiles:    cloneFiles(signatureFiles),
 	}, nil
 }
 
@@ -164,6 +211,7 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 	}
 
 	files := map[string][]byte{}
+	signatureFiles := map[string][]byte{}
 	var total int64
 	for _, file := range zr.File {
 		select {
@@ -183,9 +231,6 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 		}
 		if strings.HasSuffix(entryPath, "/") {
 			return Package{}, fmt.Errorf("directory entry %q is not allowed", entryPath)
-		}
-		if strings.HasPrefix(entryPath, "signatures/") {
-			continue
 		}
 		if opts.MaxEntryBytes > 0 && int64(file.UncompressedSize64) > opts.MaxEntryBytes {
 			return Package{}, fmt.Errorf("entry %q too large", entryPath)
@@ -212,10 +257,17 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 		if uint64(len(content)) != file.UncompressedSize64 {
 			return Package{}, fmt.Errorf("entry %q size mismatch", entryPath)
 		}
+		if strings.HasPrefix(entryPath, "signatures/") {
+			if entryPath != PackageSignaturePath {
+				return Package{}, fmt.Errorf("unsupported signature entry %q", entryPath)
+			}
+			signatureFiles[entryPath] = content
+			continue
+		}
 		files[entryPath] = content
 	}
 
-	return packageFromFiles(files)
+	return packageFromFiles(files, signatureFiles)
 }
 
 func ReadFile(ctx context.Context, filename string, opts ReadOptions) (Package, error) {
@@ -231,7 +283,7 @@ func ReadFile(ctx context.Context, filename string, opts ReadOptions) (Package, 
 	return Read(ctx, file, stat.Size(), opts)
 }
 
-func packageFromFiles(files map[string][]byte) (Package, error) {
+func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
 		return Package{}, errors.New("manifest.json is required")
@@ -261,6 +313,10 @@ func packageFromFiles(files map[string][]byte) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
+	packageSignature, err := parsePackageSignature(signatureFiles, decodedManifest, manifestHash, entriesHash, packageHash)
+	if err != nil {
+		return Package{}, err
+	}
 	return Package{
 		Manifest:          decodedManifest,
 		PackageHash:       packageHash,
@@ -268,12 +324,15 @@ func packageFromFiles(files map[string][]byte) (Package, error) {
 		CanonicalManifest: string(canonicalManifest),
 		Entries:           entries,
 		EntriesHash:       entriesHash,
+		PackageSignature:  packageSignature,
 		Files:             cloneFiles(files),
+		SignatureFiles:    cloneFiles(signatureFiles),
 	}, nil
 }
 
-func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, error) {
+func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[string][]byte, error) {
 	files := map[string][]byte{}
+	signatureFiles := map[string][]byte{}
 	var total int64
 	err := filepath.WalkDir(srcDir, func(filename string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -300,9 +359,6 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, error) {
 		if d.IsDir() {
 			return nil
 		}
-		if strings.HasPrefix(entryPath, "signatures/") {
-			return nil
-		}
 		if opts.MaxFiles > 0 && len(files)+1 > opts.MaxFiles {
 			return fmt.Errorf("too many files")
 		}
@@ -317,10 +373,17 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, error) {
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(entryPath, "signatures/") {
+			if entryPath != PackageSignaturePath {
+				return fmt.Errorf("unsupported signature entry %q", entryPath)
+			}
+			signatureFiles[entryPath] = content
+			return nil
+		}
 		files[entryPath] = content
 		return nil
 	})
-	return files, err
+	return files, signatureFiles, err
 }
 
 func validateEntryPath(entryPath string) (string, error) {
@@ -402,10 +465,63 @@ func canonicalJSON(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest, manifestHash string, entriesHash string, packageHash string) (*PackageSignature, error) {
+	if len(signatureFiles) == 0 {
+		return nil, nil
+	}
+	raw, ok := signatureFiles[PackageSignaturePath]
+	if !ok {
+		return nil, fmt.Errorf("%s is required when signature files are present", PackageSignaturePath)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var sig PackageSignature
+	if err := decoder.Decode(&sig); err != nil {
+		return nil, fmt.Errorf("%s: %w", PackageSignaturePath, err)
+	}
+	if sig.SchemaVersion != "redevplugin.package_signature.v1" {
+		return nil, fmt.Errorf("%s: unsupported schema_version %q", PackageSignaturePath, sig.SchemaVersion)
+	}
+	if strings.TrimSpace(sig.Algorithm) == "" {
+		return nil, fmt.Errorf("%s: algorithm is required", PackageSignaturePath)
+	}
+	if strings.TrimSpace(sig.KeyID) == "" {
+		return nil, fmt.Errorf("%s: key_id is required", PackageSignaturePath)
+	}
+	if strings.TrimSpace(sig.Signature) == "" {
+		return nil, fmt.Errorf("%s: signature is required", PackageSignaturePath)
+	}
+	if sig.PublisherID != "" && sig.PublisherID != m.Publisher.PublisherID {
+		return nil, fmt.Errorf("%s: publisher_id mismatch", PackageSignaturePath)
+	}
+	if sig.PluginID != "" && sig.PluginID != m.PluginID() {
+		return nil, fmt.Errorf("%s: plugin_id mismatch", PackageSignaturePath)
+	}
+	if sig.ManifestHash != manifestHash {
+		return nil, fmt.Errorf("%s: manifest_hash mismatch", PackageSignaturePath)
+	}
+	if sig.EntriesHash != entriesHash {
+		return nil, fmt.Errorf("%s: entries_hash mismatch", PackageSignaturePath)
+	}
+	if sig.PackageHash != packageHash {
+		return nil, fmt.Errorf("%s: package_hash mismatch", PackageSignaturePath)
+	}
+	return &sig, nil
+}
+
 func sortEntries(entries []Entry) {
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Path < entries[j].Path
 	})
+}
+
+func sortedFilePaths(files map[string][]byte) []string {
+	paths := make([]string, 0, len(files))
+	for entryPath := range files {
+		paths = append(paths, entryPath)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func cloneFiles(files map[string][]byte) map[string][]byte {

@@ -226,6 +226,80 @@ func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	}
 }
 
+func TestInstallVerifiedRequiresPackageTrustVerifier(t *testing.T) {
+	h, err := New(Adapters{
+		SessionResolver: fakeSessionResolver{},
+		Policy:          policyAdapter{developerMode: true, localGenerated: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified); !errors.Is(err, ErrPackageTrustVerifierRequired) {
+		t.Fatalf("InstallPackageBytes() error = %v, want ErrPackageTrustVerifierRequired", err)
+	}
+}
+
+func TestInstallUsesVerifierTrustDecisionAndMetadata(t *testing.T) {
+	verifier := &recordingPackageTrustVerifier{
+		trustState: registry.TrustNeedsReview,
+		metadata:   map[string]string{"trust.source": "test-review"},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		trustVerifier:  verifier,
+	})
+
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.TrustState != registry.TrustNeedsReview {
+		t.Fatalf("TrustState = %s, want needs_review", installed.TrustState)
+	}
+	if installed.Metadata["trust.source"] != "test-review" {
+		t.Fatalf("Metadata = %#v", installed.Metadata)
+	}
+	if verifier.last.Action != PackageTrustActionInstall || verifier.last.RequestedTrustState != registry.TrustVerified || verifier.last.Package.PackageHash == "" {
+		t.Fatalf("verifier request mismatch: %#v", verifier.last)
+	}
+}
+
+func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
+	ctx := context.Background()
+	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "old"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		trustVerifier:  verifier,
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.trustState = registry.TrustVerified
+	verifier.metadata = map[string]string{"trust.key_id": "new"}
+	nextBytes := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")
+
+	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(nextBytes),
+		PackageSize:      int64(len(nextBytes)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifier.last.Action != PackageTrustActionUpdate || verifier.last.CurrentRecord == nil || verifier.last.CurrentRecord.PackageHash != installed.PackageHash {
+		t.Fatalf("verifier update request mismatch: %#v", verifier.last)
+	}
+	if updated.Metadata["trust.key_id"] != "new" {
+		t.Fatalf("updated metadata = %#v", updated.Metadata)
+	}
+	if len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Metadata["trust.key_id"] != "old" {
+		t.Fatalf("version history metadata mismatch: %#v", updated.VersionHistory)
+	}
+}
+
 func TestSurfaceBridgeLifecycle(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -1547,6 +1621,7 @@ type testHostOptions struct {
 	developerMode      bool
 	localGenerated     bool
 	policyDecision     PolicyDecision
+	trustVerifier      PackageTrustVerifier
 	storageBroker      storage.Broker
 	connectivityBroker connectivity.Broker
 	runtimeSupervisor  runtimeclient.Supervisor
@@ -1569,6 +1644,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	if decision == "" {
 		decision = PolicyAllow
 	}
+	trustVerifier := opts.trustVerifier
+	if trustVerifier == nil {
+		trustVerifier = &recordingPackageTrustVerifier{}
+	}
 	host, err := New(Adapters{
 		SessionResolver: fakeSessionResolver{},
 		Policy: policyAdapter{
@@ -1576,15 +1655,16 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			localGenerated: opts.localGenerated,
 			decision:       decision,
 		},
-		SurfaceCatalog:    surfaces,
-		Audit:             audits,
-		Diagnostics:       opts.diagnostics,
-		Storage:           opts.storageBroker,
-		Connectivity:      opts.connectivityBroker,
-		RuntimeSupervisor: opts.runtimeSupervisor,
-		Secrets:           opts.secrets,
-		Capabilities:      capabilities,
-		CoreActions:       opts.coreActions,
+		PackageTrustVerifier: trustVerifier,
+		SurfaceCatalog:       surfaces,
+		Audit:                audits,
+		Diagnostics:          opts.diagnostics,
+		Storage:              opts.storageBroker,
+		Connectivity:         opts.connectivityBroker,
+		RuntimeSupervisor:    opts.runtimeSupervisor,
+		Secrets:              opts.secrets,
+		Capabilities:         capabilities,
+		CoreActions:          opts.coreActions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2189,6 +2269,28 @@ func (p policyAdapter) DeveloperModeEnabled(context.Context, sessionctx.Context)
 
 func (p policyAdapter) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
 	return p.localGenerated, nil
+}
+
+type recordingPackageTrustVerifier struct {
+	trustState registry.TrustState
+	metadata   map[string]string
+	err        error
+	last       PackageTrustVerificationRequest
+}
+
+func (v *recordingPackageTrustVerifier) VerifyPackageTrust(_ context.Context, req PackageTrustVerificationRequest) (PackageTrustVerificationResult, error) {
+	v.last = req
+	if v.err != nil {
+		return PackageTrustVerificationResult{}, v.err
+	}
+	trustState := v.trustState
+	if trustState == "" {
+		trustState = req.RequestedTrustState
+	}
+	return PackageTrustVerificationResult{
+		TrustState: trustState,
+		Metadata:   cloneStringMap(v.metadata),
+	}, nil
 }
 
 type surfaceSink struct {

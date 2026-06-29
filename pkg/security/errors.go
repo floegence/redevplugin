@@ -14,4 +14,6 @@ const (
 	ErrNetworkTargetDenied         ErrorCode = "PLUGIN_NETWORK_TARGET_DENIED"
 	ErrRuntimeUnavailable          ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
 	ErrContractMismatch            ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
+	ErrTrustVerificationRequired   ErrorCode = "PLUGIN_TRUST_VERIFICATION_REQUIRED"
+	ErrTrustVerificationInvalid    ErrorCode = "PLUGIN_TRUST_VERIFICATION_INVALID"
 )
