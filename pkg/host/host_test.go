@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
@@ -459,6 +460,94 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.method.called") {
 		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+	}
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
+		t.Fatalf("CallPluginMethod() without grant error = %v, want ErrPermissionDenied", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called before permission grant: %d", capabilityAdapter.calls)
+	}
+
+	beforeGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.GrantPermission(context.Background(), GrantPermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PermissionID:     "read",
+		GrantedBy:        "tester",
+	}); err != nil {
+		t.Fatalf("GrantPermission() error = %v", err)
+	}
+	afterGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterGrant.PolicyRevision <= beforeGrant.PolicyRevision || afterGrant.RevokeEpoch != beforeGrant.RevokeEpoch {
+		t.Fatalf("grant revision mismatch: before=%#v after=%#v", beforeGrant, afterGrant)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("CallPluginMethod() with stale token error = %v, want ErrTokenRevoked", err)
+	}
+	_, freshGateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	call.GatewayToken = freshGateway.GatewayToken
+	if _, err := h.CallPluginMethod(context.Background(), call); err != nil {
+		t.Fatalf("CallPluginMethod() after grant error = %v", err)
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
+	}
+
+	beforeRevoke, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PermissionID:     "read",
+		RevokedBy:        "tester",
+		Reason:           "test revoke",
+	}); err != nil {
+		t.Fatalf("RevokePermission() error = %v", err)
+	}
+	afterRevoke, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRevoke.PolicyRevision <= beforeRevoke.PolicyRevision || afterRevoke.RevokeEpoch <= beforeRevoke.RevokeEpoch {
+		t.Fatalf("revoke revision mismatch: before=%#v after=%#v", beforeRevoke, afterRevoke)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("CallPluginMethod() after revoke with stale token error = %v, want ErrTokenRevoked", err)
+	}
+	_, freshGateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	call.GatewayToken = freshGateway.GatewayToken
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
+		t.Fatalf("CallPluginMethod() after revoke error = %v, want ErrPermissionDenied", err)
+	}
+	if !audits.hasEvent("plugin.permission.granted") || !audits.hasEvent("plugin.permission.revoked") {
+		t.Fatalf("missing permission audit events: %#v", audits.events)
 	}
 }
 
@@ -1678,6 +1767,7 @@ type testHostOptions struct {
 	storageBroker      storage.Broker
 	connectivityBroker connectivity.Broker
 	cleanup            cleanup.Orchestrator
+	permissions        permissions.Store
 	runtimeSupervisor  runtimeclient.Supervisor
 	secrets            SecretStoreAdapter
 	diagnostics        DiagnosticsSink
@@ -1716,6 +1806,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Storage:              opts.storageBroker,
 		Connectivity:         opts.connectivityBroker,
 		Cleanup:              opts.cleanup,
+		Permissions:          opts.permissions,
 		RuntimeSupervisor:    opts.runtimeSupervisor,
 		Secrets:              opts.secrets,
 		Capabilities:         capabilities,
@@ -2276,6 +2367,14 @@ func networkFixtureManifestJSON(blocked bool) string {
 
 func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
+	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, packageBytes, surfaceID)
+	grantDeclaredPermissions(t, h, installed)
+	_, gateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
+	return installed, gateway
+}
+
+func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	installed, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
@@ -2285,8 +2384,20 @@ func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, sur
 	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
 		t.Fatal(err)
 	}
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
+	return installed, gateway
+}
+
+func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, surfaceID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
+		PluginInstanceID:     record.PluginInstanceID,
 		SurfaceID:            surfaceID,
 		SurfaceInstanceID:    "surface_rpc",
 		OwnerSessionHash:     "session_hash",
@@ -2319,7 +2430,26 @@ func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, sur
 	if err != nil {
 		t.Fatal(err)
 	}
-	return installed, gateway
+	return bootstrap, gateway
+}
+
+func grantDeclaredPermissions(t *testing.T, h *Host, record registry.PluginRecord) {
+	t.Helper()
+	permissionsToGrant := map[string]struct{}{}
+	for _, method := range record.Manifest.Methods {
+		for _, permissionID := range requiredPermissionsForMethod(record.Manifest, method) {
+			permissionsToGrant[permissionID] = struct{}{}
+		}
+	}
+	for permissionID := range permissionsToGrant {
+		if _, err := h.GrantPermission(context.Background(), GrantPermissionRequest{
+			PluginInstanceID: record.PluginInstanceID,
+			PermissionID:     permissionID,
+			GrantedBy:        "test",
+		}); err != nil {
+			t.Fatalf("GrantPermission(%s) error = %v", permissionID, err)
+		}
+	}
 }
 
 type fakeSessionResolver struct{}

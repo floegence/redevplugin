@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
@@ -160,6 +162,7 @@ type Adapters struct {
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
 	Operations              operation.Store
+	Permissions             permissions.Store
 	Cleanup                 cleanup.Orchestrator
 	Settings                settings.Store
 	Streams                 stream.Store
@@ -223,6 +226,27 @@ type ImportDataRequest struct {
 
 type ExportDataResult struct {
 	ArchiveRef string `json:"archive_ref"`
+}
+
+type GrantPermissionRequest struct {
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	PermissionID     string    `json:"permission_id"`
+	GrantedBy        string    `json:"granted_by,omitempty"`
+	Now              time.Time `json:"now,omitempty"`
+	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+}
+
+type RevokePermissionRequest struct {
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	PermissionID     string    `json:"permission_id"`
+	RevokedBy        string    `json:"revoked_by,omitempty"`
+	Reason           string    `json:"reason,omitempty"`
+	Now              time.Time `json:"now,omitempty"`
+}
+
+type ListPermissionGrantsRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+	ActiveOnly       bool   `json:"active_only,omitempty"`
 }
 
 type GetSettingsRequest struct {
@@ -461,6 +485,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
+	}
+	if adapters.Permissions == nil {
+		adapters.Permissions = permissions.NewMemoryStore()
 	}
 	if adapters.Cleanup == nil {
 		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
@@ -737,6 +764,18 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	}
 	if decision != PolicyAllow {
 		return resolvedMethodCall{}, errors.New("plugin method denied by local policy")
+	}
+	requiredPermissions := requiredPermissionsForMethod(record.Manifest, method)
+	granted, missing, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		PermissionIDs:    requiredPermissions,
+		Now:              req.Now,
+	})
+	if err != nil {
+		return resolvedMethodCall{}, err
+	}
+	if !granted {
+		return resolvedMethodCall{}, fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
 	}
 	return resolvedMethodCall{record: record, method: method, audience: audience, revision: revision}, nil
 }
@@ -1091,6 +1130,62 @@ func cloneEntries(entries []pluginpkg.Entry) []pluginpkg.Entry {
 
 func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
 	return h.adapters.Registry.ListPlugins(ctx)
+}
+
+func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (permissions.Record, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return permissions.Record{}, err
+	}
+	grant, err := h.adapters.Permissions.Grant(ctx, permissions.GrantRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		PermissionID:     req.PermissionID,
+		GrantedBy:        req.GrantedBy,
+		Now:              req.Now,
+		ExpiresAt:        req.ExpiresAt,
+	})
+	if err != nil {
+		return permissions.Record{}, err
+	}
+	if _, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, false, req.Now); err != nil {
+		return permissions.Record{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.permission.granted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return grant, nil
+}
+
+func (h *Host) RevokePermission(ctx context.Context, req RevokePermissionRequest) (permissions.Record, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return permissions.Record{}, err
+	}
+	grant, err := h.adapters.Permissions.Revoke(ctx, permissions.RevokeRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		PermissionID:     req.PermissionID,
+		RevokedBy:        req.RevokedBy,
+		Reason:           req.Reason,
+		Now:              req.Now,
+	})
+	if err != nil {
+		return permissions.Record{}, err
+	}
+	if _, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, true, req.Now); err != nil {
+		return permissions.Record{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.permission.revoked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return grant, nil
+}
+
+func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrantsRequest) ([]permissions.Record, error) {
+	if req.PluginInstanceID != "" {
+		if _, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID); err != nil {
+			return nil, err
+		}
+	}
+	return h.adapters.Permissions.List(ctx, permissions.ListRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		ActiveOnly:       req.ActiveOnly,
+	})
 }
 
 func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) ([]operation.Record, error) {
@@ -1460,6 +1555,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	if err := h.deleteOrRetainSettings(ctx, record, req.DeleteData, req.Now); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.adapters.Permissions.DeletePluginGrants(ctx, record.PluginInstanceID); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if h.adapters.Connectivity != nil {
@@ -2014,6 +2112,17 @@ func manifestCapabilityBinding(m manifest.Manifest, bindingID string) (manifest.
 	return manifest.CapabilityBinding{}, false
 }
 
+func requiredPermissionsForMethod(m manifest.Manifest, method manifest.MethodSpec) []string {
+	if method.Route.Kind != manifest.MethodRouteCapability {
+		return nil
+	}
+	binding, ok := manifestCapabilityBinding(m, method.Route.BindingID)
+	if !ok {
+		return nil
+	}
+	return normalizeStringSet(binding.RequiredPermissions)
+}
+
 func manifestWorker(m manifest.Manifest, workerID string) (manifest.WorkerSpec, bool) {
 	for _, worker := range m.Workers {
 		if worker.WorkerID == workerID {
@@ -2021,6 +2130,24 @@ func manifestWorker(m manifest.Manifest, workerID string) (manifest.WorkerSpec, 
 		}
 	}
 	return manifest.WorkerSpec{}, false
+}
+
+func normalizeStringSet(values []string) []string {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 func cloneParams(params map[string]any) map[string]any {

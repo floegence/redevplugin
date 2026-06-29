@@ -37,11 +37,27 @@ func TestMemoryStoreRevisionsAndList(t *testing.T) {
 		t.Fatalf("enable revisions = %#v", enabled)
 	}
 
-	uninstalled, err := store.MarkUninstalled(context.Background(), stored.PluginInstanceID, RetainedDataDeleted, now.Add(2*time.Second))
+	granted, err := store.BumpPolicyRevision(context.Background(), stored.PluginInstanceID, false, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uninstalled.ManagementRevision != 3 || uninstalled.RevokeEpoch != 2 || uninstalled.DeletedAt == nil {
+	if granted.PolicyRevision != 2 || granted.ManagementRevision != 2 || granted.RevokeEpoch != 1 {
+		t.Fatalf("grant policy revisions = %#v", granted)
+	}
+
+	revoked, err := store.BumpPolicyRevision(context.Background(), stored.PluginInstanceID, true, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked.PolicyRevision != 3 || revoked.ManagementRevision != 2 || revoked.RevokeEpoch != 2 {
+		t.Fatalf("revoke policy revisions = %#v", revoked)
+	}
+
+	uninstalled, err := store.MarkUninstalled(context.Background(), stored.PluginInstanceID, RetainedDataDeleted, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uninstalled.ManagementRevision != 3 || uninstalled.PolicyRevision != 3 || uninstalled.RevokeEpoch != 3 || uninstalled.DeletedAt == nil {
 		t.Fatalf("uninstall revisions = %#v", uninstalled)
 	}
 	list, err := store.ListPlugins(context.Background())

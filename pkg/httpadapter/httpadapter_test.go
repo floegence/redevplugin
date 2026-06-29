@@ -17,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -35,6 +36,9 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
 		"POST /_redeven_proxy/api/plugins/rpc":                                         false,
 		"POST /_redeven_proxy/api/plugins/data/export":                                 false,
+		"GET /_redeven_proxy/api/plugins/permissions":                                  false,
+		"POST /_redeven_proxy/api/plugins/permissions/grant":                           false,
+		"POST /_redeven_proxy/api/plugins/permissions/revoke":                          false,
 		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":                false,
 		"PATCH /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":              false,
 		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":         false,
@@ -321,6 +325,7 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
@@ -364,6 +369,7 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
@@ -432,6 +438,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
@@ -476,6 +483,120 @@ func TestHandlerRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.activity", "surface_http_permissions", "bridge_http_permissions")
+	callBody := map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_permissions",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_permissions",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "echo.ping",
+	}
+
+	raw, err := json.Marshal(callBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rpc without grant status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+		t.Fatalf("rpc without grant error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+
+	grant := postJSON[permissions.Record](t, handler, "/_redeven_proxy/api/plugins/permissions/grant", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"permission_id":      "read",
+		"granted_by":         "admin",
+	})
+	if grant.PermissionID != "read" || grant.GrantedBy != "admin" || grant.RevokedAt != nil {
+		t.Fatalf("grant response mismatch: %#v", grant)
+	}
+	listed := getJSON[struct {
+		Permissions []permissions.Record `json:"permissions"`
+	}](t, handler, "/_redeven_proxy/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
+	if len(listed.Permissions) != 1 || listed.Permissions[0].PermissionID != "read" {
+		t.Fatalf("permissions list mismatch: %#v", listed)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rpc with stale token status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+		t.Fatalf("stale token error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+
+	bridgeResp = openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.activity", "surface_http_permissions", "bridge_http_permissions")
+	callBody["plugin_gateway_token"] = bridgeResp.GatewayToken
+	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", callBody)
+	if result.Data == nil || adapter.last.Method != "echo.ping" {
+		t.Fatalf("rpc after grant mismatch: result=%#v invocation=%#v", result, adapter.last)
+	}
+
+	revoked := postJSON[permissions.Record](t, handler, "/_redeven_proxy/api/plugins/permissions/revoke", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"permission_id":      "read",
+		"revoked_by":         "admin",
+		"reason":             "test",
+	})
+	if revoked.RevokedAt == nil || revoked.RevokedBy != "admin" || revoked.RevokedReason != "test" {
+		t.Fatalf("revoke response mismatch: %#v", revoked)
+	}
+	active := getJSON[struct {
+		Permissions []permissions.Record `json:"permissions"`
+	}](t, handler, "/_redeven_proxy/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
+	if len(active.Permissions) != 0 {
+		t.Fatalf("active permissions after revoke mismatch: %#v", active)
+	}
+	bridgeResp = openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.activity", "surface_http_permissions", "bridge_http_permissions")
+	callBody["plugin_gateway_token"] = bridgeResp.GatewayToken
+	raw, err = json.Marshal(callBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("rpc after revoke status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+		t.Fatalf("rpc after revoke error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+}
+
 func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"done": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -489,6 +610,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
@@ -569,6 +691,7 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_operation", "bridge_http_operation")
 
@@ -619,6 +742,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.subscription.activity", "surface_http_stream", "bridge_http_stream")
 
@@ -766,6 +890,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_block_delete", "bridge_http_block_delete")
 	postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
@@ -986,6 +1111,7 @@ type httpTestHostOptions struct {
 	storageBroker     storage.Broker
 	secrets           host.SecretStoreAdapter
 	diagnostics       host.DiagnosticsSink
+	permissions       permissions.Store
 	capabilityID      string
 	capabilityAdapter capability.Adapter
 	coreActions       host.CoreActionAdapter
@@ -1004,6 +1130,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		Storage:              opts.storageBroker,
 		Secrets:              opts.secrets,
 		Diagnostics:          opts.diagnostics,
+		Permissions:          opts.permissions,
 		Capabilities:         capabilities,
 		CoreActions:          opts.coreActions,
 	})
@@ -1570,6 +1697,29 @@ func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string,
 			"ui_protocol_version": "plugin-ui-v1",
 		},
 	})
+}
+
+func grantHTTPDeclaredPermissions(t *testing.T, h *host.Host, record registry.PluginRecord) {
+	t.Helper()
+	seen := map[string]struct{}{}
+	for _, binding := range record.Manifest.CapabilityBindings {
+		for _, permissionID := range binding.RequiredPermissions {
+			if permissionID == "" {
+				continue
+			}
+			if _, ok := seen[permissionID]; ok {
+				continue
+			}
+			seen[permissionID] = struct{}{}
+			if _, err := h.GrantPermission(context.Background(), host.GrantPermissionRequest{
+				PluginInstanceID: record.PluginInstanceID,
+				PermissionID:     permissionID,
+				GrantedBy:        "test",
+			}); err != nil {
+				t.Fatalf("GrantPermission(%s) error = %v", permissionID, err)
+			}
+		}
+	}
 }
 
 func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {

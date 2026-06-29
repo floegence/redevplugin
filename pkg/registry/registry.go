@@ -87,6 +87,7 @@ type Store interface {
 	GetPlugin(ctx context.Context, pluginInstanceID string) (PluginRecord, error)
 	ListPlugins(ctx context.Context) ([]PluginRecord, error)
 	SetEnableState(ctx context.Context, pluginInstanceID string, state EnableState, reason string, now time.Time) (PluginRecord, error)
+	BumpPolicyRevision(ctx context.Context, pluginInstanceID string, revoke bool, now time.Time) (PluginRecord, error)
 	MarkUninstalled(ctx context.Context, pluginInstanceID string, retained RetainedDataState, now time.Time) (PluginRecord, error)
 	DeletePlugin(ctx context.Context, pluginInstanceID string) error
 }
@@ -187,6 +188,26 @@ func (s *MemoryStore) SetEnableState(_ context.Context, pluginInstanceID string,
 	} else {
 		record.EnabledAt = nil
 	}
+	s.records[pluginInstanceID] = record
+	return record, nil
+}
+
+func (s *MemoryStore) BumpPolicyRevision(_ context.Context, pluginInstanceID string, revoke bool, now time.Time) (PluginRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.records[pluginInstanceID]
+	if !ok || record.DeletedAt != nil {
+		return PluginRecord{}, ErrNotFound
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	record.PolicyRevision++
+	if revoke {
+		record.RevokeEpoch++
+	}
+	record.UpdatedAt = now
 	s.records[pluginInstanceID] = record
 	return record, nil
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -115,6 +116,20 @@ type importDataRequest struct {
 	DeleteExisting   bool   `json:"delete_existing,omitempty"`
 }
 
+type grantPermissionRequest struct {
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	PermissionID     string    `json:"permission_id"`
+	GrantedBy        string    `json:"granted_by,omitempty"`
+	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+}
+
+type revokePermissionRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	PermissionID     string `json:"permission_id"`
+	RevokedBy        string `json:"revoked_by,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+}
+
 type secretRefRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	SecretRef        string `json:"secret_ref"`
@@ -183,6 +198,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
 		h.handleImportData(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/permissions":
+		h.handleListPermissions(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/permissions/grant":
+		h.handleGrantPermission(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/permissions/revoke":
+		h.handleRevokePermission(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/bind":
 		h.handleBindSecret(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/test":
@@ -260,6 +281,9 @@ func RouteSet() []Route {
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/data/export"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/data/import"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/permissions"},
+		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/permissions/grant"},
+		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/permissions/revoke"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/bind"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/test"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/delete"},
@@ -671,6 +695,68 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"imported": true}})
 }
 
+func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	records, err := h.Host.ListPermissionGrants(r.Context(), host.ListPermissionGrantsRequest{
+		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
+		ActiveOnly:       boolQuery(r, "active_only"),
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForPermissionError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForPermissionError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"permissions": records}})
+}
+
+func (h Handler) handleGrantPermission(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req grantPermissionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.GrantPermission(r.Context(), host.GrantPermissionRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		PermissionID:     req.PermissionID,
+		GrantedBy:        req.GrantedBy,
+		ExpiresAt:        req.ExpiresAt,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForPermissionError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForPermissionError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req revokePermissionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.RevokePermission(r.Context(), host.RevokePermissionRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		PermissionID:     req.PermissionID,
+		RevokedBy:        req.RevokedBy,
+		Reason:           req.Reason,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForPermissionError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForPermissionError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
 func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -1015,6 +1101,11 @@ func streamIDFromPath(requestPath string) (string, bool) {
 	return streamID, true
 }
 
+func boolQuery(r *http.Request, key string) bool {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
+	return value == "1" || value == "true" || value == "yes"
+}
+
 func maxAgeSeconds(d time.Duration) int {
 	if d <= 0 {
 		return 0
@@ -1127,6 +1218,8 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return security.ErrConfirmationRequired
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return security.ErrPermissionDenied
 	case errors.Is(err, bridge.ErrTokenExpired):
 		return security.ErrTokenExpired
 	case errors.Is(err, bridge.ErrTokenReplay):
@@ -1222,6 +1315,8 @@ func httpStatusForRPCError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return http.StatusConflict
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return http.StatusForbidden
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
 		return http.StatusForbidden
 	default:
@@ -1301,6 +1396,28 @@ func httpStatusForAssetError(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, registry.ErrNotFound):
 		return http.StatusBadRequest
+	default:
+		return http.StatusForbidden
+	}
+}
+
+func errorCodeForPermissionError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, permissions.ErrInvalidPermission), errors.Is(err, permissions.ErrGrantNotFound):
+		return security.ErrInvalidRequest
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return security.ErrPermissionDenied
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForPermissionError(err error) int {
+	switch {
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, permissions.ErrInvalidPermission), errors.Is(err, permissions.ErrGrantNotFound):
+		return http.StatusBadRequest
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return http.StatusForbidden
 	default:
 		return http.StatusForbidden
 	}
