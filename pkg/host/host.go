@@ -387,6 +387,21 @@ type NetworkHandleGrantResult struct {
 	HandleGrant     bridge.HandleGrantResult     `json:"handle_grant"`
 }
 
+type MintStorageHandleGrantRequest struct {
+	PluginInstanceID    string        `json:"plugin_instance_id"`
+	StoreID             string        `json:"store_id"`
+	RuntimeInstanceID   string        `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string        `json:"runtime_generation_id"`
+	RuntimeShardID      string        `json:"runtime_shard_id,omitempty"`
+	Now                 time.Time     `json:"now,omitempty"`
+	TTL                 time.Duration `json:"ttl,omitempty"`
+}
+
+type StorageHandleGrantResult struct {
+	Namespace   storage.Namespace        `json:"namespace"`
+	HandleGrant bridge.HandleGrantResult `json:"handle_grant"`
+}
+
 func New(adapters Adapters) (*Host, error) {
 	if adapters.SessionResolver == nil {
 		return nil, errors.New("session resolver is required")
@@ -1108,6 +1123,59 @@ func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGra
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.handle_grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return NetworkHandleGrantResult{ConnectionGrant: grant, HandleGrant: handleGrant}, nil
+}
+
+func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandleGrantRequest) (StorageHandleGrantResult, error) {
+	if strings.TrimSpace(req.RuntimeGenerationID) == "" || strings.TrimSpace(req.StoreID) == "" {
+		return StorageHandleGrantResult{}, bridge.ErrMissingTokenAudience
+	}
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return StorageHandleGrantResult{}, errors.New("plugin is not enabled")
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	namespace, ok, err := storageNamespaceByStoreID(record, req.StoreID)
+	if err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	if !ok {
+		return StorageHandleGrantResult{}, storage.ErrNamespaceNotFound
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ttl := req.TTL
+	if ttl <= 0 {
+		ttl = bridge.DefaultHandleGrantTTL
+	}
+	handleGrant, err := h.surfaceTokens.MintHandleGrant(bridge.MintHandleGrantRequest{
+		PluginInstanceID:    record.PluginInstanceID,
+		ActiveFingerprint:   record.ActiveFingerprint,
+		RuntimeInstanceID:   req.RuntimeInstanceID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		RuntimeShardID:      req.RuntimeShardID,
+		HandleID:            "storage:" + namespace.StoreID,
+		Method:              "storage." + string(namespace.Kind),
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     record.PolicyRevision,
+			ManagementRevision: record.ManagementRevision,
+			RevokeEpoch:        record.RevokeEpoch,
+		},
+		Limits:    bridge.Limits{MaxTotalBytes: namespace.QuotaBytes},
+		Now:       now,
+		ExpiresAt: now.Add(ttl),
+	})
+	if err != nil {
+		return StorageHandleGrantResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.storage.handle_grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return StorageHandleGrantResult{Namespace: namespace, HandleGrant: handleGrant}, nil
 }
 
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
@@ -2000,6 +2068,20 @@ func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Name
 		})
 	}
 	return namespaces, nil
+}
+
+func storageNamespaceByStoreID(record registry.PluginRecord, storeID string) (storage.Namespace, bool, error) {
+	namespaces, err := storageNamespacesFromManifest(record)
+	if err != nil {
+		return storage.Namespace{}, false, err
+	}
+	storeID = strings.TrimSpace(storeID)
+	for _, ns := range namespaces {
+		if ns.StoreID == storeID {
+			return ns, true, nil
+		}
+	}
+	return storage.Namespace{}, false, nil
 }
 
 func settingsResult(snapshot settings.Snapshot) SettingsResult {

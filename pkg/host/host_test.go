@@ -886,6 +886,77 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	}
 }
 
+func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
+	storageBroker := storage.NewMemoryBroker()
+	host, _, audits := newTestHostWithStorage(t, true, true, storageBroker)
+	installed, err := InstallPackageBytes(context.Background(), host, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+
+	now := time.Date(2026, 6, 30, 14, 0, 0, 0, time.UTC)
+	result, err := host.MintStorageHandleGrant(context.Background(), MintStorageHandleGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		StoreID:             "db",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		Now:                 now,
+		TTL:                 time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant() error = %v", err)
+	}
+	if result.Namespace.StoreID != "db" || result.Namespace.Kind != storage.StoreSQLite {
+		t.Fatalf("storage namespace mismatch: %#v", result.Namespace)
+	}
+	record, err := host.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
+		HandleGrantToken: result.HandleGrant.HandleGrantToken,
+		Audience: bridge.Audience{
+			PluginInstanceID:    enabled.PluginInstanceID,
+			ActiveFingerprint:   enabled.ActiveFingerprint,
+			RuntimeInstanceID:   "runtime_1",
+			RuntimeGenerationID: "runtime_gen_1",
+			RuntimeShardID:      "runtime_shard_a",
+			HandleID:            "storage:db",
+			Method:              "storage.sqlite",
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     enabled.PolicyRevision,
+			ManagementRevision: enabled.ManagementRevision,
+			RevokeEpoch:        enabled.RevokeEpoch,
+		},
+		Now: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ValidateHandleGrant(storage) error = %v", err)
+	}
+	if record.Limits.MaxTotalBytes != result.Namespace.QuotaBytes {
+		t.Fatalf("storage handle quota = %d, want %d", record.Limits.MaxTotalBytes, result.Namespace.QuotaBytes)
+	}
+	if !audits.hasEvent("plugin.storage.handle_grant_minted") {
+		t.Fatalf("missing storage handle grant audit event: %#v", audits.events)
+	}
+
+	if _, err := host.MintStorageHandleGrant(context.Background(), MintStorageHandleGrantRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "db",
+	}); !errors.Is(err, bridge.ErrMissingTokenAudience) {
+		t.Fatalf("MintStorageHandleGrant(missing runtime generation) error = %v, want %v", err, bridge.ErrMissingTokenAudience)
+	}
+	if _, err := host.MintStorageHandleGrant(context.Background(), MintStorageHandleGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		StoreID:             "missing",
+		RuntimeGenerationID: "runtime_gen_1",
+	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
+		t.Fatalf("MintStorageHandleGrant(missing store) error = %v, want %v", err, storage.ErrNamespaceNotFound)
+	}
+}
+
 func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	connectivityBroker := connectivity.NewMemoryBroker()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
