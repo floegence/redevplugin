@@ -3,6 +3,7 @@ package httpadapter
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,83 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		if !found {
 			t.Fatalf("RouteSet() missing %s", key)
 		}
+	}
+}
+
+func TestHandlerManagementLifecycleFlow(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h}
+	packageBytes := buildHTTPFixturePackage(t)
+
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(packageBytes),
+		"trust_state":    "verified",
+	})
+	if installed.PluginInstanceID == "" || installed.EnableState != registry.EnableDisabled {
+		t.Fatalf("install response mismatch: %#v", installed)
+	}
+
+	enabled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if enabled.EnableState != registry.EnableEnabled {
+		t.Fatalf("enable response mismatch: %#v", enabled)
+	}
+
+	catalog := getJSON[struct {
+		Plugins []registry.PluginRecord `json:"plugins"`
+	}](t, handler, "/_redeven_proxy/api/plugins/catalog")
+	if len(catalog.Plugins) != 1 || catalog.Plugins[0].PluginInstanceID != installed.PluginInstanceID {
+		t.Fatalf("catalog mismatch: %#v", catalog)
+	}
+
+	disabled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/disable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"reason":             "test",
+	})
+	if disabled.EnableState != registry.EnableDisabled || disabled.DisabledReason != "test" {
+		t.Fatalf("disable response mismatch: %#v", disabled)
+	}
+
+	uninstalled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/uninstall", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"delete_data":        true,
+	})
+	if uninstalled.RetainedDataState != registry.RetainedDataDeleted {
+		t.Fatalf("uninstall response mismatch: %#v", uninstalled)
+	}
+
+	emptyCatalog := getJSON[struct {
+		Plugins []registry.PluginRecord `json:"plugins"`
+	}](t, handler, "/_redeven_proxy/api/plugins/catalog")
+	if len(emptyCatalog.Plugins) != 0 {
+		t.Fatalf("catalog after uninstall mismatch: %#v", emptyCatalog)
+	}
+}
+
+func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid install status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
+		"trust_state":    "untrusted",
+	})
+	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/enable", bytes.NewReader(raw))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("untrusted enable status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -207,6 +285,31 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 	}
 	if !envelope.OK {
 		t.Fatalf("POST %s returned not ok: %s", path, rec.Body.String())
+	}
+	var data T
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d body = %s", path, rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		OK   bool            `json:"ok"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatalf("GET %s returned not ok: %s", path, rec.Body.String())
 	}
 	var data T
 	if err := json.Unmarshal(envelope.Data, &data); err != nil {

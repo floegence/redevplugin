@@ -373,6 +373,10 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 	return stored, nil
 }
 
+func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
+	return h.adapters.Registry.ListPlugins(ctx)
+}
+
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
