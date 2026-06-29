@@ -15,7 +15,7 @@
   ],
   "properties": {
     "schema_version": { "const": "redevplugin.package_signature.v1" },
-    "algorithm": { "type": "string", "minLength": 1 },
+    "algorithm": { "enum": ["ed25519"] },
     "key_id": { "type": "string", "minLength": 1 },
     "publisher_id": { "type": "string", "minLength": 1 },
     "plugin_id": { "type": "string", "minLength": 1 },

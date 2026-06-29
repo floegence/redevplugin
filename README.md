@@ -27,6 +27,10 @@ capabilities.
   a host-provided `PackageTrustVerifier`, while unsigned local and review states
   can be installed for developer or review flows without becoming runnable unless
   later policy permits it.
+- The host-neutral `pkg/trust` package provides an Ed25519 verifier and keyring
+  interface for package signatures. Hosts still decide which keys, publishers,
+  registries, or enterprise policies are trusted, but they can reuse the common
+  canonical signature payload and verification checks.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
   host product.

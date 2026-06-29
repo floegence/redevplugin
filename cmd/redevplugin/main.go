@@ -25,6 +25,9 @@ type validateSummary struct {
 	PackageHash   string         `json:"package_hash,omitempty"`
 	ManifestHash  string         `json:"manifest_hash,omitempty"`
 	EntriesHash   string         `json:"entries_hash,omitempty"`
+	Signed        bool           `json:"signed,omitempty"`
+	SignatureKey  string         `json:"signature_key,omitempty"`
+	SignatureAlgo string         `json:"signature_algorithm,omitempty"`
 	VersionMatrix version.Matrix `json:"version_matrix"`
 }
 
@@ -97,6 +100,7 @@ func validate(ctx context.Context, filename string) error {
 		if err != nil {
 			return err
 		}
+		signed, signatureKey, signatureAlgo := packageSignatureSummary(pkg)
 		return writeJSON(validateSummary{
 			OK:            true,
 			Kind:          "package",
@@ -105,6 +109,9 @@ func validate(ctx context.Context, filename string) error {
 			PackageHash:   pkg.PackageHash,
 			ManifestHash:  pkg.ManifestHash,
 			EntriesHash:   pkg.EntriesHash,
+			Signed:        signed,
+			SignatureKey:  signatureKey,
+			SignatureAlgo: signatureAlgo,
 			VersionMatrix: version.CurrentMatrix(),
 		})
 	}
@@ -139,6 +146,7 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 	if err := os.WriteFile(outFile, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
+	signed, signatureKey, signatureAlgo := packageSignatureSummary(pkg)
 	return writeJSON(validateSummary{
 		OK:            true,
 		Kind:          "package",
@@ -147,8 +155,18 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 		PackageHash:   pkg.PackageHash,
 		ManifestHash:  pkg.ManifestHash,
 		EntriesHash:   pkg.EntriesHash,
+		Signed:        signed,
+		SignatureKey:  signatureKey,
+		SignatureAlgo: signatureAlgo,
 		VersionMatrix: version.CurrentMatrix(),
 	})
+}
+
+func packageSignatureSummary(pkg pluginpkg.Package) (bool, string, string) {
+	if pkg.PackageSignature == nil {
+		return false, "", ""
+	}
+	return true, pkg.PackageSignature.KeyID, pkg.PackageSignature.Algorithm
 }
 
 func writeJSON(v any) error {

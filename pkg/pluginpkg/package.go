@@ -55,6 +55,7 @@ type ReadOptions struct {
 }
 
 const PackageSignaturePath = "signatures/package.sig"
+const PackageSignatureAlgorithmEd25519 = "ed25519"
 
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
@@ -482,8 +483,8 @@ func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest
 	if sig.SchemaVersion != "redevplugin.package_signature.v1" {
 		return nil, fmt.Errorf("%s: unsupported schema_version %q", PackageSignaturePath, sig.SchemaVersion)
 	}
-	if strings.TrimSpace(sig.Algorithm) == "" {
-		return nil, fmt.Errorf("%s: algorithm is required", PackageSignaturePath)
+	if sig.Algorithm != PackageSignatureAlgorithmEd25519 {
+		return nil, fmt.Errorf("%s: unsupported algorithm %q", PackageSignaturePath, sig.Algorithm)
 	}
 	if strings.TrimSpace(sig.KeyID) == "" {
 		return nil, fmt.Errorf("%s: key_id is required", PackageSignaturePath)

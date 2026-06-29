@@ -61,6 +61,9 @@ type PolicyAdapter interface {
 	LocalGeneratedPluginsEnabled(ctx context.Context, session sessionctx.Context) (bool, error)
 }
 
+// PackageTrustVerifier is the install/update trust decision boundary. The Host
+// library treats requested trust_state values as requests only; runnable
+// verified/bundled states must come from this verifier or installation fails.
 type PackageTrustVerifier interface {
 	VerifyPackageTrust(ctx context.Context, req PackageTrustVerificationRequest) (PackageTrustVerificationResult, error)
 }
