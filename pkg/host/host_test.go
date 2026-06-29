@@ -922,6 +922,60 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 		t.Fatalf("missing connectivity grant audit event: %#v", audits.events)
 	}
 
+	now := time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC)
+	handle, err := h.MintNetworkHandleGrant(context.Background(), MintConnectionGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		ConnectorID:         "mysql",
+		Transport:           connectivity.TransportTCP,
+		Destination:         "db.example.com:3306",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		Now:                 now,
+		TTL:                 time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("MintNetworkHandleGrant() error = %v", err)
+	}
+	if handle.ConnectionGrant.GrantID == "" || handle.HandleGrant.HandleGrantToken == "" {
+		t.Fatalf("network handle grant mismatch: %#v", handle)
+	}
+	record, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
+		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
+		Audience: bridge.Audience{
+			PluginInstanceID:    installed.PluginInstanceID,
+			ActiveFingerprint:   installed.ActiveFingerprint,
+			RuntimeInstanceID:   "runtime_1",
+			RuntimeGenerationID: "runtime_gen_1",
+			RuntimeShardID:      "runtime_shard_a",
+			HandleID:            handle.ConnectionGrant.GrantID,
+			Method:              "network.tcp",
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     handle.ConnectionGrant.PolicyRevision,
+			ManagementRevision: handle.ConnectionGrant.ManagementRevision,
+			RevokeEpoch:        handle.ConnectionGrant.RevokeEpoch,
+		},
+		Now: now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ValidateHandleGrant(network) error = %v", err)
+	}
+	if record.Audience.HandleID != handle.ConnectionGrant.GrantID || record.Audience.RuntimeGenerationID != "runtime_gen_1" {
+		t.Fatalf("network handle audience mismatch: %#v", record.Audience)
+	}
+	if !audits.hasEvent("plugin.connectivity.handle_grant_minted") {
+		t.Fatalf("missing connectivity handle grant audit event: %#v", audits.events)
+	}
+	if _, err := h.MintNetworkHandleGrant(context.Background(), MintConnectionGrantRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		ConnectorID:      "mysql",
+		Transport:        connectivity.TransportTCP,
+		Destination:      "db.example.com:3306",
+	}); !errors.Is(err, bridge.ErrMissingTokenAudience) {
+		t.Fatalf("MintNetworkHandleGrant(missing runtime generation) error = %v, want %v", err, bridge.ErrMissingTokenAudience)
+	}
+
 	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test"}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}

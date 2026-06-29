@@ -375,9 +375,16 @@ type MintConnectionGrantRequest struct {
 	ConnectorID         string                 `json:"connector_id"`
 	Transport           connectivity.Transport `json:"transport"`
 	Destination         string                 `json:"destination"`
+	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID string                 `json:"runtime_generation_id,omitempty"`
+	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
 	Now                 time.Time              `json:"now,omitempty"`
 	TTL                 time.Duration          `json:"ttl,omitempty"`
+}
+
+type NetworkHandleGrantResult struct {
+	ConnectionGrant connectivity.ConnectionGrant `json:"connection_grant"`
+	HandleGrant     bridge.HandleGrantResult     `json:"handle_grant"`
 }
 
 func New(adapters Adapters) (*Host, error) {
@@ -1021,15 +1028,23 @@ func (h *Host) CloseStream(ctx context.Context, req CloseStreamRequest) (stream.
 }
 
 func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (connectivity.ConnectionGrant, error) {
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	_, grant, err := h.mintConnectionGrant(ctx, req)
 	if err != nil {
 		return connectivity.ConnectionGrant{}, err
 	}
+	return grant, nil
+}
+
+func (h *Host) mintConnectionGrant(ctx context.Context, req MintConnectionGrantRequest) (registry.PluginRecord, connectivity.ConnectionGrant, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
+	}
 	if record.EnableState != registry.EnableEnabled {
-		return connectivity.ConnectionGrant{}, errors.New("plugin is not enabled")
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, errors.New("plugin is not enabled")
 	}
 	if err := h.canRun(ctx, record); err != nil {
-		return connectivity.ConnectionGrant{}, err
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
 	}
 	grant, err := h.adapters.Connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:    record.PluginInstanceID,
@@ -1045,10 +1060,54 @@ func (h *Host) MintConnectionGrant(ctx context.Context, req MintConnectionGrantR
 		TTL:                 req.TTL,
 	})
 	if err != nil {
-		return connectivity.ConnectionGrant{}, err
+		return registry.PluginRecord{}, connectivity.ConnectionGrant{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return grant, nil
+	return record, grant, nil
+}
+
+func (h *Host) MintNetworkHandleGrant(ctx context.Context, req MintConnectionGrantRequest) (NetworkHandleGrantResult, error) {
+	if strings.TrimSpace(req.RuntimeGenerationID) == "" {
+		return NetworkHandleGrantResult{}, bridge.ErrMissingTokenAudience
+	}
+	record, grant, err := h.mintConnectionGrant(ctx, req)
+	if err != nil {
+		return NetworkHandleGrantResult{}, err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ttl := req.TTL
+	if ttl <= 0 {
+		ttl = bridge.DefaultHandleGrantTTL
+	}
+	expiresAt := now.Add(ttl)
+	if grant.ExpiresAt.Before(expiresAt) {
+		expiresAt = grant.ExpiresAt
+	}
+	handleGrant, err := h.surfaceTokens.MintHandleGrant(bridge.MintHandleGrantRequest{
+		PluginInstanceID:    grant.PluginInstanceID,
+		ActiveFingerprint:   grant.ActiveFingerprint,
+		RuntimeInstanceID:   req.RuntimeInstanceID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		RuntimeShardID:      req.RuntimeShardID,
+		HandleID:            grant.GrantID,
+		Method:              "network." + string(grant.Transport),
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     grant.PolicyRevision,
+			ManagementRevision: grant.ManagementRevision,
+			RevokeEpoch:        grant.RevokeEpoch,
+		},
+		Limits:    bridge.Limits{MaxTotalBytes: 0},
+		Now:       now,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return NetworkHandleGrantResult{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.connectivity.handle_grant_minted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return NetworkHandleGrantResult{ConnectionGrant: grant, HandleGrant: handleGrant}, nil
 }
 
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
