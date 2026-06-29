@@ -3,15 +3,18 @@ package runtimeclient
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 type Target struct {
@@ -33,6 +36,9 @@ type Lease struct {
 type Health struct {
 	RuntimeInstanceID   string `json:"runtime_instance_id"`
 	RuntimeGenerationID string `json:"runtime_generation_id"`
+	RuntimeVersion      string `json:"runtime_version,omitempty"`
+	RustIPCVersion      string `json:"rust_ipc_version,omitempty"`
+	WASMABIVersion      string `json:"wasm_abi_version,omitempty"`
 	Ready               bool   `json:"ready"`
 }
 
@@ -48,30 +54,36 @@ var (
 	ErrRuntimePathRequired   = errors.New("runtime path is required")
 	ErrRuntimeNotReady       = errors.New("runtime is not ready")
 	ErrRuntimeIPCUnavailable = errors.New("runtime ipc transport is unavailable")
+	ErrRuntimeHandshake      = errors.New("runtime ipc handshake failed")
 )
 
 type ProcessSupervisorOptions struct {
-	RuntimePath string
-	Args        []string
-	Env         []string
-	Dir         string
-	Diagnostics observability.DiagnosticsSink
-	Now         func() time.Time
+	RuntimePath      string
+	Args             []string
+	Env              []string
+	Dir              string
+	Diagnostics      observability.DiagnosticsSink
+	Now              func() time.Time
+	HandshakeTimeout time.Duration
 }
 
 type ProcessSupervisor struct {
-	mu          sync.Mutex
-	path        string
-	args        []string
-	env         []string
-	dir         string
-	diagnostics observability.DiagnosticsSink
-	now         func() time.Time
-	seq         uint64
+	startMu          sync.Mutex
+	mu               sync.Mutex
+	path             string
+	args             []string
+	env              []string
+	dir              string
+	diagnostics      observability.DiagnosticsSink
+	now              func() time.Time
+	handshakeTimeout time.Duration
+	seq              uint64
 
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
 	done      chan error
+	ipcIn     io.WriteCloser
+	ipcOut    *bufio.Reader
 	health    Health
 	exitError error
 }
@@ -85,13 +97,18 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	handshakeTimeout := options.HandshakeTimeout
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = 5 * time.Second
+	}
 	return &ProcessSupervisor{
-		path:        path,
-		args:        append([]string(nil), options.Args...),
-		env:         append([]string(nil), options.Env...),
-		dir:         strings.TrimSpace(options.Dir),
-		diagnostics: options.Diagnostics,
-		now:         now,
+		path:             path,
+		args:             append([]string(nil), options.Args...),
+		env:              append([]string(nil), options.Env...),
+		dir:              strings.TrimSpace(options.Dir),
+		diagnostics:      options.Diagnostics,
+		now:              now,
+		handshakeTimeout: handshakeTimeout,
 	}, nil
 }
 
@@ -102,10 +119,16 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
 	s.mu.Lock()
 	if s.readyLocked() {
 		s.mu.Unlock()
 		return nil
+	}
+	if s.cmd != nil {
+		s.mu.Unlock()
+		return ErrRuntimeNotReady
 	}
 	s.seq++
 	generationID := fmt.Sprintf("runtime_gen_%d_%d", s.now().UnixNano(), s.seq)
@@ -123,6 +146,12 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		s.mu.Unlock()
 		return err
 	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		s.mu.Unlock()
+		return err
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
@@ -134,15 +163,17 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		s.mu.Unlock()
 		return err
 	}
+	stdoutReader := bufio.NewReader(stdout)
 	health := Health{
 		RuntimeInstanceID:   fmt.Sprintf("runtime_%d", cmd.Process.Pid),
 		RuntimeGenerationID: generationID,
-		Ready:               true,
 	}
 	done := make(chan error, 1)
 	s.cmd = cmd
 	s.cancel = cancel
 	s.done = done
+	s.ipcIn = stdin
+	s.ipcOut = stdoutReader
 	s.health = health
 	s.exitError = nil
 	s.mu.Unlock()
@@ -153,9 +184,46 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		"os":                    target.OS,
 		"arch":                  target.Arch,
 	})
-	go s.scanPipe(stdout, "stdout")
 	go s.scanPipe(stderr, "stderr")
 	go s.wait(cmd, done, cancel, health)
+
+	ack, err := s.performHandshake(ctx, stdin, stdoutReader, health, target)
+	if err != nil {
+		cancel()
+		s.mu.Lock()
+		if s.cmd == cmd {
+			s.health.Ready = false
+		}
+		s.mu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			s.emit("plugin.runtime.process.cleanup_timeout", "warning", "runtime process did not exit after failed handshake", map[string]any{
+				"runtime_instance_id":   health.RuntimeInstanceID,
+				"runtime_generation_id": health.RuntimeGenerationID,
+			})
+		}
+		return err
+	}
+	s.mu.Lock()
+	if s.cmd == cmd {
+		health.RuntimeVersion = ack.RuntimeVersion
+		health.RustIPCVersion = ack.RustIPCVersion
+		health.WASMABIVersion = ack.WASMABIVersion
+		health.Ready = true
+		s.health = health
+	} else {
+		s.mu.Unlock()
+		return ErrRuntimeNotReady
+	}
+	s.mu.Unlock()
+	s.emit("plugin.runtime.ipc.handshake", "info", "runtime ipc handshake completed", map[string]any{
+		"runtime_instance_id":   health.RuntimeInstanceID,
+		"runtime_generation_id": health.RuntimeGenerationID,
+		"runtime_version":       health.RuntimeVersion,
+		"rust_ipc_version":      health.RustIPCVersion,
+		"wasm_abi_version":      health.WASMABIVersion,
+	})
 	return nil
 }
 
@@ -243,6 +311,8 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel contex
 		s.cancel = nil
 		s.done = nil
 		s.cmd = nil
+		s.ipcIn = nil
+		s.ipcOut = nil
 	}
 	s.mu.Unlock()
 	severity := "info"
@@ -290,4 +360,113 @@ func (s *ProcessSupervisor) emit(eventType string, severity string, message stri
 		OccurredAt: s.now(),
 		Details:    details,
 	})
+}
+
+const (
+	ipcFrameTypeHello    = "hello"
+	ipcFrameTypeHelloAck = "hello_ack"
+)
+
+type ipcFrame struct {
+	IPCVersion          string          `json:"ipc_version"`
+	FrameType           string          `json:"frame_type"`
+	RequestID           string          `json:"request_id"`
+	RuntimeGenerationID string          `json:"runtime_generation_id,omitempty"`
+	Payload             json.RawMessage `json:"payload,omitempty"`
+}
+
+type helloRequestPayload struct {
+	Target          Target `json:"target"`
+	HostProcessID   int    `json:"host_process_id"`
+	HostIPCVersion  string `json:"host_ipc_version"`
+	HostWASMABI     string `json:"host_wasm_abi"`
+	StartedUnixNano int64  `json:"started_unix_nano"`
+}
+
+type helloAckPayload struct {
+	RuntimeVersion string `json:"runtime_version"`
+	RustIPCVersion string `json:"rust_ipc_version"`
+	WASMABIVersion string `json:"wasm_abi_version"`
+}
+
+func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Writer, stdout *bufio.Reader, health Health, target Target) (helloAckPayload, error) {
+	handshakeCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout)
+	defer cancel()
+	requestID := health.RuntimeGenerationID + ":hello"
+	payload, err := json.Marshal(helloRequestPayload{
+		Target:          target,
+		HostProcessID:   os.Getpid(),
+		HostIPCVersion:  version.RustIPCVersion,
+		HostWASMABI:     version.WASMABIVersion,
+		StartedUnixNano: s.now().UnixNano(),
+	})
+	if err != nil {
+		return helloAckPayload{}, err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeHello,
+		RequestID:           requestID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Payload:             payload,
+	}); err != nil {
+		return helloAckPayload{}, fmt.Errorf("%w: write hello: %v", ErrRuntimeHandshake, err)
+	}
+
+	result := make(chan struct {
+		frame ipcFrame
+		err   error
+	}, 1)
+	go func() {
+		frame, err := readIPCFrame(stdout)
+		result <- struct {
+			frame ipcFrame
+			err   error
+		}{frame: frame, err: err}
+	}()
+
+	select {
+	case <-handshakeCtx.Done():
+		return helloAckPayload{}, fmt.Errorf("%w: %v", ErrRuntimeHandshake, handshakeCtx.Err())
+	case got := <-result:
+		if got.err != nil {
+			return helloAckPayload{}, fmt.Errorf("%w: read hello ack: %v", ErrRuntimeHandshake, got.err)
+		}
+		return validateHelloAck(requestID, health.RuntimeGenerationID, got.frame)
+	}
+}
+
+func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		return ipcFrame{}, err
+	}
+	var frame ipcFrame
+	if err := json.Unmarshal(line, &frame); err != nil {
+		return ipcFrame{}, err
+	}
+	return frame, nil
+}
+
+func validateHelloAck(requestID string, runtimeGenerationID string, frame ipcFrame) (helloAckPayload, error) {
+	if frame.IPCVersion != version.RustIPCVersion {
+		return helloAckPayload{}, fmt.Errorf("%w: ipc_version %q", ErrRuntimeHandshake, frame.IPCVersion)
+	}
+	if frame.FrameType != ipcFrameTypeHelloAck {
+		return helloAckPayload{}, fmt.Errorf("%w: frame_type %q", ErrRuntimeHandshake, frame.FrameType)
+	}
+	if frame.RequestID != requestID {
+		return helloAckPayload{}, fmt.Errorf("%w: request_id %q", ErrRuntimeHandshake, frame.RequestID)
+	}
+	if frame.RuntimeGenerationID != runtimeGenerationID {
+		return helloAckPayload{}, fmt.Errorf("%w: runtime_generation_id %q", ErrRuntimeHandshake, frame.RuntimeGenerationID)
+	}
+	var ack helloAckPayload
+	if err := json.Unmarshal(frame.Payload, &ack); err != nil {
+		return helloAckPayload{}, fmt.Errorf("%w: decode payload: %v", ErrRuntimeHandshake, err)
+	}
+	if ack.RuntimeVersion == "" || ack.RustIPCVersion != version.RustIPCVersion || ack.WASMABIVersion != version.WASMABIVersion {
+		return helloAckPayload{}, fmt.Errorf("%w: incompatible versions runtime=%q ipc=%q wasm=%q", ErrRuntimeHandshake, ack.RuntimeVersion, ack.RustIPCVersion, ack.WASMABIVersion)
+	}
+	return ack, nil
 }

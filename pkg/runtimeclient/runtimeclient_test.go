@@ -1,19 +1,26 @@
 package runtimeclient
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_HELPER") == "1" {
-		fmt.Println("runtime helper ready")
+		runRuntimeClientHelper()
+		return
+	}
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_HELPER") == "1" {
+		os.Stdout.WriteString("not-json\n")
 		time.Sleep(10 * time.Second)
 		return
 	}
@@ -39,7 +46,12 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Health() error = %v", err)
 	}
-	if !health.Ready || health.RuntimeInstanceID == "" || health.RuntimeGenerationID == "" {
+	if !health.Ready ||
+		health.RuntimeInstanceID == "" ||
+		health.RuntimeGenerationID == "" ||
+		health.RuntimeVersion != version.RuntimeVersion ||
+		health.RustIPCVersion != version.RustIPCVersion ||
+		health.WASMABIVersion != version.WASMABIVersion {
 		t.Fatalf("health mismatch: %#v", health)
 	}
 	if _, err := supervisor.InvokeWorker(context.Background(), Lease{}, "worker.echo", []byte("{}")); !errors.Is(err, ErrRuntimeIPCUnavailable) {
@@ -50,7 +62,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	}
 
 	waitForDiagnostic(t, store, "plugin.runtime.process.started")
-	waitForDiagnostic(t, store, "plugin.runtime.process.stdout")
+	waitForDiagnostic(t, store, "plugin.runtime.ipc.handshake")
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -73,6 +85,57 @@ func TestProcessSupervisorRejectsMissingPath(t *testing.T) {
 	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{}); !errors.Is(err, ErrRuntimePathRequired) {
 		t.Fatalf("NewProcessSupervisor() error = %v, want ErrRuntimePathRequired", err)
 	}
+}
+
+func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:      os.Args[0],
+		Args:             []string{"-test.run=TestMain"},
+		Env:              append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_BAD_HELPER=1"),
+		HandshakeTimeout: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"})
+	if !errors.Is(err, ErrRuntimeHandshake) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeHandshake", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Ready {
+		t.Fatalf("bad handshake left runtime ready: %#v", health)
+	}
+}
+
+func runRuntimeClientHelper() {
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(2)
+	}
+	var frame ipcFrame
+	if err := json.Unmarshal(line, &frame); err != nil {
+		os.Exit(3)
+	}
+	if frame.FrameType != ipcFrameTypeHello || frame.IPCVersion != version.RustIPCVersion || strings.TrimSpace(frame.RequestID) == "" {
+		os.Exit(4)
+	}
+	payload, _ := json.Marshal(helloAckPayload{
+		RuntimeVersion: version.RuntimeVersion,
+		RustIPCVersion: version.RustIPCVersion,
+		WASMABIVersion: version.WASMABIVersion,
+	})
+	_ = json.NewEncoder(os.Stdout).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeHelloAck,
+		RequestID:           frame.RequestID,
+		RuntimeGenerationID: frame.RuntimeGenerationID,
+		Payload:             payload,
+	})
+	time.Sleep(10 * time.Second)
 }
 
 func waitForDiagnostic(t *testing.T, store *observability.MemoryStore, eventType string) {

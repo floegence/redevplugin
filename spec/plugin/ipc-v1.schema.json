@@ -8,11 +8,58 @@
   "properties": {
     "ipc_version": { "const": "rust-ipc-v1" },
     "frame_type": {
-      "enum": ["hello", "heartbeat", "lease_grant", "invoke_worker", "open_handle", "close_handle", "revoke_epoch", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "open_handle", "close_handle", "revoke_epoch", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "runtime_generation_id": { "type": "string" },
     "payload": true
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "frame_type": { "const": "hello" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target", "host_process_id", "host_ipc_version", "host_wasm_abi", "started_unix_nano"],
+            "properties": {
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["os", "arch"],
+                "properties": {
+                  "os": { "type": "string", "minLength": 1 },
+                  "arch": { "type": "string", "minLength": 1 }
+                }
+              },
+              "host_process_id": { "type": "integer", "minimum": 1 },
+              "host_ipc_version": { "const": "rust-ipc-v1" },
+              "host_wasm_abi": { "const": "redeven-wasm-worker-v1" },
+              "started_unix_nano": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "hello_ack" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["runtime_version", "rust_ipc_version", "wasm_abi_version"],
+            "properties": {
+              "runtime_version": { "type": "string", "minLength": 1 },
+              "rust_ipc_version": { "const": "rust-ipc-v1" },
+              "wasm_abi_version": { "const": "redeven-wasm-worker-v1" }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
-
