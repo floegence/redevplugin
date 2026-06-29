@@ -945,6 +945,70 @@ func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
 	}
 }
 
+func TestSecretLifecycleUsesAdapter(t *testing.T) {
+	secrets := &recordingSecretStore{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		secrets:        secrets,
+	})
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := SecretBindRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		SecretRef:        " api_token ",
+		Scope:            "user",
+	}
+	if err := h.BindSecretRef(context.Background(), req); err != nil {
+		t.Fatalf("BindSecretRef() error = %v", err)
+	}
+	if err := h.TestSecretRef(context.Background(), SecretTestRequest(req)); err != nil {
+		t.Fatalf("TestSecretRef() error = %v", err)
+	}
+	if err := h.DeleteSecretRef(context.Background(), SecretDeleteRequest(req)); err != nil {
+		t.Fatalf("DeleteSecretRef() error = %v", err)
+	}
+	if secrets.bind.PluginInstanceID != installed.PluginInstanceID || secrets.bind.SecretRef != "api_token" || secrets.bind.Scope != "user" {
+		t.Fatalf("bind request was not normalized: %#v", secrets.bind)
+	}
+	if secrets.test.SecretRef != "api_token" || secrets.delete.SecretRef != "api_token" {
+		t.Fatalf("secret calls mismatch: test=%#v delete=%#v", secrets.test, secrets.delete)
+	}
+	if !audits.hasEvent("plugin.secret.bound") || !audits.hasEvent("plugin.secret.tested") || !audits.hasEvent("plugin.secret.deleted") {
+		t.Fatalf("missing secret audit events: %#v", audits.events)
+	}
+}
+
+func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSecrets, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		secrets:        &recordingSecretStore{},
+	})
+	if err := withSecrets.BindSecretRef(context.Background(), SecretBindRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		SecretRef:        "token",
+		Scope:            "global",
+	}); !errors.Is(err, ErrInvalidSecretRef) {
+		t.Fatalf("BindSecretRef() error = %v, want ErrInvalidSecretRef", err)
+	}
+
+	if err := h.BindSecretRef(context.Background(), SecretBindRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		SecretRef:        "token",
+		Scope:            "user",
+	}); !errors.Is(err, ErrSecretStoreRequired) {
+		t.Fatalf("BindSecretRef() error = %v, want ErrSecretStoreRequired", err)
+	}
+}
+
 func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
 	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated})
 }
@@ -960,6 +1024,7 @@ type testHostOptions struct {
 	storageBroker      storage.Broker
 	connectivityBroker connectivity.Broker
 	runtimeSupervisor  runtimeclient.Supervisor
+	secrets            SecretStoreAdapter
 	capabilityID       string
 	capabilityAdapter  capability.Adapter
 }
@@ -988,6 +1053,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Storage:           opts.storageBroker,
 		Connectivity:      opts.connectivityBroker,
 		RuntimeSupervisor: opts.runtimeSupervisor,
+		Secrets:           opts.secrets,
 		Capabilities:      capabilities,
 	})
 	if err != nil {
@@ -1469,6 +1535,12 @@ type recordingCapabilityAdapter struct {
 	err    error
 }
 
+type recordingSecretStore struct {
+	bind   SecretBindRequest
+	test   SecretTestRequest
+	delete SecretDeleteRequest
+}
+
 type recordingRuntimeSupervisor struct {
 	calls       int
 	health      runtimeclient.Health
@@ -1504,6 +1576,21 @@ func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req cap
 		return capability.Result{}, a.err
 	}
 	return a.result, nil
+}
+
+func (s *recordingSecretStore) BindSecretRef(_ context.Context, req SecretBindRequest) error {
+	s.bind = req
+	return nil
+}
+
+func (s *recordingSecretStore) TestSecretRef(_ context.Context, req SecretTestRequest) error {
+	s.test = req
+	return nil
+}
+
+func (s *recordingSecretStore) DeleteSecretRef(_ context.Context, req SecretDeleteRequest) error {
+	s.delete = req
+	return nil
 }
 
 func (r *recordingRuntimeSupervisor) Start(context.Context, runtimeclient.Target) error {

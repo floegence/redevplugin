@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -233,6 +234,11 @@ type ConfirmMethodResult struct {
 	RequestHash         string    `json:"request_hash"`
 	ExpiresAt           time.Time `json:"expires_at"`
 }
+
+var (
+	ErrSecretStoreRequired = errors.New("secret store adapter is required")
+	ErrInvalidSecretRef    = errors.New("secret_ref is invalid")
+)
 
 type ListOperationsRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
@@ -780,6 +786,42 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) erro
 	return nil
 }
 
+func (h *Host) BindSecretRef(ctx context.Context, req SecretBindRequest) error {
+	record, normalized, err := h.resolveSecretRequest(ctx, req)
+	if err != nil {
+		return err
+	}
+	if err := h.adapters.Secrets.BindSecretRef(ctx, normalized); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.secret.bound", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func (h *Host) TestSecretRef(ctx context.Context, req SecretTestRequest) error {
+	record, normalized, err := h.resolveSecretRequest(ctx, SecretBindRequest(req))
+	if err != nil {
+		return err
+	}
+	if err := h.adapters.Secrets.TestSecretRef(ctx, SecretTestRequest(normalized)); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.secret.tested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) error {
+	record, normalized, err := h.resolveSecretRequest(ctx, SecretBindRequest(req))
+	if err != nil {
+		return err
+	}
+	if err := h.adapters.Secrets.DeleteSecretRef(ctx, SecretDeleteRequest(normalized)); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.secret.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (CallMethodResult, error) {
 	switch method.Route.Kind {
 	case manifest.MethodRouteCapability:
@@ -911,6 +953,29 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		}
 	}
 	return result, nil
+}
+
+func (h *Host) resolveSecretRequest(ctx context.Context, req SecretBindRequest) (registry.PluginRecord, SecretBindRequest, error) {
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	req.SecretRef = strings.TrimSpace(req.SecretRef)
+	req.Scope = strings.TrimSpace(req.Scope)
+	if req.PluginInstanceID == "" {
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSecretRef)
+	}
+	if req.SecretRef == "" {
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: secret_ref is required", ErrInvalidSecretRef)
+	}
+	if req.Scope != "user" && req.Scope != "environment" {
+		return registry.PluginRecord{}, SecretBindRequest{}, fmt.Errorf("%w: scope must be user or environment", ErrInvalidSecretRef)
+	}
+	if h.adapters.Secrets == nil {
+		return registry.PluginRecord{}, SecretBindRequest{}, ErrSecretStoreRequired
+	}
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, SecretBindRequest{}, err
+	}
+	return record, req, nil
 }
 
 func (h *Host) registerOperationIfNeeded(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest, operationID string) error {

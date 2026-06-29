@@ -97,6 +97,12 @@ type importDataRequest struct {
 	DeleteExisting   bool   `json:"delete_existing,omitempty"`
 }
 
+type secretRefRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	SecretRef        string `json:"secret_ref"`
+	Scope            string `json:"scope"`
+}
+
 type cancelOperationRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
@@ -111,6 +117,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleDisable(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/uninstall":
 		h.handleUninstall(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/update":
+		h.handleNotImplemented(w, "updatePlugin")
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/downgrade":
+		h.handleNotImplemented(w, "downgradePlugin")
 	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/catalog":
 		h.handleCatalog(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/surfaces/open":
@@ -133,6 +143,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
 		h.handleImportData(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/bind":
+		h.handleBindSecret(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/test":
+		h.handleTestSecret(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/delete":
+		h.handleDeleteSecret(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/bootstrap":
+		h.handleNotImplemented(w, "exchangePluginAssetTicket")
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/assets/"):
+		h.handleNotImplemented(w, "getPluginAsset")
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/stream/"):
+		h.handleNotImplemented(w, "getPluginStream")
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/csp-report":
+		h.handleNotImplemented(w, "reportPluginCSPViolation")
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 	}
@@ -515,6 +539,65 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"imported": true}})
 }
 
+func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req secretRefRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if err := h.Host.BindSecretRef(r.Context(), host.SecretBindRequest(req)); err != nil {
+		WriteJSON(w, httpStatusForSecretError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSecretError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"bound": true}})
+}
+
+func (h Handler) handleTestSecret(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req secretRefRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if err := h.Host.TestSecretRef(r.Context(), host.SecretTestRequest(req)); err != nil {
+		WriteJSON(w, httpStatusForSecretError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSecretError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"tested": true}})
+}
+
+func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req secretRefRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if err := h.Host.DeleteSecretRef(r.Context(), host.SecretDeleteRequest(req)); err != nil {
+		WriteJSON(w, httpStatusForSecretError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForSecretError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"deleted": true}})
+}
+
+func (h Handler) handleNotImplemented(w http.ResponseWriter, operation string) {
+	WriteJSON(w, http.StatusNotImplemented, Envelope{
+		OK:        false,
+		Error:     operation + " is declared but not implemented by this adapter",
+		ErrorCode: string(security.ErrContractMismatch),
+	})
+}
+
 func decodeJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()
 	decoder := json.NewDecoder(r.Body)
@@ -658,6 +741,28 @@ func errorCodeForStorageError(err error) security.ErrorCode {
 		return security.ErrInvalidRequest
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func errorCodeForSecretError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
+		return security.ErrInvalidRequest
+	case errors.Is(err, host.ErrSecretStoreRequired):
+		return security.ErrRuntimeUnavailable
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForSecretError(err error) int {
+	switch {
+	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
+		return http.StatusBadRequest
+	case errors.Is(err, host.ErrSecretStoreRequired):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusForbidden
 	}
 }
 

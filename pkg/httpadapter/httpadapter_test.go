@@ -50,6 +50,25 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	}
 }
 
+func TestRouteSetRoutesAreHandled(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	for _, route := range RouteSet() {
+		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
+			path := samplePathForRoute(route.Path)
+			body := ""
+			if route.Method == http.MethodPost {
+				body = `{}`
+			}
+			req := httptest.NewRequest(route.Method, path, bytes.NewBufferString(body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("declared route fell through to 404: %s %s body = %s", route.Method, route.Path, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
@@ -470,6 +489,69 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 	})
 }
 
+func TestHandlerSecretLifecycleFlow(t *testing.T) {
+	secrets := &httpRecordingSecretStore{}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secrets})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+
+	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/bind", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	})
+	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/test", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	})
+	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/delete", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"secret_ref":         "api_token",
+		"scope":              "user",
+	})
+
+	if secrets.bind.PluginInstanceID != installed.PluginInstanceID || secrets.bind.SecretRef != "api_token" || secrets.test.SecretRef != "api_token" || secrets.delete.SecretRef != "api_token" {
+		t.Fatalf("secret adapter calls mismatch: %#v", secrets)
+	}
+}
+
+func TestHandlerDeclaredRoutesReturnContractMismatchWhenNotImplemented(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/update", body: `{}`},
+		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/downgrade", body: `{}`},
+		{method: http.MethodPost, path: "/_redeven_plugin/bootstrap", body: `{}`},
+		{method: http.MethodGet, path: "/_redeven_plugin/assets/ui/index.html"},
+		{method: http.MethodGet, path: "/_redeven_plugin/stream/stream_1"},
+		{method: http.MethodPost, path: "/_redeven_plugin/csp-report", body: `{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotImplemented {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope Envelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.ErrorCode != string(security.ErrContractMismatch) {
+				t.Fatalf("envelope mismatch: %#v body = %s", envelope, rec.Body.String())
+			}
+		})
+	}
+}
+
 func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -524,6 +606,25 @@ func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 	return data
 }
 
+func samplePathForRoute(path string) string {
+	switch path {
+	case "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap":
+		return "/_redeven_proxy/api/plugins/surfaces/surface_test/bootstrap"
+	case "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token":
+		return "/_redeven_proxy/api/plugins/surfaces/surface_test/bridge-token"
+	case "/_redeven_proxy/api/plugins/operations/{operation_id}":
+		return "/_redeven_proxy/api/plugins/operations/op_test"
+	case "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel":
+		return "/_redeven_proxy/api/plugins/operations/op_test/cancel"
+	case "/_redeven_plugin/assets/{asset_path...}":
+		return "/_redeven_plugin/assets/ui/index.html"
+	case "/_redeven_plugin/stream/{stream_id}":
+		return "/_redeven_plugin/stream/stream_test"
+	default:
+		return path
+	}
+}
+
 func newHTTPTestHost(t *testing.T) *host.Host {
 	return newHTTPTestHostWithOptions(t, httpTestHostOptions{})
 }
@@ -534,6 +635,7 @@ func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *hos
 
 type httpTestHostOptions struct {
 	storageBroker     storage.Broker
+	secrets           host.SecretStoreAdapter
 	capabilityID      string
 	capabilityAdapter capability.Adapter
 }
@@ -548,6 +650,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		SessionResolver: httpTestSessionResolver{},
 		Policy:          httpTestPolicy{},
 		Storage:         opts.storageBroker,
+		Secrets:         opts.secrets,
 		Capabilities:    capabilities,
 	})
 	if err != nil {
@@ -859,6 +962,12 @@ type httpRecordingCapabilityAdapter struct {
 	result capability.Result
 }
 
+type httpRecordingSecretStore struct {
+	bind   host.SecretBindRequest
+	test   host.SecretTestRequest
+	delete host.SecretDeleteRequest
+}
+
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
 	t.Helper()
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
@@ -888,4 +997,19 @@ func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string,
 func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	a.last = req
 	return a.result, nil
+}
+
+func (s *httpRecordingSecretStore) BindSecretRef(_ context.Context, req host.SecretBindRequest) error {
+	s.bind = req
+	return nil
+}
+
+func (s *httpRecordingSecretStore) TestSecretRef(_ context.Context, req host.SecretTestRequest) error {
+	s.test = req
+	return nil
+}
+
+func (s *httpRecordingSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
+	s.delete = req
+	return nil
 }
