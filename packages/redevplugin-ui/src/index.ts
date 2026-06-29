@@ -30,6 +30,7 @@ export type PluginSurfaceBootstrap = {
   surfaceInstanceId: string;
   activeFingerprint: string;
   bridgeNonce: string;
+  parentOrigin: string;
 };
 
 export class PluginBridgeClient {
@@ -38,6 +39,9 @@ export class PluginBridgeClient {
   #target: Window;
 
   constructor(bootstrap: PluginSurfaceBootstrap, target: Window = window.parent) {
+    if (!bootstrap.parentOrigin || bootstrap.parentOrigin === "*") {
+      throw new Error("parentOrigin must be an exact origin");
+    }
     this.bootstrap = bootstrap;
     this.#target = target;
   }
@@ -52,7 +56,7 @@ export class PluginBridgeClient {
       bridge_nonce: this.bootstrap.bridgeNonce,
       ui_protocol_version: "plugin-ui-v1",
     };
-    this.#target.postMessage(message, "*");
+    this.#target.postMessage(message, this.bootstrap.parentOrigin);
   }
 
   call(method: string, params?: unknown): PluginBridgeRequest {
@@ -61,8 +65,7 @@ export class PluginBridgeClient {
       method,
       params,
     };
-    this.#target.postMessage({ type: "redeven.plugin.call", request }, "*");
+    this.#target.postMessage({ type: "redeven.plugin.call", request }, this.bootstrap.parentOrigin);
     return request;
   }
 }
-

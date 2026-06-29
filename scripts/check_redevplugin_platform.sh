@@ -15,6 +15,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   go run ./cmd/redevplugin disable "$tmp_package" >/dev/null
   go run ./cmd/redevplugin uninstall "$tmp_package" >/dev/null
   rm -f "$tmp_package"
+  ./scripts/check_redevplugin_ui_bridge.sh
 )
 
 if command -v npm >/dev/null 2>&1; then

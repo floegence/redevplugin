@@ -4,23 +4,109 @@
   "title": "ReDevPlugin token and ticket v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["kind", "id", "plugin_instance_id", "active_fingerprint", "policy_revision", "revoke_epoch", "expires_at"],
+  "required": [
+    "token_kind",
+    "token_id",
+    "audience",
+    "revision",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "use"
+  ],
   "properties": {
-    "kind": {
-      "enum": ["asset_ticket", "asset_session", "plugin_gateway_token", "confirmation_token", "runtime_execution_lease", "handle_grant", "stream_ticket"]
+    "token_kind": { "$ref": "#/$defs/token_kind" },
+    "token_id": { "type": "string", "minLength": 1 },
+    "token_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Server-side record only. Cleartext token is returned exactly once and must not be persisted."
     },
-    "id": { "type": "string", "minLength": 1 },
-    "plugin_instance_id": { "type": "string", "minLength": 1 },
-    "active_fingerprint": { "type": "string", "minLength": 1 },
-    "surface_instance_id": { "type": "string" },
-    "bridge_channel_id": { "type": "string" },
-    "owner_session_hash": { "type": "string" },
-    "owner_user_hash": { "type": "string" },
-    "runtime_generation_id": { "type": "string" },
-    "policy_revision": { "type": "integer", "minimum": 0 },
-    "management_revision": { "type": "integer", "minimum": 0 },
-    "revoke_epoch": { "type": "integer", "minimum": 0 },
-    "expires_at": { "type": "string", "format": "date-time" }
-  }
+    "audience": { "$ref": "#/$defs/audience" },
+    "revision": { "$ref": "#/$defs/revision" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "nonce": { "type": "string", "minLength": 16 },
+    "use": { "enum": ["single_use", "reusable"] },
+    "consumed": { "type": "boolean" },
+    "consumed_at": { "type": ["string", "null"], "format": "date-time" },
+    "revoked": { "type": "boolean" },
+    "revoked_at": { "type": ["string", "null"], "format": "date-time" },
+    "bound_bridge_channel_id": { "type": "string" },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes_per_second": { "type": "integer", "minimum": 0 },
+        "max_total_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "token_kind": {
+      "enum": [
+        "asset_ticket",
+        "asset_session",
+        "plugin_gateway_token",
+        "confirmation_token",
+        "runtime_execution_lease",
+        "handle_grant",
+        "stream_ticket"
+      ]
+    },
+    "audience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin_instance_id", "active_fingerprint"],
+      "properties": {
+        "plugin_instance_id": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "surface_instance_id": { "type": "string" },
+        "owner_session_hash": { "type": "string" },
+        "owner_user_hash": { "type": "string" },
+        "session_channel_id_hash": { "type": "string" },
+        "bridge_channel_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string" },
+        "runtime_generation_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string" },
+        "stream_id": { "type": "string" },
+        "stream_direction": { "enum": ["read", "write", "duplex"] },
+        "handle_id": { "type": "string" },
+        "confirmation_id": { "type": "string" }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_revision", "management_revision", "revoke_epoch"],
+      "properties": {
+        "policy_revision": { "type": "integer", "minimum": 0 },
+        "management_revision": { "type": "integer", "minimum": 0 },
+        "revoke_epoch": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "token_kind": { "const": "asset_ticket" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": { "use": { "const": "single_use" } },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "confirmation_token" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": { "use": { "const": "single_use" } },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "stream_ticket" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": { "use": { "const": "single_use" } },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    }
+  ]
 }
-
