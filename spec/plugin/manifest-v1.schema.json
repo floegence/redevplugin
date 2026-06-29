@@ -4,59 +4,57 @@
   "title": "ReDevPlugin manifest v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["plugin_id", "publisher", "version", "display_name", "redeven", "ui", "backend"],
+  "required": ["schema_version", "publisher", "plugin", "surfaces"],
   "properties": {
-    "plugin_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "const": "redeven.plugin.manifest.v1" },
     "publisher": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id"],
+      "required": ["publisher_id"],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "publisher_id": { "type": "string", "minLength": 1 },
         "display_name": { "type": "string" }
       }
     },
-    "version": { "type": "string", "minLength": 1 },
-    "display_name": { "type": "string", "minLength": 1 },
-    "redeven": {
+    "plugin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["api_version", "min_runtime_version"],
+      "required": ["plugin_id", "display_name", "version", "api_version", "min_runtime_version", "ui_protocol_version"],
       "properties": {
+        "plugin_id": { "type": "string", "minLength": 1 },
+        "display_name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
         "api_version": { "const": "plugin-v1" },
-        "min_runtime_version": { "type": "string", "minLength": 1 }
+        "min_runtime_version": { "type": "string", "minLength": 1 },
+        "ui_protocol_version": { "const": "plugin-ui-v1" }
       }
     },
-    "ui": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["entrypoint", "sandbox"],
-      "properties": {
-        "entrypoint": { "type": "string", "minLength": 1 },
-        "sandbox": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["tokens"],
-          "properties": {
-            "tokens": {
-              "type": "array",
-              "items": { "const": "allow-scripts" },
-              "uniqueItems": true
+    "surfaces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface_id", "kind", "label", "entry"],
+        "properties": {
+          "surface_id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["activity", "workbench_widget", "settings_embed"] },
+          "label": { "type": "string", "minLength": 1 },
+          "entry": { "type": "string", "minLength": 1 },
+          "icon": { "type": "string" },
+          "method": { "type": "string" },
+          "default_size": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["width", "height"],
+            "properties": {
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 }
             }
           }
         }
       }
     },
-    "backend": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind"],
-      "properties": {
-        "kind": { "enum": ["none", "wasm"] },
-        "path": { "type": "string" }
-      }
-    },
-    "capabilities": {
+    "capability_bindings": {
       "type": "array",
       "items": {
         "type": "object",
@@ -65,7 +63,12 @@
         "properties": {
           "binding_id": { "type": "string", "minLength": 1 },
           "capability_id": { "type": "string", "minLength": 1 },
-          "min_capability_version": { "type": "string", "minLength": 1 }
+          "min_capability_version": { "type": "string", "minLength": 1 },
+          "required_permissions": {
+            "type": "array",
+            "items": { "enum": ["read", "write", "delete", "execute", "admin"] },
+            "uniqueItems": true
+          }
         }
       }
     },
@@ -74,52 +77,138 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "effect", "execution_mode", "route"],
+        "required": ["method", "effect", "execution", "route"],
         "properties": {
-          "name": { "type": "string", "minLength": 1 },
-          "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
-          "execution_mode": { "enum": ["sync", "operation", "stream"] },
+          "method": { "type": "string", "minLength": 1 },
+          "effect": { "enum": ["read", "write", "delete", "execute", "admin"] },
+          "execution": { "enum": ["sync", "operation", "subscription"] },
           "dangerous": { "type": "boolean" },
+          "preflight_only": { "type": "boolean" },
           "route": {
             "type": "object",
             "additionalProperties": false,
             "required": ["kind"],
             "properties": {
-              "kind": { "enum": ["capability", "worker"] },
+              "kind": { "enum": ["capability", "worker", "core_action"] },
               "binding_id": { "type": "string" },
-              "worker_func": { "type": "string" }
+              "target_method": { "type": "string" },
+              "worker_id": { "type": "string" },
+              "export": { "type": "string" },
+              "action_id": { "type": "string" }
+            }
+          },
+          "confirmation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mode"],
+            "properties": {
+              "mode": { "enum": ["none", "required", "risk_based"] },
+              "preflight_method": { "type": ["string", "null"] },
+              "request_hash_fields": { "type": "array", "items": { "type": "string" } },
+              "plan_hash_required": { "type": "boolean" }
+            }
+          },
+          "cancel_policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cancelable"],
+            "properties": {
+              "cancelable": { "type": "boolean" },
+              "disable_behavior": { "enum": ["cancel", "orphan", "wait"] },
+              "uninstall_behavior": { "enum": ["cancel_then_block_delete", "force_cleanup_allowed"] },
+              "ack_timeout_ms": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "request_schema": { "type": "object" },
+          "response_schema": { "type": "object" }
+        }
+      }
+    },
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["worker_id", "artifact", "abi", "mode", "scope", "memory_limit_bytes"],
+        "properties": {
+          "worker_id": { "type": "string", "minLength": 1 },
+          "artifact": { "type": "string", "minLength": 1 },
+          "abi": { "const": "redeven-wasm-worker-v1" },
+          "mode": { "enum": ["job", "actor"] },
+          "scope": { "enum": ["user", "environment"] },
+          "memory_limit_bytes": { "type": "integer", "minimum": 1 },
+          "idle_timeout_ms": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stores": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["store_id", "kind", "scope", "quota_bytes", "schema_version", "migration"],
+            "properties": {
+              "store_id": { "type": "string", "minLength": 1 },
+              "kind": { "enum": ["kv", "files", "sqlite"] },
+              "scope": { "enum": ["user", "environment"] },
+              "quota_bytes": { "type": "integer", "minimum": 1 },
+              "schema_version": { "type": "integer", "minimum": 1 },
+              "migration": { "$ref": "#/$defs/migration" }
             }
           }
         }
       }
     },
-    "surfaces": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["surface_id", "kind", "label"],
-        "properties": {
-          "surface_id": { "type": "string", "minLength": 1 },
-          "kind": { "enum": ["activity", "workbench_widget", "settings_section"] },
-          "label": { "type": "string", "minLength": 1 },
-          "method": { "type": "string" }
+    "network_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["connector_id", "transport", "scope", "destinations"],
+            "properties": {
+              "connector_id": { "type": "string", "minLength": 1 },
+              "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+              "scope": { "enum": ["user", "environment"] },
+              "destinations": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "auth": { "type": "object" },
+              "tls": { "type": "object" }
+            }
+          }
         }
       }
     },
     "settings": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["key", "type", "label", "scope"],
-        "properties": {
-          "key": { "type": "string", "minLength": 1 },
-          "type": { "type": "string", "minLength": 1 },
-          "label": { "type": "string", "minLength": 1 },
-          "scope": { "enum": ["user", "environment"] },
-          "secret_ref": { "type": "string" },
-          "options": { "type": "array", "items": { "type": "string" } }
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "migration"],
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 1 },
+        "migration": { "$ref": "#/$defs/migration" },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "type", "scope", "label"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "type": { "type": "string", "minLength": 1 },
+              "scope": { "enum": ["user", "environment"] },
+              "label": { "type": "string", "minLength": 1 },
+              "default": true,
+              "secret_ref": { "type": "string" },
+              "options": { "type": "array", "items": { "type": "string" } },
+              "validation": { "type": "object" }
+            }
+          }
         }
       }
     },
@@ -131,10 +220,27 @@
         "required": ["intent_id", "method"],
         "properties": {
           "intent_id": { "type": "string", "minLength": 1 },
-          "method": { "type": "string", "minLength": 1 }
+          "method": { "type": "string", "minLength": 1 },
+          "payload_schema": { "type": "object" }
         }
+      }
+    }
+  },
+  "$defs": {
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from_version", "to_version", "reversible", "requires_worker", "estimated_bytes", "max_duration_ms", "data_loss_risk", "steps_hash"],
+      "properties": {
+        "from_version": { "type": "integer", "minimum": 1 },
+        "to_version": { "type": "integer", "minimum": 1 },
+        "reversible": { "type": "boolean" },
+        "requires_worker": { "type": "boolean" },
+        "estimated_bytes": { "type": "integer", "minimum": 0 },
+        "max_duration_ms": { "type": "integer", "minimum": 0 },
+        "data_loss_risk": { "type": "boolean" },
+        "steps_hash": { "type": "string", "minLength": 1 }
       }
     }
   }
 }
-

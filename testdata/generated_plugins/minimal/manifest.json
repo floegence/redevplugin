@@ -1,0 +1,23 @@
+{
+  "schema_version": "redeven.plugin.manifest.v1",
+  "publisher": {
+    "publisher_id": "example",
+    "display_name": "Example"
+  },
+  "plugin": {
+    "plugin_id": "com.example.minimal",
+    "display_name": "Minimal",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.1.0",
+    "ui_protocol_version": "plugin-ui-v1"
+  },
+  "surfaces": [
+    {
+      "surface_id": "minimal.activity",
+      "kind": "activity",
+      "label": "Minimal",
+      "entry": "ui/index.html"
+    }
+  ]
+}

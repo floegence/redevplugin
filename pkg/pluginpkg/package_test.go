@@ -1,0 +1,151 @@
+package pluginpkg
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestBuildAndReadPackage(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var buf bytes.Buffer
+	built, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("BuildFromDir() error = %v", err)
+	}
+
+	read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.PackageHash != built.PackageHash {
+		t.Fatalf("PackageHash mismatch: got %s want %s", read.PackageHash, built.PackageHash)
+	}
+	if read.Manifest.PluginID() != "com.example.pkg" {
+		t.Fatalf("PluginID() = %q", read.Manifest.PluginID())
+	}
+}
+
+func TestBuildPackageIsDeterministic(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var first bytes.Buffer
+	var second bytes.Buffer
+	firstPkg, err := BuildFromDir(context.Background(), dir, &first, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPkg, err := BuildFromDir(context.Background(), dir, &second, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPkg.PackageHash != secondPkg.PackageHash {
+		t.Fatalf("package hash changed: %s != %s", firstPkg.PackageHash, secondPkg.PackageHash)
+	}
+	if !bytes.Equal(first.Bytes(), second.Bytes()) {
+		t.Fatal("zip bytes are not deterministic")
+	}
+}
+
+func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var before bytes.Buffer
+	beforePkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "signatures", "package.sig"), []byte("signature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var after bytes.Buffer
+	afterPkg, err := BuildFromDir(context.Background(), dir, &after, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforePkg.PackageHash != afterPkg.PackageHash {
+		t.Fatalf("signature changed canonical package hash: %s != %s", beforePkg.PackageHash, afterPkg.PackageHash)
+	}
+}
+
+func TestReadRejectsUnsafePath(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	writer, err := zw.Create("../manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+		t.Fatal("Read() expected unsafe path error")
+	}
+}
+
+func TestReadRejectsDuplicateEntry(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < 2; i++ {
+		writer, err := zw.Create("manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(validManifestJSON())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+		t.Fatal("Read() expected duplicate entry error")
+	}
+}
+
+func writeFixturePackageDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "manifest.json"), validManifestJSON())
+	mustWrite(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Plugin</title>")
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), "console.log('plugin');")
+	return dir
+}
+
+func mustWrite(t *testing.T, filename string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func validManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.pkg",
+			"display_name": "Package",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "pkg.activity", "kind": "activity", "label": "Package", "entry": "ui/index.html"}
+		]
+	}`
+}

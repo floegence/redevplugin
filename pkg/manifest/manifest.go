@@ -10,55 +10,50 @@ import (
 )
 
 type Manifest struct {
-	PluginID     string              `json:"plugin_id"`
-	Publisher    Publisher           `json:"publisher"`
-	Version      string              `json:"version"`
-	DisplayName  string              `json:"display_name"`
-	Redeven      RuntimeConstraint   `json:"redeven"`
-	UI           UISpec              `json:"ui"`
-	Backend      BackendSpec         `json:"backend"`
-	Capabilities []CapabilityBinding `json:"capabilities,omitempty"`
-	Methods      []MethodSpec        `json:"methods,omitempty"`
-	Surfaces     []SurfaceSpec       `json:"surfaces,omitempty"`
-	Settings     []SettingFieldSpec  `json:"settings,omitempty"`
-	Intents      []IntentSpec        `json:"intents,omitempty"`
+	SchemaVersion      string              `json:"schema_version"`
+	Publisher          Publisher           `json:"publisher"`
+	Plugin             Plugin              `json:"plugin"`
+	Surfaces           []SurfaceSpec       `json:"surfaces,omitempty"`
+	CapabilityBindings []CapabilityBinding `json:"capability_bindings,omitempty"`
+	Methods            []MethodSpec        `json:"methods,omitempty"`
+	Workers            []WorkerSpec        `json:"workers,omitempty"`
+	Storage            *StorageSpec        `json:"storage,omitempty"`
+	NetworkAccess      *NetworkAccessSpec  `json:"network_access,omitempty"`
+	Settings           *SettingsSpec       `json:"settings,omitempty"`
+	Intents            []IntentSpec        `json:"intents,omitempty"`
 }
 
 type Publisher struct {
-	ID          string `json:"id"`
+	PublisherID string `json:"publisher_id"`
 	DisplayName string `json:"display_name,omitempty"`
 }
 
-type RuntimeConstraint struct {
+type Plugin struct {
+	PluginID          string `json:"plugin_id"`
+	DisplayName       string `json:"display_name"`
+	Version           string `json:"version"`
 	APIVersion        string `json:"api_version"`
 	MinRuntimeVersion string `json:"min_runtime_version"`
+	UIProtocolVersion string `json:"ui_protocol_version"`
 }
 
-type UISpec struct {
-	Entrypoint string      `json:"entrypoint"`
-	Sandbox    SandboxSpec `json:"sandbox"`
+func (m Manifest) PluginID() string {
+	return m.Plugin.PluginID
 }
 
-type SandboxSpec struct {
-	Tokens []string `json:"tokens"`
+func (m Manifest) Version() string {
+	return m.Plugin.Version
 }
 
-type BackendKind string
-
-const (
-	BackendNone BackendKind = "none"
-	BackendWASM BackendKind = "wasm"
-)
-
-type BackendSpec struct {
-	Kind BackendKind `json:"kind"`
-	Path string      `json:"path,omitempty"`
+func (m Manifest) APIVersion() string {
+	return m.Plugin.APIVersion
 }
 
 type CapabilityBinding struct {
-	BindingID            string `json:"binding_id"`
-	CapabilityID         string `json:"capability_id"`
-	MinCapabilityVersion string `json:"min_capability_version"`
+	BindingID            string   `json:"binding_id"`
+	CapabilityID         string   `json:"capability_id"`
+	MinCapabilityVersion string   `json:"min_capability_version"`
+	RequiredPermissions  []string `json:"required_permissions,omitempty"`
 }
 
 type MethodEffect string
@@ -74,9 +69,9 @@ const (
 type MethodExecutionMode string
 
 const (
-	MethodExecutionSync      MethodExecutionMode = "sync"
-	MethodExecutionOperation MethodExecutionMode = "operation"
-	MethodExecutionStream    MethodExecutionMode = "stream"
+	MethodExecutionSync         MethodExecutionMode = "sync"
+	MethodExecutionOperation    MethodExecutionMode = "operation"
+	MethodExecutionSubscription MethodExecutionMode = "subscription"
 )
 
 type MethodRouteKind string
@@ -84,20 +79,51 @@ type MethodRouteKind string
 const (
 	MethodRouteCapability MethodRouteKind = "capability"
 	MethodRouteWorker     MethodRouteKind = "worker"
+	MethodRouteCoreAction MethodRouteKind = "core_action"
 )
 
 type MethodRouteSpec struct {
-	Kind       MethodRouteKind `json:"kind"`
-	BindingID  string          `json:"binding_id,omitempty"`
-	WorkerFunc string          `json:"worker_func,omitempty"`
+	Kind         MethodRouteKind `json:"kind"`
+	BindingID    string          `json:"binding_id,omitempty"`
+	TargetMethod string          `json:"target_method,omitempty"`
+	WorkerID     string          `json:"worker_id,omitempty"`
+	Export       string          `json:"export,omitempty"`
+	ActionID     string          `json:"action_id,omitempty"`
 }
 
 type MethodSpec struct {
-	Name          string              `json:"name"`
-	Effect        MethodEffect        `json:"effect"`
-	ExecutionMode MethodExecutionMode `json:"execution_mode"`
-	Dangerous     bool                `json:"dangerous,omitempty"`
-	Route         MethodRouteSpec     `json:"route"`
+	Method         string              `json:"method"`
+	Effect         MethodEffect        `json:"effect"`
+	Execution      MethodExecutionMode `json:"execution"`
+	Dangerous      bool                `json:"dangerous,omitempty"`
+	PreflightOnly  bool                `json:"preflight_only,omitempty"`
+	Confirmation   *ConfirmationSpec   `json:"confirmation,omitempty"`
+	CancelPolicy   *CancelPolicySpec   `json:"cancel_policy,omitempty"`
+	RequestSchema  map[string]any      `json:"request_schema,omitempty"`
+	ResponseSchema map[string]any      `json:"response_schema,omitempty"`
+	Route          MethodRouteSpec     `json:"route"`
+}
+
+type ConfirmationMode string
+
+const (
+	ConfirmationNone      ConfirmationMode = "none"
+	ConfirmationRequired  ConfirmationMode = "required"
+	ConfirmationRiskBased ConfirmationMode = "risk_based"
+)
+
+type ConfirmationSpec struct {
+	Mode              ConfirmationMode `json:"mode"`
+	PreflightMethod   *string          `json:"preflight_method,omitempty"`
+	RequestHashFields []string         `json:"request_hash_fields,omitempty"`
+	PlanHashRequired  bool             `json:"plan_hash_required,omitempty"`
+}
+
+type CancelPolicySpec struct {
+	Cancelable        bool   `json:"cancelable"`
+	DisableBehavior   string `json:"disable_behavior,omitempty"`
+	UninstallBehavior string `json:"uninstall_behavior,omitempty"`
+	AckTimeoutMS      int    `json:"ack_timeout_ms,omitempty"`
 }
 
 type SurfaceKind string
@@ -105,28 +131,99 @@ type SurfaceKind string
 const (
 	SurfaceActivity  SurfaceKind = "activity"
 	SurfaceWorkbench SurfaceKind = "workbench_widget"
-	SurfaceSettings  SurfaceKind = "settings_section"
+	SurfaceSettings  SurfaceKind = "settings_embed"
 )
 
 type SurfaceSpec struct {
-	SurfaceID string      `json:"surface_id"`
-	Kind      SurfaceKind `json:"kind"`
-	Label     string      `json:"label"`
-	Method    string      `json:"method,omitempty"`
+	SurfaceID   string          `json:"surface_id"`
+	Kind        SurfaceKind     `json:"kind"`
+	Label       string          `json:"label"`
+	Entry       string          `json:"entry"`
+	Icon        string          `json:"icon,omitempty"`
+	DefaultSize *WidgetSizeSpec `json:"default_size,omitempty"`
+	Method      string          `json:"method,omitempty"`
+}
+
+type WidgetSizeSpec struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type WorkerMode string
+
+const (
+	WorkerModeJob   WorkerMode = "job"
+	WorkerModeActor WorkerMode = "actor"
+)
+
+type WorkerSpec struct {
+	WorkerID         string     `json:"worker_id"`
+	Artifact         string     `json:"artifact"`
+	ABI              string     `json:"abi"`
+	Mode             WorkerMode `json:"mode"`
+	Scope            string     `json:"scope"`
+	MemoryLimitBytes int64      `json:"memory_limit_bytes"`
+	IdleTimeoutMS    int        `json:"idle_timeout_ms,omitempty"`
+}
+
+type MigrationSpec struct {
+	FromVersion    int    `json:"from_version"`
+	ToVersion      int    `json:"to_version"`
+	Reversible     bool   `json:"reversible"`
+	RequiresWorker bool   `json:"requires_worker"`
+	EstimatedBytes int64  `json:"estimated_bytes"`
+	MaxDurationMS  int    `json:"max_duration_ms"`
+	DataLossRisk   bool   `json:"data_loss_risk"`
+	StepsHash      string `json:"steps_hash"`
+}
+
+type StorageSpec struct {
+	Stores []StoreSpec `json:"stores,omitempty"`
+}
+
+type StoreSpec struct {
+	StoreID       string        `json:"store_id"`
+	Kind          string        `json:"kind"`
+	Scope         string        `json:"scope"`
+	QuotaBytes    int64         `json:"quota_bytes"`
+	SchemaVersion int           `json:"schema_version"`
+	Migration     MigrationSpec `json:"migration"`
+}
+
+type NetworkAccessSpec struct {
+	Connectors []NetworkConnectorSpec `json:"connectors,omitempty"`
+}
+
+type NetworkConnectorSpec struct {
+	ConnectorID  string         `json:"connector_id"`
+	Transport    string         `json:"transport"`
+	Scope        string         `json:"scope"`
+	Destinations []string       `json:"destinations"`
+	Auth         map[string]any `json:"auth,omitempty"`
+	TLS          map[string]any `json:"tls,omitempty"`
+}
+
+type SettingsSpec struct {
+	SchemaVersion int                `json:"schema_version"`
+	Migration     MigrationSpec      `json:"migration"`
+	Fields        []SettingFieldSpec `json:"fields,omitempty"`
 }
 
 type SettingFieldSpec struct {
-	Key       string   `json:"key"`
-	Type      string   `json:"type"`
-	Label     string   `json:"label"`
-	Scope     string   `json:"scope"`
-	SecretRef string   `json:"secret_ref,omitempty"`
-	Options   []string `json:"options,omitempty"`
+	Key        string         `json:"key"`
+	Type       string         `json:"type"`
+	Label      string         `json:"label"`
+	Scope      string         `json:"scope"`
+	Default    any            `json:"default,omitempty"`
+	SecretRef  string         `json:"secret_ref,omitempty"`
+	Options    []string       `json:"options,omitempty"`
+	Validation map[string]any `json:"validation,omitempty"`
 }
 
 type IntentSpec struct {
-	IntentID string `json:"intent_id"`
-	Method   string `json:"method"`
+	IntentID      string         `json:"intent_id"`
+	Method        string         `json:"method"`
+	PayloadSchema map[string]any `json:"payload_schema,omitempty"`
 }
 
 type ValidationError struct {
@@ -153,76 +250,73 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if strings.TrimSpace(m.PluginID) == "" {
-		return ValidationError{Field: "plugin_id", Message: "is required"}
+	if m.SchemaVersion != "redeven.plugin.manifest.v1" {
+		return ValidationError{Field: "schema_version", Message: "must be redeven.plugin.manifest.v1"}
 	}
-	if strings.TrimSpace(m.Publisher.ID) == "" {
-		return ValidationError{Field: "publisher.id", Message: "is required"}
+	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
+		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
 	}
-	if strings.TrimSpace(m.Version) == "" {
-		return ValidationError{Field: "version", Message: "is required"}
+	if strings.TrimSpace(m.Plugin.PluginID) == "" {
+		return ValidationError{Field: "plugin.plugin_id", Message: "is required"}
 	}
-	if m.Redeven.APIVersion != "plugin-v1" {
-		return ValidationError{Field: "redeven.api_version", Message: "must be plugin-v1"}
+	if strings.TrimSpace(m.Plugin.Version) == "" {
+		return ValidationError{Field: "plugin.version", Message: "is required"}
 	}
-	if strings.TrimSpace(m.UI.Entrypoint) == "" {
-		return ValidationError{Field: "ui.entrypoint", Message: "is required"}
+	if m.Plugin.APIVersion != "plugin-v1" {
+		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
 	}
-	for _, token := range m.UI.Sandbox.Tokens {
-		if token != "allow-scripts" {
-			return ValidationError{Field: "ui.sandbox.tokens", Message: "only allow-scripts may be declared"}
-		}
-	}
-	if m.Backend.Kind != BackendNone && m.Backend.Kind != BackendWASM {
-		return ValidationError{Field: "backend.kind", Message: "must be none or wasm"}
-	}
-	if m.Backend.Kind == BackendWASM && strings.TrimSpace(m.Backend.Path) == "" {
-		return ValidationError{Field: "backend.path", Message: "is required for wasm backend"}
+	if m.Plugin.UIProtocolVersion != "plugin-ui-v1" {
+		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be plugin-ui-v1"}
 	}
 
 	bindings := map[string]struct{}{}
-	for i, binding := range m.Capabilities {
+	for i, binding := range m.CapabilityBindings {
 		if binding.BindingID == "" {
-			return ValidationError{Field: fmt.Sprintf("capabilities[%d].binding_id", i), Message: "is required"}
+			return ValidationError{Field: fmt.Sprintf("capability_bindings[%d].binding_id", i), Message: "is required"}
 		}
 		if _, ok := bindings[binding.BindingID]; ok {
-			return ValidationError{Field: fmt.Sprintf("capabilities[%d].binding_id", i), Message: "must be unique"}
+			return ValidationError{Field: fmt.Sprintf("capability_bindings[%d].binding_id", i), Message: "must be unique"}
 		}
 		bindings[binding.BindingID] = struct{}{}
 	}
 
 	methods := map[string]MethodSpec{}
 	for i, method := range m.Methods {
-		if method.Name == "" {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].name", i), Message: "is required"}
+		if method.Method == "" {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].method", i), Message: "is required"}
 		}
-		if _, ok := methods[method.Name]; ok {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].name", i), Message: "must be unique"}
+		if _, ok := methods[method.Method]; ok {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].method", i), Message: "must be unique"}
 		}
 		if !validEffect(method.Effect) {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].effect", i), Message: "is invalid"}
 		}
-		if !validExecutionMode(method.ExecutionMode) {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].execution_mode", i), Message: "is invalid"}
+		if !validExecutionMode(method.Execution) {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].execution", i), Message: "is invalid"}
 		}
-		if method.Route.Kind != MethodRouteCapability && method.Route.Kind != MethodRouteWorker {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].route.kind", i), Message: "must be capability or worker"}
+		if method.Route.Kind != MethodRouteCapability && method.Route.Kind != MethodRouteWorker && method.Route.Kind != MethodRouteCoreAction {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].route.kind", i), Message: "must be capability, worker, or core_action"}
 		}
 		if method.Route.Kind == MethodRouteCapability {
 			if _, ok := bindings[method.Route.BindingID]; !ok {
 				return ValidationError{Field: fmt.Sprintf("methods[%d].route.binding_id", i), Message: "must reference a declared capability binding"}
 			}
 		}
-		methods[method.Name] = method
+		if method.Execution != MethodExecutionSync && method.CancelPolicy == nil {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].cancel_policy", i), Message: "is required for operation and subscription methods"}
+		}
+		methods[method.Method] = method
 	}
 
 	surfaces := map[string]struct{}{}
 	for i, surface := range m.Surfaces {
-		key := string(surface.Kind) + ":" + surface.SurfaceID
-		if _, ok := surfaces[key]; ok {
-			return ValidationError{Field: fmt.Sprintf("surfaces[%d].surface_id", i), Message: "must be unique for the same surface kind"}
+		if _, ok := surfaces[surface.SurfaceID]; ok {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].surface_id", i), Message: "must be globally unique"}
 		}
-		surfaces[key] = struct{}{}
+		surfaces[surface.SurfaceID] = struct{}{}
+		if strings.TrimSpace(surface.Entry) == "" {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].entry", i), Message: "is required"}
+		}
 		if surface.Method != "" {
 			if _, ok := methods[surface.Method]; !ok {
 				return ValidationError{Field: fmt.Sprintf("surfaces[%d].method", i), Message: "must reference a declared method"}
@@ -236,25 +330,61 @@ func Validate(m Manifest) error {
 		}
 	}
 
+	for i, worker := range m.Workers {
+		if strings.TrimSpace(worker.WorkerID) == "" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].worker_id", i), Message: "is required"}
+		}
+		if worker.ABI != "" && worker.ABI != "redeven-wasm-worker-v1" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redeven-wasm-worker-v1"}
+		}
+	}
+
+	if m.Settings != nil {
+		if m.Settings.SchemaVersion <= 0 {
+			return ValidationError{Field: "settings.schema_version", Message: "must be positive"}
+		}
+	}
+	if m.Storage != nil {
+		for i, store := range m.Storage.Stores {
+			if store.SchemaVersion <= 0 {
+				return ValidationError{Field: fmt.Sprintf("storage.stores[%d].schema_version", i), Message: "must be positive"}
+			}
+		}
+	}
+
 	return nil
 }
 
 func DescriptorHashInput(m Manifest) ([]byte, error) {
 	methods := append([]MethodSpec(nil), m.Methods...)
-	sort.Slice(methods, func(i, j int) bool { return methods[i].Name < methods[j].Name })
+	sort.Slice(methods, func(i, j int) bool { return methods[i].Method < methods[j].Method })
 
 	input := struct {
-		PluginID    string       `json:"plugin_id"`
-		Version     string       `json:"version"`
-		APIVersion  string       `json:"api_version"`
-		Methods     []MethodSpec `json:"methods"`
-		BackendKind BackendKind  `json:"backend_kind"`
+		SchemaVersion      string              `json:"schema_version"`
+		PublisherID        string              `json:"publisher_id"`
+		PluginID           string              `json:"plugin_id"`
+		Version            string              `json:"version"`
+		APIVersion         string              `json:"api_version"`
+		UIProtocolVersion  string              `json:"ui_protocol_version"`
+		CapabilityBindings []CapabilityBinding `json:"capability_bindings"`
+		Methods            []MethodSpec        `json:"methods"`
+		Workers            []WorkerSpec        `json:"workers"`
+		Storage            *StorageSpec        `json:"storage,omitempty"`
+		NetworkAccess      *NetworkAccessSpec  `json:"network_access,omitempty"`
+		Settings           *SettingsSpec       `json:"settings,omitempty"`
 	}{
-		PluginID:    m.PluginID,
-		Version:     m.Version,
-		APIVersion:  m.Redeven.APIVersion,
-		Methods:     methods,
-		BackendKind: m.Backend.Kind,
+		SchemaVersion:      m.SchemaVersion,
+		PublisherID:        m.Publisher.PublisherID,
+		PluginID:           m.Plugin.PluginID,
+		Version:            m.Plugin.Version,
+		APIVersion:         m.Plugin.APIVersion,
+		UIProtocolVersion:  m.Plugin.UIProtocolVersion,
+		CapabilityBindings: m.CapabilityBindings,
+		Methods:            methods,
+		Workers:            m.Workers,
+		Storage:            m.Storage,
+		NetworkAccess:      m.NetworkAccess,
+		Settings:           m.Settings,
 	}
 	return json.Marshal(input)
 }
@@ -270,7 +400,7 @@ func validEffect(effect MethodEffect) bool {
 
 func validExecutionMode(mode MethodExecutionMode) bool {
 	switch mode {
-	case MethodExecutionSync, MethodExecutionOperation, MethodExecutionStream:
+	case MethodExecutionSync, MethodExecutionOperation, MethodExecutionSubscription:
 		return true
 	default:
 		return false
