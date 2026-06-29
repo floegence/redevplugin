@@ -84,6 +84,10 @@ type RuntimeArtifactResolver interface {
 	RuntimePath(ctx context.Context, target RuntimeTarget) (string, error)
 }
 
+type CoreActionAdapter interface {
+	InvokeCoreAction(ctx context.Context, req capability.Invocation) (capability.Result, error)
+}
+
 type RuntimeTarget struct {
 	OS   string `json:"os"`
 	Arch string `json:"arch"`
@@ -118,6 +122,7 @@ type Adapters struct {
 	SurfaceCatalog          SurfaceCatalogSink
 	Assets                  pluginpkg.AssetStore
 	Capabilities            *capability.Registry
+	CoreActions             CoreActionAdapter
 	SurfaceTokens           *bridge.SurfaceTokenService
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
@@ -1339,10 +1344,45 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		}
 		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
 	case manifest.MethodRouteCoreAction:
-		return CallMethodResult{}, fmt.Errorf("method route kind %q is not implemented", method.Route.Kind)
+		result, err := h.invokeCoreAction(ctx, record, method, req)
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+		if err := validateExecutionResult(method, result); err != nil {
+			return CallMethodResult{}, err
+		}
+		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
+			return CallMethodResult{}, err
+		}
+		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
+			return CallMethodResult{}, err
+		}
+		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
 	}
+}
+
+func (h *Host) invokeCoreAction(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (capability.Result, error) {
+	if h.adapters.CoreActions == nil {
+		return capability.Result{}, errors.New("core action adapter is required")
+	}
+	actionID := strings.TrimSpace(method.Route.ActionID)
+	if actionID == "" {
+		return capability.Result{}, errors.New("core action_id is required")
+	}
+	return h.adapters.CoreActions.InvokeCoreAction(ctx, capability.Invocation{
+		CapabilityID:         "core_action",
+		Method:               method.Method,
+		TargetMethod:         actionID,
+		Effect:               capability.Effect(method.Effect),
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		Arguments:            cloneParams(req.Params),
+	})
 }
 
 func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (capability.Result, error) {

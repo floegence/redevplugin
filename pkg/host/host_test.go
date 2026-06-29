@@ -542,6 +542,61 @@ func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
+	coreAdapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		coreActions:    coreAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.activity")
+
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "core.open",
+		Params:               map[string]any{"target": "settings"},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if result.Data == nil {
+		t.Fatalf("CallPluginMethod() result missing data: %#v", result)
+	}
+	if coreAdapter.last.TargetMethod != "example.open_settings" ||
+		coreAdapter.last.Method != "core.open" ||
+		coreAdapter.last.PluginInstanceID != installed.PluginInstanceID ||
+		coreAdapter.last.Arguments["target"] != "settings" {
+		t.Fatalf("core action invocation mismatch: %#v", coreAdapter.last)
+	}
+	if !audits.hasEvent("plugin.method.called") {
+		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.activity")
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "core.open",
+	}); err == nil {
+		t.Fatal("CallPluginMethod() expected missing core action adapter error")
+	}
+}
+
 func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -1278,6 +1333,7 @@ type testHostOptions struct {
 	diagnostics        DiagnosticsSink
 	capabilityID       string
 	capabilityAdapter  capability.Adapter
+	coreActions        CoreActionAdapter
 }
 
 func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
@@ -1307,6 +1363,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		RuntimeSupervisor: opts.runtimeSupervisor,
 		Secrets:           opts.secrets,
 		Capabilities:      capabilities,
+		CoreActions:       opts.coreActions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1396,6 +1453,18 @@ func buildSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), subscriptionRPCFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Subscription</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildCoreActionFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), coreActionFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Core Action</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1664,6 +1733,32 @@ func subscriptionRPCFixtureManifestJSON() string {
 	}`
 }
 
+func coreActionFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.core",
+			"display_name": "Core Action",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "core.activity", "kind": "activity", "label": "Core", "entry": "ui/index.html", "method": "core.open"}
+		],
+		"methods": [
+			{
+				"method": "core.open",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "core_action", "action_id": "example.open_settings"}
+			}
+		]
+	}`
+}
+
 func workerFixtureManifestJSON() string {
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
@@ -1870,6 +1965,13 @@ type recordingCapabilityAdapter struct {
 	err    error
 }
 
+type recordingCoreActionAdapter struct {
+	calls  int
+	last   capability.Invocation
+	result capability.Result
+	err    error
+}
+
 type recordingSecretStore struct {
 	bind   SecretBindRequest
 	test   SecretTestRequest
@@ -1908,6 +2010,15 @@ func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want o
 }
 
 func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+	a.calls++
+	a.last = req
+	if a.err != nil {
+		return capability.Result{}, a.err
+	}
+	return a.result, nil
+}
+
+func (a *recordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	a.calls++
 	a.last = req
 	if a.err != nil {

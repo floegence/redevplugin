@@ -205,6 +205,24 @@ func TestValidateWorkers(t *testing.T) {
 	}
 }
 
+func TestValidateCoreActionRouteRequiresActionID(t *testing.T) {
+	m := validManifest()
+	m.Methods = append(m.Methods, MethodSpec{
+		Method:    "core.open",
+		Effect:    MethodEffectRead,
+		Execution: MethodExecutionSync,
+		Route:     MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "example.open_settings"},
+	})
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() core_action manifest error = %v", err)
+	}
+
+	m.Methods[len(m.Methods)-1].Route.ActionID = ""
+	if err := Validate(m); err == nil {
+		t.Fatal("Validate() expected missing action_id error")
+	}
+}
+
 func validManifest() Manifest {
 	return Manifest{
 		SchemaVersion: "redeven.plugin.manifest.v1",

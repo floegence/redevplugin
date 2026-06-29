@@ -559,6 +559,38 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerCoreActionRPCFlow(t *testing.T) {
+	coreAdapter := &httpRecordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{coreActions: coreAdapter})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPCoreActionFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.core.activity", "surface_http_core", "bridge_http_core")
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_core",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_core",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "core.open",
+		"params":                  map[string]any{"target": "settings"},
+	})
+	if result.Data == nil {
+		t.Fatalf("core action rpc result missing data: %#v", result)
+	}
+	if coreAdapter.last.TargetMethod != "example.open_settings" || coreAdapter.last.Arguments["target"] != "settings" {
+		t.Fatalf("core action invocation mismatch: %#v", coreAdapter.last)
+	}
+}
+
 func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_block_delete"}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -790,6 +822,7 @@ type httpTestHostOptions struct {
 	diagnostics       host.DiagnosticsSink
 	capabilityID      string
 	capabilityAdapter capability.Adapter
+	coreActions       host.CoreActionAdapter
 }
 
 func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
@@ -805,6 +838,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		Secrets:         opts.secrets,
 		Diagnostics:     opts.diagnostics,
 		Capabilities:    capabilities,
+		CoreActions:     opts.coreActions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -889,6 +923,18 @@ func buildHTTPSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSubscriptionRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Subscription</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPCoreActionFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpCoreActionFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Core Action</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1112,6 +1158,32 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 	}`
 }
 
+func httpCoreActionFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.core",
+			"display_name": "HTTP Core Action",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.core.activity", "kind": "activity", "label": "HTTP Core", "entry": "ui/index.html", "method": "core.open"}
+		],
+		"methods": [
+			{
+				"method": "core.open",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "core_action", "action_id": "example.open_settings"}
+			}
+		]
+	}`
+}
+
 func httpBlockedNetworkFixtureManifestJSON() string {
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
@@ -1181,6 +1253,11 @@ type httpRecordingCapabilityAdapter struct {
 	result capability.Result
 }
 
+type httpRecordingCoreActionAdapter struct {
+	last   capability.Invocation
+	result capability.Result
+}
+
 type httpRecordingSecretStore struct {
 	bind   host.SecretBindRequest
 	test   host.SecretTestRequest
@@ -1218,6 +1295,11 @@ func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string,
 }
 
 func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+	a.last = req
+	return a.result, nil
+}
+
+func (a *httpRecordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	a.last = req
 	return a.result, nil
 }

@@ -340,6 +340,9 @@ func Validate(m Manifest) error {
 				return ValidationError{Field: fmt.Sprintf("methods[%d].route.export", i), Message: "is required for worker routes"}
 			}
 		}
+		if method.Route.Kind == MethodRouteCoreAction && strings.TrimSpace(method.Route.ActionID) == "" {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].route.action_id", i), Message: "is required for core_action routes"}
+		}
 		if method.Execution != MethodExecutionSync && method.CancelPolicy == nil {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].cancel_policy", i), Message: "is required for operation and subscription methods"}
 		}
