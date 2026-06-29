@@ -39,11 +39,16 @@ type AuditEvent struct {
 }
 
 type DiagnosticEvent struct {
-	Type      string `json:"type"`
-	Severity  string `json:"severity"`
-	Message   string `json:"message"`
-	PluginID  string `json:"plugin_id,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
+	Type              string         `json:"type"`
+	Severity          string         `json:"severity"`
+	Message           string         `json:"message"`
+	PluginID          string         `json:"plugin_id,omitempty"`
+	PluginInstanceID  string         `json:"plugin_instance_id,omitempty"`
+	SurfaceID         string         `json:"surface_id,omitempty"`
+	SurfaceInstanceID string         `json:"surface_instance_id,omitempty"`
+	ActiveFingerprint string         `json:"active_fingerprint,omitempty"`
+	RequestID         string         `json:"request_id,omitempty"`
+	Details           map[string]any `json:"details,omitempty"`
 }
 
 type PolicyAdapter interface {
@@ -189,6 +194,25 @@ type ReadSurfaceAssetResult struct {
 	Entry   pluginpkg.Entry
 	Content []byte
 	Session bridge.SurfaceSession
+}
+
+type CSPViolationReport struct {
+	PluginID           string         `json:"plugin_id,omitempty"`
+	PluginInstanceID   string         `json:"plugin_instance_id,omitempty"`
+	SurfaceID          string         `json:"surface_id,omitempty"`
+	SurfaceInstanceID  string         `json:"surface_instance_id,omitempty"`
+	ActiveFingerprint  string         `json:"active_fingerprint,omitempty"`
+	BlockedURI         string         `json:"blocked_uri,omitempty"`
+	DocumentURI        string         `json:"document_uri,omitempty"`
+	EffectiveDirective string         `json:"effective_directive,omitempty"`
+	ViolatedDirective  string         `json:"violated_directive,omitempty"`
+	OriginalPolicy     string         `json:"original_policy,omitempty"`
+	Disposition        string         `json:"disposition,omitempty"`
+	LineNumber         int            `json:"line_number,omitempty"`
+	ColumnNumber       int            `json:"column_number,omitempty"`
+	SourceFile         string         `json:"source_file,omitempty"`
+	Sample             string         `json:"sample,omitempty"`
+	Raw                map[string]any `json:"raw,omitempty"`
 }
 
 type MintBridgeTokenRequest struct {
@@ -876,6 +900,48 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) err
 	return nil
 }
 
+func (h *Host) ReportCSPViolation(ctx context.Context, report CSPViolationReport) error {
+	if h.adapters.Diagnostics == nil {
+		return nil
+	}
+	message := report.EffectiveDirective
+	if message == "" {
+		message = report.ViolatedDirective
+	}
+	if message == "" {
+		message = "content security policy violation"
+	}
+	details := map[string]any{}
+	addStringDetail(details, "blocked_uri", report.BlockedURI)
+	addStringDetail(details, "document_uri", report.DocumentURI)
+	addStringDetail(details, "effective_directive", report.EffectiveDirective)
+	addStringDetail(details, "violated_directive", report.ViolatedDirective)
+	addStringDetail(details, "original_policy", report.OriginalPolicy)
+	addStringDetail(details, "disposition", report.Disposition)
+	addStringDetail(details, "source_file", report.SourceFile)
+	addStringDetail(details, "sample", report.Sample)
+	if report.LineNumber > 0 {
+		details["line_number"] = report.LineNumber
+	}
+	if report.ColumnNumber > 0 {
+		details["column_number"] = report.ColumnNumber
+	}
+	if len(report.Raw) > 0 {
+		details["raw"] = report.Raw
+	}
+	return h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+		Type:              "plugin.csp.violation",
+		Severity:          "warning",
+		Message:           message,
+		PluginID:          report.PluginID,
+		PluginInstanceID:  report.PluginInstanceID,
+		SurfaceID:         report.SurfaceID,
+		SurfaceInstanceID: report.SurfaceInstanceID,
+		ActiveFingerprint: report.ActiveFingerprint,
+		Details:           details,
+	})
+}
+
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (CallMethodResult, error) {
 	switch method.Route.Kind {
 	case manifest.MethodRouteCapability:
@@ -1142,6 +1208,12 @@ func cloneParams(params map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func addStringDetail(details map[string]any, key string, value string) {
+	if value != "" {
+		details[key] = value
+	}
 }
 
 func methodRequiresConfirmation(method manifest.MethodSpec) bool {

@@ -583,6 +583,33 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerCSPReportFlow(t *testing.T) {
+	diagnostics := &httpDiagnosticSink{}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics})
+	handler := Handler{Host: h}
+
+	postJSON[map[string]bool](t, handler, "/_redeven_plugin/csp-report", map[string]any{
+		"plugin_id":           "com.example.http",
+		"plugin_instance_id":  "plugin_http",
+		"surface_id":          "http.activity",
+		"surface_instance_id": "surface_http",
+		"active_fingerprint":  "sha256:fingerprint",
+		"csp-report": map[string]any{
+			"document-uri":        "https://plugin.example/ui/index.html",
+			"blocked-uri":         "inline",
+			"effective-directive": "script-src",
+			"line-number":         7,
+		},
+	})
+	if len(diagnostics.events) != 1 {
+		t.Fatalf("diagnostic events = %#v", diagnostics.events)
+	}
+	event := diagnostics.events[0]
+	if event.Type != "plugin.csp.violation" || event.PluginID != "com.example.http" || event.SurfaceInstanceID != "surface_http" || event.Details["effective_directive"] != "script-src" {
+		t.Fatalf("diagnostic event mismatch: %#v", event)
+	}
+}
+
 func TestHandlerDeclaredRoutesReturnContractMismatchWhenNotImplemented(t *testing.T) {
 	handler := Handler{Host: newHTTPTestHost(t)}
 	cases := []struct {
@@ -593,7 +620,6 @@ func TestHandlerDeclaredRoutesReturnContractMismatchWhenNotImplemented(t *testin
 		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/update", body: `{}`},
 		{method: http.MethodPost, path: "/_redeven_proxy/api/plugins/downgrade", body: `{}`},
 		{method: http.MethodGet, path: "/_redeven_plugin/stream/stream_1"},
-		{method: http.MethodPost, path: "/_redeven_plugin/csp-report", body: `{}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -698,6 +724,7 @@ func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *hos
 type httpTestHostOptions struct {
 	storageBroker     storage.Broker
 	secrets           host.SecretStoreAdapter
+	diagnostics       host.DiagnosticsSink
 	capabilityID      string
 	capabilityAdapter capability.Adapter
 }
@@ -713,6 +740,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		Policy:          httpTestPolicy{},
 		Storage:         opts.storageBroker,
 		Secrets:         opts.secrets,
+		Diagnostics:     opts.diagnostics,
 		Capabilities:    capabilities,
 	})
 	if err != nil {
@@ -1030,6 +1058,10 @@ type httpRecordingSecretStore struct {
 	delete host.SecretDeleteRequest
 }
 
+type httpDiagnosticSink struct {
+	events []host.DiagnosticEvent
+}
+
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
 	t.Helper()
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
@@ -1073,5 +1105,10 @@ func (s *httpRecordingSecretStore) TestSecretRef(_ context.Context, req host.Sec
 
 func (s *httpRecordingSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
 	s.delete = req
+	return nil
+}
+
+func (s *httpDiagnosticSink) AppendPluginDiagnostic(_ context.Context, event host.DiagnosticEvent) error {
+	s.events = append(s.events, event)
 	return nil
 }

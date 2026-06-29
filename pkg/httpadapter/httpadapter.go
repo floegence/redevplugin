@@ -116,6 +116,8 @@ type cancelOperationRequest struct {
 
 const assetSessionCookieName = "__Host-redevplugin-asset-session"
 
+const maxCSPReportBytes = 64 << 10
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/install":
@@ -165,7 +167,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/stream/"):
 		h.handleNotImplemented(w, "getPluginStream")
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/csp-report":
-		h.handleNotImplemented(w, "reportPluginCSPViolation")
+		h.handleCSPReport(w, r)
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 	}
@@ -672,6 +674,33 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(result.Content)
 }
 
+func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	defer r.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxCSPReportBytes+1))
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if len(raw) > maxCSPReportBytes {
+		WriteJSON(w, http.StatusRequestEntityTooLarge, Envelope{OK: false, Error: "csp report is too large", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	report, err := parseCSPReport(raw)
+	if err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	if err := h.Host.ReportCSPViolation(r.Context(), report); err != nil {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"reported": true}})
+}
+
 func (h Handler) handleNotImplemented(w http.ResponseWriter, operation string) {
 	WriteJSON(w, http.StatusNotImplemented, Envelope{
 		OK:        false,
@@ -750,6 +779,83 @@ func maxAgeSeconds(d time.Duration) int {
 		return 0
 	}
 	return int(d.Seconds())
+}
+
+func parseCSPReport(raw []byte) (host.CSPViolationReport, error) {
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return host.CSPViolationReport{}, err
+	}
+	body := envelope
+	if cspReport, ok := envelope["csp-report"].(map[string]any); ok {
+		body = cspReport
+	} else if reportBody, ok := envelope["body"].(map[string]any); ok {
+		body = reportBody
+	}
+	report := host.CSPViolationReport{
+		PluginID:           stringFromAny(envelope["plugin_id"]),
+		PluginInstanceID:   stringFromAny(envelope["plugin_instance_id"]),
+		SurfaceID:          stringFromAny(envelope["surface_id"]),
+		SurfaceInstanceID:  stringFromAny(envelope["surface_instance_id"]),
+		ActiveFingerprint:  stringFromAny(envelope["active_fingerprint"]),
+		BlockedURI:         stringFromAny(firstAny(body, "blocked-uri", "blockedURL", "blocked_uri")),
+		DocumentURI:        stringFromAny(firstAny(body, "document-uri", "documentURL", "document_uri")),
+		EffectiveDirective: stringFromAny(firstAny(body, "effective-directive", "effectiveDirective", "effective_directive")),
+		ViolatedDirective:  stringFromAny(firstAny(body, "violated-directive", "violatedDirective", "violated_directive")),
+		OriginalPolicy:     stringFromAny(firstAny(body, "original-policy", "originalPolicy", "original_policy")),
+		Disposition:        stringFromAny(body["disposition"]),
+		LineNumber:         intFromAny(firstAny(body, "line-number", "lineNumber", "line_number")),
+		ColumnNumber:       intFromAny(firstAny(body, "column-number", "columnNumber", "column_number")),
+		SourceFile:         stringFromAny(firstAny(body, "source-file", "sourceFile", "source_file")),
+		Sample:             stringFromAny(firstAny(body, "sample", "script-sample", "scriptSample", "script_sample")),
+		Raw:                body,
+	}
+	if report.PluginID == "" {
+		report.PluginID = stringFromAny(body["plugin_id"])
+	}
+	if report.PluginInstanceID == "" {
+		report.PluginInstanceID = stringFromAny(body["plugin_instance_id"])
+	}
+	if report.SurfaceID == "" {
+		report.SurfaceID = stringFromAny(body["surface_id"])
+	}
+	if report.SurfaceInstanceID == "" {
+		report.SurfaceInstanceID = stringFromAny(body["surface_instance_id"])
+	}
+	if report.ActiveFingerprint == "" {
+		report.ActiveFingerprint = stringFromAny(body["active_fingerprint"])
+	}
+	return report, nil
+}
+
+func firstAny(values map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func stringFromAny(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func intFromAny(value any) int {
+	switch v := value.(type) {
+	case float64:
+		if v > 0 {
+			return int(v)
+		}
+	case int:
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func errorCodeForBridgeError(err error) security.ErrorCode {

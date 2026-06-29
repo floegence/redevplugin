@@ -1059,6 +1059,35 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	}
 }
 
+func TestReportCSPViolationAppendsDiagnostic(t *testing.T) {
+	diagnostics := &diagnosticSink{}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		diagnostics:    diagnostics,
+	})
+	err := h.ReportCSPViolation(context.Background(), CSPViolationReport{
+		PluginID:           "com.example.plugin",
+		PluginInstanceID:   "plugin_instance",
+		SurfaceID:          "activity",
+		SurfaceInstanceID:  "surface_instance",
+		ActiveFingerprint:  "sha256:fingerprint",
+		BlockedURI:         "inline",
+		EffectiveDirective: "script-src",
+		LineNumber:         12,
+	})
+	if err != nil {
+		t.Fatalf("ReportCSPViolation() error = %v", err)
+	}
+	if len(diagnostics.events) != 1 {
+		t.Fatalf("diagnostic events = %#v", diagnostics.events)
+	}
+	event := diagnostics.events[0]
+	if event.Type != "plugin.csp.violation" || event.Severity != "warning" || event.Message != "script-src" || event.PluginInstanceID != "plugin_instance" || event.Details["blocked_uri"] != "inline" {
+		t.Fatalf("diagnostic event mismatch: %#v", event)
+	}
+}
+
 func newTestHost(t *testing.T, developerMode bool, localGenerated bool) (*Host, *surfaceSink, *auditSink) {
 	return newTestHostWithOptions(t, testHostOptions{developerMode: developerMode, localGenerated: localGenerated})
 }
@@ -1075,6 +1104,7 @@ type testHostOptions struct {
 	connectivityBroker connectivity.Broker
 	runtimeSupervisor  runtimeclient.Supervisor
 	secrets            SecretStoreAdapter
+	diagnostics        DiagnosticsSink
 	capabilityID       string
 	capabilityAdapter  capability.Adapter
 }
@@ -1100,6 +1130,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		},
 		SurfaceCatalog:    surfaces,
 		Audit:             audits,
+		Diagnostics:       opts.diagnostics,
 		Storage:           opts.storageBroker,
 		Connectivity:      opts.connectivityBroker,
 		RuntimeSupervisor: opts.runtimeSupervisor,
@@ -1576,6 +1607,15 @@ func (s *auditSink) hasEvent(eventType string) bool {
 		}
 	}
 	return false
+}
+
+type diagnosticSink struct {
+	events []DiagnosticEvent
+}
+
+func (s *diagnosticSink) AppendPluginDiagnostic(_ context.Context, event DiagnosticEvent) error {
+	s.events = append(s.events, event)
+	return nil
 }
 
 type recordingCapabilityAdapter struct {
