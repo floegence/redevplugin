@@ -1790,7 +1790,7 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker</title>")
-	writeFile(t, filepath.Join(dir, "workers", "echo.wasm"), "wasm-placeholder")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redeven_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1824,12 +1824,35 @@ func buildBlockedNetworkFixturePackage(t *testing.T) []byte {
 
 func writeFile(t *testing.T, filename string, content string) {
 	t.Helper()
+	writeBytes(t, filename, []byte(content))
+}
+
+func writeBytes(t *testing.T, filename string, content []byte) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func minimalWorkerWASMForTest(exportName string) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+		0x03, 0x02, 0x01, 0x00,
+		0x07,
+	}
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x00)
+	module = append(module, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	return module
 }
 
 func fixtureManifestJSON() string {

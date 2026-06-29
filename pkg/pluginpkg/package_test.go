@@ -304,6 +304,73 @@ func TestReadRejectsMissingWorkerArtifact(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsMalformedWorkerWASM(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+	mustWrite(t, filepath.Join(dir, "workers", "echo.wasm"), "wasm-placeholder")
+
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+		t.Fatal("BuildFromDir() expected malformed worker wasm error")
+	}
+}
+
+func TestReadRejectsWorkerRouteMissingExport(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	entries := map[string][]byte{
+		"manifest.json":       []byte(workerManifestJSON()),
+		"ui/index.html":       []byte("<!doctype html><title>Plugin</title>"),
+		"workers/echo.wasm":   minimalWorkerWASMForTest("other_export"),
+		"ui/assets/app.js":    []byte("console.log('plugin');"),
+		"workers/abi.json":    []byte(`{"abi_version":"redeven-wasm-worker-v1"}`),
+		"workers/echo.wat":    []byte("(module)"),
+		"ui/assets/style.css": []byte("body{}"),
+	}
+	for entryPath, content := range entries {
+		writer, err := zw.Create(entryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+		t.Fatal("Read() expected missing worker export error")
+	}
+}
+
+func TestBuildRejectsWorkerRouteExportedAsMemory(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalMemoryExportWASMForTest("redeven_worker_invoke"))
+
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+		t.Fatal("BuildFromDir() expected non-function worker export error")
+	}
+}
+
+func TestBuildAcceptsWorkerWASMExport(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redeven_worker_invoke"))
+
+	var buf bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("BuildFromDir() worker error = %v", err)
+	}
+	if pkg.Manifest.Workers[0].Artifact != "workers/echo.wasm" {
+		t.Fatalf("worker artifact mismatch: %#v", pkg.Manifest.Workers[0])
+	}
+}
+
 func TestMemoryAssetStoreReadsPackageAssets(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var buf bytes.Buffer
@@ -350,12 +417,51 @@ func writeFixturePackageDir(t *testing.T) string {
 
 func mustWrite(t *testing.T, filename string, content string) {
 	t.Helper()
+	mustWriteBytes(t, filename, []byte(content))
+}
+
+func mustWriteBytes(t *testing.T, filename string, content []byte) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func minimalWorkerWASMForTest(exportName string) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+		0x03, 0x02, 0x01, 0x00,
+		0x07,
+	}
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x00)
+	module = append(module, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	return module
+}
+
+func minimalMemoryExportWASMForTest(exportName string) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07,
+	}
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x02, 0x00)
+	module = append(module, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	return module
 }
 
 func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {

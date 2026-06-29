@@ -403,16 +403,135 @@ func validateEntryPath(entryPath string) (string, error) {
 }
 
 func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) error {
+	workerExports := map[string]map[string]struct{}{}
 	for i, worker := range m.Workers {
 		artifact, err := validateEntryPath(worker.Artifact)
 		if err != nil {
 			return fmt.Errorf("workers[%d].artifact: %w", i, err)
 		}
-		if _, ok := files[artifact]; !ok {
+		content, ok := files[artifact]
+		if !ok {
 			return fmt.Errorf("workers[%d].artifact %q is not present in package", i, artifact)
+		}
+		exports, err := wasmExports(content)
+		if err != nil {
+			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
+		}
+		workerExports[worker.WorkerID] = exports
+	}
+	for i, method := range m.Methods {
+		if method.Route.Kind != manifest.MethodRouteWorker {
+			continue
+		}
+		exports, ok := workerExports[method.Route.WorkerID]
+		if !ok {
+			return fmt.Errorf("methods[%d].route.worker_id %q does not reference a packaged worker", i, method.Route.WorkerID)
+		}
+		if _, ok := exports[method.Route.Export]; !ok {
+			return fmt.Errorf("methods[%d].route.export %q is not exported by worker %q", i, method.Route.Export, method.Route.WorkerID)
 		}
 	}
 	return nil
+}
+
+func wasmExports(module []byte) (map[string]struct{}, error) {
+	if len(module) < 8 {
+		return nil, errors.New("wasm module is too short")
+	}
+	if !bytes.Equal(module[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
+		return nil, errors.New("wasm magic header is invalid")
+	}
+	if !bytes.Equal(module[4:8], []byte{0x01, 0x00, 0x00, 0x00}) {
+		return nil, errors.New("wasm version must be 1")
+	}
+	exports := map[string]struct{}{}
+	offset := 8
+	seenExportSection := false
+	for offset < len(module) {
+		sectionID := module[offset]
+		offset++
+		payloadLength, err := readWASMVarUint32(module, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("section %d length: %w", sectionID, err)
+		}
+		payloadEnd := offset + int(payloadLength)
+		if payloadEnd < offset || payloadEnd > len(module) {
+			return nil, fmt.Errorf("section %d exceeds module size", sectionID)
+		}
+		if sectionID == 7 {
+			if seenExportSection {
+				return nil, errors.New("duplicate export section")
+			}
+			seenExportSection = true
+			sectionExports, err := readWASMExportSection(module[offset:payloadEnd])
+			if err != nil {
+				return nil, fmt.Errorf("export section: %w", err)
+			}
+			for name := range sectionExports {
+				exports[name] = struct{}{}
+			}
+		}
+		offset = payloadEnd
+	}
+	if offset != len(module) {
+		return nil, errors.New("wasm section parsing ended outside module boundary")
+	}
+	return exports, nil
+}
+
+func readWASMExportSection(section []byte) (map[string]struct{}, error) {
+	offset := 0
+	count, err := readWASMVarUint32(section, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("export count: %w", err)
+	}
+	exports := map[string]struct{}{}
+	for i := uint32(0); i < count; i++ {
+		nameLength, err := readWASMVarUint32(section, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("export[%d].name_length: %w", i, err)
+		}
+		nameEnd := offset + int(nameLength)
+		if nameEnd < offset || nameEnd > len(section) {
+			return nil, fmt.Errorf("export[%d].name exceeds export section", i)
+		}
+		name := string(section[offset:nameEnd])
+		offset = nameEnd
+		if offset >= len(section) {
+			return nil, fmt.Errorf("export[%d].kind is missing", i)
+		}
+		kind := section[offset]
+		offset++
+		if _, err := readWASMVarUint32(section, &offset); err != nil {
+			return nil, fmt.Errorf("export[%d].index: %w", i, err)
+		}
+		if kind == 0x00 {
+			exports[name] = struct{}{}
+		}
+	}
+	if offset != len(section) {
+		return nil, errors.New("export section has trailing bytes")
+	}
+	return exports, nil
+}
+
+func readWASMVarUint32(data []byte, offset *int) (uint32, error) {
+	var value uint32
+	for shift := uint(0); shift <= 28; shift += 7 {
+		if *offset >= len(data) {
+			return 0, errors.New("unexpected end of data")
+		}
+		b := data[*offset]
+		*offset = *offset + 1
+		if shift == 28 && b&0xf0 != 0 {
+			return 0, errors.New("varuint32 exceeds 32 bits")
+		}
+		value |= uint32(b&0x7f) << shift
+		if b&0x80 == 0 {
+			return value, nil
+		}
+	}
+	return 0, errors.New("varuint32 exceeds 32 bits")
 }
 
 func makeEntry(entryPath string, content []byte) (Entry, error) {
