@@ -10,6 +10,10 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redeven-plugin")
   go run ./cmd/redevplugin package testdata/generated_plugins/minimal "$tmp_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_package" >/dev/null
+  go run ./cmd/redevplugin install-local "$tmp_package" >/dev/null
+  go run ./cmd/redevplugin enable "$tmp_package" >/dev/null
+  go run ./cmd/redevplugin disable "$tmp_package" >/dev/null
+  go run ./cmd/redevplugin uninstall "$tmp_package" >/dev/null
   rm -f "$tmp_package"
 )
 
