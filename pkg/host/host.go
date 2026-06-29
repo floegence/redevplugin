@@ -14,6 +14,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
@@ -159,6 +160,7 @@ type Adapters struct {
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
 	Operations              operation.Store
+	Cleanup                 cleanup.Orchestrator
 	Settings                settings.Store
 	Streams                 stream.Store
 }
@@ -459,6 +461,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
+	}
+	if adapters.Cleanup == nil {
+		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
 	}
 	if adapters.Settings == nil {
 		adapters.Settings = settings.NewMemoryStore()
@@ -1443,6 +1448,14 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 		return registry.PluginRecord{}, operation.ErrDeleteBlocked
 	}
+	cleanupPlan, err := h.adapters.Cleanup.PlanUninstall(ctx, record.PluginInstanceID, req.DeleteData)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.adapters.Cleanup.Execute(ctx, cleanupPlan); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.cleanup.executed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	if err := h.deleteOrRetainStorage(ctx, record, req.DeleteData); err != nil {
 		return registry.PluginRecord{}, err
 	}

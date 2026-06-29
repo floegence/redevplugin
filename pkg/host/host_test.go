@@ -13,6 +13,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
@@ -71,8 +72,10 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	if _, err := host.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID); err != registry.ErrNotFound {
 		t.Fatalf("GetPlugin after uninstall error = %v", err)
 	}
-	if len(audits.events) != 4 {
-		t.Fatalf("audit count = %d", len(audits.events))
+	for _, eventType := range []string{"plugin.installed", "plugin.enabled", "plugin.disabled", "plugin.cleanup.executed", "plugin.uninstalled"} {
+		if !audits.hasEvent(eventType) {
+			t.Fatalf("missing audit event %q: %#v", eventType, audits.events)
+		}
 	}
 }
 
@@ -1172,7 +1175,13 @@ func TestEnableRejectsBlockedNetworkTargetBeforeStorageSideEffects(t *testing.T)
 func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	ctx := context.Background()
 	retainBroker := storage.NewMemoryBroker()
-	retainHost, _, _ := newTestHostWithStorage(t, true, true, retainBroker)
+	retainCleanup := cleanup.NewMemoryOrchestrator()
+	retainHost, _, retainAudits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  retainBroker,
+		cleanup:        retainCleanup,
+	})
 	retainedPlugin, err := InstallPackageBytes(ctx, retainHost, buildStorageFixturePackage(t), registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
@@ -1190,9 +1199,25 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	if len(retained) != 2 || retained[0].State != storage.NamespaceRetained || retained[1].State != storage.NamespaceRetained {
 		t.Fatalf("retained namespaces mismatch: %#v", retained)
 	}
+	retainExecutions, err := retainCleanup.ListExecutions(ctx, retainedPlugin.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanupPhases(retainExecutions).contains(cleanup.PhaseDeleteData) {
+		t.Fatalf("retain cleanup unexpectedly deleted data: %#v", retainExecutions)
+	}
+	if !retainAudits.hasEvent("plugin.cleanup.executed") {
+		t.Fatalf("missing cleanup audit event: %#v", retainAudits.events)
+	}
 
 	deleteBroker := storage.NewMemoryBroker()
-	deleteHost, _, _ := newTestHostWithStorage(t, true, true, deleteBroker)
+	deleteCleanup := cleanup.NewMemoryOrchestrator()
+	deleteHost, _, deleteAudits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  deleteBroker,
+		cleanup:        deleteCleanup,
+	})
 	deletedPlugin, err := InstallPackageBytes(ctx, deleteHost, buildStorageFixturePackage(t), registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
@@ -1209,6 +1234,21 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 	if len(deleted) != 0 {
 		t.Fatalf("deleted namespaces still present: %#v", deleted)
+	}
+	deleteExecutions, err := deleteCleanup.ListExecutions(ctx, deletedPlugin.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletePhases := cleanupPhases(deleteExecutions)
+	if !deletePhases.contains(cleanup.PhaseTombstone) ||
+		!deletePhases.contains(cleanup.PhaseRevoke) ||
+		!deletePhases.contains(cleanup.PhaseDeleteData) ||
+		!deletePhases.contains(cleanup.PhaseDeletePackage) ||
+		!deletePhases.contains(cleanup.PhaseComplete) {
+		t.Fatalf("delete cleanup phases mismatch: %#v", deleteExecutions)
+	}
+	if !deleteAudits.hasEvent("plugin.cleanup.executed") {
+		t.Fatalf("missing delete cleanup audit event: %#v", deleteAudits.events)
 	}
 }
 
@@ -1248,7 +1288,13 @@ func TestDisableTransitionsOperations(t *testing.T) {
 func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
-	h, _, audits := newTestHostWithStorage(t, true, true, broker)
+	cleanupOrchestrator := cleanup.NewMemoryOrchestrator()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		cleanup:        cleanupOrchestrator,
+	})
 	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
@@ -1278,6 +1324,13 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.operations.delete_blocked") {
 		t.Fatalf("missing blocked audit event: %#v", audits.events)
+	}
+	executions, err := cleanupOrchestrator.ListExecutions(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(executions) != 0 {
+		t.Fatalf("cleanup executed despite blocked operation: %#v", executions)
 	}
 }
 
@@ -1624,6 +1677,7 @@ type testHostOptions struct {
 	trustVerifier      PackageTrustVerifier
 	storageBroker      storage.Broker
 	connectivityBroker connectivity.Broker
+	cleanup            cleanup.Orchestrator
 	runtimeSupervisor  runtimeclient.Supervisor
 	secrets            SecretStoreAdapter
 	diagnostics        DiagnosticsSink
@@ -1661,6 +1715,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Diagnostics:          opts.diagnostics,
 		Storage:              opts.storageBroker,
 		Connectivity:         opts.connectivityBroker,
+		Cleanup:              opts.cleanup,
 		RuntimeSupervisor:    opts.runtimeSupervisor,
 		Secrets:              opts.secrets,
 		Capabilities:         capabilities,
@@ -2341,6 +2396,21 @@ func (s *auditSink) hasEvent(eventType string) bool {
 		}
 	}
 	return false
+}
+
+type cleanupPhaseSet map[cleanup.Phase]struct{}
+
+func cleanupPhases(records []cleanup.ExecutionRecord) cleanupPhaseSet {
+	phases := cleanupPhaseSet{}
+	for _, record := range records {
+		phases[record.Phase] = struct{}{}
+	}
+	return phases
+}
+
+func (s cleanupPhaseSet) contains(phase cleanup.Phase) bool {
+	_, ok := s[phase]
+	return ok
 }
 
 type diagnosticSink struct {
