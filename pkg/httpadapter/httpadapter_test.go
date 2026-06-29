@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -41,6 +42,9 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redeven_proxy/api/plugins/permissions/revoke":                          false,
 		"GET /_redeven_proxy/api/plugins/audit":                                        false,
 		"GET /_redeven_proxy/api/plugins/diagnostics":                                  false,
+		"GET /_redeven_proxy/api/plugins/runtime/health":                               false,
+		"POST /_redeven_proxy/api/plugins/runtime/start":                               false,
+		"POST /_redeven_proxy/api/plugins/runtime/stop":                                false,
 		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":                false,
 		"PATCH /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":              false,
 		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":         false,
@@ -1056,6 +1060,29 @@ func TestHandlerListsAuditEvents(t *testing.T) {
 	}
 }
 
+func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
+	supervisor := &httpRecordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", Ready: true},
+	}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: supervisor})
+	handler := Handler{Host: h}
+
+	health := postJSON[runtimeclient.Health](t, handler, "/_redeven_proxy/api/plugins/runtime/start", map[string]any{
+		"target": map[string]any{"os": "test-os", "arch": "test-arch"},
+	})
+	if health.RuntimeInstanceID != "runtime_http" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
+		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
+	}
+	health = getJSON[runtimeclient.Health](t, handler, "/_redeven_proxy/api/plugins/runtime/health")
+	if !health.Ready || health.RuntimeGenerationID != "runtime_gen_http" {
+		t.Fatalf("runtime health mismatch: %#v", health)
+	}
+	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/runtime/stop", map[string]any{})
+	if supervisor.stopCalls != 1 {
+		t.Fatalf("Stop calls = %d, want 1", supervisor.stopCalls)
+	}
+}
+
 func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -1146,6 +1173,7 @@ type httpTestHostOptions struct {
 	secrets           host.SecretStoreAdapter
 	diagnostics       host.DiagnosticsSink
 	permissions       permissions.Store
+	runtimeSupervisor runtimeclient.Supervisor
 	capabilityID      string
 	capabilityAdapter capability.Adapter
 	coreActions       host.CoreActionAdapter
@@ -1165,6 +1193,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		Secrets:              opts.secrets,
 		Diagnostics:          opts.diagnostics,
 		Permissions:          opts.permissions,
+		RuntimeSupervisor:    opts.runtimeSupervisor,
 		Capabilities:         capabilities,
 		CoreActions:          opts.coreActions,
 	})
@@ -1675,6 +1704,12 @@ type httpRecordingSecretStore struct {
 	delete host.SecretDeleteRequest
 }
 
+type httpRecordingRuntimeSupervisor struct {
+	health        runtimeclient.Health
+	startedTarget runtimeclient.Target
+	stopCalls     int
+}
+
 type httpTestWebSecurityGuard struct {
 	decision        websecurity.OriginDecision
 	evaluateErr     error
@@ -1775,4 +1810,30 @@ func (s *httpRecordingSecretStore) TestSecretRef(_ context.Context, req host.Sec
 func (s *httpRecordingSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
 	s.delete = req
 	return nil
+}
+
+func (s *httpRecordingRuntimeSupervisor) Start(_ context.Context, target runtimeclient.Target) error {
+	s.startedTarget = target
+	if s.health == (runtimeclient.Health{}) {
+		s.health = runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", Ready: true}
+	}
+	return nil
+}
+
+func (s *httpRecordingRuntimeSupervisor) Stop(context.Context) error {
+	s.stopCalls++
+	s.health.Ready = false
+	return nil
+}
+
+func (s *httpRecordingRuntimeSupervisor) Health(context.Context) (runtimeclient.Health, error) {
+	return s.health, nil
+}
+
+func (s *httpRecordingRuntimeSupervisor) InvokeWorker(context.Context, runtimeclient.Lease, string, []byte) ([]byte, error) {
+	return nil, runtimeclient.ErrRuntimeIPCUnavailable
+}
+
+func (s *httpRecordingRuntimeSupervisor) Revoke(context.Context, string, uint64) error {
+	return runtimeclient.ErrRuntimeIPCUnavailable
 }

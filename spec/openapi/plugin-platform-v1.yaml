@@ -108,6 +108,25 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/runtime/start:
+    post:
+      operationId: startPluginRuntime
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/runtime/stop:
+    post:
+      operationId: stopPluginRuntime
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/runtime/health:
+    get:
+      operationId: getPluginRuntimeHealth
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
   /_redeven_proxy/api/plugins/data/export:
     post:
       operationId: exportPluginData

@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -117,6 +119,10 @@ type RuntimeTarget struct {
 	Arch string `json:"arch"`
 }
 
+type StartRuntimeRequest struct {
+	Target RuntimeTarget `json:"target,omitempty"`
+}
+
 type SurfaceCatalogSink interface {
 	PublishSurfaces(ctx context.Context, snapshot SurfaceSnapshot) error
 }
@@ -161,6 +167,7 @@ type Adapters struct {
 type Host struct {
 	adapters      Adapters
 	surfaceTokens *bridge.SurfaceTokenService
+	runtimeMu     sync.Mutex
 }
 
 type InstallRequest struct {
@@ -1205,6 +1212,59 @@ func (h *Host) ListDiagnosticEvents(ctx context.Context, req ListDiagnosticEvent
 
 func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) ([]operation.Record, error) {
 	return h.adapters.Operations.List(ctx, operation.ListRequest{PluginInstanceID: req.PluginInstanceID})
+}
+
+func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runtimeclient.Health, error) {
+	if h.adapters.RuntimeSupervisor == nil {
+		h.runtimeMu.Lock()
+		defer h.runtimeMu.Unlock()
+		if h.adapters.RuntimeSupervisor == nil && h.adapters.RuntimeArtifactResolver == nil {
+			return runtimeclient.Health{}, errors.New("runtime artifact resolver is required")
+		}
+		if h.adapters.RuntimeSupervisor == nil {
+			target := normalizeRuntimeTarget(req.Target)
+			runtimePath, err := h.adapters.RuntimeArtifactResolver.RuntimePath(ctx, target)
+			if err != nil {
+				return runtimeclient.Health{}, err
+			}
+			supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+				RuntimePath: runtimePath,
+				Diagnostics: h.adapters.Diagnostics,
+			})
+			if err != nil {
+				return runtimeclient.Health{}, err
+			}
+			h.adapters.RuntimeSupervisor = supervisor
+		}
+	}
+	target := normalizeRuntimeTarget(req.Target)
+	if err := h.adapters.RuntimeSupervisor.Start(ctx, runtimeclient.Target{OS: target.OS, Arch: target.Arch}); err != nil {
+		return runtimeclient.Health{}, err
+	}
+	health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+	if err != nil {
+		return runtimeclient.Health{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.runtime.started"})
+	return health, nil
+}
+
+func (h *Host) StopRuntime(ctx context.Context) error {
+	if h.adapters.RuntimeSupervisor == nil {
+		return nil
+	}
+	if err := h.adapters.RuntimeSupervisor.Stop(ctx); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.runtime.stopped"})
+	return nil
+}
+
+func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.Health, error) {
+	if h.adapters.RuntimeSupervisor == nil {
+		return runtimeclient.Health{}, nil
+	}
+	return h.adapters.RuntimeSupervisor.Health(ctx)
 }
 
 func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
@@ -2404,6 +2464,18 @@ func settingsResult(snapshot settings.Snapshot) SettingsResult {
 		Values:           cloneParams(snapshot.Values),
 		UpdatedAt:        snapshot.UpdatedAt,
 	}
+}
+
+func normalizeRuntimeTarget(target RuntimeTarget) RuntimeTarget {
+	target.OS = strings.TrimSpace(target.OS)
+	target.Arch = strings.TrimSpace(target.Arch)
+	if target.OS == "" {
+		target.OS = runtime.GOOS
+	}
+	if target.Arch == "" {
+		target.Arch = runtime.GOARCH
+	}
+	return target
 }
 
 func cloneSettingFields(fields []manifest.SettingFieldSpec) []manifest.SettingFieldSpec {

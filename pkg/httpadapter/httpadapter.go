@@ -149,6 +149,10 @@ type cancelOperationRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type startRuntimeRequest struct {
+	Target host.RuntimeTarget `json:"target,omitempty"`
+}
+
 const assetSessionCookieName = "__Host-redevplugin-asset-session"
 
 // OwnerSessionHashHeader optionally carries the host session binding used by
@@ -194,6 +198,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleGetOperation(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/operations/") && strings.HasSuffix(r.URL.Path, "/cancel"):
 		h.handleCancelOperation(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/runtime/start":
+		h.handleStartRuntime(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/runtime/stop":
+		h.handleStopRuntime(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/runtime/health":
+		h.handleRuntimeHealth(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/export":
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
@@ -283,6 +293,9 @@ func RouteSet() []Route {
 		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/operations"},
 		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/operations/{operation_id}"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/runtime/health"},
+		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/runtime/start"},
+		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/runtime/stop"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/data/export"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/data/import"},
 		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/permissions"},
@@ -657,6 +670,49 @@ func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req startRuntimeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	health, err := h.Host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: req.Target})
+	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: health})
+}
+
+func (h Handler) handleStopRuntime(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	if err := h.Host.StopRuntime(r.Context()); err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"stopped": true}})
+}
+
+func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	health, err := h.Host.RuntimeHealth(r.Context())
+	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: health})
 }
 
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {

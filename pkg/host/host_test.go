@@ -1809,20 +1809,21 @@ func newTestHostWithStorage(t *testing.T, developerMode bool, localGenerated boo
 }
 
 type testHostOptions struct {
-	developerMode      bool
-	localGenerated     bool
-	policyDecision     PolicyDecision
-	trustVerifier      PackageTrustVerifier
-	storageBroker      storage.Broker
-	connectivityBroker connectivity.Broker
-	cleanup            cleanup.Orchestrator
-	permissions        permissions.Store
-	runtimeSupervisor  runtimeclient.Supervisor
-	secrets            SecretStoreAdapter
-	diagnostics        DiagnosticsSink
-	capabilityID       string
-	capabilityAdapter  capability.Adapter
-	coreActions        CoreActionAdapter
+	developerMode           bool
+	localGenerated          bool
+	policyDecision          PolicyDecision
+	trustVerifier           PackageTrustVerifier
+	storageBroker           storage.Broker
+	connectivityBroker      connectivity.Broker
+	cleanup                 cleanup.Orchestrator
+	permissions             permissions.Store
+	runtimeSupervisor       runtimeclient.Supervisor
+	runtimeArtifactResolver RuntimeArtifactResolver
+	secrets                 SecretStoreAdapter
+	diagnostics             DiagnosticsSink
+	capabilityID            string
+	capabilityAdapter       capability.Adapter
+	coreActions             CoreActionAdapter
 }
 
 func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
@@ -1848,18 +1849,19 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			localGenerated: opts.localGenerated,
 			decision:       decision,
 		},
-		PackageTrustVerifier: trustVerifier,
-		SurfaceCatalog:       surfaces,
-		Audit:                audits,
-		Diagnostics:          opts.diagnostics,
-		Storage:              opts.storageBroker,
-		Connectivity:         opts.connectivityBroker,
-		Cleanup:              opts.cleanup,
-		Permissions:          opts.permissions,
-		RuntimeSupervisor:    opts.runtimeSupervisor,
-		Secrets:              opts.secrets,
-		Capabilities:         capabilities,
-		CoreActions:          opts.coreActions,
+		PackageTrustVerifier:    trustVerifier,
+		SurfaceCatalog:          surfaces,
+		Audit:                   audits,
+		Diagnostics:             opts.diagnostics,
+		Storage:                 opts.storageBroker,
+		Connectivity:            opts.connectivityBroker,
+		Cleanup:                 opts.cleanup,
+		Permissions:             opts.permissions,
+		RuntimeSupervisor:       opts.runtimeSupervisor,
+		RuntimeArtifactResolver: opts.runtimeArtifactResolver,
+		Secrets:                 opts.secrets,
+		Capabilities:            capabilities,
+		CoreActions:             opts.coreActions,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2622,13 +2624,23 @@ type recordingSecretStore struct {
 }
 
 type recordingRuntimeSupervisor struct {
-	calls       int
-	health      runtimeclient.Health
-	result      capability.Result
-	err         error
-	lastLease   runtimeclient.Lease
-	lastMethod  string
-	lastPayload []byte
+	calls         int
+	startCalls    int
+	stopCalls     int
+	startedTarget runtimeclient.Target
+	health        runtimeclient.Health
+	result        capability.Result
+	err           error
+	lastLease     runtimeclient.Lease
+	lastMethod    string
+	lastPayload   []byte
+}
+
+type recordingRuntimeArtifactResolver struct {
+	calls  int
+	target RuntimeTarget
+	path   string
+	err    error
 }
 
 func surfaceIDForMethod(method string) string {
@@ -2685,11 +2697,18 @@ func (s *recordingSecretStore) DeleteSecretRef(_ context.Context, req SecretDele
 	return nil
 }
 
-func (r *recordingRuntimeSupervisor) Start(context.Context, runtimeclient.Target) error {
+func (r *recordingRuntimeSupervisor) Start(_ context.Context, target runtimeclient.Target) error {
+	r.startCalls++
+	r.startedTarget = target
+	if r.health == (runtimeclient.Health{}) {
+		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", Ready: true}
+	}
 	return nil
 }
 
 func (r *recordingRuntimeSupervisor) Stop(context.Context) error {
+	r.stopCalls++
+	r.health.Ready = false
 	return nil
 }
 
@@ -2713,4 +2732,13 @@ func (r *recordingRuntimeSupervisor) InvokeWorker(_ context.Context, lease runti
 
 func (r *recordingRuntimeSupervisor) Revoke(context.Context, string, uint64) error {
 	return nil
+}
+
+func (r *recordingRuntimeArtifactResolver) RuntimePath(_ context.Context, target RuntimeTarget) (string, error) {
+	r.calls++
+	r.target = target
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.path, nil
 }
