@@ -12,6 +12,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -95,6 +96,10 @@ type importDataRequest struct {
 	DeleteExisting   bool   `json:"delete_existing,omitempty"`
 }
 
+type cancelOperationRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/install":
@@ -117,6 +122,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRPC(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/confirm":
 		h.handleConfirm(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/operations":
+		h.handleListOperations(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/operations/"):
+		h.handleGetOperation(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/operations/") && strings.HasSuffix(r.URL.Path, "/cancel"):
+		h.handleCancelOperation(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/export":
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
@@ -402,6 +413,65 @@ func (h Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
 }
 
+func (h Handler) handleListOperations(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	records, err := h.Host.ListOperations(r.Context(), host.ListOperationsRequest{
+		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOperationError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"operations": records}})
+}
+
+func (h Handler) handleGetOperation(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	operationID, ok := operationIDFromPath(r.URL.Path, "")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.GetOperation(r.Context(), operationID)
+	if err != nil {
+		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOperationError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	operationID, ok := operationIDFromPath(r.URL.Path, "/cancel")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req cancelOperationRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.CancelOperation(r.Context(), host.CancelOperationRequest{
+		OperationID: operationID,
+		Reason:      req.Reason,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOperationError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -471,6 +541,25 @@ func surfaceInstanceIDFromPath(path string, suffix string) (string, bool) {
 	return id, id != ""
 }
 
+func operationIDFromPath(path string, suffix string) (string, bool) {
+	const prefix = "/_redeven_proxy/api/plugins/operations/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	operationID := strings.TrimPrefix(path, prefix)
+	if suffix != "" {
+		if !strings.HasSuffix(operationID, suffix) {
+			return "", false
+		}
+		operationID = strings.TrimSuffix(operationID, suffix)
+	}
+	operationID = strings.Trim(operationID, "/")
+	if operationID == "" || strings.Contains(operationID, "/") {
+		return "", false
+	}
+	return operationID, true
+}
+
 func errorCodeForBridgeError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, bridge.ErrTokenExpired):
@@ -507,6 +596,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrInvalidRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
+	case errors.Is(err, operation.ErrDeleteBlocked):
+		return security.ErrOperationBlocked
 	default:
 		return security.ErrPermissionDenied
 	}
@@ -518,6 +609,26 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, operation.ErrDeleteBlocked):
+		return http.StatusConflict
+	default:
+		return http.StatusForbidden
+	}
+}
+
+func errorCodeForOperationError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
+		return security.ErrInvalidRequest
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForOperationError(err error) int {
+	switch {
+	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
+		return http.StatusBadRequest
 	default:
 		return http.StatusForbidden
 	}

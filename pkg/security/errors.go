@@ -10,6 +10,7 @@ const (
 	ErrTokenReplay                 ErrorCode = "PLUGIN_TOKEN_REPLAY"
 	ErrGatewayTokenChannelMismatch ErrorCode = "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH"
 	ErrStorageQuotaExceeded        ErrorCode = "PLUGIN_STORAGE_QUOTA_EXCEEDED"
+	ErrOperationBlocked            ErrorCode = "PLUGIN_OPERATION_BLOCKED"
 	ErrNetworkTargetDenied         ErrorCode = "PLUGIN_NETWORK_TARGET_DENIED"
 	ErrRuntimeUnavailable          ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
 	ErrContractMismatch            ErrorCode = "PLUGIN_CONTRACT_MISMATCH"

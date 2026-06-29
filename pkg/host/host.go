@@ -14,6 +14,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -108,6 +109,7 @@ type Adapters struct {
 	Capabilities            *capability.Registry
 	SurfaceTokens           *bridge.SurfaceTokenService
 	Storage                 storage.Broker
+	Operations              operation.Store
 }
 
 type Host struct {
@@ -209,6 +211,23 @@ type ConfirmMethodResult struct {
 	ExpiresAt           time.Time `json:"expires_at"`
 }
 
+type ListOperationsRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+}
+
+type CancelOperationRequest struct {
+	OperationID string `json:"operation_id"`
+	Reason      string `json:"reason,omitempty"`
+	Now         time.Time
+}
+
+type FinishOperationRequest struct {
+	OperationID string           `json:"operation_id"`
+	Status      operation.Status `json:"status"`
+	Reason      string           `json:"reason,omitempty"`
+	Now         time.Time
+}
+
 func New(adapters Adapters) (*Host, error) {
 	if adapters.SessionResolver == nil {
 		return nil, errors.New("session resolver is required")
@@ -224,6 +243,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.SurfaceTokens == nil {
 		adapters.SurfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	}
+	if adapters.Operations == nil {
+		adapters.Operations = operation.NewMemoryStore()
 	}
 	return &Host{adapters: adapters, surfaceTokens: adapters.SurfaceTokens}, nil
 }
@@ -479,6 +501,41 @@ func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error)
 	return h.adapters.Registry.ListPlugins(ctx)
 }
 
+func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) ([]operation.Record, error) {
+	return h.adapters.Operations.List(ctx, operation.ListRequest{PluginInstanceID: req.PluginInstanceID})
+}
+
+func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
+	return h.adapters.Operations.Get(ctx, operationID)
+}
+
+func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) (operation.Record, error) {
+	record, err := h.adapters.Operations.RequestCancel(ctx, operation.CancelRequest{
+		OperationID: req.OperationID,
+		Reason:      req.Reason,
+		Now:         req.Now,
+	})
+	if err != nil {
+		return operation.Record{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return record, nil
+}
+
+func (h *Host) FinishOperation(ctx context.Context, req FinishOperationRequest) (operation.Record, error) {
+	record, err := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
+		OperationID: req.OperationID,
+		Status:      req.Status,
+		Reason:      req.Reason,
+		Now:         req.Now,
+	})
+	if err != nil {
+		return operation.Record{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.operation.finished", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return record, nil
+}
+
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -516,6 +573,14 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	operations, err := h.adapters.Operations.MarkPluginDisabled(ctx, operation.PluginTransitionRequest{
+		PluginInstanceID: disabled.PluginInstanceID,
+		Reason:           reason,
+		Now:              req.Now,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if h.adapters.SurfaceCatalog != nil {
 		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
 			PluginInstanceID:  disabled.PluginInstanceID,
@@ -526,6 +591,9 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 		}
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.disabled", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
+	if len(operations) > 0 {
+		h.audit(ctx, AuditEvent{Type: "plugin.operations.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
+	}
 	return disabled, nil
 }
 
@@ -533,6 +601,18 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	operations, err := h.adapters.Operations.MarkPluginUninstalled(ctx, operation.PluginTransitionRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		Reason:           "uninstalled",
+		Now:              req.Now,
+	})
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if req.DeleteData && operationsBlockDelete(operations) {
+		h.audit(ctx, AuditEvent{Type: "plugin.operations.delete_blocked", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		return registry.PluginRecord{}, operation.ErrDeleteBlocked
 	}
 	if err := h.deleteOrRetainStorage(ctx, record, req.DeleteData); err != nil {
 		return registry.PluginRecord{}, err
@@ -555,6 +635,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		}
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.uninstalled", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if len(operations) > 0 {
+		h.audit(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	}
 	return record, nil
 }
 
@@ -636,12 +719,75 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err != nil {
 			return CallMethodResult{}, err
 		}
+		if err := validateExecutionResult(method, result); err != nil {
+			return CallMethodResult{}, err
+		}
+		if result.OperationID != "" {
+			if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
+				OperationID:          result.OperationID,
+				PluginID:             record.PluginID,
+				PluginInstanceID:     record.PluginInstanceID,
+				Method:               method.Method,
+				Effect:               string(method.Effect),
+				Execution:            string(method.Execution),
+				SurfaceInstanceID:    req.SurfaceInstanceID,
+				SessionChannelIDHash: req.SessionChannelIDHash,
+				BridgeChannelID:      req.BridgeChannelID,
+				DisableBehavior:      cancelPolicyDisableBehavior(method.CancelPolicy),
+				UninstallBehavior:    cancelPolicyUninstallBehavior(method.CancelPolicy),
+				Now:                  req.Now,
+			}); err != nil {
+				return CallMethodResult{}, err
+			}
+			h.audit(ctx, AuditEvent{Type: "plugin.operation.started", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+		}
 		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
 	case manifest.MethodRouteWorker, manifest.MethodRouteCoreAction:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is not implemented", method.Route.Kind)
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
 	}
+}
+
+func validateExecutionResult(method manifest.MethodSpec, result capability.Result) error {
+	switch method.Execution {
+	case manifest.MethodExecutionSync:
+		if result.OperationID != "" || result.StreamID != "" {
+			return fmt.Errorf("sync method %q returned async handles", method.Method)
+		}
+	case manifest.MethodExecutionOperation:
+		if result.OperationID == "" {
+			return fmt.Errorf("operation method %q did not return operation_id", method.Method)
+		}
+	case manifest.MethodExecutionSubscription:
+		if result.StreamID == "" && result.OperationID == "" {
+			return fmt.Errorf("subscription method %q did not return stream_id or operation_id", method.Method)
+		}
+	}
+	return nil
+}
+
+func operationsBlockDelete(records []operation.Record) bool {
+	for _, record := range records {
+		if record.Status == operation.StatusCancelRequested && record.UninstallBehavior == operation.UninstallBehaviorCancelThenBlockDelete {
+			return true
+		}
+	}
+	return false
+}
+
+func cancelPolicyDisableBehavior(policy *manifest.CancelPolicySpec) string {
+	if policy == nil {
+		return operation.DisableBehaviorCancel
+	}
+	return policy.DisableBehavior
+}
+
+func cancelPolicyUninstallBehavior(policy *manifest.CancelPolicySpec) string {
+	if policy == nil {
+		return operation.UninstallBehaviorCancelThenBlockDelete
+	}
+	return policy.UninstallBehavior
 }
 
 func pluginRefFromRecord(record registry.PluginRecord) PluginRef {

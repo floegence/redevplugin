@@ -12,6 +12,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -205,6 +206,130 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.method.called") {
 		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodRegistersOperation(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_pull_1"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
+
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "images.pull",
+		Params:               map[string]any{"image": "alpine:latest"},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if result.OperationID != "op_pull_1" {
+		t.Fatalf("operation id mismatch: %#v", result)
+	}
+	registered, err := h.GetOperation(context.Background(), "op_pull_1")
+	if err != nil {
+		t.Fatalf("GetOperation() error = %v", err)
+	}
+	if registered.PluginInstanceID != installed.PluginInstanceID ||
+		registered.Method != "images.pull" ||
+		registered.Effect != "execute" ||
+		registered.Execution != string(manifest.MethodExecutionOperation) ||
+		registered.DisableBehavior != operation.DisableBehaviorCancel ||
+		registered.UninstallBehavior != operation.UninstallBehaviorCancelThenBlockDelete {
+		t.Fatalf("registered operation mismatch: %#v", registered)
+	}
+	if !audits.hasEvent("plugin.operation.started") {
+		t.Fatalf("missing operation audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
+	cases := []struct {
+		name         string
+		packageBytes []byte
+		method       string
+		result       capability.Result
+	}{
+		{
+			name:         "operation requires operation id",
+			packageBytes: buildOperationRPCFixturePackage(t),
+			method:       "images.pull",
+			result:       capability.Result{Data: map[string]any{"started": true}},
+		},
+		{
+			name:         "sync rejects async handle",
+			packageBytes: buildRPCFixturePackage(t),
+			method:       "echo.ping",
+			result:       capability.Result{OperationID: "op_unexpected"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capabilityAdapter := &recordingCapabilityAdapter{result: tc.result}
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode:     true,
+				localGenerated:    true,
+				capabilityID:      "example.capability.echo",
+				capabilityAdapter: capabilityAdapter,
+			})
+			installed, gateway := installEnableAndMintGateway(t, h, tc.packageBytes, surfaceIDForMethod(tc.method))
+			if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+				PluginInstanceID:     installed.PluginInstanceID,
+				SurfaceInstanceID:    "surface_rpc",
+				SessionChannelIDHash: "channel_hash",
+				OwnerSessionHash:     "session_hash",
+				OwnerUserHash:        "user_hash",
+				BridgeChannelID:      "bridge_rpc",
+				GatewayToken:         gateway.GatewayToken,
+				Method:               tc.method,
+			}); err == nil {
+				t.Fatal("CallPluginMethod() expected execution contract error")
+			}
+		})
+	}
+}
+
+func TestCancelOperationRequestsCancel(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_cancel_1"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "images.pull",
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+
+	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: "op_cancel_1", Reason: "user"})
+	if err != nil {
+		t.Fatalf("CancelOperation() error = %v", err)
+	}
+	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
+		t.Fatalf("cancel operation mismatch: %#v", canceled)
+	}
+	if !audits.hasEvent("plugin.operation.cancel_requested") {
+		t.Fatalf("missing cancel audit event: %#v", audits.events)
 	}
 }
 
@@ -453,6 +578,151 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 }
 
+func TestDisableTransitionsOperations(t *testing.T) {
+	h, _, _ := newTestHost(t, true, true)
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelOp, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
+		OperationID:      "op_disable_cancel",
+		PluginID:         installed.PluginID,
+		PluginInstanceID: installed.PluginInstanceID,
+		Method:           "images.pull",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitOp, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
+		OperationID:      "op_disable_wait",
+		PluginID:         installed.PluginID,
+		PluginInstanceID: installed.PluginInstanceID,
+		Method:           "sync.wait",
+		DisableBehavior:  operation.DisableBehaviorWait,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"}); err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, cancelOp.OperationID, operation.StatusCancelRequested)
+	assertHostOperationStatus(t, h, waitOp.OperationID, operation.StatusRunning)
+}
+
+func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	h, _, audits := newTestHostWithStorage(t, true, true, broker)
+	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
+		OperationID:      "op_blocks_delete",
+		PluginID:         installed.PluginID,
+		PluginInstanceID: installed.PluginInstanceID,
+		Method:           "images.pull",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); !errors.Is(err, operation.ErrDeleteBlocked) {
+		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
+	}
+	assertHostOperationStatus(t, h, "op_blocks_delete", operation.StatusCancelRequested)
+	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) == 0 {
+		t.Fatal("storage namespaces were deleted despite blocked operation")
+	}
+	if !audits.hasEvent("plugin.operations.delete_blocked") {
+		t.Fatalf("missing blocked audit event: %#v", audits.events)
+	}
+}
+
+func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
+		OperationID:      "op_cancel_then_delete",
+		PluginID:         installed.PluginID,
+		PluginInstanceID: installed.PluginInstanceID,
+		Method:           "images.pull",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); !errors.Is(err, operation.ErrDeleteBlocked) {
+		t.Fatalf("UninstallPlugin() first error = %v, want ErrDeleteBlocked", err)
+	}
+	if _, err := h.FinishOperation(ctx, FinishOperationRequest{
+		OperationID: "op_cancel_then_delete",
+		Status:      operation.StatusCanceled,
+		Reason:      "runtime ack",
+	}); err != nil {
+		t.Fatalf("FinishOperation() error = %v", err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin() retry error = %v", err)
+	}
+	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != 0 {
+		t.Fatalf("storage namespaces still present: %#v", namespaces)
+	}
+}
+
+func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
+		OperationID:       "op_force_cleanup",
+		PluginID:          installed.PluginID,
+		PluginInstanceID:  installed.PluginInstanceID,
+		Method:            "cleanup.force",
+		UninstallBehavior: operation.UninstallBehaviorForceCleanupAllowed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, "op_force_cleanup", operation.StatusOrphanedAfterUninstall)
+	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != 0 {
+		t.Fatalf("storage namespaces still present: %#v", namespaces)
+	}
+}
+
 func TestExportImportPluginData(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
@@ -618,6 +888,18 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildOperationRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Operation</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func writeFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
@@ -762,6 +1044,41 @@ func dangerousRPCFixtureManifestJSON() string {
 	}`
 }
 
+func operationRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.operation",
+			"display_name": "Operation",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "operation.activity", "kind": "activity", "label": "Operation", "entry": "ui/index.html", "method": "images.pull"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+		],
+		"methods": [
+			{
+				"method": "images.pull",
+				"effect": "execute",
+				"execution": "operation",
+				"cancel_policy": {
+					"cancelable": true,
+					"disable_behavior": "cancel",
+					"uninstall_behavior": "cancel_then_block_delete",
+					"ack_timeout_ms": 2000
+				},
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
+			}
+		]
+	}`
+}
+
 func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
 	ctx := context.Background()
@@ -869,6 +1186,24 @@ type recordingCapabilityAdapter struct {
 	last   capability.Invocation
 	result capability.Result
 	err    error
+}
+
+func surfaceIDForMethod(method string) string {
+	if method == "images.pull" {
+		return "operation.activity"
+	}
+	return "rpc.activity"
+}
+
+func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want operation.Status) {
+	t.Helper()
+	record, err := h.GetOperation(context.Background(), operationID)
+	if err != nil {
+		t.Fatalf("GetOperation(%s) error = %v", operationID, err)
+	}
+	if record.Status != want {
+		t.Fatalf("operation %s status = %s, want %s: %#v", operationID, record.Status, want, record)
+	}
 }
 
 func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {

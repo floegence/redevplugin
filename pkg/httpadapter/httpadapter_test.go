@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/security"
@@ -306,6 +307,104 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerOperationManagementFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_http_1"}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_operation", "bridge_http_operation")
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_operation",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_operation",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "images.pull",
+	})
+	if result.OperationID != "op_http_1" {
+		t.Fatalf("rpc operation result mismatch: %#v", result)
+	}
+
+	listed := getJSON[struct {
+		Operations []operation.Record `json:"operations"`
+	}](t, handler, "/_redeven_proxy/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
+	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != "op_http_1" {
+		t.Fatalf("operation list mismatch: %#v", listed)
+	}
+
+	detail := getJSON[operation.Record](t, handler, "/_redeven_proxy/api/plugins/operations/op_http_1")
+	if detail.Method != "images.pull" || detail.Status != operation.StatusRunning {
+		t.Fatalf("operation detail mismatch: %#v", detail)
+	}
+
+	canceled := postJSON[operation.Record](t, handler, "/_redeven_proxy/api/plugins/operations/op_http_1/cancel", map[string]any{
+		"reason": "user",
+	})
+	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
+		t.Fatalf("cancel response mismatch: %#v", canceled)
+	}
+}
+
+func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_block_delete"}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_block_delete", "bridge_http_block_delete")
+	postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_block_delete",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_block_delete",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "images.pull",
+	})
+
+	raw, err := json.Marshal(map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"delete_data":        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/uninstall", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("uninstall status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrOperationBlocked) {
+		t.Fatalf("error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+}
+
 func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	h := newHTTPTestHost(t)
 	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
@@ -479,6 +578,18 @@ func buildHTTPDangerousRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpOperationRPCFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Operation</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func writeHTTPFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
@@ -606,6 +717,41 @@ func httpDangerousRPCFixtureManifestJSON() string {
 	}`
 }
 
+func httpOperationRPCFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.operation",
+			"display_name": "HTTP Operation",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.operation.activity", "kind": "activity", "label": "HTTP Operation", "entry": "ui/index.html", "method": "images.pull"}
+		],
+		"capability_bindings": [
+			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+		],
+		"methods": [
+			{
+				"method": "images.pull",
+				"effect": "execute",
+				"execution": "operation",
+				"cancel_policy": {
+					"cancelable": true,
+					"disable_behavior": "cancel",
+					"uninstall_behavior": "cancel_then_block_delete",
+					"ack_timeout_ms": 2000
+				},
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
+			}
+		]
+	}`
+}
+
 type httpTestSessionResolver struct{}
 
 func (httpTestSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
@@ -629,6 +775,32 @@ func (httpTestPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.C
 type httpRecordingCapabilityAdapter struct {
 	last   capability.Invocation
 	result capability.Result
+}
+
+func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
+	t.Helper()
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      pluginInstanceID,
+		"surface_id":              surfaceID,
+		"surface_instance_id":     surfaceInstanceID,
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/"+surfaceInstanceID+"/bootstrap", map[string]any{
+		"asset_ticket": openResp.AssetTicket,
+	})
+	return postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/"+surfaceInstanceID+"/bridge-token", map[string]any{
+		"bridge_channel_id": bridgeChannelID,
+		"handshake": map[string]any{
+			"plugin_id":           openResp.PluginID,
+			"surface_id":          openResp.SurfaceID,
+			"surface_instance_id": openResp.SurfaceInstanceID,
+			"active_fingerprint":  openResp.ActiveFingerprint,
+			"bridge_nonce":        openResp.BridgeNonce,
+			"ui_protocol_version": "plugin-ui-v1",
+		},
+	})
 }
 
 func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
