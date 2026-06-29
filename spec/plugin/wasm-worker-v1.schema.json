@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/wasm-worker-v1.schema.json",
+  "title": "ReDevPlugin WASM worker ABI v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["abi_version", "exports", "imports"],
+  "properties": {
+    "abi_version": { "const": "redeven-wasm-worker-v1" },
+    "exports": {
+      "type": "array",
+      "items": { "enum": ["redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"] },
+      "uniqueItems": true
+    },
+    "imports": {
+      "type": "array",
+      "items": { "enum": ["redeven.log", "redeven.storage", "redeven.network", "redeven.operation", "redeven.clock"] },
+      "uniqueItems": true
+    }
+  }
+}
+

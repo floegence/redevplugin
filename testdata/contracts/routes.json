@@ -1,0 +1,25 @@
+[
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/install"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/enable"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/disable"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/uninstall"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/update"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/downgrade"},
+  {"method": "GET", "path": "/_redeven_proxy/api/plugins/catalog"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/surfaces/bootstrap"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/rpc"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/confirm"},
+  {"method": "GET", "path": "/_redeven_proxy/api/plugins/operations"},
+  {"method": "GET", "path": "/_redeven_proxy/api/plugins/operations/{operation_id}"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/data/export"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/data/import"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/secrets/bind"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/secrets/test"},
+  {"method": "POST", "path": "/_redeven_proxy/api/plugins/secrets/delete"},
+  {"method": "POST", "path": "/_redeven_plugin/bootstrap"},
+  {"method": "GET", "path": "/_redeven_plugin/assets/{asset_path...}"},
+  {"method": "GET", "path": "/_redeven_plugin/stream/{stream_id}"},
+  {"method": "POST", "path": "/_redeven_plugin/csp-report"}
+]
+

@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/redevplugin-runtime",
+  "crates/redevplugin-ipc",
+  "crates/redevplugin-wasm-abi",
+  "crates/redevplugin-target-classifier",
+]
+

@@ -1,0 +1,8 @@
+[package]
+name = "redevplugin-wasm-abi"
+version = "0.0.0-dev"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+

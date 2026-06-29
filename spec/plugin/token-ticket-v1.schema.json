@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/token-ticket-v1.schema.json",
+  "title": "ReDevPlugin token and ticket v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "id", "plugin_instance_id", "active_fingerprint", "policy_revision", "revoke_epoch", "expires_at"],
+  "properties": {
+    "kind": {
+      "enum": ["asset_ticket", "asset_session", "plugin_gateway_token", "confirmation_token", "runtime_execution_lease", "handle_grant", "stream_ticket"]
+    },
+    "id": { "type": "string", "minLength": 1 },
+    "plugin_instance_id": { "type": "string", "minLength": 1 },
+    "active_fingerprint": { "type": "string", "minLength": 1 },
+    "surface_instance_id": { "type": "string" },
+    "bridge_channel_id": { "type": "string" },
+    "owner_session_hash": { "type": "string" },
+    "owner_user_hash": { "type": "string" },
+    "runtime_generation_id": { "type": "string" },
+    "policy_revision": { "type": "integer", "minimum": 0 },
+    "management_revision": { "type": "integer", "minimum": 0 },
+    "revoke_epoch": { "type": "integer", "minimum": 0 },
+    "expires_at": { "type": "string", "format": "date-time" }
+  }
+}
+

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/ipc-v1.schema.json",
+  "title": "ReDevPlugin Rust IPC v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ipc_version", "frame_type", "request_id"],
+  "properties": {
+    "ipc_version": { "const": "rust-ipc-v1" },
+    "frame_type": {
+      "enum": ["hello", "heartbeat", "lease_grant", "invoke_worker", "open_handle", "close_handle", "revoke_epoch", "diagnostic"]
+    },
+    "request_id": { "type": "string", "minLength": 1 },
+    "runtime_generation_id": { "type": "string" },
+    "payload": true
+  }
+}
+

@@ -1,0 +1,169 @@
+openapi: 3.1.0
+info:
+  title: ReDevPlugin Plugin Platform API
+  version: plugin-platform-v1
+  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes.
+paths:
+  /_redeven_proxy/api/plugins/install:
+    post:
+      operationId: installPlugin
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/enable:
+    post:
+      operationId: enablePlugin
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/disable:
+    post:
+      operationId: disablePlugin
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/uninstall:
+    post:
+      operationId: uninstallPlugin
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/update:
+    post:
+      operationId: updatePlugin
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/downgrade:
+    post:
+      operationId: downgradePlugin
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/catalog:
+    get:
+      operationId: listPlugins
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/surfaces/bootstrap:
+    post:
+      operationId: createSurfaceBootstrap
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/rpc:
+    post:
+      operationId: callPluginMethod
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/confirm:
+    post:
+      operationId: confirmPluginIntent
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/operations:
+    get:
+      operationId: listPluginOperations
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/operations/{operation_id}:
+    get:
+      operationId: getPluginOperation
+      parameters:
+        - $ref: "#/components/parameters/OperationID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/operations/{operation_id}/cancel:
+    post:
+      operationId: cancelPluginOperation
+      parameters:
+        - $ref: "#/components/parameters/OperationID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/data/export:
+    post:
+      operationId: exportPluginData
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/data/import:
+    post:
+      operationId: importPluginData
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/secrets/bind:
+    post:
+      operationId: bindPluginSecret
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/secrets/test:
+    post:
+      operationId: testPluginSecret
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/secrets/delete:
+    post:
+      operationId: deletePluginSecret
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_plugin/bootstrap:
+    post:
+      operationId: exchangePluginAssetTicket
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_plugin/assets/{asset_path...}:
+    get:
+      operationId: getPluginAsset
+      parameters:
+        - name: asset_path...
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Plugin package asset.
+  /_redeven_plugin/stream/{stream_id}:
+    get:
+      operationId: getPluginStream
+      parameters:
+        - name: stream_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Plugin stream bytes.
+  /_redeven_plugin/csp-report:
+    post:
+      operationId: reportPluginCSPViolation
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+components:
+  parameters:
+    OperationID:
+      name: operation_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Envelope:
+      description: Flat host envelope used by Redeven appserver integration.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+  schemas:
+    Envelope:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        data: true
+        error: { type: string }
+        error_code:
+          $ref: "#/components/schemas/ErrorCode"
+    ErrorCode:
+      type: string
+      enum:
+        - PLUGIN_INVALID_REQUEST
+        - PLUGIN_PERMISSION_DENIED
+        - PLUGIN_CONFIRMATION_REQUIRED
+        - PLUGIN_TOKEN_EXPIRED
+        - PLUGIN_TOKEN_REPLAY
+        - PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH
+        - PLUGIN_STORAGE_QUOTA_EXCEEDED
+        - PLUGIN_NETWORK_TARGET_DENIED
+        - PLUGIN_RUNTIME_UNAVAILABLE
+        - PLUGIN_CONTRACT_MISMATCH

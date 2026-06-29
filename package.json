@@ -1,0 +1,14 @@
+{
+  "name": "redevplugin-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
+    "build": "tsc -p packages/redevplugin-ui/tsconfig.json",
+    "check": "npm run typecheck && npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
+
