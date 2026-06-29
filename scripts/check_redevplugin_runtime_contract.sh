@@ -12,6 +12,8 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"handle_grant"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"runtime_generation_id",' spec/plugin/token-ticket-v1.schema.json
   grep -q '"handle_id",' spec/plugin/token-ticket-v1.schema.json
+  grep -q '"stream_id",' spec/plugin/token-ticket-v1.schema.json
+  grep -q '"stream_direction"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"method"' spec/plugin/token-ticket-v1.schema.json
 )
 

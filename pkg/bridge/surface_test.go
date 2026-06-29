@@ -488,6 +488,96 @@ func TestHandleGrantRevisionMismatchAndTTLClamp(t *testing.T) {
 	}
 }
 
+func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.StreamID = "stream_logs_1"
+	audience.StreamDirection = "read"
+	audience.Method = "logs.tail"
+	result, err := service.MintStreamTicket(MintStreamTicketRequest{
+		PluginInstanceID:     audience.PluginInstanceID,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		StreamID:             audience.StreamID,
+		StreamDirection:      audience.StreamDirection,
+		Method:               audience.Method,
+		Revision:             testRevision(11),
+		Now:                  now,
+	})
+	if err != nil {
+		t.Fatalf("MintStreamTicket() error = %v", err)
+	}
+	if result.StreamTicket == "" || result.StreamID != audience.StreamID || result.Direction != "read" {
+		t.Fatalf("stream ticket result mismatch: %#v", result)
+	}
+
+	wrongAudience := audience
+	wrongAudience.StreamDirection = "write"
+	if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
+		StreamTicket: result.StreamTicket,
+		Audience:     wrongAudience,
+		Revision:     testRevision(11),
+		Now:          now.Add(time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("ValidateStreamTicket() wrong direction error = %v, want %v", err, ErrTokenAudience)
+	}
+	if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
+		StreamTicket: result.StreamTicket,
+		Audience:     audience,
+		Revision:     testRevision(11),
+		Now:          now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("ValidateStreamTicket() error = %v", err)
+	}
+	if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
+		StreamTicket: result.StreamTicket,
+		Audience:     audience,
+		Revision:     testRevision(11),
+		Now:          now.Add(3 * time.Second),
+	}); !errors.Is(err, ErrTokenReplay) {
+		t.Fatalf("ValidateStreamTicket() replay error = %v, want %v", err, ErrTokenReplay)
+	}
+}
+
+func TestStreamTicketRequiresStreamDirectionAndMethod(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	audience := testSurfaceAudience("bridge_1")
+	req := MintStreamTicketRequest{
+		PluginInstanceID:     audience.PluginInstanceID,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		StreamID:             "stream_logs_1",
+		StreamDirection:      "read",
+		Method:               "logs.tail",
+		Revision:             testRevision(11),
+		Now:                  testNow(),
+	}
+	missingDirection := req
+	missingDirection.StreamDirection = ""
+	if _, err := service.MintStreamTicket(missingDirection); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintStreamTicket() missing direction error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	badDirection := req
+	badDirection.StreamDirection = "sideways"
+	if _, err := service.MintStreamTicket(badDirection); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintStreamTicket() bad direction error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	missingMethod := req
+	missingMethod.Method = ""
+	if _, err := service.MintStreamTicket(missingMethod); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintStreamTicket() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+}
+
 func mintTestGatewayToken(t *testing.T, service *SurfaceTokenService, now time.Time) (SurfaceBootstrap, GatewayTokenResult) {
 	t.Helper()
 	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))

@@ -187,6 +187,38 @@ type ValidateHandleGrantRequest struct {
 	Now              time.Time       `json:"now,omitempty"`
 }
 
+type MintStreamTicketRequest struct {
+	PluginInstanceID     string          `json:"plugin_instance_id"`
+	ActiveFingerprint    string          `json:"active_fingerprint"`
+	SurfaceInstanceID    string          `json:"surface_instance_id"`
+	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string          `json:"bridge_channel_id"`
+	StreamID             string          `json:"stream_id"`
+	StreamDirection      string          `json:"stream_direction"`
+	Method               string          `json:"method"`
+	Revision             RevisionBinding `json:"revision"`
+	Now                  time.Time       `json:"now,omitempty"`
+	ExpiresAt            time.Time       `json:"expires_at,omitempty"`
+}
+
+type StreamTicketResult struct {
+	StreamTicket   string    `json:"stream_ticket"`
+	StreamTicketID string    `json:"stream_ticket_id"`
+	StreamID       string    `json:"stream_id"`
+	Direction      string    `json:"stream_direction"`
+	IssuedAt       time.Time `json:"issued_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+type ValidateStreamTicketRequest struct {
+	StreamTicket string          `json:"stream_ticket"`
+	Audience     Audience        `json:"audience"`
+	Revision     RevisionBinding `json:"revision"`
+	Now          time.Time       `json:"now,omitempty"`
+}
+
 type surfaceState struct {
 	session             SurfaceSession
 	assetSessionIssued  bool
@@ -612,6 +644,81 @@ func (s *SurfaceTokenService) ValidateHandleGrant(req ValidateHandleGrantRequest
 	})
 }
 
+func (s *SurfaceTokenService) MintStreamTicket(req MintStreamTicketRequest) (StreamTicketResult, error) {
+	if s == nil {
+		return StreamTicketResult{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.SurfaceInstanceID) == "" ||
+		strings.TrimSpace(req.BridgeChannelID) == "" ||
+		strings.TrimSpace(req.StreamID) == "" ||
+		!validStreamDirection(req.StreamDirection) ||
+		strings.TrimSpace(req.Method) == "" {
+		return StreamTicketResult{}, ErrMissingTokenAudience
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	expiresAt := req.ExpiresAt
+	if expiresAt.IsZero() {
+		expiresAt = now.Add(DefaultConfirmationTTL)
+	}
+	minted, err := s.tokens.Mint(MintRequest{
+		Kind: TokenKindStreamTicket,
+		Audience: Audience{
+			PluginInstanceID:     req.PluginInstanceID,
+			ActiveFingerprint:    req.ActiveFingerprint,
+			SurfaceInstanceID:    req.SurfaceInstanceID,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			BridgeChannelID:      req.BridgeChannelID,
+			StreamID:             req.StreamID,
+			StreamDirection:      req.StreamDirection,
+			Method:               req.Method,
+		},
+		Revision:  req.Revision,
+		ExpiresAt: expiresAt,
+		Now:       now,
+	})
+	if err != nil {
+		return StreamTicketResult{}, err
+	}
+	return StreamTicketResult{
+		StreamTicket:   minted.Token,
+		StreamTicketID: minted.TokenID,
+		StreamID:       req.StreamID,
+		Direction:      req.StreamDirection,
+		IssuedAt:       minted.IssuedAt,
+		ExpiresAt:      minted.ExpiresAt,
+	}, nil
+}
+
+func (s *SurfaceTokenService) ValidateStreamTicket(req ValidateStreamTicketRequest) (TokenRecord, error) {
+	if s == nil {
+		return TokenRecord{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.Audience.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.Audience.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.Audience.SurfaceInstanceID) == "" ||
+		strings.TrimSpace(req.Audience.BridgeChannelID) == "" ||
+		strings.TrimSpace(req.Audience.StreamID) == "" ||
+		!validStreamDirection(req.Audience.StreamDirection) ||
+		strings.TrimSpace(req.Audience.Method) == "" {
+		return TokenRecord{}, ErrMissingTokenAudience
+	}
+	return s.tokens.Validate(ValidateRequest{
+		Kind:     TokenKindStreamTicket,
+		Token:    req.StreamTicket,
+		Audience: req.Audience,
+		Revision: req.Revision,
+		Now:      req.Now,
+		Consume:  true,
+	})
+}
+
 func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.Time) bool {
 	if s == nil {
 		return false
@@ -675,4 +782,13 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		return ErrHandshakeMismatch
 	}
 	return nil
+}
+
+func validStreamDirection(direction string) bool {
+	switch strings.TrimSpace(direction) {
+	case "read", "write", "duplex":
+		return true
+	default:
+		return false
+	}
 }

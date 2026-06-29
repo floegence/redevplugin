@@ -156,7 +156,20 @@
     {
       "if": { "properties": { "token_kind": { "const": "stream_ticket" } }, "required": ["token_kind"] },
       "then": {
-        "properties": { "use": { "const": "single_use" } },
+        "properties": {
+          "use": { "const": "single_use" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "surface_instance_id",
+              "bridge_channel_id",
+              "stream_id",
+              "stream_direction",
+              "method"
+            ]
+          }
+        },
         "required": ["token_kind", "audience", "revision", "use"]
       }
     }
