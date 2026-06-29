@@ -1,6 +1,9 @@
 package websecurity
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+)
 
 type OriginDecision string
 
@@ -17,6 +20,12 @@ const (
 	OriginPortForward   OriginRole = "port_forward"
 	OriginPluginSandbox OriginRole = "plugin_sandbox"
 	OriginUnknown       OriginRole = "unknown"
+)
+
+var (
+	ErrOriginDenied = errors.New("request origin is denied")
+	ErrCSRFRequired = errors.New("csrf token is required")
+	ErrCSRFInvalid  = errors.New("csrf token is invalid")
 )
 
 type RequestContext struct {

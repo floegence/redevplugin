@@ -18,6 +18,9 @@ capabilities.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
+- Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
+  and CSRF policy while keeping the concrete session and token semantics in the
+  host product.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, and route
   fixture aligned.
 

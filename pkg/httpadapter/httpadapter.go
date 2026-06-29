@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
 type Envelope struct {
@@ -36,7 +37,8 @@ type Route struct {
 }
 
 type Handler struct {
-	Host *host.Host
+	Host        *host.Host
+	WebSecurity websecurity.Guard
 }
 
 type installRequest struct {
@@ -134,11 +136,18 @@ type cancelOperationRequest struct {
 
 const assetSessionCookieName = "__Host-redevplugin-asset-session"
 
+// OwnerSessionHashHeader optionally carries the host session binding used by
+// the configured WebSecurity guard for CSRF validation.
+const OwnerSessionHashHeader = "X-ReDevPlugin-Owner-Session-Hash"
+
 const maxCSPReportBytes = 64 << 10
 const defaultStreamReadMaxEvents = 256
 const defaultStreamReadMaxBytes = 1 << 20
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !h.enforceWebSecurity(w, r) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/install":
 		h.handleInstall(w, r)
@@ -197,6 +206,39 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 	}
+}
+
+func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) bool {
+	if h.WebSecurity == nil || !isPluginHTTPPath(r.URL.Path) {
+		return true
+	}
+	if _, decision, err := h.WebSecurity.Evaluate(r); err != nil {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
+		return false
+	} else if decision != websecurity.OriginAllow {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "request origin is not allowed", ErrorCode: string(security.ErrPermissionDenied)})
+		return false
+	}
+	if requiresCSRF(r) {
+		if err := h.WebSecurity.ValidateCSRF(r, strings.TrimSpace(r.Header.Get(OwnerSessionHashHeader))); err != nil {
+			WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
+			return false
+		}
+	}
+	return true
+}
+
+func isPluginHTTPPath(requestPath string) bool {
+	return requestPath == "/_redeven_proxy/api/plugins" ||
+		strings.HasPrefix(requestPath, "/_redeven_proxy/api/plugins/") ||
+		strings.HasPrefix(requestPath, "/_redeven_plugin/")
+}
+
+func requiresCSRF(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return false
+	}
+	return r.URL.Path == "/_redeven_proxy/api/plugins" || strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/")
 }
 
 func RouteSet() []Route {

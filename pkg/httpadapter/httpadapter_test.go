@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
@@ -70,6 +71,74 @@ func TestRouteSetRoutesAreHandled(t *testing.T) {
 				t.Fatalf("declared route fell through to 404: %s %s body = %s", route.Method, route.Path, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDeny}
+	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	req := httptest.NewRequest(http.MethodGet, "/_redeven_proxy/api/plugins/catalog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("denied origin status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if guard.evaluateCount != 1 {
+		t.Fatalf("Evaluate count = %d, want 1", guard.evaluateCount)
+	}
+	if guard.csrfCount != 0 {
+		t.Fatalf("CSRF count = %d, want 0 for safe method", guard.csrfCount)
+	}
+}
+
+func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, csrfErr: websecurity.ErrCSRFRequired}
+	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/enable", bytes.NewBufferString(`{}`))
+	req.Header.Set(OwnerSessionHashHeader, "session_hash")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if guard.evaluateCount != 1 || guard.csrfCount != 1 || guard.lastSessionHash != "session_hash" {
+		t.Fatalf("guard calls = evaluate:%d csrf:%d session:%q", guard.evaluateCount, guard.csrfCount, guard.lastSessionHash)
+	}
+}
+
+func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, csrfErr: websecurity.ErrCSRFRequired}
+	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	req := httptest.NewRequest(http.MethodGet, "/_redeven_proxy/api/plugins/catalog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("catalog status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if guard.evaluateCount != 1 || guard.csrfCount != 0 {
+		t.Fatalf("guard calls = evaluate:%d csrf:%d", guard.evaluateCount, guard.csrfCount)
+	}
+}
+
+func TestHandlerWebSecurityDoesNotRequireCSRFForSandboxBootstrap(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, csrfErr: websecurity.ErrCSRFRequired}
+	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_plugin/bootstrap", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("sandbox bootstrap status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if guard.evaluateCount != 1 || guard.csrfCount != 0 {
+		t.Fatalf("guard calls = evaluate:%d csrf:%d", guard.evaluateCount, guard.csrfCount)
 	}
 }
 
@@ -1407,6 +1476,34 @@ type httpRecordingSecretStore struct {
 
 type httpDiagnosticSink struct {
 	events []host.DiagnosticEvent
+}
+
+type httpTestWebSecurityGuard struct {
+	decision        websecurity.OriginDecision
+	evaluateErr     error
+	csrfErr         error
+	evaluateCount   int
+	csrfCount       int
+	lastSessionHash string
+}
+
+func (g *httpTestWebSecurityGuard) Evaluate(r *http.Request) (websecurity.RequestContext, websecurity.OriginDecision, error) {
+	g.evaluateCount++
+	decision := g.decision
+	if decision == "" {
+		decision = websecurity.OriginAllow
+	}
+	return websecurity.RequestContext{
+		Origin: r.Header.Get("Origin"),
+		Route:  r.URL.Path,
+		Method: r.Method,
+	}, decision, g.evaluateErr
+}
+
+func (g *httpTestWebSecurityGuard) ValidateCSRF(_ *http.Request, sessionHash string) error {
+	g.csrfCount++
+	g.lastSessionHash = sessionHash
+	return g.csrfErr
 }
 
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
