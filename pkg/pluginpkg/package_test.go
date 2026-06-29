@@ -50,6 +50,34 @@ func TestBuildPackageIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var builtBytes bytes.Buffer
+	built, err := BuildFromDir(context.Background(), dir, &builtBytes, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var first bytes.Buffer
+	var second bytes.Buffer
+	if err := WritePackage(context.Background(), &first, built); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	if err := WritePackage(context.Background(), &second, built); err != nil {
+		t.Fatalf("WritePackage() second error = %v", err)
+	}
+	if !bytes.Equal(first.Bytes(), second.Bytes()) {
+		t.Fatal("WritePackage() bytes are not deterministic")
+	}
+	read, err := Read(context.Background(), bytes.NewReader(first.Bytes()), int64(first.Len()), DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.PackageHash != built.PackageHash || read.PackageSignature != nil {
+		t.Fatalf("unsigned package round trip mismatch: hash=%s signature=%#v", read.PackageHash, read.PackageSignature)
+	}
+}
+
 func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var before bytes.Buffer
@@ -88,6 +116,49 @@ func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 	}
 	if _, ok := read.Files[PackageSignaturePath]; ok {
 		t.Fatal("signature file leaked into canonical file set")
+	}
+}
+
+func TestWritePackageMaterializesDetachedSignature(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var before bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := PackageSignature{
+		SchemaVersion: "redevplugin.package_signature.v1",
+		Algorithm:     PackageSignatureAlgorithmEd25519,
+		KeyID:         "test-key",
+		PublisherID:   pkg.Manifest.Publisher.PublisherID,
+		PluginID:      pkg.Manifest.PluginID(),
+		PackageHash:   pkg.PackageHash,
+		ManifestHash:  pkg.ManifestHash,
+		EntriesHash:   pkg.EntriesHash,
+		Signature:     "test-signature",
+		SignedAt:      "2026-06-30T00:00:00Z",
+	}
+	pkg.PackageSignature = &sig
+
+	var signedBytes bytes.Buffer
+	if err := WritePackage(context.Background(), &signedBytes, pkg); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	read, err := Read(context.Background(), bytes.NewReader(signedBytes.Bytes()), int64(signedBytes.Len()), DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if read.PackageHash != pkg.PackageHash {
+		t.Fatalf("signature changed package hash: %s != %s", read.PackageHash, pkg.PackageHash)
+	}
+	if read.PackageSignature == nil || read.PackageSignature.KeyID != "test-key" {
+		t.Fatalf("signature not materialized: %#v", read.PackageSignature)
+	}
+	if _, ok := read.SignatureFiles[PackageSignaturePath]; !ok {
+		t.Fatal("signature file missing from detached signature set")
+	}
+	if _, ok := read.Files[PackageSignaturePath]; ok {
+		t.Fatal("signature file leaked into canonical files")
 	}
 }
 

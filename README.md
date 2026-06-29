@@ -31,6 +31,10 @@ capabilities.
   interface for package signatures. Hosts still decide which keys, publishers,
   registries, or enterprise policies are trusted, but they can reuse the common
   canonical signature payload and verification checks.
+- The CLI can generate local Ed25519 signing keys and produce signed package
+  artifacts without placing private keys in shell arguments:
+  `redevplugin keygen <key-id> <private.json> <public.json>` followed by
+  `redevplugin sign <unsigned.redeven-plugin> <private.json> <signed.redeven-plugin>`.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
   host product.

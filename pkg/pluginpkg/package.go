@@ -97,49 +97,55 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 	if err != nil {
 		return Package{}, err
 	}
-
-	manifestBytes, ok := files["manifest.json"]
-	if !ok {
-		return Package{}, errors.New("manifest.json is required")
-	}
-	decodedManifest, err := manifest.Decode(bytes.NewReader(manifestBytes))
+	pkg, err := packageFromFiles(files, signatureFiles)
 	if err != nil {
-		return Package{}, fmt.Errorf("manifest.json: %w", err)
-	}
-	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
 		return Package{}, err
 	}
+	if err := WritePackage(ctx, w, pkg); err != nil {
+		return Package{}, err
+	}
+	return pkg, nil
+}
 
-	entries := make([]Entry, 0, len(files))
-	for entryPath, content := range files {
-		entry, err := makeEntry(entryPath, content)
+func WritePackage(ctx context.Context, w io.Writer, pkg Package) error {
+	if w == nil {
+		return errors.New("package writer is required")
+	}
+	if len(pkg.Files) == 0 {
+		return errors.New("package files are required")
+	}
+	files := cloneFiles(pkg.Files)
+	signatureFiles := map[string][]byte{}
+	if pkg.PackageSignature != nil {
+		signatureBytes, err := marshalPackageSignature(*pkg.PackageSignature)
 		if err != nil {
-			return Package{}, err
+			return err
 		}
-		entries = append(entries, entry)
+		signatureFiles[PackageSignaturePath] = signatureBytes
 	}
-	sortEntries(entries)
+	normalized, err := packageFromFiles(files, signatureFiles)
+	if err != nil {
+		return err
+	}
+	if pkg.PackageHash != "" && normalized.PackageHash != pkg.PackageHash {
+		return fmt.Errorf("package_hash mismatch: %s != %s", normalized.PackageHash, pkg.PackageHash)
+	}
+	if pkg.ManifestHash != "" && normalized.ManifestHash != pkg.ManifestHash {
+		return fmt.Errorf("manifest_hash mismatch: %s != %s", normalized.ManifestHash, pkg.ManifestHash)
+	}
+	if pkg.EntriesHash != "" && normalized.EntriesHash != pkg.EntriesHash {
+		return fmt.Errorf("entries_hash mismatch: %s != %s", normalized.EntriesHash, pkg.EntriesHash)
+	}
+	return writePackageZip(ctx, w, normalized)
+}
 
-	canonicalManifest, err := canonicalJSON(decodedManifest)
-	if err != nil {
-		return Package{}, err
-	}
-	manifestHash := sha256String(canonicalManifest)
-	entriesHash, packageHash, err := canonicalHashes(entries, manifestHash)
-	if err != nil {
-		return Package{}, err
-	}
-	packageSignature, err := parsePackageSignature(signatureFiles, decodedManifest, manifestHash, entriesHash, packageHash)
-	if err != nil {
-		return Package{}, err
-	}
-
+func writePackageZip(ctx context.Context, w io.Writer, pkg Package) error {
 	zipWriter := zip.NewWriter(w)
-	for _, entry := range entries {
+	for _, entry := range pkg.Entries {
 		select {
 		case <-ctx.Done():
 			_ = zipWriter.Close()
-			return Package{}, ctx.Err()
+			return ctx.Err()
 		default:
 		}
 		header := &zip.FileHeader{
@@ -151,19 +157,19 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			_ = zipWriter.Close()
-			return Package{}, err
+			return err
 		}
-		if _, err := writer.Write(files[entry.Path]); err != nil {
+		if _, err := writer.Write(pkg.Files[entry.Path]); err != nil {
 			_ = zipWriter.Close()
-			return Package{}, err
+			return err
 		}
 	}
-	signaturePaths := sortedFilePaths(signatureFiles)
+	signaturePaths := sortedFilePaths(pkg.SignatureFiles)
 	for _, entryPath := range signaturePaths {
 		select {
 		case <-ctx.Done():
 			_ = zipWriter.Close()
-			return Package{}, ctx.Err()
+			return ctx.Err()
 		default:
 		}
 		header := &zip.FileHeader{
@@ -175,28 +181,17 @@ func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOpti
 		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			_ = zipWriter.Close()
-			return Package{}, err
+			return err
 		}
-		if _, err := writer.Write(signatureFiles[entryPath]); err != nil {
+		if _, err := writer.Write(pkg.SignatureFiles[entryPath]); err != nil {
 			_ = zipWriter.Close()
-			return Package{}, err
+			return err
 		}
 	}
 	if err := zipWriter.Close(); err != nil {
-		return Package{}, err
+		return err
 	}
-
-	return Package{
-		Manifest:          decodedManifest,
-		PackageHash:       packageHash,
-		ManifestHash:      manifestHash,
-		CanonicalManifest: string(canonicalManifest),
-		Entries:           entries,
-		EntriesHash:       entriesHash,
-		PackageSignature:  packageSignature,
-		Files:             cloneFiles(files),
-		SignatureFiles:    cloneFiles(signatureFiles),
-	}, nil
+	return nil
 }
 
 func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Package, error) {
@@ -508,6 +503,13 @@ func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest
 		return nil, fmt.Errorf("%s: package_hash mismatch", PackageSignaturePath)
 	}
 	return &sig, nil
+}
+
+func marshalPackageSignature(sig PackageSignature) ([]byte, error) {
+	if sig.SchemaVersion == "" {
+		sig.SchemaVersion = "redevplugin.package_signature.v1"
+	}
+	return json.Marshal(sig)
 }
 
 func sortEntries(entries []Entry) {
