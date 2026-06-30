@@ -413,6 +413,34 @@ func TestBuildRejectsUnknownWorkerABIImport(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsActorWorkerMissingWASMExports(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), actorWorkerManifestJSON())
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redeven_worker_invoke"))
+	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"))
+
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+		t.Fatal("BuildFromDir() expected actor worker wasm export error")
+	}
+}
+
+func TestBuildAcceptsActorWorkerLifecycleExports(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), actorWorkerManifestJSON())
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMWithExportsForTest("redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"))
+	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"))
+
+	var buf bytes.Buffer
+	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("BuildFromDir() actor worker error = %v", err)
+	}
+	if pkg.Manifest.Workers[0].Mode != "actor" {
+		t.Fatalf("worker mode = %s, want actor", pkg.Manifest.Workers[0].Mode)
+	}
+}
+
 func TestMemoryAssetStoreReadsPackageAssets(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var buf bytes.Buffer
@@ -473,7 +501,10 @@ func mustWriteBytes(t *testing.T, filename string, content []byte) {
 }
 
 func minimalWorkerWASMForTest(exportName string) []byte {
-	exportNameBytes := []byte(exportName)
+	return minimalWorkerWASMWithExportsForTest(exportName)
+}
+
+func minimalWorkerWASMWithExportsForTest(exportNames ...string) []byte {
 	module := []byte{
 		0x00, 0x61, 0x73, 0x6d,
 		0x01, 0x00, 0x00, 0x00,
@@ -481,9 +512,13 @@ func minimalWorkerWASMForTest(exportName string) []byte {
 		0x03, 0x02, 0x01, 0x00,
 		0x07,
 	}
-	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, 0x00)
+	exportPayload := []byte{byte(len(exportNames))}
+	for _, exportName := range exportNames {
+		exportNameBytes := []byte(exportName)
+		exportPayload = append(exportPayload, byte(len(exportNameBytes)))
+		exportPayload = append(exportPayload, exportNameBytes...)
+		exportPayload = append(exportPayload, 0x00, 0x00)
+	}
 	module = append(module, byte(len(exportPayload)))
 	module = append(module, exportPayload...)
 	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
@@ -589,5 +624,41 @@ func workerManifestJSON() string {
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
 			}
 		]
-	}`
+		}`
+}
+
+func actorWorkerManifestJSON() string {
+	return `{
+			"schema_version": "redeven.plugin.manifest.v1",
+			"publisher": {"publisher_id": "example", "display_name": "Example"},
+			"plugin": {
+				"plugin_id": "com.example.actor",
+				"display_name": "Actor",
+				"version": "1.0.0",
+				"api_version": "plugin-v1",
+				"min_runtime_version": "0.1.0",
+				"ui_protocol_version": "plugin-ui-v1"
+			},
+			"surfaces": [
+				{"surface_id": "actor.activity", "kind": "activity", "label": "Actor", "entry": "ui/index.html", "method": "worker.echo"}
+			],
+			"workers": [
+				{
+					"worker_id": "echo_worker",
+					"artifact": "workers/echo.wasm",
+					"abi": "redeven-wasm-worker-v1",
+					"mode": "actor",
+					"scope": "user",
+					"memory_limit_bytes": 16777216
+				}
+			],
+			"methods": [
+				{
+					"method": "worker.echo",
+					"effect": "read",
+					"execution": "sync",
+					"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+				}
+			]
+		}`
 }

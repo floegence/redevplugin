@@ -428,6 +428,13 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		if err != nil {
 			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
 		}
+		if worker.Mode == manifest.WorkerModeActor {
+			for _, requiredExport := range []string{"redeven_actor_start", "redeven_actor_stop"} {
+				if _, ok := exports[requiredExport]; !ok {
+					return fmt.Errorf("workers[%d].mode actor requires %s export in %q", i, requiredExport, artifact)
+				}
+			}
+		}
 		workerExports[worker.WorkerID] = exports
 	}
 	for i, method := range m.Methods {
