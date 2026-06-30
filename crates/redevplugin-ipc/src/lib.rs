@@ -1,5 +1,5 @@
 pub const RUST_IPC_VERSION: &str = "rust-ipc-v1";
-pub const WASM_ABI_VERSION: &str = "redeven-wasm-worker-v1";
+pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_INVOKE_WORKER: &str = "invoke_worker";
@@ -744,7 +744,7 @@ pub fn parse_worker_invocation_identity(
     let export = extract_json_string(input, "export").ok_or("missing export")?;
     if !matches!(
         export.as_str(),
-        "redeven_worker_invoke" | "redeven_actor_start" | "redeven_actor_stop"
+        "redevplugin_worker_invoke" | "redevplugin_actor_start" | "redevplugin_actor_stop"
     ) {
         return Err("invalid export");
     }
@@ -835,7 +835,7 @@ mod tests {
                     .to_string(),
             worker_id: "backend".to_string(),
             method: "worker.echo".to_string(),
-            export: "redeven_worker_invoke".to_string(),
+            export: "redevplugin_worker_invoke".to_string(),
         };
         let frame = open_handle_frame("r1", "g1", &identity);
         assert!(frame.contains(r#""frame_type":"open_handle""#));
@@ -853,7 +853,7 @@ mod tests {
                     .to_string(),
             worker_id: "backend".to_string(),
             method: "worker.echo".to_string(),
-            export: "redeven_worker_invoke".to_string(),
+            export: "redevplugin_worker_invoke".to_string(),
         };
         let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
         validate_open_handle_response(frame, "r1:artifact", "g1", &identity)
@@ -939,7 +939,7 @@ mod tests {
                     .to_string(),
             worker_id: "backend".to_string(),
             method: "worker.echo".to_string(),
-            export: "redeven_worker_invoke".to_string(),
+            export: "redevplugin_worker_invoke".to_string(),
         };
         let result = worker_success_result_json(
             &identity,
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn parses_worker_invocation_identity() {
-        let frame = r#"{"payload":{"invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redeven_worker_invoke"}}}"#;
+        let frame = r#"{"payload":{"invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
         let identity = parse_worker_invocation_identity(frame).expect("valid invocation");
         assert_eq!(
             identity.package_hash,
@@ -1062,7 +1062,7 @@ mod tests {
         )
         .expect_err("invalid invocation");
         assert_eq!(err, "missing package_hash");
-        let err = parse_worker_invocation_identity(r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redeven_worker_invoke"}"#)
+        let err = parse_worker_invocation_identity(r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}"#)
             .expect_err("invalid artifact");
         assert_eq!(err, "invalid artifact");
     }

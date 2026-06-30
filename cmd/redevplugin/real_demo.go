@@ -55,7 +55,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		return err
 	}
 	pluginDir := filepath.Join(stateRoot, "plugin")
-	packageFile := filepath.Join(stateRoot, "real-demo.redeven-plugin")
+	packageFile := filepath.Join(stateRoot, "real-demo.redevplugin")
 	if err := resetDirectory(pluginDir); err != nil {
 		return err
 	}
@@ -105,7 +105,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	platformHandler := httpadapter.Handler{Host: pluginHost}
 	hostMux := http.NewServeMux()
 	hostMux.HandleFunc("/favicon.ico", noContentHandler)
-	hostMux.Handle("/_redeven_proxy/api/plugins/", platformHandler)
+	hostMux.Handle("/_redevplugin/api/plugins/", platformHandler)
 	hostMux.HandleFunc("/packages/redevplugin-ui/dist/index.js", realDemoSDKHandler)
 	hostMux.HandleFunc("/demo/real/index.html", func(w http.ResponseWriter, _ *http.Request) {
 		bootstrap, err := pluginHost.OpenSurface(ctx, host.OpenSurfaceRequest{
@@ -383,7 +383,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
       });
       window.addEventListener("beforeunload", () => surfaceHost.dispose());
       try {
-        const assetResponse = await hostFetch("/_redeven_proxy/api/plugins/surfaces/" + encodeURIComponent(bootstrap.surface_instance_id) + "/bootstrap", {
+        const assetResponse = await hostFetch("/_redevplugin/api/plugins/surfaces/" + encodeURIComponent(bootstrap.surface_instance_id) + "/bootstrap", {
           method: "POST",
           headers: { "Accept": "application/json", "Content-Type": "application/json" },
           body: JSON.stringify({ asset_ticket: bootstrap.asset_ticket }),

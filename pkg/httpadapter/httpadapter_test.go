@@ -31,28 +31,28 @@ import (
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	routes := RouteSet()
 	want := map[string]bool{
-		"POST /_redeven_proxy/api/plugins/install":                                     false,
-		"POST /_redeven_proxy/api/plugins/enable":                                      false,
-		"POST /_redeven_proxy/api/plugins/surfaces/open":                               false,
-		"POST /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap":    false,
-		"POST /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
-		"POST /_redeven_proxy/api/plugins/rpc":                                         false,
-		"POST /_redeven_proxy/api/plugins/data/export":                                 false,
-		"GET /_redeven_proxy/api/plugins/platform/compatibility":                       false,
-		"GET /_redeven_proxy/api/plugins/permissions":                                  false,
-		"POST /_redeven_proxy/api/plugins/permissions/grant":                           false,
-		"POST /_redeven_proxy/api/plugins/permissions/revoke":                          false,
-		"GET /_redeven_proxy/api/plugins/audit":                                        false,
-		"GET /_redeven_proxy/api/plugins/diagnostics":                                  false,
-		"GET /_redeven_proxy/api/plugins/runtime/health":                               false,
-		"POST /_redeven_proxy/api/plugins/runtime/start":                               false,
-		"POST /_redeven_proxy/api/plugins/runtime/stop":                                false,
-		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":                false,
-		"PATCH /_redeven_proxy/api/plugins/{plugin_instance_id}/settings":              false,
-		"GET /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":         false,
-		"POST /_redeven_plugin/bootstrap":                                              false,
-		"GET /_redeven_plugin/assets/{asset_path...}":                                  false,
-		"POST /_redeven_plugin/csp-report":                                             false,
+		"POST /_redevplugin/api/plugins/install":                                     false,
+		"POST /_redevplugin/api/plugins/enable":                                      false,
+		"POST /_redevplugin/api/plugins/surfaces/open":                               false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap":    false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
+		"POST /_redevplugin/api/plugins/rpc":                                         false,
+		"POST /_redevplugin/api/plugins/data/export":                                 false,
+		"GET /_redevplugin/api/plugins/platform/compatibility":                       false,
+		"GET /_redevplugin/api/plugins/permissions":                                  false,
+		"POST /_redevplugin/api/plugins/permissions/grant":                           false,
+		"POST /_redevplugin/api/plugins/permissions/revoke":                          false,
+		"GET /_redevplugin/api/plugins/audit":                                        false,
+		"GET /_redevplugin/api/plugins/diagnostics":                                  false,
+		"GET /_redevplugin/api/plugins/runtime/health":                               false,
+		"POST /_redevplugin/api/plugins/runtime/start":                               false,
+		"POST /_redevplugin/api/plugins/runtime/stop":                                false,
+		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":                false,
+		"PATCH /_redevplugin/api/plugins/{plugin_instance_id}/settings":              false,
+		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":         false,
+		"POST /_redevplugin/bootstrap":                                               false,
+		"GET /_redevplugin/assets/{asset_path...}":                                   false,
+		"POST /_redevplugin/csp-report":                                              false,
 	}
 	for _, route := range routes {
 		key := route.Method + " " + route.Path
@@ -99,7 +99,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 			Path   string `json:"path"`
 			SHA256 string `json:"sha256"`
 		} `json:"contracts"`
-	}](t, handler, "/_redeven_proxy/api/plugins/platform/compatibility")
+	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility")
 
 	if got.SchemaVersion != "redevplugin.compatibility.v1" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
@@ -129,7 +129,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDeny}
 	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
-	req := httptest.NewRequest(http.MethodGet, "/_redeven_proxy/api/plugins/catalog", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -148,7 +148,7 @@ func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, csrfErr: websecurity.ErrCSRFRequired}
 	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/enable", bytes.NewBufferString(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{}`))
 	req.Header.Set(OwnerSessionHashHeader, "session_hash")
 	rec := httptest.NewRecorder()
 
@@ -165,7 +165,7 @@ func TestHandlerWebSecurityRequiresCSRFForUnsafeProxyRoutes(t *testing.T) {
 func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, csrfErr: websecurity.ErrCSRFRequired}
 	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
-	req := httptest.NewRequest(http.MethodGet, "/_redeven_proxy/api/plugins/catalog", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/api/plugins/catalog", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -181,7 +181,7 @@ func TestHandlerWebSecurityAllowsSafeProxyRouteWithoutCSRF(t *testing.T) {
 func TestHandlerWebSecurityDoesNotRequireCSRFForSandboxBootstrap(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, csrfErr: websecurity.ErrCSRFRequired}
 	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_plugin/bootstrap", bytes.NewBufferString(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/bootstrap", bytes.NewBufferString(`{}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -210,7 +210,7 @@ func TestHandlerInstallVerifiedRequiresHostTrustVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/install", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -232,7 +232,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	handler := Handler{Host: h}
 	packageBytes := buildHTTPFixturePackage(t)
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(packageBytes),
 		"trust_state":    "verified",
 	})
@@ -240,7 +240,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 		t.Fatalf("install response mismatch: %#v", installed)
 	}
 
-	enabled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/enable", map[string]any{
+	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
 	if enabled.EnableState != registry.EnableEnabled {
@@ -249,12 +249,12 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 
 	catalog := getJSON[struct {
 		Plugins []registry.PluginRecord `json:"plugins"`
-	}](t, handler, "/_redeven_proxy/api/plugins/catalog")
+	}](t, handler, "/_redevplugin/api/plugins/catalog")
 	if len(catalog.Plugins) != 1 || catalog.Plugins[0].PluginInstanceID != installed.PluginInstanceID {
 		t.Fatalf("catalog mismatch: %#v", catalog)
 	}
 
-	disabled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/disable", map[string]any{
+	disabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/disable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"reason":             "test",
 	})
@@ -262,7 +262,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 		t.Fatalf("disable response mismatch: %#v", disabled)
 	}
 
-	uninstalled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/uninstall", map[string]any{
+	uninstalled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"delete_data":        true,
 	})
@@ -272,7 +272,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 
 	emptyCatalog := getJSON[struct {
 		Plugins []registry.PluginRecord `json:"plugins"`
-	}](t, handler, "/_redeven_proxy/api/plugins/catalog")
+	}](t, handler, "/_redevplugin/api/plugins/catalog")
 	if len(emptyCatalog.Plugins) != 0 {
 		t.Fatalf("catalog after uninstall mismatch: %#v", emptyCatalog)
 	}
@@ -284,18 +284,18 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	v1 := buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP")
 	v2 := buildHTTPVersionedFixturePackage(t, "2.0.0", "HTTP v2")
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(v1),
 		"trust_state":    "verified",
 	})
-	enabled := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/enable", map[string]any{
+	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
 	if enabled.EnableState != registry.EnableEnabled {
 		t.Fatalf("enable response mismatch: %#v", enabled)
 	}
 
-	updated := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/update", map[string]any{
+	updated := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/update", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"package_base64":     base64.StdEncoding.EncodeToString(v2),
 	})
@@ -303,7 +303,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 		t.Fatalf("update response mismatch: %#v", updated)
 	}
 
-	downgraded := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/downgrade", map[string]any{
+	downgraded := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/downgrade", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"version":            "1.0.0",
 	})
@@ -315,14 +315,14 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid install status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
 		"trust_state":    "untrusted",
 	})
@@ -330,7 +330,7 @@ func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/enable", bytes.NewReader(raw))
+	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -341,7 +341,7 @@ func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) 
 func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{storageBroker: storage.NewMemoryBroker()})
 	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPBlockedNetworkFixturePackage(t)),
 		"trust_state":    "verified",
 	})
@@ -349,7 +349,7 @@ func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/enable", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -377,14 +377,14 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_id":              "http.activity",
 		"surface_instance_id":     "surface_http",
 		"owner_session_hash":      "session_hash",
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
-		"sandbox_origin":          "https://plg-http.sandbox.redeven.local",
+		"sandbox_origin":          "https://plg-http.sandbox.redevplugin.local",
 	})
 	if openResp.AssetTicket == "" || openResp.BridgeNonce == "" {
 		t.Fatalf("open response missing ticket/nonce: %#v", openResp)
@@ -393,18 +393,18 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(origins) != 1 || origins[0].Origin != "https://plg-http.sandbox.redeven.local" || origins[0].SurfaceInstanceID != "surface_http" {
+	if len(origins) != 1 || origins[0].Origin != "https://plg-http.sandbox.redevplugin.local" || origins[0].SurfaceInstanceID != "surface_http" {
 		t.Fatalf("registered browser origins mismatch: %#v", origins)
 	}
 
-	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http/bootstrap", map[string]any{
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
 
-	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http/bridge-token", map[string]any{
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http/bridge-token", map[string]any{
 		"bridge_channel_id": "bridge_http",
 		"handshake": map[string]any{
-			"type":                "redeven.plugin.handshake",
+			"type":                "redevplugin.bridge.handshake",
 			"plugin_id":           openResp.PluginID,
 			"surface_id":          openResp.SurfaceID,
 			"surface_instance_id": openResp.SurfaceInstanceID,
@@ -430,7 +430,7 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_id":              "http.activity",
 		"surface_instance_id":     "surface_http_bad_type",
@@ -438,13 +438,13 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
 	})
-	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_bad_type/bootstrap", map[string]any{
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_type/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
 	raw, err := json.Marshal(map[string]any{
 		"bridge_channel_id": "bridge_http",
 		"handshake": map[string]any{
-			"type":                "redeven.plugin.call",
+			"type":                "redevplugin.bridge.call",
 			"plugin_id":           openResp.PluginID,
 			"surface_id":          openResp.SurfaceID,
 			"surface_instance_id": openResp.SurfaceInstanceID,
@@ -456,7 +456,7 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/surfaces/surface_http_bad_type/bridge-token", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/surfaces/surface_http_bad_type/bridge-token", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -485,7 +485,7 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_id":              "http.activity",
 		"surface_instance_id":     "surface_http_asset",
@@ -501,7 +501,7 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_plugin/bootstrap", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/bootstrap", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -512,7 +512,7 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatalf("asset session cookie mismatch: %#v", cookies)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/assets/ui/index.html", nil)
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/ui/index.html", nil)
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -529,7 +529,7 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatalf("asset nosniff = %q", got)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/assets/manifest.json", nil)
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/manifest.json", nil)
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -554,7 +554,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_id":              "http.rpc.activity",
 		"surface_instance_id":     "surface_http_rpc",
@@ -562,10 +562,10 @@ func TestHandlerRPCFlow(t *testing.T) {
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
 	})
-	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_rpc/bootstrap", map[string]any{
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_rpc/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_rpc/bridge-token", map[string]any{
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_rpc/bridge-token", map[string]any{
 		"bridge_channel_id": "bridge_http_rpc",
 		"handshake": map[string]any{
 			"plugin_id":           openResp.PluginID,
@@ -577,7 +577,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 		},
 	})
 
-	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_instance_id":     "surface_http_rpc",
 		"session_channel_id_hash": "channel_hash",
@@ -626,7 +626,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -640,7 +640,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		t.Fatalf("rpc without grant error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
 
-	grant := postJSON[permissions.Record](t, handler, "/_redeven_proxy/api/plugins/permissions/grant", map[string]any{
+	grant := postJSON[permissions.Record](t, handler, "/_redevplugin/api/plugins/permissions/grant", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"permission_id":      "read",
 		"granted_by":         "admin",
@@ -650,12 +650,12 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	}
 	listed := getJSON[struct {
 		Permissions []permissions.Record `json:"permissions"`
-	}](t, handler, "/_redeven_proxy/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
+	}](t, handler, "/_redevplugin/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
 	if len(listed.Permissions) != 1 || listed.Permissions[0].PermissionID != "read" {
 		t.Fatalf("permissions list mismatch: %#v", listed)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -670,12 +670,12 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 
 	bridgeResp = openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.activity", "surface_http_permissions", "bridge_http_permissions")
 	callBody["plugin_gateway_token"] = bridgeResp.GatewayToken
-	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", callBody)
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", callBody)
 	if result.Data == nil || adapter.last.Method != "echo.ping" {
 		t.Fatalf("rpc after grant mismatch: result=%#v invocation=%#v", result, adapter.last)
 	}
 
-	revoked := postJSON[permissions.Record](t, handler, "/_redeven_proxy/api/plugins/permissions/revoke", map[string]any{
+	revoked := postJSON[permissions.Record](t, handler, "/_redevplugin/api/plugins/permissions/revoke", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"permission_id":      "read",
 		"revoked_by":         "admin",
@@ -686,7 +686,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	}
 	active := getJSON[struct {
 		Permissions []permissions.Record `json:"permissions"`
-	}](t, handler, "/_redeven_proxy/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
+	}](t, handler, "/_redevplugin/api/plugins/permissions?plugin_instance_id="+installed.PluginInstanceID+"&active_only=true")
 	if len(active.Permissions) != 0 {
 		t.Fatalf("active permissions after revoke mismatch: %#v", active)
 	}
@@ -696,7 +696,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -725,7 +725,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_id":              "http.danger.activity",
 		"surface_instance_id":     "surface_http_danger",
@@ -733,10 +733,10 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
 	})
-	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_danger/bootstrap", map[string]any{
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_danger/bridge-token", map[string]any{
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/bridge-token", map[string]any{
 		"bridge_channel_id": "bridge_http_danger",
 		"handshake": map[string]any{
 			"plugin_id":           openResp.PluginID,
@@ -763,7 +763,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -780,12 +780,12 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 		t.Fatalf("capability adapter should not be called before confirmation: %#v", adapter.last)
 	}
 
-	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redeven_proxy/api/plugins/confirm", body)
+	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redevplugin/api/plugins/confirm", body)
 	if confirmation.ConfirmationToken == "" || confirmation.RequestHash == "" {
 		t.Fatalf("confirmation response mismatch: %#v", confirmation)
 	}
 	body["confirmation_token"] = confirmation.ConfirmationToken
-	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", body)
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", body)
 	if result.Data == nil || adapter.last.Method != "danger.run" {
 		t.Fatalf("confirmed rpc mismatch: result=%#v invocation=%#v", result, adapter.last)
 	}
@@ -808,7 +808,7 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_operation", "bridge_http_operation")
 
-	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_instance_id":     "surface_http_operation",
 		"session_channel_id_hash": "channel_hash",
@@ -824,17 +824,17 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 
 	listed := getJSON[struct {
 		Operations []operation.Record `json:"operations"`
-	}](t, handler, "/_redeven_proxy/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
+	}](t, handler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
 	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != "op_http_1" {
 		t.Fatalf("operation list mismatch: %#v", listed)
 	}
 
-	detail := getJSON[operation.Record](t, handler, "/_redeven_proxy/api/plugins/operations/op_http_1")
+	detail := getJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/op_http_1")
 	if detail.Method != "images.pull" || detail.Status != operation.StatusRunning {
 		t.Fatalf("operation detail mismatch: %#v", detail)
 	}
 
-	canceled := postJSON[operation.Record](t, handler, "/_redeven_proxy/api/plugins/operations/op_http_1/cancel", map[string]any{
+	canceled := postJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/op_http_1/cancel", map[string]any{
 		"reason": "user",
 	})
 	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
@@ -859,7 +859,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.subscription.activity", "surface_http_stream", "bridge_http_stream")
 
-	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_instance_id":     "surface_http_stream",
 		"session_channel_id_hash": "channel_hash",
@@ -879,14 +879,14 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 		t.Fatalf("AppendStreamEvent() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("stream without ticket status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -907,7 +907,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 		t.Fatalf("stream event mismatch: %#v body = %s", event, rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/_redeven_plugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -928,7 +928,7 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.core.activity", "surface_http_core", "bridge_http_core")
 
-	result := postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_instance_id":     "surface_http_core",
 		"session_channel_id_hash": "channel_hash",
@@ -977,7 +977,7 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1003,11 +1003,11 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	schema := getJSON[host.SettingsSchemaResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings/schema")
+	schema := getJSON[host.SettingsSchemaResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings/schema")
 	if schema.SchemaVersion != 1 || len(schema.Fields) != 3 || schema.SettingsRevision == 0 {
 		t.Fatalf("settings schema mismatch: %#v", schema)
 	}
-	initial := getJSON[host.SettingsResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings")
+	initial := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
 	if initial.Values["default_engine"] != "docker" {
 		t.Fatalf("settings defaults mismatch: %#v", initial)
 	}
@@ -1016,19 +1016,19 @@ func TestHandlerSettingsFlow(t *testing.T) {
 		t.Fatalf("secret setting should be redacted unset state: %#v", initial.Values["api_token"])
 	}
 
-	patched := patchJSON[host.SettingsResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
+	patched := patchJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings", map[string]any{
 		"values": map[string]any{"default_engine": "podman"},
 	})
 	if patched.SettingsRevision <= initial.SettingsRevision || patched.Values["default_engine"] != "podman" {
 		t.Fatalf("patched settings mismatch: before=%#v after=%#v", initial, patched)
 	}
 
-	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/bind", map[string]any{
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/secrets/bind", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"secret_ref":         "api_token",
 		"scope":              "user",
 	})
-	withSecret := getJSON[host.SettingsResult](t, handler, "/_redeven_proxy/api/plugins/"+installed.PluginInstanceID+"/settings")
+	withSecret := getJSON[host.SettingsResult](t, handler, "/_redevplugin/api/plugins/"+installed.PluginInstanceID+"/settings")
 	secretRaw, ok = withSecret.Values["api_token"].(map[string]any)
 	if !ok || secretRaw["set"] != true {
 		t.Fatalf("secret setting should be redacted set state: %#v", withSecret.Values["api_token"])
@@ -1051,7 +1051,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
 	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_block_delete", "bridge_http_block_delete")
-	postJSON[host.CallMethodResult](t, handler, "/_redeven_proxy/api/plugins/rpc", map[string]any{
+	postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_instance_id":     "surface_http_block_delete",
 		"session_channel_id_hash": "channel_hash",
@@ -1069,7 +1069,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/uninstall", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/uninstall", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -1086,7 +1086,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 
 func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	h := newHTTPTestHost(t)
-	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", bytes.NewBufferString(`{} {}`))
 	rec := httptest.NewRecorder()
 	Handler{Host: h}.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -1109,14 +1109,14 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 	}
 	handler := Handler{Host: h}
 
-	exported := postJSON[host.ExportDataResult](t, handler, "/_redeven_proxy/api/plugins/data/export", map[string]any{
+	exported := postJSON[host.ExportDataResult](t, handler, "/_redevplugin/api/plugins/data/export", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
 	if exported.ArchiveRef == "" {
 		t.Fatal("export response missing archive_ref")
 	}
 
-	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/data/import", map[string]any{
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/import", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"archive_ref":        exported.ArchiveRef,
 		"delete_existing":    true,
@@ -1132,17 +1132,17 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	}
 	handler := Handler{Host: h}
 
-	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/bind", map[string]any{
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/secrets/bind", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"secret_ref":         "api_token",
 		"scope":              "user",
 	})
-	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/test", map[string]any{
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/secrets/test", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"secret_ref":         "api_token",
 		"scope":              "user",
 	})
-	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/secrets/delete", map[string]any{
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/secrets/delete", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"secret_ref":         "api_token",
 		"scope":              "user",
@@ -1157,7 +1157,7 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
 
-	postJSON[map[string]bool](t, handler, "/_redeven_plugin/csp-report", map[string]any{
+	postJSON[map[string]bool](t, handler, "/_redevplugin/csp-report", map[string]any{
 		"plugin_id":           "com.example.http",
 		"plugin_instance_id":  "plugin_http",
 		"surface_id":          "http.activity",
@@ -1176,7 +1176,7 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 	}
 	listed = getJSON[struct {
 		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
-	}](t, handler, "/_redeven_proxy/api/plugins/diagnostics?plugin_instance_id=plugin_http&severity=warning")
+	}](t, handler, "/_redevplugin/api/plugins/diagnostics?plugin_instance_id=plugin_http&severity=warning")
 	if len(listed.DiagnosticEvents) != 1 {
 		t.Fatalf("diagnostic events = %#v", listed.DiagnosticEvents)
 	}
@@ -1189,11 +1189,11 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 func TestHandlerListsAuditEvents(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
 		"trust_state":    registry.TrustVerified,
 	})
-	postJSON[registry.PluginRecord](t, handler, "/_redeven_proxy/api/plugins/enable", map[string]any{
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
 
@@ -1202,7 +1202,7 @@ func TestHandlerListsAuditEvents(t *testing.T) {
 	}
 	listed = getJSON[struct {
 		AuditEvents []host.AuditEvent `json:"audit_events"`
-	}](t, handler, "/_redeven_proxy/api/plugins/audit?plugin_instance_id="+installed.PluginInstanceID+"&type=plugin.enabled&limit=5")
+	}](t, handler, "/_redevplugin/api/plugins/audit?plugin_instance_id="+installed.PluginInstanceID+"&type=plugin.enabled&limit=5")
 	if len(listed.AuditEvents) != 1 {
 		t.Fatalf("audit events = %#v", listed.AuditEvents)
 	}
@@ -1219,17 +1219,17 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: supervisor})
 	handler := Handler{Host: h}
 
-	health := postJSON[runtimeclient.Health](t, handler, "/_redeven_proxy/api/plugins/runtime/start", map[string]any{
+	health := postJSON[runtimeclient.Health](t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
 		"target": map[string]any{"os": "test-os", "arch": "test-arch"},
 	})
 	if health.RuntimeInstanceID != "runtime_http" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
 		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
-	health = getJSON[runtimeclient.Health](t, handler, "/_redeven_proxy/api/plugins/runtime/health")
+	health = getJSON[runtimeclient.Health](t, handler, "/_redevplugin/api/plugins/runtime/health")
 	if !health.Ready || health.RuntimeGenerationID != "runtime_gen_http" {
 		t.Fatalf("runtime health mismatch: %#v", health)
 	}
-	postJSON[map[string]bool](t, handler, "/_redeven_proxy/api/plugins/runtime/stop", map[string]any{})
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
 	if supervisor.stopCalls != 1 {
 		t.Fatalf("Stop calls = %d, want 1", supervisor.stopCalls)
 	}
@@ -1291,22 +1291,22 @@ func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 
 func samplePathForRoute(path string) string {
 	switch path {
-	case "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap":
-		return "/_redeven_proxy/api/plugins/surfaces/surface_test/bootstrap"
-	case "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token":
-		return "/_redeven_proxy/api/plugins/surfaces/surface_test/bridge-token"
-	case "/_redeven_proxy/api/plugins/operations/{operation_id}":
-		return "/_redeven_proxy/api/plugins/operations/op_test"
-	case "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel":
-		return "/_redeven_proxy/api/plugins/operations/op_test/cancel"
-	case "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema":
-		return "/_redeven_proxy/api/plugins/plugini_test/settings/schema"
-	case "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings":
-		return "/_redeven_proxy/api/plugins/plugini_test/settings"
-	case "/_redeven_plugin/assets/{asset_path...}":
-		return "/_redeven_plugin/assets/ui/index.html"
-	case "/_redeven_plugin/stream/{stream_id}":
-		return "/_redeven_plugin/stream/stream_test"
+	case "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap":
+		return "/_redevplugin/api/plugins/surfaces/surface_test/bootstrap"
+	case "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token":
+		return "/_redevplugin/api/plugins/surfaces/surface_test/bridge-token"
+	case "/_redevplugin/api/plugins/operations/{operation_id}":
+		return "/_redevplugin/api/plugins/operations/op_test"
+	case "/_redevplugin/api/plugins/operations/{operation_id}/cancel":
+		return "/_redevplugin/api/plugins/operations/op_test/cancel"
+	case "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":
+		return "/_redevplugin/api/plugins/plugini_test/settings/schema"
+	case "/_redevplugin/api/plugins/{plugin_instance_id}/settings":
+		return "/_redevplugin/api/plugins/plugini_test/settings"
+	case "/_redevplugin/assets/{asset_path...}":
+		return "/_redevplugin/assets/ui/index.html"
+	case "/_redevplugin/stream/{stream_id}":
+		return "/_redevplugin/stream/stream_test"
 	default:
 		return path
 	}
@@ -1458,8 +1458,8 @@ func buildHTTPWorkerFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpWorkerFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Worker</title>")
-	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redeven_worker_invoke"))
-	writeHTTPFile(t, filepath.Join(dir, "workers", "abi.json"), httpWorkerFixtureABIJSON("redeven_worker_invoke"))
+	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeHTTPFile(t, filepath.Join(dir, "workers", "abi.json"), httpWorkerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1530,9 +1530,9 @@ func httpWorkerFixtureABIJSON(exports ...string) string {
 		panic(err)
 	}
 	return "{\n" +
-		"  \"abi_version\": \"redeven-wasm-worker-v1\",\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
 		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": [\"redeven.log\", \"redeven.storage\", \"redeven.network\", \"redeven.operation\", \"redeven.clock\"]\n" +
+		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
 		"}\n"
 }
 
@@ -1545,7 +1545,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 		title = "HTTP"
 	}
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http",
@@ -1563,7 +1563,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 
 func httpStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.storage",
@@ -1602,7 +1602,7 @@ func httpStorageFixtureManifestJSON() string {
 
 func httpRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.rpc",
@@ -1631,7 +1631,7 @@ func httpRPCFixtureManifestJSON() string {
 
 func httpDangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.danger",
@@ -1662,7 +1662,7 @@ func httpDangerousRPCFixtureManifestJSON() string {
 
 func httpOperationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.operation",
@@ -1697,7 +1697,7 @@ func httpOperationRPCFixtureManifestJSON() string {
 
 func httpSubscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.subscription",
@@ -1732,7 +1732,7 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 
 func httpCoreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.core",
@@ -1758,7 +1758,7 @@ func httpCoreActionFixtureManifestJSON() string {
 
 func httpWorkerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.worker",
@@ -1772,14 +1772,14 @@ func httpWorkerFixtureManifestJSON() string {
 			{"surface_id": "http.worker.activity", "kind": "activity", "label": "HTTP Worker", "entry": "ui/index.html", "method": "worker.echo"}
 		],
 		"workers": [
-			{"worker_id": "echo_worker", "mode": "job", "artifact": "workers/echo.wasm", "abi": "redeven-wasm-worker-v1", "scope": "user", "memory_limit_bytes": 1048576}
+			{"worker_id": "echo_worker", "mode": "job", "artifact": "workers/echo.wasm", "abi": "redevplugin-wasm-worker-v1", "scope": "user", "memory_limit_bytes": 1048576}
 		],
 		"methods": [
 			{
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		]
 	}`
@@ -1787,7 +1787,7 @@ func httpWorkerFixtureManifestJSON() string {
 
 func httpSettingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.settings",
@@ -1823,7 +1823,7 @@ func httpSettingsFixtureManifestJSON() string {
 
 func httpBlockedNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.network",
@@ -1973,7 +1973,7 @@ func (g *httpTestWebSecurityGuard) ValidateCSRF(_ *http.Request, sessionHash str
 
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
 	t.Helper()
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      pluginInstanceID,
 		"surface_id":              surfaceID,
 		"surface_instance_id":     surfaceInstanceID,
@@ -1981,10 +1981,10 @@ func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string,
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
 	})
-	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/"+surfaceInstanceID+"/bootstrap", map[string]any{
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	return postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/"+surfaceInstanceID+"/bridge-token", map[string]any{
+	return postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/bridge-token", map[string]any{
 		"bridge_channel_id": bridgeChannelID,
 		"handshake": map[string]any{
 			"plugin_id":           openResp.PluginID,

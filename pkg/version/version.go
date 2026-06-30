@@ -17,7 +17,7 @@ const (
 	RuntimeVersion                = "0.0.0-dev"
 	PluginHostProtocolVersion     = "plugin-host-v1"
 	RustIPCVersion                = "rust-ipc-v1"
-	WASMABIVersion                = "redeven-wasm-worker-v1"
+	WASMABIVersion                = "redevplugin-wasm-worker-v1"
 	ManifestSchemaVersion         = "manifest-v1"
 	PackageSignatureSchemaVersion = "package-signature-v1"
 	TokenTicketSchemaVersion      = "token-ticket-v1"
@@ -94,13 +94,13 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "plugin-platform-openapi",
 				Path:    "spec/openapi/plugin-platform-v1.yaml",
 				Version: PluginPlatformOpenAPIVersion,
-				SHA256:  "7af8c007332722a8d12c7da0a43bad90d3878719b27a93b6e605113a09bae5a0",
+				SHA256:  "9e502c81ee5dea89c376c85e7ea60e4bb590c94f717ac7910919757557d386a3",
 			},
 			{
 				ID:      "manifest-schema",
 				Path:    "spec/plugin/manifest-v1.schema.json",
 				Version: ManifestSchemaVersion,
-				SHA256:  "8d76eb53ca63a4eaed623d12381a152da2da22634a5159845a46c8abc27a406a",
+				SHA256:  "caae19f507c0539d2873e21e82ad17c3269de1ee30d53e81e740220ddfb1beb4",
 			},
 			{
 				ID:      "package-signature-schema",
@@ -118,31 +118,31 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "iframe-bridge-schema",
 				Path:    "spec/plugin/bridge-v1.schema.json",
 				Version: BridgeSchemaVersion,
-				SHA256:  "d6c82f67bb86695b5a018d10ba64d3aef99863083094543659f3f39cf3d3ed50",
+				SHA256:  "1cbd353248fe104f2745b8a1adb466461d1282ab43d1779186683c38fadd641a",
 			},
 			{
 				ID:      "compatibility-manifest-schema",
 				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
 				Version: CompatibilitySchemaVersion,
-				SHA256:  "4e3e347c78a530e566298b9f0e62625ce12bf37dfe6e67598f17c37b42984f54",
+				SHA256:  "36634fffc351fdc6a4ef5d36aa23a2fabb9e8a85bf917e31d71703f9255cf1b6",
 			},
 			{
 				ID:      "worker-invocation-schema",
 				Path:    "spec/plugin/worker-invocation-v1.schema.json",
 				Version: WorkerInvocationSchemaVersion,
-				SHA256:  "2219ee6e96c2d1873bbfcf0be8378a82042a00775a2382703a6edaf851702f21",
+				SHA256:  "913e7fbdc87ed59f0f1b7f9b16b87e88c9441cc1c26a5547a22d03f0f1c4fc03",
 			},
 			{
 				ID:      "rust-ipc-schema",
 				Path:    "spec/plugin/ipc-v1.schema.json",
 				Version: RustIPCVersion,
-				SHA256:  "a78a2d5fe456fbee9745760ff25f78c449719dda7ad77cf5f2a389195ca2dfa2",
+				SHA256:  "1e8b9a7122ddbf18aac75a22aed4f2e0a54c913e537b9255cb448011fefcbbcc",
 			},
 			{
 				ID:      "wasm-worker-schema",
 				Path:    "spec/plugin/wasm-worker-v1.schema.json",
 				Version: WASMABIVersion,
-				SHA256:  "6bff741d49a49e1e7685ccd9c1520c272412bdbe91d3654f601a7f083ba1fa38",
+				SHA256:  "ff0a37ea972db7d8be89b529e03d890af00aab3f2d9461c2db3a3d58c664b775",
 			},
 			{
 				ID:      "network-grant-schema",

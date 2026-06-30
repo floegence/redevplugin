@@ -23,7 +23,7 @@
         "ui_protocol_version"
       ],
       "properties": {
-        "type": { "const": "redeven.plugin.handshake" },
+        "type": { "const": "redevplugin.bridge.handshake" },
         "plugin_id": { "type": "string", "minLength": 1 },
         "surface_id": { "type": "string", "minLength": 1 },
         "surface_instance_id": { "type": "string", "minLength": 1 },
@@ -37,7 +37,7 @@
       "additionalProperties": false,
       "required": ["type", "request"],
       "properties": {
-        "type": { "const": "redeven.plugin.call" },
+        "type": { "const": "redevplugin.bridge.call" },
         "request": {
           "type": "object",
           "additionalProperties": false,
@@ -60,7 +60,7 @@
           "additionalProperties": false,
           "required": ["type", "id", "ok"],
           "properties": {
-            "type": { "const": "redeven.plugin.response" },
+            "type": { "const": "redevplugin.bridge.response" },
             "id": { "type": "string", "minLength": 1 },
             "ok": { "const": true },
             "data": true
@@ -71,7 +71,7 @@
           "additionalProperties": false,
           "required": ["type", "id", "ok", "error_code", "error"],
           "properties": {
-            "type": { "const": "redeven.plugin.response" },
+            "type": { "const": "redevplugin.bridge.response" },
             "id": { "type": "string", "minLength": 1 },
             "ok": { "const": false },
             "error_code": {
@@ -104,7 +104,7 @@
       "additionalProperties": false,
       "required": ["type", "event"],
       "properties": {
-        "type": { "const": "redeven.plugin.lifecycle" },
+        "type": { "const": "redevplugin.bridge.lifecycle" },
         "event": {
           "type": "object",
           "additionalProperties": false,

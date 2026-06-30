@@ -10,10 +10,10 @@ if grep -R 'postMessage([^,]*,[[:space:]]*["'\'']\*["'\'']' "$SDK_SRC" >/dev/nul
   exit 1
 fi
 
-grep -q '"type": { "const": "redeven.plugin.handshake" }' "$BRIDGE_SCHEMA"
-grep -q '"type": { "const": "redeven.plugin.call" }' "$BRIDGE_SCHEMA"
-grep -q '"type": { "const": "redeven.plugin.response" }' "$BRIDGE_SCHEMA"
-grep -q '"type": { "const": "redeven.plugin.lifecycle" }' "$BRIDGE_SCHEMA"
+grep -q '"type": { "const": "redevplugin.bridge.handshake" }' "$BRIDGE_SCHEMA"
+grep -q '"type": { "const": "redevplugin.bridge.call" }' "$BRIDGE_SCHEMA"
+grep -q '"type": { "const": "redevplugin.bridge.response" }' "$BRIDGE_SCHEMA"
+grep -q '"type": { "const": "redevplugin.bridge.lifecycle" }' "$BRIDGE_SCHEMA"
 grep -q '"ui_protocol_version": { "const": "plugin-ui-v1" }' "$BRIDGE_SCHEMA"
 grep -q '"params": {' "$BRIDGE_SCHEMA"
 grep -q '"type": "object"' "$BRIDGE_SCHEMA"
@@ -21,10 +21,10 @@ grep -q '"PLUGIN_CONFIRMATION_REQUIRED"' "$BRIDGE_SCHEMA"
 grep -q '"PLUGIN_CONFIRMATION_REJECTED"' "$BRIDGE_SCHEMA"
 grep -q '"PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"' "$BRIDGE_SCHEMA"
 
-grep -q 'type: "redeven.plugin.handshake"' "$SDK_SRC/index.ts"
-grep -q 'type: "redeven.plugin.call"' "$SDK_SRC/index.ts"
-grep -q 'type: "redeven.plugin.response"' "$SDK_SRC/index.ts"
-grep -q 'type: "redeven.plugin.lifecycle"' "$SDK_SRC/index.ts"
+grep -q 'type: "redevplugin.bridge.handshake"' "$SDK_SRC/index.ts"
+grep -q 'type: "redevplugin.bridge.call"' "$SDK_SRC/index.ts"
+grep -q 'type: "redevplugin.bridge.response"' "$SDK_SRC/index.ts"
+grep -q 'type: "redevplugin.bridge.lifecycle"' "$SDK_SRC/index.ts"
 grep -q 'ui_protocol_version: "plugin-ui-v1"' "$SDK_SRC/index.ts"
 
 node - "$BRIDGE_SCHEMA" "$SDK_SRC/index.ts" <<'NODE'
@@ -35,8 +35,8 @@ const schemaRaw = fs.readFileSync(schemaPath, "utf8");
 const schema = JSON.parse(schemaRaw);
 const sdk = fs.readFileSync(sdkPath, "utf8");
 
-const schemaConstants = new Set(schemaRaw.match(/redeven\.plugin\.[a-z_]+|plugin-ui-v1/g) ?? []);
-for (const value of ["redeven.plugin.handshake", "redeven.plugin.call", "redeven.plugin.response", "redeven.plugin.lifecycle", "plugin-ui-v1"]) {
+const schemaConstants = new Set(schemaRaw.match(/redevplugin\.bridge\.[a-z_]+|plugin-ui-v1/g) ?? []);
+for (const value of ["redevplugin.bridge.handshake", "redevplugin.bridge.call", "redevplugin.bridge.response", "redevplugin.bridge.lifecycle", "plugin-ui-v1"]) {
   if (!schemaConstants.has(value)) {
     throw new Error(`bridge schema is missing ${value}`);
   }

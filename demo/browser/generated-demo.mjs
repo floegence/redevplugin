@@ -11,7 +11,7 @@ const hostPort = Number(process.env.HOST_PORT || (await getFreePort()));
 const pluginPort = Number(process.env.PLUGIN_PORT || (await getFreePort(hostPort)));
 const generatedRoot = await mkdtemp(join(tmpdir(), "redevplugin-generated-demo-"));
 const generatedPluginDir = join(generatedRoot, "plugin");
-const generatedPackage = join(generatedRoot, "generated.redeven-plugin");
+const generatedPackage = join(generatedRoot, "generated.redevplugin");
 const generatedStateRoot = join(generatedRoot, "state");
 let server;
 let cleanupStarted = false;

@@ -32,7 +32,7 @@
         "redevplugin_runtime_version": { "type": "string", "minLength": 1 },
         "plugin_host_protocol_version": { "const": "plugin-host-v1" },
         "rust_ipc_version": { "const": "rust-ipc-v1" },
-        "wasm_abi_version": { "const": "redeven-wasm-worker-v1" },
+        "wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" },
         "manifest_schema_version": { "const": "manifest-v1" },
         "package_signature_schema_version": { "const": "package-signature-v1" },
         "token_ticket_schema_version": { "const": "token-ticket-v1" },

@@ -152,7 +152,7 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.trust",

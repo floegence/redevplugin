@@ -383,7 +383,7 @@ func TestOpenSurfaceRegistersBrowserOrigin(t *testing.T) {
 		OwnerSessionHash:     "owner_session_hash",
 		OwnerUserHash:        "owner_user_hash",
 		SessionChannelIDHash: "session_channel_hash",
-		SandboxOrigin:        "https://plg-lifecycle.sandbox.redeven.local",
+		SandboxOrigin:        "https://plg-lifecycle.sandbox.redevplugin.local",
 		Now:                  now.Add(time.Second),
 	})
 	if err != nil {
@@ -404,7 +404,7 @@ func TestOpenSurfaceRegistersBrowserOrigin(t *testing.T) {
 		origin.SurfaceInstanceID != bootstrap.SurfaceInstanceID ||
 		origin.OwnerSessionHash != "owner_session_hash" ||
 		origin.OwnerUserHash != "owner_user_hash" ||
-		origin.Origin != "https://plg-lifecycle.sandbox.redeven.local" {
+		origin.Origin != "https://plg-lifecycle.sandbox.redevplugin.local" {
 		t.Fatalf("registered origin mismatch: %#v", origin)
 	}
 	if !audits.hasEvent("plugin.browser_origin.registered") {
@@ -739,7 +739,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload.WorkerID != "echo_worker" ||
-		payload.Export != "redeven_worker_invoke" ||
+		payload.Export != "redevplugin_worker_invoke" ||
 		payload.Artifact != "workers/echo.wasm" ||
 		payload.PackageHash != installed.PackageHash ||
 		payload.ArtifactSHA256 == "" ||
@@ -1460,7 +1460,7 @@ func TestUninstallRetainsOrDeletesBrowserSiteData(t *testing.T) {
 		SurfaceID:         "lifecycle.activity",
 		SurfaceInstanceID: "surface_retain_browser",
 		OwnerSessionHash:  "session_retain",
-		SandboxOrigin:     "https://plg-retain.sandbox.redeven.local",
+		SandboxOrigin:     "https://plg-retain.sandbox.redevplugin.local",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1497,14 +1497,14 @@ func TestUninstallRetainsOrDeletesBrowserSiteData(t *testing.T) {
 		SurfaceID:         "lifecycle.activity",
 		SurfaceInstanceID: "surface_delete_browser",
 		OwnerSessionHash:  "session_delete",
-		SandboxOrigin:     "https://plg-delete.sandbox.redeven.local",
+		SandboxOrigin:     "https://plg-delete.sandbox.redevplugin.local",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true}); err != nil {
 		t.Fatalf("UninstallPlugin(delete) error = %v", err)
 	}
-	if len(cleaner.origins) != 1 || cleaner.origins[0] != "https://plg-delete.sandbox.redeven.local" {
+	if len(cleaner.origins) != 1 || cleaner.origins[0] != "https://plg-delete.sandbox.redevplugin.local" {
 		t.Fatalf("cleaned origins mismatch: %#v", cleaner.origins)
 	}
 	deletedOrigins, err := deleteBrowserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: deletedPlugin.PluginInstanceID})
@@ -1542,7 +1542,7 @@ func TestUninstallDeleteDataFailsWhenBrowserSiteCleanupFails(t *testing.T) {
 		SurfaceID:         "lifecycle.activity",
 		SurfaceInstanceID: "surface_cleanup_failure",
 		OwnerSessionHash:  "session_failure",
-		SandboxOrigin:     "https://plg-failure.sandbox.redeven.local",
+		SandboxOrigin:     "https://plg-failure.sandbox.redevplugin.local",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2252,8 +2252,8 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker</title>")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redeven_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -2266,8 +2266,8 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network</title>")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redeven_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -2280,8 +2280,8 @@ func buildWorkerNetworkHostcallFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Hostcall</title>")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedHostcallWorkerWASMForTest("redeven.network", "http_request_demo", "redeven_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedHostcallWorkerWASMForTest("redevplugin.network", "http_request_demo", "redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -2294,8 +2294,8 @@ func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Memory Hostcall</title>")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redeven_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -2308,8 +2308,8 @@ func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage</title>")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageHostcallWorkerWASMForTest("redeven_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -2322,8 +2322,8 @@ func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage Memory Hostcall</title>")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redeven_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -2389,7 +2389,7 @@ func minimalWorkerWASMForTest(exportName string) []byte {
 }
 
 func storageHostcallWorkerWASMForTest(exportName string) []byte {
-	return importedHostcallWorkerWASMForTest("redeven.storage", "files_write_demo", exportName)
+	return importedHostcallWorkerWASMForTest("redevplugin.storage", "files_write_demo", exportName)
 }
 
 func importedHostcallWorkerWASMForTest(importModule string, importName string, exportName string) []byte {
@@ -2423,12 +2423,12 @@ func importedHostcallWorkerWASMForTest(importModule string, importName string, e
 
 func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	return importedMemoryHostcallWorkerWASMForTest("redeven.network", "http_request", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "http_request", exportName, request)
 }
 
 func storageMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}`)
-	return importedMemoryHostcallWorkerWASMForTest("redeven.storage", "files", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "files", exportName, request)
 }
 
 func importedMemoryHostcallWorkerWASMForTest(importModuleName string, importNameName string, exportName string, request []byte) []byte {
@@ -2508,9 +2508,9 @@ func workerFixtureABIJSON(exports ...string) string {
 		panic(err)
 	}
 	return "{\n" +
-		"  \"abi_version\": \"redeven-wasm-worker-v1\",\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
 		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": [\"redeven.log\", \"redeven.storage\", \"redeven.network\", \"redeven.operation\", \"redeven.clock\"]\n" +
+		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
 		"}\n"
 }
 
@@ -2523,7 +2523,7 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
@@ -2541,7 +2541,7 @@ func lifecycleManifestJSON(version string, title string) string {
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
@@ -2597,7 +2597,7 @@ func storageFixtureManifestJSON() string {
 
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
@@ -2636,7 +2636,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
@@ -2665,7 +2665,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
@@ -2696,7 +2696,7 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
@@ -2731,7 +2731,7 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
@@ -2766,7 +2766,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
@@ -2792,7 +2792,7 @@ func coreActionFixtureManifestJSON() string {
 
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -2809,7 +2809,7 @@ func workerFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redeven-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v1",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -2821,7 +2821,7 @@ func workerFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		]
 	}`
@@ -2829,7 +2829,7 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
@@ -2846,7 +2846,7 @@ func workerNetworkFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redeven-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v1",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -2858,7 +2858,7 @@ func workerNetworkFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
 		"network_access": {
@@ -2871,7 +2871,7 @@ func workerNetworkFixtureManifestJSON() string {
 
 func workerStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage",
@@ -2888,7 +2888,7 @@ func workerStorageFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redeven-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v1",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -2900,7 +2900,7 @@ func workerStorageFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "write",
 				"execution": "sync",
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
 		"storage": {
@@ -2933,7 +2933,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",

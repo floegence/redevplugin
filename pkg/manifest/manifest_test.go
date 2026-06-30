@@ -12,7 +12,7 @@ func TestDecodeValidManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if manifest.PluginID() != "com.example.containers" {
+	if manifest.PluginID() != "com.example.resources" {
 		t.Fatalf("PluginID() = %q", manifest.PluginID())
 	}
 	if manifest.Version() != "1.0.0" {
@@ -38,7 +38,7 @@ func TestDecodeRejectsTrailingJSONValue(t *testing.T) {
 
 func TestValidateRejectsIntentMissingMethod(t *testing.T) {
 	m := validManifest()
-	m.Intents = []IntentSpec{{IntentID: "missing", Method: "containers.inspect"}}
+	m.Intents = []IntentSpec{{IntentID: "missing", Method: "resources.inspect"}}
 
 	if err := Validate(m); err == nil {
 		t.Fatal("Validate() expected missing method error")
@@ -48,8 +48,8 @@ func TestValidateRejectsIntentMissingMethod(t *testing.T) {
 func TestValidateRejectsSameSurfaceIDAcrossKinds(t *testing.T) {
 	m := validManifest()
 	m.Surfaces = []SurfaceSpec{
-		{SurfaceID: "containers", Kind: SurfaceActivity, Label: "Containers", Entry: "ui/index.html"},
-		{SurfaceID: "containers", Kind: SurfaceWorkbench, Label: "Containers", Entry: "ui/index.html"},
+		{SurfaceID: "resources", Kind: SurfaceActivity, Label: "Resources", Entry: "ui/index.html"},
+		{SurfaceID: "resources", Kind: SurfaceWorkbench, Label: "Resources", Entry: "ui/index.html"},
 	}
 
 	if err := Validate(m); err == nil {
@@ -60,10 +60,10 @@ func TestValidateRejectsSameSurfaceIDAcrossKinds(t *testing.T) {
 func TestValidateRequiresCancelPolicyForSubscription(t *testing.T) {
 	m := validManifest()
 	m.Methods = append(m.Methods, MethodSpec{
-		Method:    "containers.logs.tail",
+		Method:    "resources.logs.tail",
 		Effect:    MethodEffectRead,
 		Execution: MethodExecutionSubscription,
-		Route:     MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "container_runtime", TargetMethod: "containers.logs.tail"},
+		Route:     MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.logs.tail"},
 	})
 
 	if err := Validate(m); err == nil {
@@ -111,7 +111,7 @@ func TestValidateWorkers(t *testing.T) {
 	m.Workers = []WorkerSpec{{
 		WorkerID:         "echo_worker",
 		Artifact:         "workers/echo.wasm",
-		ABI:              "redeven-wasm-worker-v1",
+		ABI:              "redevplugin-wasm-worker-v1",
 		Mode:             WorkerModeJob,
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
@@ -120,7 +120,7 @@ func TestValidateWorkers(t *testing.T) {
 		Method:    "worker.echo",
 		Effect:    MethodEffectRead,
 		Execution: MethodExecutionSync,
-		Route:     MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redeven_worker_invoke"},
+		Route:     MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
 	})
 	if err := Validate(m); err != nil {
 		t.Fatalf("Validate() worker manifest error = %v", err)
@@ -225,28 +225,28 @@ func TestValidateCoreActionRouteRequiresActionID(t *testing.T) {
 
 func validManifest() Manifest {
 	return Manifest{
-		SchemaVersion: "redeven.plugin.manifest.v1",
+		SchemaVersion: "redevplugin.manifest.v1",
 		Publisher:     Publisher{PublisherID: "example", DisplayName: "Example"},
 		Plugin: Plugin{
-			PluginID:          "com.example.containers",
-			DisplayName:       "Containers",
+			PluginID:          "com.example.resources",
+			DisplayName:       "Resources",
 			Version:           "1.0.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
 			UIProtocolVersion: "plugin-ui-v1",
 		},
 		Surfaces: []SurfaceSpec{
-			{SurfaceID: "containers.activity", Kind: SurfaceActivity, Label: "Containers", Entry: "ui/index.html", Method: "containers.list"},
+			{SurfaceID: "resources.activity", Kind: SurfaceActivity, Label: "Resources", Entry: "ui/index.html", Method: "resources.list"},
 		},
 		CapabilityBindings: []CapabilityBinding{
-			{BindingID: "container_runtime", CapabilityID: "redeven.capability.container_resources", MinCapabilityVersion: "1.0.0", RequiredPermissions: []string{"read"}},
+			{BindingID: "resource_provider", CapabilityID: "example.capability.resources", MinCapabilityVersion: "1.0.0", RequiredPermissions: []string{"read"}},
 		},
 		Methods: []MethodSpec{
 			{
-				Method:         "containers.list",
+				Method:         "resources.list",
 				Effect:         MethodEffectRead,
 				Execution:      MethodExecutionSync,
-				Route:          MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "container_runtime", TargetMethod: "containers.list"},
+				Route:          MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.list"},
 				RequestSchema:  map[string]any{"type": "object", "additionalProperties": false},
 				ResponseSchema: map[string]any{"type": "object"},
 			},
@@ -255,10 +255,10 @@ func validManifest() Manifest {
 			SchemaVersion: 1,
 			Migration:     noopMigration(),
 			Fields: []SettingFieldSpec{
-				{Key: "default_engine", Type: "select", Scope: "user", Label: "Default engine", Default: "docker", Options: []string{"docker", "podman"}},
+				{Key: "default_source", Type: "select", Scope: "user", Label: "Default source", Default: "primary", Options: []string{"primary", "secondary"}},
 			},
 		},
-		Intents: []IntentSpec{{IntentID: "open-container-list", Method: "containers.list"}},
+		Intents: []IntentSpec{{IntentID: "open-resource-list", Method: "resources.list"}},
 	}
 }
 
@@ -274,28 +274,28 @@ func noopMigration() MigrationSpec {
 
 func validManifestJSON() string {
 	return `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
-			"plugin_id": "com.example.containers",
-			"display_name": "Containers",
+			"plugin_id": "com.example.resources",
+			"display_name": "Resources",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
 			"ui_protocol_version": "plugin-ui-v1"
 		},
 		"surfaces": [
-			{"surface_id": "containers.activity", "kind": "activity", "label": "Containers", "entry": "ui/index.html", "method": "containers.list"}
+			{"surface_id": "resources.activity", "kind": "activity", "label": "Resources", "entry": "ui/index.html", "method": "resources.list"}
 		],
 		"capability_bindings": [
-			{"binding_id": "container_runtime", "capability_id": "redeven.capability.container_resources", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+			{"binding_id": "resource_provider", "capability_id": "example.capability.resources", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
 		],
 		"methods": [
 			{
-				"method": "containers.list",
+				"method": "resources.list",
 				"effect": "read",
 				"execution": "sync",
-				"route": {"kind": "capability", "binding_id": "container_runtime", "target_method": "containers.list"},
+				"route": {"kind": "capability", "binding_id": "resource_provider", "target_method": "resources.list"},
 				"request_schema": {"type": "object", "additionalProperties": false},
 				"response_schema": {"type": "object"}
 			}
@@ -313,11 +313,11 @@ func validManifestJSON() string {
 				"steps_hash": "sha256:empty"
 			},
 			"fields": [
-				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]}
+				{"key": "default_source", "type": "select", "scope": "user", "label": "Default source", "default": "primary", "options": ["primary", "secondary"]}
 			]
 		},
 		"intents": [
-			{"intent_id": "open-container-list", "method": "containers.list"}
+			{"intent_id": "open-resource-list", "method": "resources.list"}
 		]
 	}`
 }

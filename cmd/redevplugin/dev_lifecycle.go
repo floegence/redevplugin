@@ -24,7 +24,7 @@ import (
 const (
 	devStateSchemaVersion = "redevplugin.dev_state.v1"
 	devStateFile          = "redevplugin-dev-state.json"
-	devPackageFile        = "installed.redeven-plugin"
+	devPackageFile        = "installed.redevplugin"
 	devStorageDir         = "storage"
 	devDefaultSandbox     = "http://127.0.0.1:4174"
 )

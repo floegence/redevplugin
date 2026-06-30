@@ -14,7 +14,7 @@ func TestMemoryStoreGrantListCheckAndRevoke(t *testing.T) {
 
 	record, err := store.Grant(context.Background(), GrantRequest{
 		PluginInstanceID: "plugin_a",
-		PermissionID:     "containers.read",
+		PermissionID:     "resources.read",
 		GrantedBy:        "user_a",
 		Now:              now,
 	})
@@ -27,7 +27,7 @@ func TestMemoryStoreGrantListCheckAndRevoke(t *testing.T) {
 
 	ok, missing, err := store.IsGranted(context.Background(), CheckRequest{
 		PluginInstanceID: "plugin_a",
-		PermissionIDs:    []string{"containers.read", "containers.read"},
+		PermissionIDs:    []string{"resources.read", "resources.read"},
 		Now:              now.Add(time.Second),
 	})
 	if err != nil {
@@ -39,19 +39,19 @@ func TestMemoryStoreGrantListCheckAndRevoke(t *testing.T) {
 
 	ok, missing, err = store.IsGranted(context.Background(), CheckRequest{
 		PluginInstanceID: "plugin_a",
-		PermissionIDs:    []string{"containers.read", "containers.write"},
+		PermissionIDs:    []string{"resources.read", "resources.write"},
 		Now:              now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok || !reflect.DeepEqual(missing, []string{"containers.write"}) {
+	if ok || !reflect.DeepEqual(missing, []string{"resources.write"}) {
 		t.Fatalf("IsGranted(missing) = %v missing=%v", ok, missing)
 	}
 
 	revoked, err := store.Revoke(context.Background(), RevokeRequest{
 		PluginInstanceID: "plugin_a",
-		PermissionID:     "containers.read",
+		PermissionID:     "resources.read",
 		RevokedBy:        "admin",
 		Reason:           "review",
 		Now:              now.Add(2 * time.Second),
@@ -65,13 +65,13 @@ func TestMemoryStoreGrantListCheckAndRevoke(t *testing.T) {
 
 	ok, missing, err = store.IsGranted(context.Background(), CheckRequest{
 		PluginInstanceID: "plugin_a",
-		PermissionIDs:    []string{"containers.read"},
+		PermissionIDs:    []string{"resources.read"},
 		Now:              now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok || !reflect.DeepEqual(missing, []string{"containers.read"}) {
+	if ok || !reflect.DeepEqual(missing, []string{"resources.read"}) {
 		t.Fatalf("IsGranted(revoked) = %v missing=%v", ok, missing)
 	}
 

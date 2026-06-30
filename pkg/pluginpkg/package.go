@@ -429,7 +429,7 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
 		}
 		if worker.Mode == manifest.WorkerModeActor {
-			for _, requiredExport := range []string{"redeven_actor_start", "redeven_actor_stop"} {
+			for _, requiredExport := range []string{"redevplugin_actor_start", "redevplugin_actor_stop"} {
 				if _, ok := exports[requiredExport]; !ok {
 					return fmt.Errorf("workers[%d].mode actor requires %s export in %q", i, requiredExport, artifact)
 				}
@@ -472,8 +472,8 @@ func validateWorkerABIDescriptor(m manifest.Manifest, files map[string][]byte) (
 	if err := json.Unmarshal(raw, &descriptor); err != nil {
 		return validatedWorkerABI{}, fmt.Errorf("%s: %w", workerABIPath, err)
 	}
-	if descriptor.ABIVersion != "redeven-wasm-worker-v1" {
-		return validatedWorkerABI{}, fmt.Errorf("%s: abi_version must be redeven-wasm-worker-v1", workerABIPath)
+	if descriptor.ABIVersion != "redevplugin-wasm-worker-v1" {
+		return validatedWorkerABI{}, fmt.Errorf("%s: abi_version must be redevplugin-wasm-worker-v1", workerABIPath)
 	}
 	exports, err := validateWorkerABISet(workerABIPath, "exports", descriptor.Exports, allowedWorkerABIExports())
 	if err != nil {
@@ -490,7 +490,7 @@ func validateWorkerABIDescriptor(m manifest.Manifest, files map[string][]byte) (
 		if worker.Mode != manifest.WorkerModeActor {
 			continue
 		}
-		for _, requiredExport := range []string{"redeven_actor_start", "redeven_actor_stop"} {
+		for _, requiredExport := range []string{"redevplugin_actor_start", "redevplugin_actor_stop"} {
 			if _, ok := exports[requiredExport]; !ok {
 				return validatedWorkerABI{}, fmt.Errorf("workers[%d].mode actor requires %s export in %s", i, requiredExport, workerABIPath)
 			}
@@ -519,19 +519,19 @@ func validateWorkerABISet(abiPath string, field string, values []string, allowed
 
 func allowedWorkerABIExports() map[string]struct{} {
 	return map[string]struct{}{
-		"redeven_worker_invoke": {},
-		"redeven_actor_start":   {},
-		"redeven_actor_stop":    {},
+		"redevplugin_worker_invoke": {},
+		"redevplugin_actor_start":   {},
+		"redevplugin_actor_stop":    {},
 	}
 }
 
 func allowedWorkerABIImports() map[string]struct{} {
 	return map[string]struct{}{
-		"redeven.log":       {},
-		"redeven.storage":   {},
-		"redeven.network":   {},
-		"redeven.operation": {},
-		"redeven.clock":     {},
+		"redevplugin.log":       {},
+		"redevplugin.storage":   {},
+		"redevplugin.network":   {},
+		"redevplugin.operation": {},
+		"redevplugin.clock":     {},
 	}
 }
 

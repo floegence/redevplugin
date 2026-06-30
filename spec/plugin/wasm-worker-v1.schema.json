@@ -6,15 +6,15 @@
   "additionalProperties": false,
   "required": ["abi_version", "exports", "imports"],
   "properties": {
-    "abi_version": { "const": "redeven-wasm-worker-v1" },
+    "abi_version": { "const": "redevplugin-wasm-worker-v1" },
     "exports": {
       "type": "array",
-      "items": { "enum": ["redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"] },
+      "items": { "enum": ["redevplugin_worker_invoke", "redevplugin_actor_start", "redevplugin_actor_stop"] },
       "uniqueItems": true
     },
     "imports": {
       "type": "array",
-      "items": { "enum": ["redeven.log", "redeven.storage", "redeven.network", "redeven.operation", "redeven.clock"] },
+      "items": { "enum": ["redevplugin.log", "redevplugin.storage", "redevplugin.network", "redevplugin.operation", "redevplugin.clock"] },
       "uniqueItems": true
     }
   }

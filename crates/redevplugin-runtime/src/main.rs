@@ -374,7 +374,7 @@ fn execute_worker_module<'a>(
     let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&engine);
     linker
         .func_wrap(
-            "redeven.storage",
+            "redevplugin.storage",
             "files_write_demo",
             |mut caller: wasmi::Caller<'_, WorkerHostState>| {
                 caller.data_mut().storage_file_write_demo_requested = true;
@@ -383,7 +383,7 @@ fn execute_worker_module<'a>(
         .map_err(|err| format!("define storage hostcall import: {err}"))?;
     linker
         .func_wrap(
-            "redeven.storage",
+            "redevplugin.storage",
             "files",
             |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
              request_ptr: i32,
@@ -403,7 +403,7 @@ fn execute_worker_module<'a>(
         .map_err(|err| format!("define storage memory hostcall import: {err}"))?;
     linker
         .func_wrap(
-            "redeven.network",
+            "redevplugin.network",
             "http_request_demo",
             |mut caller: wasmi::Caller<'_, WorkerHostState>| {
                 caller.data_mut().network_http_request_demo_requested = true;
@@ -412,7 +412,7 @@ fn execute_worker_module<'a>(
         .map_err(|err| format!("define network hostcall import: {err}"))?;
     linker
         .func_wrap(
-            "redeven.network",
+            "redevplugin.network",
             "http_request",
             |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
              request_ptr: i32,
@@ -1014,8 +1014,8 @@ mod tests {
 
     #[test]
     fn executes_minimal_wasm_worker_export() {
-        let module = minimal_worker_wasm("redeven_worker_invoke");
-        let execution = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+        let module = minimal_worker_wasm("redevplugin_worker_invoke");
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
             unexpected_hostcall(request)
         })
         .expect("minimal worker executes");
@@ -1028,8 +1028,8 @@ mod tests {
 
     #[test]
     fn executes_storage_hostcall_wasm_worker_export() {
-        let module = storage_hostcall_worker_wasm("redeven_worker_invoke");
-        let execution = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+        let module = storage_hostcall_worker_wasm("redevplugin_worker_invoke");
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
             unexpected_hostcall(request)
         })
         .expect("storage hostcall worker executes");
@@ -1043,11 +1043,11 @@ mod tests {
     #[test]
     fn executes_network_hostcall_wasm_worker_export() {
         let module = imported_hostcall_worker_wasm(
-            "redeven.network",
+            "redevplugin.network",
             "http_request_demo",
-            "redeven_worker_invoke",
+            "redevplugin_worker_invoke",
         );
-        let execution = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
             unexpected_hostcall(request)
         })
         .expect("network hostcall worker executes");
@@ -1060,8 +1060,8 @@ mod tests {
 
     #[test]
     fn executes_storage_memory_hostcall_wasm_worker_export() {
-        let module = storage_memory_hostcall_worker_wasm("redeven_worker_invoke");
-        let execution = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+        let module = storage_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
             let WorkerHostcallRequest::StorageFile(request) = request else {
                 panic!("expected storage hostcall request");
             };
@@ -1085,8 +1085,8 @@ mod tests {
 
     #[test]
     fn executes_network_memory_hostcall_wasm_worker_export() {
-        let module = network_memory_hostcall_worker_wasm("redeven_worker_invoke");
-        let execution = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+        let module = network_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
             let WorkerHostcallRequest::NetworkHTTP(request) = request else {
                 panic!("expected network hostcall request");
             };
@@ -1111,7 +1111,7 @@ mod tests {
     #[test]
     fn rejects_wasm_worker_with_missing_export() {
         let module = minimal_worker_wasm("other_export");
-        let err = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+        let err = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
             unexpected_hostcall(request)
         })
         .expect_err("missing worker export");
@@ -1141,18 +1141,18 @@ mod tests {
     }
 
     fn storage_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
-        imported_hostcall_worker_wasm("redeven.storage", "files_write_demo", export_name)
+        imported_hostcall_worker_wasm("redevplugin.storage", "files_write_demo", export_name)
     }
 
     fn storage_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
         let request = br#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}"#;
-        imported_memory_hostcall_worker_wasm("redeven.storage", "files", export_name, request)
+        imported_memory_hostcall_worker_wasm("redevplugin.storage", "files", export_name, request)
     }
 
     fn network_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
         let request = br#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}"#;
         imported_memory_hostcall_worker_wasm(
-            "redeven.network",
+            "redevplugin.network",
             "http_request",
             export_name,
             request,

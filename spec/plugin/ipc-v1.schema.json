@@ -36,7 +36,7 @@
               },
               "host_process_id": { "type": "integer", "minimum": 1 },
               "host_ipc_version": { "const": "rust-ipc-v1" },
-              "host_wasm_abi": { "const": "redeven-wasm-worker-v1" },
+              "host_wasm_abi": { "const": "redevplugin-wasm-worker-v1" },
               "started_unix_nano": { "type": "integer", "minimum": 1 }
             }
           }
@@ -55,7 +55,7 @@
             "properties": {
               "runtime_version": { "type": "string", "minLength": 1 },
               "rust_ipc_version": { "const": "rust-ipc-v1" },
-              "wasm_abi_version": { "const": "redeven-wasm-worker-v1" }
+              "wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" }
             }
           }
         }

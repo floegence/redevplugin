@@ -81,7 +81,7 @@ const hostBootstrap = {
 };
 
 const handshake = {
-  type: "redeven.plugin.handshake",
+  type: "redevplugin.bridge.handshake",
   plugin_id: "com.example.plugin",
   surface_id: "example.activity",
   surface_instance_id: "surface_1",
@@ -100,7 +100,7 @@ test("handshake posts exact-origin message", () => {
   assert.equal(target.sent.length, 1);
   assert.equal(target.sent[0]?.targetOrigin, "https://host.example");
   assert.deepEqual(target.sent[0]?.message, {
-    type: "redeven.plugin.handshake",
+    type: "redevplugin.bridge.handshake",
     plugin_id: "com.example.plugin",
     surface_id: "example.activity",
     surface_instance_id: "surface_1",
@@ -120,13 +120,13 @@ test("call resolves only matching exact-origin response", async () => {
   assert.equal(target.sent.length, 1);
   assert.equal(target.sent[0]?.targetOrigin, "https://host.example");
   assert.deepEqual(target.sent[0]?.message, {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "1", method: "worker.echo", params: { message: "hello" } },
   });
 
-  receiver.emit("https://evil.example", { type: "redeven.plugin.response", id: "1", ok: true, data: { ok: false } });
-  receiver.emit("https://host.example", { type: "redeven.plugin.response", id: "other", ok: true, data: { ok: false } });
-  receiver.emit("https://host.example", { type: "redeven.plugin.response", id: "1", ok: true, data: { ok: true } });
+  receiver.emit("https://evil.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "other", ok: true, data: { ok: false } });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: true } });
 
   assert.deepEqual(await pending, { ok: true });
   client.dispose();
@@ -139,7 +139,7 @@ test("call rejects runtime bridge errors", async () => {
 
   const pending = client.call("worker.echo");
   receiver.emit("https://host.example", {
-    type: "redeven.plugin.response",
+    type: "redevplugin.bridge.response",
     id: "1",
     ok: false,
     error_code: "PLUGIN_RUNTIME_UNAVAILABLE",
@@ -168,10 +168,10 @@ test("lifecycle subscription accepts only parent origin", () => {
   const unsubscribe = client.onLifecycle((event) => {
     events.push(event.type);
   });
-  receiver.emit("https://evil.example", { type: "redeven.plugin.lifecycle", event: { type: "visible" } });
-  receiver.emit("https://host.example", { type: "redeven.plugin.lifecycle", event: { type: "visible" } });
+  receiver.emit("https://evil.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } });
   unsubscribe();
-  receiver.emit("https://host.example", { type: "redeven.plugin.lifecycle", event: { type: "hidden" } });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "hidden" } });
 
   assert.deepEqual(events, ["visible"]);
   client.dispose();
@@ -184,7 +184,7 @@ test("dispose rejects pending calls and removes listener", async () => {
   const pending = client.call("worker.echo");
 
   client.dispose();
-  receiver.emit("https://host.example", { type: "redeven.plugin.response", id: "1", ok: true, data: true });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: true });
 
   await assert.rejects(pending, (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_BRIDGE_DISPOSED");
   assert.throws(() => client.handshake(), PluginBridgeError);
@@ -215,7 +215,7 @@ test("surface host mints parent-only gateway token after matching handshake", as
   await tick();
 
   assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redeven_proxy/api/plugins/surfaces/surface_1/bridge-token");
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/surfaces/surface_1/bridge-token");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
     bridge_channel_id: "bridge_channel_1",
     handshake,
@@ -224,7 +224,7 @@ test("surface host mints parent-only gateway token after matching handshake", as
   assert.deepEqual(iframe.sent, [
     {
       targetOrigin: "https://plugin.example",
-      message: { type: "redeven.plugin.lifecycle", event: { type: "ready" } },
+      message: { type: "redevplugin.bridge.lifecycle", event: { type: "ready" } },
     },
   ]);
   host.dispose();
@@ -248,13 +248,13 @@ test("surface host calls rpc with gateway token without exposing it to iframe", 
   parent.emit("https://plugin.example", handshake, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_1", method: "echo.ping", params: { message: "hello" } },
   }, iframe);
   await tick();
 
   assert.equal(fetch.calls.length, 2);
-  assert.equal(fetch.calls[1]?.input, "/_redeven_proxy/api/plugins/rpc");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/rpc");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
     surface_instance_id: "surface_1",
@@ -269,7 +269,7 @@ test("surface host calls rpc with gateway token without exposing it to iframe", 
   assert.deepEqual(iframe.sent[1], {
     targetOrigin: "https://plugin.example",
     message: {
-      type: "redeven.plugin.response",
+      type: "redevplugin.bridge.response",
       id: "call_1",
       ok: true,
       data: { data: { pong: true }, operation_id: "op_1" },
@@ -293,12 +293,12 @@ test("surface host rejects calls before handshake and invalid params", async () 
   });
 
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_before_handshake", method: "echo.ping", params: {} },
   }, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_from_other_window", method: "echo.ping", params: {} },
   }, new FakeWindow());
   await tick();
@@ -308,7 +308,7 @@ test("surface host rejects calls before handshake and invalid params", async () 
     {
       targetOrigin: "https://plugin.example",
       message: {
-        type: "redeven.plugin.response",
+        type: "redevplugin.bridge.response",
         id: "call_before_handshake",
         ok: false,
         error_code: "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED",
@@ -321,7 +321,7 @@ test("surface host rejects calls before handshake and invalid params", async () 
   parent.emit("https://plugin.example", handshake, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_bad_params", method: "echo.ping", params: ["not", "object"] },
   }, iframe);
   await tick();
@@ -330,7 +330,7 @@ test("surface host rejects calls before handshake and invalid params", async () 
   assert.deepEqual(iframe.sent[2], {
     targetOrigin: "https://plugin.example",
     message: {
-      type: "redeven.plugin.response",
+      type: "redevplugin.bridge.response",
       id: "call_bad_params",
       ok: false,
       error_code: "PLUGIN_INVALID_REQUEST",
@@ -384,7 +384,7 @@ test("surface host maps rpc envelope errors into bridge responses", async () => 
   parent.emit("https://plugin.example", handshake, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_denied", method: "echo.ping", params: {} },
   }, iframe);
   await tick();
@@ -392,7 +392,7 @@ test("surface host maps rpc envelope errors into bridge responses", async () => 
   assert.deepEqual(iframe.sent[1], {
     targetOrigin: "https://plugin.example",
     message: {
-      type: "redeven.plugin.response",
+      type: "redevplugin.bridge.response",
       id: "call_denied",
       ok: false,
       error_code: "PLUGIN_PERMISSION_DENIED",
@@ -434,15 +434,15 @@ test("surface host owns dangerous confirmation token and retries confirmed rpc",
   parent.emit("https://plugin.example", handshake, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_danger", method: "danger.run", params: { target: "db" } },
   }, iframe);
   await tick();
 
   assert.equal(fetch.calls.length, 4);
-  assert.equal(fetch.calls[1]?.input, "/_redeven_proxy/api/plugins/rpc");
-  assert.equal(fetch.calls[2]?.input, "/_redeven_proxy/api/plugins/confirm");
-  assert.equal(fetch.calls[3]?.input, "/_redeven_proxy/api/plugins/rpc");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/rpc");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/confirm");
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/rpc");
   assert.deepEqual(confirmations, [{
     requestId: "call_danger",
     method: "danger.run",
@@ -476,7 +476,7 @@ test("surface host owns dangerous confirmation token and retries confirmed rpc",
   assert.deepEqual(iframe.sent[1], {
     targetOrigin: "https://plugin.example",
     message: {
-      type: "redeven.plugin.response",
+      type: "redevplugin.bridge.response",
       id: "call_danger",
       ok: true,
       data: { data: { done: true } },
@@ -513,7 +513,7 @@ test("surface host rejects dangerous call when confirmation callback declines", 
   parent.emit("https://plugin.example", handshake, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_declined", method: "danger.run", params: { target: "db" } },
   }, iframe);
   await tick();
@@ -522,7 +522,7 @@ test("surface host rejects dangerous call when confirmation callback declines", 
   assert.deepEqual(iframe.sent[1], {
     targetOrigin: "https://plugin.example",
     message: {
-      type: "redeven.plugin.response",
+      type: "redevplugin.bridge.response",
       id: "call_declined",
       ok: false,
       error_code: "PLUGIN_CONFIRMATION_REJECTED",
@@ -550,7 +550,7 @@ test("surface host keeps dangerous call fail-closed without confirmation callbac
   parent.emit("https://plugin.example", handshake, iframe);
   await tick();
   parent.emit("https://plugin.example", {
-    type: "redeven.plugin.call",
+    type: "redevplugin.bridge.call",
     request: { id: "call_no_confirm_handler", method: "danger.run", params: { target: "db" } },
   }, iframe);
   await tick();
@@ -559,7 +559,7 @@ test("surface host keeps dangerous call fail-closed without confirmation callbac
   assert.deepEqual(iframe.sent[1], {
     targetOrigin: "https://plugin.example",
     message: {
-      type: "redeven.plugin.response",
+      type: "redevplugin.bridge.response",
       id: "call_no_confirm_handler",
       ok: false,
       error_code: "PLUGIN_CONFIRMATION_REQUIRED",

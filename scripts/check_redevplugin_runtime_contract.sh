@@ -18,10 +18,10 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"stream_id",' spec/plugin/token-ticket-v1.schema.json
   grep -q '"stream_direction"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"method"' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"type": { "const": "redeven.plugin.handshake" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"type": { "const": "redeven.plugin.call" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"type": { "const": "redeven.plugin.response" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"type": { "const": "redeven.plugin.lifecycle" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redevplugin.bridge.handshake" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redevplugin.bridge.call" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redevplugin.bridge.response" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redevplugin.bridge.lifecycle" }' spec/plugin/bridge-v1.schema.json
   grep -q '"ui_protocol_version": { "const": "plugin-ui-v1" }' spec/plugin/bridge-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.compatibility.v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"bridge_schema_version": { "const": "bridge-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
@@ -81,7 +81,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
-  grep -q '"wasm_abi_version": { "const": "redeven-wasm-worker-v1" }' spec/plugin/ipc-v1.schema.json
+  grep -q '"wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
   grep -q '"content_base64": { "type": "string", "contentEncoding": "base64" }' spec/plugin/ipc-v1.schema.json
   grep -q '"handle_grant_token": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json

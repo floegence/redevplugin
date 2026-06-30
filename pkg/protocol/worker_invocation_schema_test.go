@@ -19,13 +19,13 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	}
 
 	properties := requireNestedObject(t, schema, "properties")
-	requireConst(t, map[string]any{"worker_invocation": map[string]any{"properties": properties}}, "worker_invocation", "abi", "redeven-wasm-worker-v1")
+	requireConst(t, map[string]any{"worker_invocation": map[string]any{"properties": properties}}, "worker_invocation", "abi", "redevplugin-wasm-worker-v1")
 
 	for name, want := range map[string][]string{
 		"worker_mode": {"job", "actor"},
 		"effect":      {"read", "write", "execute", "delete", "admin"},
 		"execution":   {"sync", "operation", "subscription"},
-		"export":      {"redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"},
+		"export":      {"redevplugin_worker_invoke", "redevplugin_actor_start", "redevplugin_actor_stop"},
 	} {
 		property := requireNestedObject(t, properties, name)
 		got := requireStringSlice(t, property["enum"], name+" enum")

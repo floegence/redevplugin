@@ -1,5 +1,5 @@
 {
-  "schema_version": "redeven.plugin.manifest.v1",
+  "schema_version": "redevplugin.manifest.v1",
   "publisher": {
     "publisher_id": "example",
     "display_name": "Example"

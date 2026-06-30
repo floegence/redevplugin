@@ -825,7 +825,7 @@ func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	payload := []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":"ui/index.html","artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redeven_worker_invoke"}`, fixturePackageHash, fixtureArtifactSHA))
+	payload := []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":"ui/index.html","artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redevplugin_worker_invoke"}`, fixturePackageHash, fixtureArtifactSHA))
 	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", payload); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
@@ -1566,7 +1566,7 @@ func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req Artifact
 }
 
 func workerInvocationFixture() []byte {
-	return []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":%q,"artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redeven_worker_invoke","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
+	return []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":%q,"artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redevplugin_worker_invoke","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
 }
 
 func stopRuntimeSupervisor(t *testing.T, supervisor *ProcessSupervisor) {

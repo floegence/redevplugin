@@ -5,7 +5,7 @@ import { createDemoPlatformFetch, demoBootstrap } from "./demo-platform.mjs";
 
 test("demo platform mints bridge token and handles rpc calls", async () => {
   const platform = createDemoPlatformFetch();
-  const tokenResponse = await platform.fetch(`/_redeven_proxy/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
+  const tokenResponse = await platform.fetch(`/_redevplugin/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
     method: "POST",
     headers: {},
     body: JSON.stringify({ handshake: { surface_instance_id: demoBootstrap.surfaceInstanceId } }),
@@ -13,7 +13,7 @@ test("demo platform mints bridge token and handles rpc calls", async () => {
   assert.equal(tokenResponse.status, 200);
   assert.equal((await tokenResponse.json()).data.plugin_gateway_token, "gateway_token_parent_only_demo");
 
-  const echoResponse = await platform.fetch("/_redeven_proxy/api/plugins/rpc", {
+  const echoResponse = await platform.fetch("/_redevplugin/api/plugins/rpc", {
     method: "POST",
     headers: {},
     body: JSON.stringify({
@@ -27,12 +27,12 @@ test("demo platform mints bridge token and handles rpc calls", async () => {
 
 test("demo platform requires confirmation before cache deletion", async () => {
   const platform = createDemoPlatformFetch();
-  await platform.fetch(`/_redeven_proxy/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
+  await platform.fetch(`/_redevplugin/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
     method: "POST",
     headers: {},
     body: JSON.stringify({ handshake: {} }),
   });
-  const denied = await platform.fetch("/_redeven_proxy/api/plugins/rpc", {
+  const denied = await platform.fetch("/_redevplugin/api/plugins/rpc", {
     method: "POST",
     headers: {},
     body: JSON.stringify({
@@ -45,13 +45,13 @@ test("demo platform requires confirmation before cache deletion", async () => {
   assert.equal(deniedBody.ok, false);
   assert.equal(deniedBody.error_code, "PLUGIN_CONFIRMATION_REQUIRED");
 
-  const confirmation = await platform.fetch("/_redeven_proxy/api/plugins/confirm", {
+  const confirmation = await platform.fetch("/_redevplugin/api/plugins/confirm", {
     method: "POST",
     headers: {},
     body: JSON.stringify({ method: "demo.cache.delete" }),
   });
   const token = (await confirmation.json()).data.confirmation_token;
-  const approved = await platform.fetch("/_redeven_proxy/api/plugins/rpc", {
+  const approved = await platform.fetch("/_redevplugin/api/plugins/rpc", {
     method: "POST",
     headers: {},
     body: JSON.stringify({

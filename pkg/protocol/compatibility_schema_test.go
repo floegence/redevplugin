@@ -29,7 +29,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	for name, want := range map[string]string{
 		"plugin_host_protocol_version":     "plugin-host-v1",
 		"rust_ipc_version":                 "rust-ipc-v1",
-		"wasm_abi_version":                 "redeven-wasm-worker-v1",
+		"wasm_abi_version":                 "redevplugin-wasm-worker-v1",
 		"manifest_schema_version":          "manifest-v1",
 		"bridge_schema_version":            "bridge-v1",
 		"compatibility_schema_version":     "compatibility-manifest-v1",

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "publisher", "plugin", "surfaces"],
   "properties": {
-    "schema_version": { "const": "redeven.plugin.manifest.v1" },
+    "schema_version": { "const": "redevplugin.manifest.v1" },
     "publisher": {
       "type": "object",
       "additionalProperties": false,
@@ -147,7 +147,7 @@
         "properties": {
           "worker_id": { "type": "string", "minLength": 1 },
           "artifact": { "type": "string", "minLength": 1 },
-          "abi": { "const": "redeven-wasm-worker-v1" },
+          "abi": { "const": "redevplugin-wasm-worker-v1" },
           "mode": { "enum": ["job", "actor"] },
           "scope": { "enum": ["user", "environment"] },
           "memory_limit_bytes": { "type": "integer", "minimum": 1 },

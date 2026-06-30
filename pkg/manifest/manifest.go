@@ -254,8 +254,8 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if m.SchemaVersion != "redeven.plugin.manifest.v1" {
-		return ValidationError{Field: "schema_version", Message: "must be redeven.plugin.manifest.v1"}
+	if m.SchemaVersion != "redevplugin.manifest.v1" {
+		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v1"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -296,8 +296,8 @@ func Validate(m Manifest) error {
 		if strings.TrimSpace(worker.Artifact) == "" {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].artifact", i), Message: "is required"}
 		}
-		if worker.ABI != "redeven-wasm-worker-v1" {
-			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redeven-wasm-worker-v1"}
+		if worker.ABI != "redevplugin-wasm-worker-v1" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redevplugin-wasm-worker-v1"}
 		}
 		if worker.Mode != WorkerModeJob && worker.Mode != WorkerModeActor {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].mode", i), Message: "must be job or actor"}

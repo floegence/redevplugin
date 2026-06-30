@@ -12,7 +12,7 @@ const hostPort = await getFreePort();
 const pluginPort = await getFreePort(hostPort);
 const generatedRoot = await mkdtemp(join(tmpdir(), "redevplugin-generated-browser-"));
 const generatedPluginDir = join(generatedRoot, "plugin");
-const generatedPackage = join(generatedRoot, "generated.redeven-plugin");
+const generatedPackage = join(generatedRoot, "generated.redevplugin");
 const generatedStateRoot = join(generatedRoot, "state");
 await runCLI(["scaffold", "com.example.generated.browser", "Generated Browser Plugin", generatedPluginDir]);
 await runCLI(["package", generatedPluginDir, generatedPackage]);

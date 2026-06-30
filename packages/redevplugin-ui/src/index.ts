@@ -5,7 +5,7 @@ export type BridgeLifecycleEvent =
   | { type: "dispose" };
 
 export type PluginBridgeHandshake = {
-  type: "redeven.plugin.handshake";
+  type: "redevplugin.bridge.handshake";
   plugin_id: string;
   surface_id: string;
   surface_instance_id: string;
@@ -21,18 +21,18 @@ export type PluginBridgeRequest = {
 };
 
 export type PluginBridgeResponse =
-  | { type: "redeven.plugin.response"; id: string; ok: true; data?: unknown }
-  | { type: "redeven.plugin.response"; id: string; ok: false; error_code: string; error: string };
+  | { type: "redevplugin.bridge.response"; id: string; ok: true; data?: unknown }
+  | { type: "redevplugin.bridge.response"; id: string; ok: false; error_code: string; error: string };
 
 export type PluginBridgeCallMessage = {
-  type: "redeven.plugin.call";
+  type: "redevplugin.bridge.call";
   request: PluginBridgeRequest;
 };
 
 export type PluginBridgeMessage = PluginBridgeHandshake | PluginBridgeCallMessage;
 
 export type PluginBridgeLifecycleMessage = {
-  type: "redeven.plugin.lifecycle";
+  type: "redevplugin.bridge.lifecycle";
   event: BridgeLifecycleEvent;
 };
 
@@ -108,7 +108,7 @@ export class PluginBridgeClient {
   handshake(): void {
     this.#assertActive();
     const message: PluginBridgeHandshake = {
-      type: "redeven.plugin.handshake",
+      type: "redevplugin.bridge.handshake",
       plugin_id: this.bootstrap.pluginId,
       surface_id: this.bootstrap.surfaceId,
       surface_instance_id: this.bootstrap.surfaceInstanceId,
@@ -126,7 +126,7 @@ export class PluginBridgeClient {
       method,
       params,
     };
-    const message: PluginBridgeCallMessage = { type: "redeven.plugin.call", request };
+    const message: PluginBridgeCallMessage = { type: "redevplugin.bridge.call", request };
     const result = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(request.id);
@@ -314,7 +314,7 @@ export class PluginSurfaceHost {
 
   sendLifecycle(event: BridgeLifecycleEvent): void {
     this.#assertActive();
-    this.#postToIframe({ type: "redeven.plugin.lifecycle", event });
+    this.#postToIframe({ type: "redevplugin.bridge.lifecycle", event });
   }
 
   dispose(): void {
@@ -324,7 +324,7 @@ export class PluginSurfaceHost {
     this.#disposed = true;
     this.#gatewayToken = undefined;
     this.#parentWindow.removeEventListener?.("message", this.#onMessage);
-    this.#postToIframe({ type: "redeven.plugin.lifecycle", event: { type: "dispose" } });
+    this.#postToIframe({ type: "redevplugin.bridge.lifecycle", event: { type: "dispose" } });
   }
 
   async #handleMessage(event: MessageEventLike): Promise<void> {
@@ -350,12 +350,12 @@ export class PluginSurfaceHost {
       return;
     }
     try {
-      const token = await this.#postJSON<PluginGatewayTokenResult>(`/_redeven_proxy/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`, {
+      const token = await this.#postJSON<PluginGatewayTokenResult>(`/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`, {
         bridge_channel_id: this.bridgeChannelId,
         handshake,
       });
       this.#gatewayToken = token.plugin_gateway_token;
-      this.#postToIframe({ type: "redeven.plugin.lifecycle", event: { type: "ready" } });
+      this.#postToIframe({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
     } catch (error) {
       this.#reportError(toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
     }
@@ -372,7 +372,7 @@ export class PluginSurfaceHost {
     }
     try {
       const result = await this.#callRPC(request);
-      this.#postToIframe({ type: "redeven.plugin.response", id: request.id, ok: true, data: result });
+      this.#postToIframe({ type: "redevplugin.bridge.response", id: request.id, ok: true, data: result });
     } catch (error) {
       const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
       if (bridgeError instanceof PluginConfirmationRequiredError) {
@@ -402,7 +402,7 @@ export class PluginSurfaceHost {
         return;
       }
       const result = await this.#callRPC(request, confirmation.confirmation_token);
-      this.#postToIframe({ type: "redeven.plugin.response", id: request.id, ok: true, data: result });
+      this.#postToIframe({ type: "redevplugin.bridge.response", id: request.id, ok: true, data: result });
     } catch (error) {
       const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
       this.#postError(request.id, bridgeError.errorCode, bridgeError.message);
@@ -410,11 +410,11 @@ export class PluginSurfaceHost {
   }
 
   #callRPC(request: PluginBridgeRequest, confirmationToken?: string): Promise<PluginMethodResult> {
-    return this.#postJSON<PluginMethodResult>(`/_redeven_proxy/api/plugins/rpc`, this.#rpcBody(request, confirmationToken));
+    return this.#postJSON<PluginMethodResult>(`/_redevplugin/api/plugins/rpc`, this.#rpcBody(request, confirmationToken));
   }
 
   #prepareConfirmation(request: PluginBridgeRequest): Promise<PluginConfirmationResult> {
-    return this.#postJSON<PluginConfirmationResult>(`/_redeven_proxy/api/plugins/confirm`, this.#rpcBody(request));
+    return this.#postJSON<PluginConfirmationResult>(`/_redevplugin/api/plugins/confirm`, this.#rpcBody(request));
   }
 
   #rpcBody(request: PluginBridgeRequest, confirmationToken?: string): Record<string, unknown> {
@@ -465,7 +465,7 @@ export class PluginSurfaceHost {
   }
 
   #postError(id: string, errorCode: string, error: string): void {
-    this.#postToIframe({ type: "redeven.plugin.response", id, ok: false, error_code: errorCode, error });
+    this.#postToIframe({ type: "redevplugin.bridge.response", id, ok: false, error_code: errorCode, error });
   }
 
   #postToIframe(message: PluginBridgeResponse | PluginBridgeLifecycleMessage): void {
@@ -515,7 +515,7 @@ function trimTrailingSlash(value: string): string {
 
 function isBridgeHandshake(value: unknown): value is PluginBridgeHandshake {
   return isRecord(value) &&
-    value.type === "redeven.plugin.handshake" &&
+    value.type === "redevplugin.bridge.handshake" &&
     typeof value.plugin_id === "string" &&
     typeof value.surface_id === "string" &&
     typeof value.surface_instance_id === "string" &&
@@ -526,14 +526,14 @@ function isBridgeHandshake(value: unknown): value is PluginBridgeHandshake {
 
 function isBridgeCallMessage(value: unknown): value is PluginBridgeCallMessage {
   return isRecord(value) &&
-    value.type === "redeven.plugin.call" &&
+    value.type === "redevplugin.bridge.call" &&
     isRecord(value.request) &&
     typeof value.request.id === "string" &&
     typeof value.request.method === "string";
 }
 
 function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
-  if (!isRecord(value) || value.type !== "redeven.plugin.response" || typeof value.id !== "string") {
+  if (!isRecord(value) || value.type !== "redevplugin.bridge.response" || typeof value.id !== "string") {
     return false;
   }
   if (value.ok === true) {
@@ -553,7 +553,7 @@ function isHostEnvelope(value: unknown): value is HostEnvelope<unknown> {
 }
 
 function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessage {
-  if (!isRecord(value) || value.type !== "redeven.plugin.lifecycle" || !isRecord(value.event)) {
+  if (!isRecord(value) || value.type !== "redevplugin.bridge.lifecycle" || !isRecord(value.event)) {
     return false;
   }
   return value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose";

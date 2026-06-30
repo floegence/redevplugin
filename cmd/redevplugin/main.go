@@ -296,7 +296,7 @@ func inspectStorage(ctx context.Context, root string, pluginInstanceID string) e
 }
 
 func validate(ctx context.Context, filename string) error {
-	if strings.HasSuffix(filename, ".redeven-plugin") || strings.HasSuffix(filename, ".zip") {
+	if strings.HasSuffix(filename, ".redevplugin") || strings.HasSuffix(filename, ".zip") {
 		pkg, err := pluginpkg.ReadFile(ctx, filename, pluginpkg.DefaultReadOptions())
 		if err != nil {
 			return err
@@ -385,7 +385,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
 	manifestDoc := manifest.Manifest{
-		SchemaVersion: "redeven.plugin.manifest.v1",
+		SchemaVersion: "redevplugin.manifest.v1",
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
@@ -408,7 +408,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		Workers: []manifest.WorkerSpec{{
 			WorkerID:         "backend",
 			Artifact:         "workers/backend.wasm",
-			ABI:              "redeven-wasm-worker-v1",
+			ABI:              "redevplugin-wasm-worker-v1",
 			Mode:             manifest.WorkerModeJob,
 			Scope:            "user",
 			MemoryLimitBytes: 16 << 20,
@@ -417,7 +417,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Method:         "worker.echo",
 			Effect:         manifest.MethodEffectRead,
 			Execution:      manifest.MethodExecutionSync,
-			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redeven_worker_invoke"},
+			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redevplugin_worker_invoke"},
 			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
 			ResponseSchema: map[string]any{"type": "object"},
 		}},
@@ -622,7 +622,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -754,8 +754,8 @@ func scaffoldIndexHTML(pluginID string, displayName string) string {
 		"      <section class=\"surface\">\n" +
 		"        <p class=\"eyebrow\">Plugin surface</p>\n" +
 		"        <h1>" + title + "</h1>\n" +
-		"        <p class=\"status\" id=\"status\">Ready</p>\n" +
-		"        <div class=\"actions\">\n" +
+		"        <div class=\"toolbar\">\n" +
+		"          <p class=\"status\" id=\"status\">Ready</p>\n" +
 		"          <button id=\"invoke-worker\" type=\"button\">Invoke backend</button>\n" +
 		"        </div>\n" +
 		"        <pre id=\"result\" aria-label=\"Latest result\">Waiting for bridge handshake...</pre>\n" +
@@ -786,7 +786,7 @@ func scaffoldAppJS(displayName string) string {
 		"} else {\n" +
 		"  window.addEventListener('message', handleMessage);\n" +
 		"  window.parent.postMessage({\n" +
-		"    type: 'redeven.plugin.handshake',\n" +
+		"    type: 'redevplugin.bridge.handshake',\n" +
 		"    plugin_id: bootstrap.pluginId,\n" +
 		"    surface_id: bootstrap.surfaceId,\n" +
 		"    surface_instance_id: bootstrap.surfaceInstanceId,\n" +
@@ -814,11 +814,11 @@ func scaffoldAppJS(displayName string) string {
 		"    return;\n" +
 		"  }\n" +
 		"  const data = event.data;\n" +
-		"  if (data?.type === 'redeven.plugin.lifecycle') {\n" +
+		"  if (data?.type === 'redevplugin.bridge.lifecycle') {\n" +
 		"    setStatus(data.event?.type === 'ready' ? 'Ready' : `Lifecycle: ${data.event?.type || 'unknown'}`);\n" +
 		"    return;\n" +
 		"  }\n" +
-		"  if (data?.type !== 'redeven.plugin.response' || typeof data.id !== 'string') {\n" +
+		"  if (data?.type !== 'redevplugin.bridge.response' || typeof data.id !== 'string') {\n" +
 		"    return;\n" +
 		"  }\n" +
 		"  const call = pending.get(data.id);\n" +
@@ -847,7 +847,7 @@ func scaffoldAppJS(displayName string) string {
 		"    }, 30000);\n" +
 		"    pending.set(id, { resolve, reject, timer });\n" +
 		"  });\n" +
-		"  window.parent.postMessage({ type: 'redeven.plugin.call', request: { id, method, params: callParams } }, parentOrigin);\n" +
+		"  window.parent.postMessage({ type: 'redevplugin.bridge.call', request: { id, method, params: callParams } }, parentOrigin);\n" +
 		"  return promise;\n" +
 		"}\n" +
 		"function setStatus(value) {\n" +
@@ -878,7 +878,7 @@ func scaffoldStylesCSS() string {
 		"}\n\n" +
 		".surface {\n" +
 		"  display: grid;\n" +
-		"  gap: 8px;\n" +
+		"  gap: 14px;\n" +
 		"  min-height: 100vh;\n" +
 		"  align-content: start;\n" +
 		"  padding: 20px;\n" +
@@ -897,6 +897,14 @@ func scaffoldStylesCSS() string {
 		".status {\n" +
 		"  margin: 0;\n" +
 		"  font-size: 14px;\n" +
+		"  line-height: 1.5;\n" +
+		"  min-height: 22px;\n" +
+		"}\n\n" +
+		".toolbar {\n" +
+		"  align-items: center;\n" +
+		"  display: flex;\n" +
+		"  flex-wrap: wrap;\n" +
+		"  gap: 12px;\n" +
 		"}\n\n" +
 		"button {\n" +
 		"  width: fit-content;\n" +
@@ -913,17 +921,17 @@ func scaffoldStylesCSS() string {
 func scaffoldWorkerWAT() string {
 	return "(module\n" +
 		"  ;; Minimal ReDevPlugin worker scaffold. Replace this module with a\n" +
-		"  ;; generated worker that implements redeven-wasm-worker-v1.\n" +
-		"  (func $redeven_worker_invoke (export \"redeven_worker_invoke\")\n" +
+		"  ;; generated worker that implements redevplugin-wasm-worker-v1.\n" +
+		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
 		"    nop)\n" +
 		")\n"
 }
 
 func scaffoldWorkerABIJSON() string {
 	return "{\n" +
-		"  \"abi_version\": \"redeven-wasm-worker-v1\",\n" +
-		"  \"exports\": [\"redeven_worker_invoke\"],\n" +
-		"  \"imports\": [\"redeven.log\", \"redeven.storage\", \"redeven.network\", \"redeven.operation\", \"redeven.clock\"]\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
+		"  \"exports\": [\"redevplugin_worker_invoke\"],\n" +
+		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
 		"}\n"
 }
 
@@ -933,10 +941,11 @@ func minimalWorkerWASM() []byte {
 		0x01, 0x00, 0x00, 0x00,
 		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
 		0x03, 0x02, 0x01, 0x00,
-		0x07, 0x19, 0x01, 0x15,
-		0x72, 0x65, 0x64, 0x65, 0x76, 0x65, 0x6e, 0x5f,
-		0x77, 0x6f, 0x72, 0x6b, 0x65, 0x72, 0x5f, 0x69,
-		0x6e, 0x76, 0x6f, 0x6b, 0x65,
+		0x07, 0x1d, 0x01, 0x19,
+		0x72, 0x65, 0x64, 0x65, 0x76, 0x70, 0x6c, 0x75,
+		0x67, 0x69, 0x6e, 0x5f, 0x77, 0x6f, 0x72, 0x6b,
+		0x65, 0x72, 0x5f, 0x69, 0x6e, 0x76, 0x6f, 0x6b,
+		0x65,
 		0x00, 0x00,
 		0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
 	}

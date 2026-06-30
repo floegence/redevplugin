@@ -39,10 +39,10 @@
       "pattern": "^workers/[A-Za-z0-9._/-]+\\.wasm$"
     },
     "artifact_sha256": { "$ref": "#/$defs/sha256" },
-    "abi": { "const": "redeven-wasm-worker-v1" },
+    "abi": { "const": "redevplugin-wasm-worker-v1" },
     "method": { "type": "string", "minLength": 1 },
     "export": {
-      "enum": ["redeven_worker_invoke", "redeven_actor_start", "redeven_actor_stop"]
+      "enum": ["redevplugin_worker_invoke", "redevplugin_actor_start", "redevplugin_actor_stop"]
     },
     "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
     "execution": { "enum": ["sync", "operation", "subscription"] },

@@ -167,7 +167,7 @@ type startRuntimeRequest struct {
 }
 
 const assetSessionCookieName = "__Host-redevplugin-asset-session"
-const pluginBridgeHandshakeType = "redeven.plugin.handshake"
+const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
 
 // OwnerSessionHashHeader optionally carries the host session binding used by
 // the configured WebSecurity guard for CSRF validation.
@@ -182,77 +182,77 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/install":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/install":
 		h.handleInstall(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/enable":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/enable":
 		h.handleEnable(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/disable":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/disable":
 		h.handleDisable(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/uninstall":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/uninstall":
 		h.handleUninstall(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/update":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/update":
 		h.handleUpdate(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/downgrade":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/downgrade":
 		h.handleDowngrade(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/catalog":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/catalog":
 		h.handleCatalog(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/platform/compatibility":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/platform/compatibility":
 		h.handleCompatibility(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/surfaces/open":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/surfaces/open":
 		h.handleOpenSurface(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bootstrap"):
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bootstrap"):
 		h.handleExchangeAssetTicket(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bridge-token"):
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bridge-token"):
 		h.handleBridgeToken(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/rpc":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/rpc":
 		h.handleRPC(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/confirm":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/confirm":
 		h.handleConfirm(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/operations":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/operations":
 		h.handleListOperations(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/operations/"):
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/operations/"):
 		h.handleGetOperation(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/operations/") && strings.HasSuffix(r.URL.Path, "/cancel"):
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/operations/") && strings.HasSuffix(r.URL.Path, "/cancel"):
 		h.handleCancelOperation(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/runtime/start":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/start":
 		h.handleStartRuntime(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/runtime/stop":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/stop":
 		h.handleStopRuntime(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/runtime/health":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/runtime/health":
 		h.handleRuntimeHealth(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/export":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/data/export":
 		h.handleExportData(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/data/import":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/data/import":
 		h.handleImportData(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/permissions":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/permissions":
 		h.handleListPermissions(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/permissions/grant":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/permissions/grant":
 		h.handleGrantPermission(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/permissions/revoke":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/permissions/revoke":
 		h.handleRevokePermission(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/audit":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/audit":
 		h.handleListAudit(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/diagnostics":
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/diagnostics":
 		h.handleListDiagnostics(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/bind":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/secrets/bind":
 		h.handleBindSecret(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/test":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/secrets/test":
 		h.handleTestSecret(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/secrets/delete":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/secrets/delete":
 		h.handleDeleteSecret(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings/schema"):
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings/schema"):
 		h.handleGetSettingsSchema(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
 		h.handleGetSettings(w, r)
-	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
 		h.handlePatchSettings(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/bootstrap":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/bootstrap":
 		h.handleSandboxBootstrap(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/assets/"):
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/assets/"):
 		h.handlePluginAsset(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redeven_plugin/stream/"):
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/stream/"):
 		h.handlePluginStream(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_plugin/csp-report":
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/csp-report":
 		h.handleCSPReport(w, r)
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
@@ -280,56 +280,56 @@ func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) bool
 }
 
 func isPluginHTTPPath(requestPath string) bool {
-	return requestPath == "/_redeven_proxy/api/plugins" ||
-		strings.HasPrefix(requestPath, "/_redeven_proxy/api/plugins/") ||
-		strings.HasPrefix(requestPath, "/_redeven_plugin/")
+	return requestPath == "/_redevplugin/api/plugins" ||
+		strings.HasPrefix(requestPath, "/_redevplugin/api/plugins/") ||
+		strings.HasPrefix(requestPath, "/_redevplugin/")
 }
 
 func requiresCSRF(r *http.Request) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return false
 	}
-	return r.URL.Path == "/_redeven_proxy/api/plugins" || strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/")
+	return r.URL.Path == "/_redevplugin/api/plugins" || strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/")
 }
 
 func RouteSet() []Route {
 	routes := []Route{
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/install"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/enable"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/disable"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/uninstall"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/update"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/downgrade"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/catalog"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/platform/compatibility"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/surfaces/open"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/rpc"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/confirm"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/operations"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/operations/{operation_id}"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/operations/{operation_id}/cancel"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/runtime/health"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/runtime/start"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/runtime/stop"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/data/export"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/data/import"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/permissions"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/permissions/grant"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/permissions/revoke"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/audit"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/diagnostics"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/bind"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/test"},
-		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/secrets/delete"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema"},
-		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings"},
-		{Method: http.MethodPatch, Path: "/_redeven_proxy/api/plugins/{plugin_instance_id}/settings"},
-		{Method: http.MethodPost, Path: "/_redeven_plugin/bootstrap"},
-		{Method: http.MethodGet, Path: "/_redeven_plugin/assets/{asset_path...}"},
-		{Method: http.MethodGet, Path: "/_redeven_plugin/stream/{stream_id}"},
-		{Method: http.MethodPost, Path: "/_redeven_plugin/csp-report"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/enable"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/disable"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/uninstall"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/open"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirm"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations/{operation_id}"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/operations/{operation_id}/cancel"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/runtime/health"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/start"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/stop"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/import"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/permissions"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/grant"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/revoke"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/audit"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/diagnostics"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/bind"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/test"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/secrets/delete"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
+		{Method: http.MethodPatch, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
+		{Method: http.MethodPost, Path: "/_redevplugin/bootstrap"},
+		{Method: http.MethodGet, Path: "/_redevplugin/assets/{asset_path...}"},
+		{Method: http.MethodGet, Path: "/_redevplugin/stream/{stream_id}"},
+		{Method: http.MethodPost, Path: "/_redevplugin/csp-report"},
 	}
 	sort.Slice(routes, func(i, j int) bool {
 		if routes[i].Path == routes[j].Path {
@@ -1166,7 +1166,7 @@ func decodeJSON(r *http.Request, dst any) error {
 }
 
 func surfaceInstanceIDFromPath(path string, suffix string) (string, bool) {
-	const prefix = "/_redeven_proxy/api/plugins/surfaces/"
+	const prefix = "/_redevplugin/api/plugins/surfaces/"
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
 		return "", false
 	}
@@ -1176,7 +1176,7 @@ func surfaceInstanceIDFromPath(path string, suffix string) (string, bool) {
 }
 
 func operationIDFromPath(path string, suffix string) (string, bool) {
-	const prefix = "/_redeven_proxy/api/plugins/operations/"
+	const prefix = "/_redevplugin/api/plugins/operations/"
 	if !strings.HasPrefix(path, prefix) {
 		return "", false
 	}
@@ -1195,7 +1195,7 @@ func operationIDFromPath(path string, suffix string) (string, bool) {
 }
 
 func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string, bool) {
-	const prefix = "/_redeven_proxy/api/plugins/"
+	const prefix = "/_redevplugin/api/plugins/"
 	if !strings.HasPrefix(requestPath, prefix) || !strings.HasSuffix(requestPath, suffix) {
 		return "", false
 	}
@@ -1208,7 +1208,7 @@ func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string
 }
 
 func assetPathFromSandboxPath(requestPath string) (string, bool) {
-	const prefix = "/_redeven_plugin/assets/"
+	const prefix = "/_redevplugin/assets/"
 	if !strings.HasPrefix(requestPath, prefix) {
 		return "", false
 	}
@@ -1227,7 +1227,7 @@ func assetPathFromSandboxPath(requestPath string) (string, bool) {
 }
 
 func streamIDFromPath(requestPath string) (string, bool) {
-	const prefix = "/_redeven_plugin/stream/"
+	const prefix = "/_redevplugin/stream/"
 	if !strings.HasPrefix(requestPath, prefix) {
 		return "", false
 	}

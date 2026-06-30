@@ -15,9 +15,9 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatal("bridge schema missing $defs")
 	}
 
-	requireConst(t, defs, "handshake", "type", "redeven.plugin.handshake")
-	requireConst(t, defs, "call", "type", "redeven.plugin.call")
-	requireConst(t, defs, "lifecycle", "type", "redeven.plugin.lifecycle")
+	requireConst(t, defs, "handshake", "type", "redevplugin.bridge.handshake")
+	requireConst(t, defs, "call", "type", "redevplugin.bridge.call")
+	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
 	requireNestedConst(t, defs, "handshake", []string{"properties", "ui_protocol_version"}, "plugin-ui-v1")
 
 	call := requireDef(t, defs, "call")

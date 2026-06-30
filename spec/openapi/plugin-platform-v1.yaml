@@ -4,67 +4,67 @@ info:
   version: plugin-platform-v1
   description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Install and update trust_state fields are requested trust outcomes; the Host library must resolve runnable verified/bundled trust through a PackageTrustVerifier before records can become runnable.
 paths:
-  /_redeven_proxy/api/plugins/install:
+  /_redevplugin/api/plugins/install:
     post:
       operationId: installPlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/enable:
+  /_redevplugin/api/plugins/enable:
     post:
       operationId: enablePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/disable:
+  /_redevplugin/api/plugins/disable:
     post:
       operationId: disablePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/uninstall:
+  /_redevplugin/api/plugins/uninstall:
     post:
       operationId: uninstallPlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/update:
+  /_redevplugin/api/plugins/update:
     post:
       operationId: updatePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/downgrade:
+  /_redevplugin/api/plugins/downgrade:
     post:
       operationId: downgradePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/catalog:
+  /_redevplugin/api/plugins/catalog:
     get:
       operationId: listPlugins
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/platform/compatibility:
+  /_redevplugin/api/plugins/platform/compatibility:
     get:
       operationId: getPluginPlatformCompatibility
       description: Returns the host-consumable ReDevPlugin compatibility manifest for the mounted platform artifact set.
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/surfaces/open:
+  /_redevplugin/api/plugins/surfaces/open:
     post:
       operationId: openPluginSurface
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap:
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap:
     post:
       operationId: createSurfaceBootstrap
       parameters:
@@ -72,7 +72,7 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token:
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token:
     post:
       operationId: createSurfaceBridgeToken
       parameters:
@@ -80,33 +80,33 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/rpc:
+  /_redevplugin/api/plugins/rpc:
     post:
       operationId: callPluginMethod
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/confirm:
+  /_redevplugin/api/plugins/confirm:
     post:
       operationId: confirmPluginIntent
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/operations:
+  /_redevplugin/api/plugins/operations:
     get:
       operationId: listPluginOperations
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/operations/{operation_id}:
+  /_redevplugin/api/plugins/operations/{operation_id}:
     get:
       operationId: getPluginOperation
       parameters:
         - $ref: "#/components/parameters/OperationID"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/operations/{operation_id}/cancel:
+  /_redevplugin/api/plugins/operations/{operation_id}/cancel:
     post:
       operationId: cancelPluginOperation
       parameters:
@@ -114,97 +114,97 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/runtime/start:
+  /_redevplugin/api/plugins/runtime/start:
     post:
       operationId: startPluginRuntime
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/runtime/stop:
+  /_redevplugin/api/plugins/runtime/stop:
     post:
       operationId: stopPluginRuntime
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/runtime/health:
+  /_redevplugin/api/plugins/runtime/health:
     get:
       operationId: getPluginRuntimeHealth
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/data/export:
+  /_redevplugin/api/plugins/data/export:
     post:
       operationId: exportPluginData
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/data/import:
+  /_redevplugin/api/plugins/data/import:
     post:
       operationId: importPluginData
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/permissions:
+  /_redevplugin/api/plugins/permissions:
     get:
       operationId: listPluginPermissionGrants
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/permissions/grant:
+  /_redevplugin/api/plugins/permissions/grant:
     post:
       operationId: grantPluginPermission
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/permissions/revoke:
+  /_redevplugin/api/plugins/permissions/revoke:
     post:
       operationId: revokePluginPermission
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/audit:
+  /_redevplugin/api/plugins/audit:
     get:
       operationId: listPluginAuditEvents
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/diagnostics:
+  /_redevplugin/api/plugins/diagnostics:
     get:
       operationId: listPluginDiagnosticEvents
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/secrets/bind:
+  /_redevplugin/api/plugins/secrets/bind:
     post:
       operationId: bindPluginSecret
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/secrets/test:
+  /_redevplugin/api/plugins/secrets/test:
     post:
       operationId: testPluginSecret
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/secrets/delete:
+  /_redevplugin/api/plugins/secrets/delete:
     post:
       operationId: deletePluginSecret
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/{plugin_instance_id}/settings/schema:
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema:
     get:
       operationId: getPluginSettingsSchema
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_proxy/api/plugins/{plugin_instance_id}/settings:
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings:
     get:
       operationId: getPluginSettings
       parameters:
@@ -218,12 +218,12 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_plugin/bootstrap:
+  /_redevplugin/bootstrap:
     post:
       operationId: exchangePluginAssetTicket
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redeven_plugin/assets/{asset_path...}:
+  /_redevplugin/assets/{asset_path...}:
     get:
       operationId: getPluginAsset
       parameters:
@@ -234,7 +234,7 @@ paths:
       responses:
         "200":
           description: Plugin package asset.
-  /_redeven_plugin/stream/{stream_id}:
+  /_redevplugin/stream/{stream_id}:
     get:
       operationId: getPluginStream
       parameters:
@@ -255,7 +255,7 @@ paths:
               schema:
                 type: string
                 description: One JSON StreamEvent object per line.
-  /_redeven_plugin/csp-report:
+  /_redevplugin/csp-report:
     post:
       operationId: reportPluginCSPViolation
       responses:
@@ -285,7 +285,7 @@ components:
       description: Optional host session binding value passed to the configured WebSecurity guard for CSRF validation.
   responses:
     Envelope:
-      description: Flat host envelope used by Redeven appserver integration.
+      description: Flat host envelope used by host product HTTP integration.
       content:
         application/json:
           schema:

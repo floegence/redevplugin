@@ -27,7 +27,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "plugin")
 	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redeven.plugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v1",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.cli",
@@ -43,8 +43,8 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	}`)
 	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), "<!doctype html><title>CLI</title>")
 
-	unsignedPackage := filepath.Join(dir, "unsigned.redeven-plugin")
-	signedPackage := filepath.Join(dir, "signed.redeven-plugin")
+	unsignedPackage := filepath.Join(dir, "unsigned.redevplugin")
+	signedPackage := filepath.Join(dir, "signed.redevplugin")
 	privateKeyFile := filepath.Join(dir, "private.json")
 	publicKeyFile := filepath.Join(dir, "public.json")
 
@@ -149,7 +149,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"redeven.plugin.handshake", "redeven.plugin.call", "parent_origin", "worker.echo"} {
+	for _, want := range []string{"redevplugin.bridge.handshake", "redevplugin.bridge.call", "parent_origin", "worker.echo"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
 		}
@@ -161,7 +161,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if len(wasmRaw) < 8 || !bytes.Equal(wasmRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
 		t.Fatalf("scaffold wasm artifact is invalid: %x", wasmRaw[:prefixLen(len(wasmRaw), 8)])
 	}
-	packageFile := filepath.Join(dir, "generated.redeven-plugin")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
 		t.Fatalf("package scaffold error = %v", err)
 	}
@@ -192,7 +192,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated-runtime")
-	packageFile := filepath.Join(dir, "generated-runtime.redeven-plugin")
+	packageFile := filepath.Join(dir, "generated-runtime.redevplugin")
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.runtime", "Generated Runtime Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
@@ -305,7 +305,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
-	packageFile := filepath.Join(dir, "generated.redeven-plugin")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}

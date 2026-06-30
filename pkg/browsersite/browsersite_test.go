@@ -19,7 +19,7 @@ func TestMemoryStoreRegistersAndRetainsOrigins(t *testing.T) {
 		ActiveFingerprint: "sha256:active",
 		SurfaceID:         "main",
 		SurfaceInstanceID: "surface_1",
-		Origin:            "https://plg-active.sandbox.redeven.local",
+		Origin:            "https://plg-active.sandbox.redevplugin.local",
 		OwnerSessionHash:  "owner_session",
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestMemoryStoreCleanupCallsCleanerAndRecordsFailure(t *testing.T) {
 	cleaner := &recordingCleaner{}
 	store := NewMemoryStore(MemoryStoreOptions{Now: func() time.Time { return now }, Cleaner: cleaner})
 	ctx := context.Background()
-	for _, origin := range []string{"https://plg-a.sandbox.redeven.local", "https://plg-b.sandbox.redeven.local"} {
+	for _, origin := range []string{"https://plg-a.sandbox.redevplugin.local", "https://plg-b.sandbox.redevplugin.local"} {
 		if _, err := store.RegisterOrigin(ctx, RegisterRequest{
 			PluginInstanceID:  "plugini_1",
 			ActiveFingerprint: "sha256:active",
@@ -57,7 +57,7 @@ func TestMemoryStoreCleanupCallsCleanerAndRecordsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CleanupPluginOrigins(delete) error = %v", err)
 	}
-	if !reflect.DeepEqual(cleaner.origins, []string{"https://plg-a.sandbox.redeven.local", "https://plg-b.sandbox.redeven.local"}) {
+	if !reflect.DeepEqual(cleaner.origins, []string{"https://plg-a.sandbox.redevplugin.local", "https://plg-b.sandbox.redevplugin.local"}) {
 		t.Fatalf("cleaner origins = %#v", cleaner.origins)
 	}
 	if len(result.Records) != 2 || result.Records[0].State != StateCleanupComplete || result.Records[1].CleanedAt == nil {
@@ -68,7 +68,7 @@ func TestMemoryStoreCleanupCallsCleanerAndRecordsFailure(t *testing.T) {
 	if _, err := store.RegisterOrigin(ctx, RegisterRequest{
 		PluginInstanceID:  "plugini_2",
 		ActiveFingerprint: "sha256:active",
-		Origin:            "https://plg-c.sandbox.redeven.local",
+		Origin:            "https://plg-c.sandbox.redevplugin.local",
 	}); err != nil {
 		t.Fatal(err)
 	}

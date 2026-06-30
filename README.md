@@ -1,7 +1,7 @@
 # ReDevPlugin
 
 ReDevPlugin is the reusable plugin platform intended to be consumed by host
-products such as Redeven through published Go, TypeScript, Rust runtime, and
+products through published Go, TypeScript, Rust runtime, and
 machine-contract artifacts.
 
 This repository owns the host-neutral plugin platform core. Host products own
@@ -43,9 +43,9 @@ capabilities.
   `redevplugin scaffold <plugin-id> <display-name> <out-dir>`, package the
   generated UI plus WASM backend worker skeleton, then sign it:
   `redevplugin keygen <key-id> <private.json> <public.json>` followed by
-  `redevplugin sign <unsigned.redeven-plugin> <private.json> <signed.redeven-plugin>`.
+  `redevplugin sign <unsigned.redevplugin> <private.json> <signed.redevplugin>`.
   Development harnesses can then run
-  `redevplugin install-verified <signed.redeven-plugin> <public.json>` to prove
+  `redevplugin install-verified <signed.redevplugin> <public.json>` to prove
   the Host trust-verifier path accepts the signed package.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
@@ -60,9 +60,8 @@ capabilities.
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
   worker invocation, target-classifier contracts.
 - Mounted hosts can also expose the same compatibility manifest through
-  `GET /_redeven_proxy/api/plugins/platform/compatibility`, allowing a product
-  such as Redeven to verify the loaded platform artifact set without shelling out
-  to the CLI.
+  `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
+  verify the loaded platform artifact set without shelling out to the CLI.
 - `redevplugin verify-compatibility <compatibility.json> <artifact-root>` checks
   a released compatibility manifest against the current version matrix and the
   referenced contract artifact hashes. Host products can use this command before
@@ -86,10 +85,10 @@ capabilities.
   the exported no-argument worker entrypoint with the embedded Wasmi engine, and
   returns a successful scaffold worker result over `invoke_worker_result`. It
   also exposes the first brokered hostcall slices. The early
-  `redeven.storage/files_write_demo` and `redeven.network/http_request_demo`
+  `redevplugin.storage/files_write_demo` and `redevplugin.network/http_request_demo`
   imports prove storage and network broker routing. The newer
-  `redeven.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32` and
-  `redeven.network/http_request(req_ptr, req_len, out_ptr, out_len) -> i32`
+  `redevplugin.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32` and
+  `redevplugin.network/http_request(req_ptr, req_len, out_ptr, out_len) -> i32`
   imports are the first linear-memory ABI slices: the worker writes bounded
   JSON broker requests into WASM memory, the Rust runtime injects Host-owned
   identity, policy, grant, and revoke context, executes the requests through
