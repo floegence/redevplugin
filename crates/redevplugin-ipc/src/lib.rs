@@ -6,10 +6,12 @@ pub const FRAME_TYPE_INVOKE_WORKER: &str = "invoke_worker";
 pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
 pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
 pub const FRAME_TYPE_VALIDATE_HANDLE_GRANT: &str = "validate_handle_grant";
+pub const FRAME_TYPE_STORAGE_FILE: &str = "storage_file";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
 pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
 pub const ERR_HANDLE_GRANT_VALIDATION_FAILED: &str = "HANDLE_GRANT_VALIDATION_FAILED";
+pub const ERR_STORAGE_FILE_FAILED: &str = "STORAGE_FILE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 
@@ -22,6 +24,8 @@ pub enum FrameType {
     InvokeWorker,
     InvokeWorkerResult,
     OpenHandle,
+    ValidateHandleGrant,
+    StorageFile,
     CloseHandle,
     RevokeEpoch,
     RevokeEpochAck,
@@ -248,6 +252,86 @@ pub fn validate_handle_grant_response(
     let method = extract_json_string(input, "method").ok_or("missing method")?;
     if handle_id != expected_handle_id || method != expected_method {
         return Err("validate_handle_grant audience mismatch".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageFileRequest {
+    pub handle_grant_token: String,
+    pub plugin_instance_id: String,
+    pub active_fingerprint: String,
+    pub runtime_instance_id: String,
+    pub runtime_generation_id: String,
+    pub runtime_shard_id: String,
+    pub handle_id: String,
+    pub method: String,
+    pub policy_revision: u64,
+    pub management_revision: u64,
+    pub revoke_epoch: u64,
+    pub operation: String,
+    pub store_id: String,
+    pub path: String,
+    pub data_base64: String,
+    pub max_bytes: u64,
+    pub max_entries: u64,
+    pub recursive: bool,
+}
+
+pub fn storage_file_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    req: &StorageFileRequest,
+) -> String {
+    format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"path\":\"{}\",\"data_base64\":\"{}\",\"max_bytes\":{},\"max_entries\":{},\"recursive\":{}}}}}",
+        RUST_IPC_VERSION,
+        FRAME_TYPE_STORAGE_FILE,
+        escape_json_string(request_id),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(&req.handle_grant_token),
+        escape_json_string(&req.plugin_instance_id),
+        escape_json_string(&req.active_fingerprint),
+        escape_json_string(&req.runtime_instance_id),
+        escape_json_string(&req.runtime_generation_id),
+        escape_json_string(&req.runtime_shard_id),
+        escape_json_string(&req.handle_id),
+        escape_json_string(&req.method),
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+        escape_json_string(&req.operation),
+        escape_json_string(&req.store_id),
+        escape_json_string(&req.path),
+        escape_json_string(&req.data_base64),
+        req.max_bytes,
+        req.max_entries,
+        if req.recursive { "true" } else { "false" }
+    )
+}
+
+pub fn validate_storage_file_response(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+) -> Result<(), String> {
+    let (frame_type, request_id, runtime_generation_id) =
+        parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_STORAGE_FILE {
+        return Err("expected storage_file frame".to_string());
+    }
+    if request_id != expected_request_id {
+        return Err("storage_file request_id mismatch".to_string());
+    }
+    if runtime_generation_id != expected_runtime_generation_id {
+        return Err("storage_file runtime_generation_id mismatch".to_string());
+    }
+    if !extract_json_bool(input, "ok").unwrap_or(false) {
+        let code = extract_json_string(input, "code")
+            .unwrap_or_else(|| ERR_STORAGE_FILE_FAILED.to_string());
+        let message = extract_json_string(input, "message")
+            .unwrap_or_else(|| "storage file request failed".to_string());
+        return Err(format!("{code}: {message}"));
     }
     Ok(())
 }
@@ -479,6 +563,46 @@ mod tests {
         let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
         validate_handle_grant_response(frame, "r1:handle", "g1", "storage:db", "storage.sqlite")
             .expect("valid handle grant");
+    }
+
+    #[test]
+    fn renders_storage_file_frame() {
+        let req = StorageFileRequest {
+            handle_grant_token: "handle_grant.secret".to_string(),
+            plugin_instance_id: "plugini_1".to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: "runtime_shard_1".to_string(),
+            handle_id: "storage:workspace".to_string(),
+            method: "storage.files".to_string(),
+            policy_revision: 1,
+            management_revision: 2,
+            revoke_epoch: 3,
+            operation: "read".to_string(),
+            store_id: "workspace".to_string(),
+            path: "notes/today.txt".to_string(),
+            data_base64: "".to_string(),
+            max_bytes: 1024,
+            max_entries: 10,
+            recursive: false,
+        };
+        let frame = storage_file_frame("r1:storage_file", "g1", &req);
+        assert!(frame.contains(r#""frame_type":"storage_file""#));
+        assert!(frame.contains(r#""handle_id":"storage:workspace""#));
+        assert!(frame.contains(r#""method":"storage.files""#));
+        assert!(frame.contains(r#""operation":"read""#));
+    }
+
+    #[test]
+    fn validates_storage_file_response() {
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5}}"#;
+        validate_storage_file_response(frame, "r1:storage_file", "g1")
+            .expect("valid storage file response");
+        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
+        let err = validate_storage_file_response(failed, "r1:storage_file", "g1")
+            .expect_err("failed storage file response");
+        assert!(err.contains("STORAGE_FILE_NOT_FOUND"));
     }
 
     #[test]
