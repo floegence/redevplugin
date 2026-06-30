@@ -80,6 +80,12 @@ capabilities.
   method, has the helper runtime request `network_execute` over IPC, mints the
   grant through the Host connectivity broker, and records the HTTP executor
   request/response before returning the worker result.
+- The Rust runtime now performs the first executable worker slice: it requests
+  the bound WASM artifact from the Host over IPC, validates the WASM binary
+  header and required function export through `redevplugin-wasm-abi`, and
+  returns a successful scaffold worker result over `invoke_worker_result`.
+  A Host integration test builds and exercises the real Rust runtime whenever a
+  local Cargo toolchain is available.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the

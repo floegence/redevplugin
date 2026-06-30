@@ -58,6 +58,11 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q 'struct NetworkExecuteRequest' crates/redevplugin-ipc/src/lib.rs
   grep -q 'network_execute_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_network_execute_response' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_WASM_WORKER_INVALID' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'worker_success_result_json' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'validate_worker_module' crates/redevplugin-wasm-abi/src/lib.rs
+  grep -q 'redevplugin-wasm-abi' crates/redevplugin-runtime/Cargo.toml
+  grep -q 'redevplugin_wasm_abi::validate_worker_module' crates/redevplugin-runtime/src/main.rs
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json

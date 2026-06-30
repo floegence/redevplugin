@@ -18,6 +18,7 @@ pub const ERR_NETWORK_GRANT_FAILED: &str = "NETWORK_GRANT_FAILED";
 pub const ERR_NETWORK_EXECUTE_FAILED: &str = "NETWORK_EXECUTE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
+pub const ERR_WASM_WORKER_INVALID: &str = "WASM_WORKER_INVALID";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
@@ -39,7 +40,7 @@ pub enum FrameType {
 }
 
 pub fn extract_json_string(input: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\"", key);
+    let pattern = format!("\"{key}\"");
     let key_start = input.find(&pattern)?;
     let after_key = &input[key_start + pattern.len()..];
     let colon = after_key.find(':')?;
@@ -181,8 +182,7 @@ pub fn validate_open_handle_response(
             .unwrap_or_else(|| "artifact handle request failed".to_string());
         return Err(format!("{code}: {message}"));
     }
-    let package_hash =
-        extract_json_string(input, "package_hash").ok_or("missing package_hash")?;
+    let package_hash = extract_json_string(input, "package_hash").ok_or("missing package_hash")?;
     let artifact = extract_json_string(input, "artifact").ok_or("missing artifact")?;
     let sha256 = extract_json_string(input, "sha256").ok_or("missing sha256")?;
     if package_hash != expected_identity.package_hash
@@ -199,6 +199,35 @@ pub fn validate_open_handle_response(
     Ok(())
 }
 
+pub fn open_handle_content_base64(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+    expected_identity: &WorkerInvocationIdentity,
+) -> Result<String, String> {
+    validate_open_handle_response(
+        input,
+        expected_request_id,
+        expected_runtime_generation_id,
+        expected_identity,
+    )?;
+    extract_json_string(input, "content_base64").ok_or("missing content_base64".to_string())
+}
+
+pub fn worker_success_result_json(
+    identity: &WorkerInvocationIdentity,
+    wasm_byte_len: usize,
+) -> String {
+    format!(
+        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"validated wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}}}}}",
+        escape_json_string(&identity.method),
+        escape_json_string(&identity.worker_id),
+        WASM_ABI_VERSION,
+        wasm_byte_len
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn validate_handle_grant_frame(
     request_id: &str,
     runtime_generation_id: &str,
@@ -413,8 +442,7 @@ pub fn validate_network_grant_response(
     if !grant_id.starts_with("netgrant_") || grant_id.len() != "netgrant_".len() + 32 {
         return Err("invalid network grant id".to_string());
     }
-    let connector_id =
-        extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
+    let connector_id = extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
     let transport = extract_json_string(input, "transport").ok_or("missing transport")?;
     if connector_id != expected_connector_id || transport != expected_transport {
         return Err("network_grant audience mismatch".to_string());
@@ -514,8 +542,7 @@ pub fn validate_network_execute_response(
             .unwrap_or_else(|| "network execute request failed".to_string());
         return Err(format!("{code}: {message}"));
     }
-    let connector_id =
-        extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
+    let connector_id = extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
     let transport = extract_json_string(input, "transport").ok_or("missing transport")?;
     if connector_id != expected_connector_id || transport != expected_transport {
         return Err("network_execute audience mismatch".to_string());
@@ -536,8 +563,8 @@ pub fn validate_hello_frame(input: &str) -> Result<(String, String), &'static st
     if request_id.trim().is_empty() {
         return Err("empty request_id");
     }
-    let runtime_generation_id =
-        extract_json_string(input, "runtime_generation_id").ok_or("missing runtime_generation_id")?;
+    let runtime_generation_id = extract_json_string(input, "runtime_generation_id")
+        .ok_or("missing runtime_generation_id")?;
     if runtime_generation_id.trim().is_empty() {
         return Err("empty runtime_generation_id");
     }
@@ -554,8 +581,8 @@ pub fn parse_frame_identity(input: &str) -> Result<(String, String, String), &'s
     if request_id.trim().is_empty() {
         return Err("empty request_id");
     }
-    let runtime_generation_id =
-        extract_json_string(input, "runtime_generation_id").ok_or("missing runtime_generation_id")?;
+    let runtime_generation_id = extract_json_string(input, "runtime_generation_id")
+        .ok_or("missing runtime_generation_id")?;
     if runtime_generation_id.trim().is_empty() {
         return Err("empty runtime_generation_id");
     }
@@ -563,7 +590,7 @@ pub fn parse_frame_identity(input: &str) -> Result<(String, String, String), &'s
 }
 
 pub fn extract_json_bool(input: &str, key: &str) -> Option<bool> {
-    let pattern = format!("\"{}\"", key);
+    let pattern = format!("\"{key}\"");
     let key_start = input.find(&pattern)?;
     let after_key = &input[key_start + pattern.len()..];
     let colon = after_key.find(':')?;
@@ -639,7 +666,10 @@ fn is_sha256_ref(value: &str) -> bool {
     let Some(hex) = value.strip_prefix("sha256:") else {
         return false;
     };
-    hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    hex.len() == 64
+        && hex
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
 fn is_worker_artifact_path(value: &str) -> bool {
@@ -723,7 +753,8 @@ mod tests {
             export: "redeven_worker_invoke".to_string(),
         };
         let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
-        validate_open_handle_response(frame, "r1:artifact", "g1", &identity).expect("valid open_handle");
+        validate_open_handle_response(frame, "r1:artifact", "g1", &identity)
+            .expect("valid open_handle");
     }
 
     #[test]
@@ -866,14 +897,9 @@ mod tests {
         validate_network_execute_response(frame, "r1:network_execute", "g1", "api", "http")
             .expect("valid network execute response");
         let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large"}}"#;
-        let err = validate_network_execute_response(
-            failed,
-            "r1:network_execute",
-            "g1",
-            "api",
-            "http",
-        )
-        .expect_err("failed network execute response");
+        let err =
+            validate_network_execute_response(failed, "r1:network_execute", "g1", "api", "http")
+                .expect_err("failed network execute response");
         assert!(err.contains("NETWORK_RESPONSE_TOO_LARGE"));
     }
 
@@ -881,15 +907,20 @@ mod tests {
     fn parses_worker_invocation_identity() {
         let frame = r#"{"payload":{"invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redeven_worker_invoke"}}}"#;
         let identity = parse_worker_invocation_identity(frame).expect("valid invocation");
-        assert_eq!(identity.package_hash, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            identity.package_hash,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
         assert_eq!(identity.artifact, "workers/backend.wasm");
         assert_eq!(identity.worker_id, "backend");
     }
 
     #[test]
     fn rejects_worker_invocation_without_artifact_identity() {
-        let err = parse_worker_invocation_identity(r#"{"payload":{"invocation":{"artifact":"../backend.wasm"}}}"#)
-            .expect_err("invalid invocation");
+        let err = parse_worker_invocation_identity(
+            r#"{"payload":{"invocation":{"artifact":"../backend.wasm"}}}"#,
+        )
+        .expect_err("invalid invocation");
         assert_eq!(err, "missing package_hash");
         let err = parse_worker_invocation_identity(r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redeven_worker_invoke"}"#)
             .expect_err("invalid artifact");

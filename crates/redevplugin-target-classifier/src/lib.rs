@@ -6,4 +6,3 @@ pub fn is_special_host(host: &str) -> bool {
         "localhost" | "metadata.google.internal" | "169.254.169.254"
     )
 }
-

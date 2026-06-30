@@ -6,4 +6,4 @@ license = "MIT"
 
 [dependencies]
 redevplugin-ipc = { path = "../redevplugin-ipc" }
-
+redevplugin-wasm-abi = { path = "../redevplugin-wasm-abi" }
