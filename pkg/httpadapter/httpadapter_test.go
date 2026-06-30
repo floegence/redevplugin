@@ -840,6 +840,51 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
+	runtime := &httpRecordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", Ready: true},
+		err:    runtimeclient.ErrRuntimeRequestFailed,
+	}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: runtime})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPWorkerFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.worker.activity", "surface_http_worker", "bridge_http_worker")
+
+	raw, err := json.Marshal(map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_worker",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_worker",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "worker.echo",
+		"params":                  map[string]any{"message": "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/rpc", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("worker runtime error status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("worker runtime error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+}
+
 func TestHandlerSettingsFlow(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: &httpRecordingSecretStore{}})
 	handler := Handler{Host: h}
@@ -1299,6 +1344,19 @@ func buildHTTPCoreActionFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpWorkerFixtureManifestJSON())
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Worker</title>")
+	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redeven_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildHTTPSettingsFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -1325,12 +1383,35 @@ func buildHTTPBlockedNetworkFixturePackage(t *testing.T) []byte {
 
 func writeHTTPFile(t *testing.T, filename string, content string) {
 	t.Helper()
+	writeHTTPBytes(t, filename, []byte(content))
+}
+
+func writeHTTPBytes(t *testing.T, filename string, content []byte) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func minimalHTTPWorkerWASMForTest(exportName string) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+		0x03, 0x02, 0x01, 0x00,
+		0x07,
+	}
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x00)
+	module = append(module, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	return module
 }
 
 func httpFixtureManifestJSON() string {
@@ -1553,6 +1634,35 @@ func httpCoreActionFixtureManifestJSON() string {
 	}`
 }
 
+func httpWorkerFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.http.worker",
+			"display_name": "HTTP Worker",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "http.worker.activity", "kind": "activity", "label": "HTTP Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{"worker_id": "echo_worker", "mode": "job", "artifact": "workers/echo.wasm", "abi": "redeven-wasm-worker-v1", "scope": "user", "memory_limit_bytes": 1048576}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+			}
+		]
+	}`
+}
+
 func httpSettingsFixtureManifestJSON() string {
 	return `{
 		"schema_version": "redeven.plugin.manifest.v1",
@@ -1708,6 +1818,7 @@ type httpRecordingRuntimeSupervisor struct {
 	health        runtimeclient.Health
 	startedTarget runtimeclient.Target
 	stopCalls     int
+	err           error
 }
 
 type httpTestWebSecurityGuard struct {
@@ -1831,9 +1942,15 @@ func (s *httpRecordingRuntimeSupervisor) Health(context.Context) (runtimeclient.
 }
 
 func (s *httpRecordingRuntimeSupervisor) InvokeWorker(context.Context, runtimeclient.Lease, string, []byte) ([]byte, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	return nil, runtimeclient.ErrRuntimeIPCUnavailable
 }
 
 func (s *httpRecordingRuntimeSupervisor) Revoke(context.Context, string, uint64) error {
+	if s.err != nil {
+		return s.err
+	}
 	return runtimeclient.ErrRuntimeIPCUnavailable
 }

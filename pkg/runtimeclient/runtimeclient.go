@@ -55,6 +55,7 @@ var (
 	ErrRuntimeNotReady       = errors.New("runtime is not ready")
 	ErrRuntimeIPCUnavailable = errors.New("runtime ipc transport is unavailable")
 	ErrRuntimeHandshake      = errors.New("runtime ipc handshake failed")
+	ErrRuntimeRequestFailed  = errors.New("runtime ipc request failed")
 )
 
 type ProcessSupervisorOptions struct {
@@ -69,6 +70,7 @@ type ProcessSupervisorOptions struct {
 
 type ProcessSupervisor struct {
 	startMu          sync.Mutex
+	ipcMu            sync.Mutex
 	mu               sync.Mutex
 	path             string
 	args             []string
@@ -78,6 +80,7 @@ type ProcessSupervisor struct {
 	now              func() time.Time
 	handshakeTimeout time.Duration
 	seq              uint64
+	requestSeq       uint64
 
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
@@ -271,24 +274,68 @@ func (s *ProcessSupervisor) Health(context.Context) (Health, error) {
 	return s.health, nil
 }
 
-func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, _ Lease, _ string, _ []byte) ([]byte, error) {
+func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if s == nil || !s.isReady() {
 		return nil, ErrRuntimeNotReady
 	}
-	return nil, ErrRuntimeIPCUnavailable
+	invocation := json.RawMessage(payload)
+	if len(invocation) == 0 {
+		invocation = json.RawMessage("null")
+	}
+	rawPayload, err := json.Marshal(invokeWorkerRequestPayload{
+		Lease:      lease,
+		Method:     method,
+		Invocation: invocation,
+	})
+	if err != nil {
+		return nil, err
+	}
+	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload)
+	if err != nil {
+		return nil, err
+	}
+	response, err := decodeRuntimeResponse(frame)
+	if err != nil {
+		return nil, err
+	}
+	if !response.OK {
+		return nil, response.err()
+	}
+	if len(response.Result) == 0 {
+		return []byte("{}"), nil
+	}
+	return append([]byte(nil), response.Result...), nil
 }
 
-func (s *ProcessSupervisor) Revoke(ctx context.Context, _ string, _ uint64) error {
+func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if s == nil || !s.isReady() {
 		return ErrRuntimeNotReady
 	}
-	return ErrRuntimeIPCUnavailable
+	rawPayload, err := json.Marshal(revokeEpochRequestPayload{
+		PluginInstanceID: pluginInstanceID,
+		RevokeEpoch:      revokeEpoch,
+	})
+	if err != nil {
+		return err
+	}
+	frame, err := s.callIPC(ctx, ipcFrameTypeRevokeEpoch, ipcFrameTypeRevokeEpochAck, rawPayload)
+	if err != nil {
+		return err
+	}
+	response, err := decodeRuntimeResponse(frame)
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		return response.err()
+	}
+	return nil
 }
 
 func (s *ProcessSupervisor) isReady() bool {
@@ -363,8 +410,12 @@ func (s *ProcessSupervisor) emit(eventType string, severity string, message stri
 }
 
 const (
-	ipcFrameTypeHello    = "hello"
-	ipcFrameTypeHelloAck = "hello_ack"
+	ipcFrameTypeHello              = "hello"
+	ipcFrameTypeHelloAck           = "hello_ack"
+	ipcFrameTypeInvokeWorker       = "invoke_worker"
+	ipcFrameTypeInvokeWorkerResult = "invoke_worker_result"
+	ipcFrameTypeRevokeEpoch        = "revoke_epoch"
+	ipcFrameTypeRevokeEpochAck     = "revoke_epoch_ack"
 )
 
 type ipcFrame struct {
@@ -387,6 +438,40 @@ type helloAckPayload struct {
 	RuntimeVersion string `json:"runtime_version"`
 	RustIPCVersion string `json:"rust_ipc_version"`
 	WASMABIVersion string `json:"wasm_abi_version"`
+}
+
+type invokeWorkerRequestPayload struct {
+	Lease      Lease           `json:"lease"`
+	Method     string          `json:"method"`
+	Invocation json.RawMessage `json:"invocation"`
+}
+
+type revokeEpochRequestPayload struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	RevokeEpoch      uint64 `json:"revoke_epoch"`
+}
+
+type runtimeResponsePayload struct {
+	OK      bool            `json:"ok"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Code    string          `json:"code,omitempty"`
+	Message string          `json:"message,omitempty"`
+}
+
+func (p runtimeResponsePayload) err() error {
+	message := strings.TrimSpace(p.Message)
+	if message == "" {
+		message = strings.TrimSpace(p.Error)
+	}
+	if message == "" {
+		message = "runtime request failed"
+	}
+	code := strings.TrimSpace(p.Code)
+	if code == "" {
+		return fmt.Errorf("%w: %s", ErrRuntimeRequestFailed, message)
+	}
+	return fmt.Errorf("%w: %s: %s", ErrRuntimeRequestFailed, code, message)
 }
 
 func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Writer, stdout *bufio.Reader, health Health, target Target) (helloAckPayload, error) {
@@ -436,6 +521,63 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 	}
 }
 
+func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage) (ipcFrame, error) {
+	if err := ctx.Err(); err != nil {
+		return ipcFrame{}, err
+	}
+	s.ipcMu.Lock()
+	defer s.ipcMu.Unlock()
+	s.mu.Lock()
+	if !s.readyLocked() || s.ipcIn == nil || s.ipcOut == nil {
+		s.mu.Unlock()
+		return ipcFrame{}, ErrRuntimeNotReady
+	}
+	s.requestSeq++
+	health := s.health
+	requestID := fmt.Sprintf("%s:%s:%d", health.RuntimeGenerationID, frameType, s.requestSeq)
+	stdin := s.ipcIn
+	stdout := s.ipcOut
+	s.mu.Unlock()
+
+	if len(payload) == 0 {
+		payload = json.RawMessage("null")
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           frameType,
+		RequestID:           requestID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Payload:             payload,
+	}); err != nil {
+		return ipcFrame{}, fmt.Errorf("%w: write %s: %v", ErrRuntimeIPCUnavailable, frameType, err)
+	}
+
+	result := make(chan struct {
+		frame ipcFrame
+		err   error
+	}, 1)
+	go func() {
+		frame, err := readIPCFrame(stdout)
+		result <- struct {
+			frame ipcFrame
+			err   error
+		}{frame: frame, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ipcFrame{}, ctx.Err()
+	case got := <-result:
+		if got.err != nil {
+			return ipcFrame{}, fmt.Errorf("%w: read %s: %v", ErrRuntimeIPCUnavailable, responseFrameType, got.err)
+		}
+		if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
+			return ipcFrame{}, err
+		}
+		return got.frame, nil
+	}
+}
+
 func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
 	line, err := reader.ReadBytes('\n')
 	if err != nil {
@@ -446,6 +588,33 @@ func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
 		return ipcFrame{}, err
 	}
 	return frame, nil
+}
+
+func validateIPCResponse(requestID string, runtimeGenerationID string, responseFrameType string, frame ipcFrame) error {
+	if frame.IPCVersion != version.RustIPCVersion {
+		return fmt.Errorf("%w: ipc_version %q", ErrRuntimeIPCUnavailable, frame.IPCVersion)
+	}
+	if frame.FrameType != responseFrameType {
+		return fmt.Errorf("%w: frame_type %q", ErrRuntimeIPCUnavailable, frame.FrameType)
+	}
+	if frame.RequestID != requestID {
+		return fmt.Errorf("%w: request_id %q", ErrRuntimeIPCUnavailable, frame.RequestID)
+	}
+	if frame.RuntimeGenerationID != runtimeGenerationID {
+		return fmt.Errorf("%w: runtime_generation_id %q", ErrRuntimeIPCUnavailable, frame.RuntimeGenerationID)
+	}
+	return nil
+}
+
+func decodeRuntimeResponse(frame ipcFrame) (runtimeResponsePayload, error) {
+	var payload runtimeResponsePayload
+	if len(frame.Payload) == 0 {
+		return runtimeResponsePayload{}, fmt.Errorf("%w: missing response payload", ErrRuntimeIPCUnavailable)
+	}
+	if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+		return runtimeResponsePayload{}, fmt.Errorf("%w: decode response payload: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return payload, nil
 }
 
 func validateHelloAck(requestID string, runtimeGenerationID string, frame ipcFrame) (helloAckPayload, error) {

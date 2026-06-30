@@ -19,9 +19,12 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"stream_direction"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"method"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"hello_ack"' spec/plugin/ipc-v1.schema.json
+  grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
+  grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"wasm_abi_version": { "const": "redeven-wasm-worker-v1" }' spec/plugin/ipc-v1.schema.json
+  grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
 )
 
 if command -v cargo >/dev/null 2>&1; then

@@ -29,7 +29,46 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("write hello ack: {err}"))?;
 
     for line in io::stdin().lock().lines() {
-        let _ = line.map_err(|err| format!("read ipc frame: {err}"))?;
+        let line = line.map_err(|err| format!("read ipc frame: {err}"))?;
+        let (frame_type, request_id, frame_generation_id) =
+            redevplugin_ipc::parse_frame_identity(&line).map_err(|err| err.to_string())?;
+        if frame_generation_id != runtime_generation_id {
+            return Err("runtime_generation_id mismatch".to_string());
+        }
+        let response = match frame_type.as_str() {
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                &request_id,
+                &runtime_generation_id,
+                false,
+                None,
+                Some("WASM_NOT_IMPLEMENTED"),
+                Some("runtime worker execution is not implemented"),
+            ),
+            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
+                &request_id,
+                &runtime_generation_id,
+                true,
+                None,
+                None,
+                None,
+            ),
+            _ => redevplugin_ipc::response_frame(
+                "diagnostic",
+                &request_id,
+                &runtime_generation_id,
+                false,
+                None,
+                Some("UNSUPPORTED_FRAME"),
+                Some("runtime frame type is not supported"),
+            ),
+        };
+        stdout
+            .write_all(response.as_bytes())
+            .and_then(|_| stdout.write_all(b"\n"))
+            .and_then(|_| stdout.flush())
+            .map_err(|err| format!("write ipc response: {err}"))?;
     }
     Ok(())
 }

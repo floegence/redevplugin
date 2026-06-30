@@ -54,11 +54,19 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 		health.WASMABIVersion != version.WASMABIVersion {
 		t.Fatalf("health mismatch: %#v", health)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{}, "worker.echo", []byte("{}")); !errors.Is(err, ErrRuntimeIPCUnavailable) {
-		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeIPCUnavailable", err)
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", []byte(`{"message":"hello"}`))
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugin_a", 3); !errors.Is(err, ErrRuntimeIPCUnavailable) {
-		t.Fatalf("Revoke() error = %v, want ErrRuntimeIPCUnavailable", err)
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	if decoded["data"].(map[string]any)["from_runtime"] != true {
+		t.Fatalf("worker result mismatch: %#v", decoded)
+	}
+	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); err != nil {
+		t.Fatalf("Revoke() error = %v", err)
 	}
 
 	waitForDiagnostic(t, store, "plugin.runtime.process.started")
@@ -78,6 +86,28 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	}
 	if _, err := supervisor.InvokeWorker(context.Background(), Lease{}, "worker.echo", nil); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("InvokeWorker(after stop) error = %v, want ErrRuntimeNotReady", err)
+	}
+}
+
+func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", []byte("{}")); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := supervisor.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop() error = %v", err)
 	}
 }
 
@@ -135,7 +165,43 @@ func runRuntimeClientHelper() {
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload:             payload,
 	})
-	time.Sleep(10 * time.Second)
+	encoder := json.NewEncoder(os.Stdout)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var request ipcFrame
+		if err := json.Unmarshal(line, &request); err != nil {
+			os.Exit(5)
+		}
+		switch request.FrameType {
+		case ipcFrameTypeInvokeWorker:
+			resultPayload := runtimeResponsePayload{OK: true, Result: json.RawMessage(`{"data":{"from_runtime":true}}`)}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE") == "1" {
+				resultPayload = runtimeResponsePayload{OK: false, Code: "WASM_NOT_IMPLEMENTED", Message: "runtime worker execution is not implemented"}
+			}
+			raw, _ := json.Marshal(resultPayload)
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           ipcFrameTypeInvokeWorkerResult,
+				RequestID:           request.RequestID,
+				RuntimeGenerationID: request.RuntimeGenerationID,
+				Payload:             raw,
+			})
+		case ipcFrameTypeRevokeEpoch:
+			raw, _ := json.Marshal(runtimeResponsePayload{OK: true})
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           ipcFrameTypeRevokeEpochAck,
+				RequestID:           request.RequestID,
+				RuntimeGenerationID: request.RuntimeGenerationID,
+				Payload:             raw,
+			})
+		default:
+			os.Exit(6)
+		}
+	}
 }
 
 func waitForDiagnostic(t *testing.T, store *observability.MemoryStore, eventType string) {

@@ -8,7 +8,7 @@
   "properties": {
     "ipc_version": { "const": "rust-ipc-v1" },
     "frame_type": {
-      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "open_handle", "close_handle", "revoke_epoch", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "runtime_generation_id": { "type": "string" },
@@ -60,6 +60,82 @@
           }
         }
       }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "invoke_worker" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lease", "method", "invocation"],
+            "properties": {
+              "lease": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["lease_id", "lease_token", "runtime_generation_id", "plugin_instance_id"],
+                "properties": {
+                  "lease_id": { "type": "string", "minLength": 1 },
+                  "lease_token": { "type": "string", "minLength": 1 },
+                  "runtime_generation_id": { "type": "string", "minLength": 1 },
+                  "plugin_instance_id": { "type": "string", "minLength": 1 },
+                  "policy_revision": { "type": "integer", "minimum": 0 },
+                  "management_revision": { "type": "integer", "minimum": 0 },
+                  "revoke_epoch": { "type": "integer", "minimum": 0 },
+                  "expires_at": { "type": "string", "format": "date-time" }
+                }
+              },
+              "method": { "type": "string", "minLength": 1 },
+              "invocation": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "invoke_worker_result" } }, "required": ["frame_type"] },
+      "then": { "$ref": "#/$defs/runtime_response_frame" }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "revoke_epoch" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["plugin_instance_id", "revoke_epoch"],
+            "properties": {
+              "plugin_instance_id": { "type": "string", "minLength": 1 },
+              "revoke_epoch": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "revoke_epoch_ack" } }, "required": ["frame_type"] },
+      "then": { "$ref": "#/$defs/runtime_response_frame" }
     }
-  ]
+  ],
+  "$defs": {
+    "runtime_response_frame": {
+      "required": ["runtime_generation_id", "payload"],
+      "properties": {
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ok"],
+          "properties": {
+            "ok": { "type": "boolean" },
+            "result": true,
+            "error": { "type": "string" },
+            "code": { "type": "string" },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
 }
