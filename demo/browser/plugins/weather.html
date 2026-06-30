@@ -19,6 +19,7 @@
       <div id="weather-form" class="weather-search">
         <input id="weather-location" autocomplete="off" placeholder="City or region" />
         <button id="weather-fetch" type="button">Fetch</button>
+        <button id="weather-compare" type="button" class="secondary-button">Compare saved</button>
       </div>
       <div id="saved-locations" class="saved-locations" aria-label="Saved weather locations"></div>
 
@@ -77,6 +78,14 @@
           <strong id="network-history-count">0</strong>
         </div>
         <ol id="network-history"></ol>
+      </section>
+
+      <section class="weather-compare-panel" aria-label="Saved location comparison">
+        <div>
+          <span class="metric-label">saved location comparison</span>
+          <strong id="weather-compare-count">0 locations</strong>
+        </div>
+        <div id="weather-compare-grid" class="weather-compare-grid"></div>
       </section>
 
       <section class="result-panel" aria-label="Weather plugin result">

@@ -20,6 +20,7 @@ const status = document.querySelector("#plugin-status");
 const addButton = document.querySelector("#schedule-add");
 const refreshButton = document.querySelector("#schedule-refresh");
 const seedWeekButton = document.querySelector("#schedule-seed-week");
+const bulkPlanButton = document.querySelector("#schedule-bulk-plan");
 const archiveDoneButton = document.querySelector("#schedule-archive-done");
 const titleInput = document.querySelector("#schedule-title");
 const dateInput = document.querySelector("#schedule-date");
@@ -40,6 +41,9 @@ const storageUsage = document.querySelector("#schedule-storage-usage");
 const persistedAt = document.querySelector("#schedule-persisted-at");
 const timelineNext = document.querySelector("#timeline-next");
 const timeline = document.querySelector("#schedule-timeline");
+const tagCloud = document.querySelector("#schedule-tag-cloud");
+const transactionStatus = document.querySelector("#schedule-transaction");
+const transactionDetail = document.querySelector("#schedule-transaction-detail");
 const journalCount = document.querySelector("#journal-count");
 const journal = document.querySelector("#schedule-journal");
 const result = document.querySelector("#plugin-result");
@@ -72,6 +76,7 @@ addButton.addEventListener("click", async () => {
 
 refreshButton.addEventListener("click", refreshItems);
 seedWeekButton.addEventListener("click", () => callPlugin("schedule.items.seedWeek", { view: currentView() }));
+bulkPlanButton.addEventListener("click", () => callPlugin("schedule.items.bulkPlan", { view: currentView() }));
 archiveDoneButton.addEventListener("click", () => callPlugin("schedule.items.archiveDone", { view: currentView() }));
 statusInput.addEventListener("change", refreshItems);
 queryInput.addEventListener("input", debounce(refreshItems, 180));
@@ -96,6 +101,12 @@ async function callPlugin(method, payload) {
     }
     if (Array.isArray(data?.journal)) {
       renderJournal(data.journal);
+    }
+    if (data?.stats?.tag_load) {
+      renderTagCloud(data.stats.tag_load);
+    }
+    if (data?.transaction) {
+      renderTransaction(data.transaction);
     }
     if (data?.source || data?.persisted_at) {
       renderStorageState(data);
@@ -144,6 +155,20 @@ function renderStats(stats) {
   doneCount.textContent = String(stats.done ?? 0);
   minuteCount.textContent = String(stats.planned_minutes ?? 0);
   timelineNext.textContent = stats.next ? `${stats.next.time} · ${stats.next.title}` : "No upcoming item";
+}
+
+function renderTagCloud(tags) {
+  tagCloud.replaceChildren(...Object.entries(tags).sort((a, b) => b[1] - a[1]).map(([tag, value]) => {
+    const chip = document.createElement("span");
+    chip.textContent = `${tag} · ${value}`;
+    chip.style.setProperty("--weight", String(Math.min(1, Math.max(0.22, Number(value) / 6))));
+    return chip;
+  }));
+}
+
+function renderTransaction(transaction) {
+  transactionStatus.textContent = `${transaction.engine ?? "sqlite-demo"} · ${transaction.mode ?? "read"}`;
+  transactionDetail.textContent = `${Number(transaction.rows_changed ?? 0)} rows, rev ${Number(transaction.revision ?? 0)}, ${formatBytes(transaction.bytes_written ?? 0)} written`;
 }
 
 function renderStorageState(data) {

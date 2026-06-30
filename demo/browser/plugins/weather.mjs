@@ -18,6 +18,7 @@ const client = new PluginBridgeClient({ ...bootstrap, parentOrigin });
 
 const status = document.querySelector("#plugin-status");
 const fetchButton = document.querySelector("#weather-fetch");
+const compareButton = document.querySelector("#weather-compare");
 const locationInput = document.querySelector("#weather-location");
 const savedLocations = document.querySelector("#saved-locations");
 const place = document.querySelector("#weather-place");
@@ -41,6 +42,8 @@ const networkResponse = document.querySelector("#network-response");
 const networkParser = document.querySelector("#network-parser");
 const networkHistoryCount = document.querySelector("#network-history-count");
 const networkHistory = document.querySelector("#network-history");
+const compareCount = document.querySelector("#weather-compare-count");
+const compareGrid = document.querySelector("#weather-compare-grid");
 const forecast = document.querySelector("#forecast");
 const hourly = document.querySelector("#hourly");
 const rawWeatherResponse = document.querySelector("#raw-weather-response");
@@ -59,6 +62,10 @@ fetchButton.addEventListener("click", async () => {
   const location = locationInput.value.trim() || "San Francisco";
   await callPlugin("weather.location.save", { location });
   await callPlugin("weather.fetch", { location });
+});
+
+compareButton.addEventListener("click", async () => {
+  await callPlugin("weather.saved.compare", {});
 });
 
 locationInput.addEventListener("keydown", (event) => {
@@ -87,6 +94,9 @@ async function callPlugin(method, payload) {
     }
     if (Array.isArray(data?.saved_locations)) {
       renderSavedLocations(data.saved_locations);
+    }
+    if (Array.isArray(data?.comparisons)) {
+      renderComparisons(data.comparisons);
     }
     if (data?.location && method !== "weather.fetch") {
       place.textContent = data.location;
@@ -162,6 +172,22 @@ function renderSavedLocations(locations) {
       await callPlugin("weather.fetch", { location });
     });
     return button;
+  }));
+}
+
+function renderComparisons(entries) {
+  compareCount.textContent = `${entries.length} locations`;
+  compareGrid.replaceChildren(...entries.map((entry) => {
+    const parsed = parseWeatherResponse(entry);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "weather-compare-card";
+    card.innerHTML = `<strong>${escapeHTML(entry.location)}</strong><span>${Number(parsed.current.temperature_c)}°C · ${escapeHTML(parsed.current.condition)}</span><small>${Number(parsed.current.wind_kph)} kph wind · AQI ${Number(parsed.air_quality?.aqi ?? 0)} · ${Number(entry.network?.latency_ms ?? 0)} ms</small>`;
+    card.addEventListener("click", () => {
+      locationInput.value = entry.location;
+      renderWeather(entry);
+    });
+    return card;
   }));
 }
 

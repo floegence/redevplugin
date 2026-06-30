@@ -32,6 +32,7 @@ export function createDemoPlatformFetch(options = {}) {
     persistence.save({
       gameBestScore: state.gameBestScore,
       gameLastRun: state.gameLastRun,
+      gameEvents: state.gameEvents,
       gameSaves: state.gameSaves,
       gameSnapshots: state.gameSnapshots,
       scheduleItems: state.scheduleItems,
@@ -237,7 +238,9 @@ export function createDemoPlatformFetch(options = {}) {
                 last_run: state.gameLastRun,
                 saves: state.gameSaves,
                 achievements: gameAchievements(state.gameLastRun),
+                events: state.gameEvents,
                 leaderboard: gameLeaderboard(state),
+                mission: gameMission(state.gameLastRun),
                 storage: "host-backed kv store",
               },
             },
@@ -251,12 +254,48 @@ export function createDemoPlatformFetch(options = {}) {
                 last_run: state.gameLastRun,
                 saves: state.gameSaves,
                 achievements: state.gameLastRun ? gameAchievements(state.gameLastRun) : [],
+                events: state.gameEvents,
                 leaderboard: gameLeaderboard(state),
+                mission: gameMission(state.gameLastRun),
                 snapshots: state.gameSnapshots,
                 storage: "host-backed kv store",
               },
             },
           });
+        case "game.run.sync": {
+          const run = normalizeGameRun(body.params?.run ?? {});
+          const telemetry = normalizeGameTelemetry(body.params?.telemetry ?? {});
+          state.gameLastRun = run;
+          state.gameBestScore = Math.max(state.gameBestScore, run.score);
+          state.gameEvents = [
+            {
+              label: `synced ${telemetry.events.length} runtime events`,
+              tone: "green",
+              score: run.score,
+              level: run.level,
+              combo: run.combo,
+              at: new Date().toISOString(),
+            },
+            ...telemetry.events,
+            ...state.gameEvents,
+          ].map(normalizeGameEvent).slice(0, 8);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                synced: true,
+                run,
+                telemetry,
+                best_score: state.gameBestScore,
+                events: state.gameEvents,
+                mission: gameMission(run),
+                storage: "host-backed kv store",
+                storage_key: "game/runs/latest",
+              },
+            },
+          });
+        }
         case "game.snapshot.save": {
           const snapshot = normalizeGameSnapshot(body.params);
           state.gameSnapshots = [snapshot, ...state.gameSnapshots].slice(0, 5);
@@ -295,6 +334,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("read", state, 0),
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted_at: new Date().toISOString(),
@@ -316,6 +356,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("insert", state, 1),
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -338,6 +379,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("update", state, 1),
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -360,6 +402,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("delete", state, 1),
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -383,6 +426,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("bulk_insert", state, seeded.length),
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -407,6 +451,31 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("bulk_delete", state, archived),
+                journal: state.scheduleJournal,
+                source: "host storage broker",
+                persisted: true,
+                persisted_at: new Date().toISOString(),
+              },
+            },
+          });
+        }
+        case "schedule.items.bulkPlan": {
+          const planned = createSprintPlanItems(state.scheduleRevision);
+          state.scheduleItems = [...state.scheduleItems, ...planned].sort(compareScheduleItems);
+          state.scheduleRevision += 1;
+          appendScheduleJournal(state, "bulk_plan", `${planned.length} sprint items`);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                added: planned.length,
+                items: filterScheduleItems(state.scheduleItems, body.params?.view),
+                stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("bulk_insert", state, planned.length),
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -449,11 +518,34 @@ export function createDemoPlatformFetch(options = {}) {
           const payload = await fetchWeatherPayload(location, state.weatherFetches, { networkBaseURL, networkFetch });
           state.weatherNetworkEvents = rememberWeatherNetworkEvent(state.weatherNetworkEvents, payload.network);
           payload.network_history = state.weatherNetworkEvents;
+          payload.saved_locations = state.weatherSavedLocations;
           persistState();
           return jsonResponse({
             ok: true,
             data: {
               data: payload,
+            },
+          });
+        }
+        case "weather.saved.compare": {
+          const locations = state.weatherSavedLocations.slice(0, 4);
+          const comparisons = [];
+          for (const location of locations) {
+            state.weatherFetches += 1;
+            const payload = await fetchWeatherPayload(location, state.weatherFetches, { networkBaseURL, networkFetch });
+            state.weatherNetworkEvents = rememberWeatherNetworkEvent(state.weatherNetworkEvents, payload.network);
+            comparisons.push(payload);
+          }
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                comparisons,
+                saved_locations: state.weatherSavedLocations,
+                network_history: state.weatherNetworkEvents,
+                source: "host network broker",
+              },
             },
           });
         }
@@ -471,6 +563,7 @@ export function createDemoPlatformFetch(options = {}) {
 function createDefaultDemoState() {
   return {
     gameBestScore: 0,
+    gameEvents: [],
     gameLastRun: null,
     gameSaves: 0,
     gameSnapshots: [],
@@ -610,6 +703,9 @@ function applyPersistedState(state, persisted = {}) {
   if (persisted.gameLastRun && typeof persisted.gameLastRun === "object") {
     state.gameLastRun = normalizeGameRun(persisted.gameLastRun);
   }
+  if (Array.isArray(persisted.gameEvents)) {
+    state.gameEvents = persisted.gameEvents.map(normalizeGameEvent).slice(0, 8);
+  }
   if (Number.isFinite(Number(persisted.gameSaves))) {
     state.gameSaves = Math.max(0, Math.round(Number(persisted.gameSaves)));
   }
@@ -711,6 +807,26 @@ function createSeedScheduleItems(revision) {
   }));
 }
 
+function createSprintPlanItems(revision) {
+  const base = [
+    ["2026-07-13", "09:40", "Plugin runtime profiling", "runtime", "high", 45],
+    ["2026-07-13", "13:10", "Storage broker quota drill", "storage", "high", 50],
+    ["2026-07-14", "11:00", "Network connector fixture replay", "network", "medium", 35],
+    ["2026-07-15", "15:30", "Sandbox iframe accessibility pass", "ui", "medium", 40],
+  ];
+  return base.map(([date, time, title, tag, priority, duration], index) => ({
+    id: `sched-sprint-${revision}-${index}`,
+    title,
+    date,
+    time,
+    tag,
+    priority,
+    duration_minutes: duration,
+    notes: "Inserted by one simulated SQLite transaction from the backend worker path.",
+    done: false,
+  }));
+}
+
 function compareScheduleItems(a, b) {
   return `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`);
 }
@@ -745,6 +861,10 @@ function scheduleStats(items) {
   const done = items.length - open.length;
   const minutes = open.reduce((sum, item) => sum + Number(item.duration_minutes ?? 0), 0);
   const tags = [...new Set(items.map((item) => item.tag).filter(Boolean))].sort();
+  const tagLoad = items.reduce((acc, item) => {
+    acc[item.tag] = (acc[item.tag] ?? 0) + 1;
+    return acc;
+  }, {});
   const next = open.slice().sort(compareScheduleItems)[0] ?? null;
   return {
     total: items.length,
@@ -752,6 +872,7 @@ function scheduleStats(items) {
     done,
     planned_minutes: minutes,
     tags,
+    tag_load: tagLoad,
     next,
   };
 }
@@ -785,6 +906,26 @@ function normalizeGameSnapshot(params = {}) {
   };
 }
 
+function normalizeGameTelemetry(params = {}) {
+  return {
+    events: Array.isArray(params.events) ? params.events.map(normalizeGameEvent).slice(0, 8) : [],
+    peak_speed: Math.max(1, Number(params.peak_speed ?? 1)),
+    duration_ms: Math.max(0, Math.round(Number(params.duration_ms ?? 0))),
+    canvas_size: String(params.canvas_size || "860x420").slice(0, 24),
+  };
+}
+
+function normalizeGameEvent(event = {}) {
+  return {
+    label: String(event.label || "runtime event").slice(0, 80),
+    tone: String(event.tone || "default").slice(0, 24),
+    score: Math.max(0, Math.round(Number(event.score ?? 0))),
+    level: Math.max(1, Math.round(Number(event.level ?? 1))),
+    combo: Math.max(0, Math.round(Number(event.combo ?? 0))),
+    at: typeof event.at === "string" ? event.at : "2026-06-30T00:00:00Z",
+  };
+}
+
 function gameAchievements(run) {
   const achievements = [];
   if (run.score >= 50) {
@@ -800,6 +941,28 @@ function gameAchievements(run) {
     achievements.push("power-collector");
   }
   return achievements;
+}
+
+function gameMission(run) {
+  if (!run || run.bricks_cleared < 8) {
+    return {
+      key: "clear",
+      title: "Break the front line",
+      detail: "Clear eight bricks before syncing the run.",
+    };
+  }
+  if (run.combo < 6) {
+    return {
+      key: "combo",
+      title: "Build combo heat",
+      detail: "Keep rebounds alive until combo reaches six.",
+    };
+  }
+  return {
+    key: "sync",
+    title: "Bank the run",
+    detail: "Sync the current run to host-backed plugin storage.",
+  };
 }
 
 function gameLeaderboard(state) {
@@ -820,6 +983,19 @@ function scheduleStorageMetadata(state) {
     journal_entries: state.scheduleJournal.length,
     quota_bytes: 1048576,
     used_bytes: 4096 + state.scheduleItems.length * 384 + state.scheduleJournal.length * 128,
+  };
+}
+
+function scheduleTransaction(mode, state, rowsChanged) {
+  const rows = Math.max(0, Math.round(Number(rowsChanged ?? 0)));
+  return {
+    engine: "sqlite-demo",
+    mode,
+    revision: state.scheduleRevision,
+    rows_changed: rows,
+    bytes_written: rows === 0 ? 0 : 512 + rows * 192,
+    journal_mode: "wal",
+    committed_at: new Date().toISOString(),
   };
 }
 

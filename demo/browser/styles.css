@@ -383,7 +383,8 @@ pre {
 }
 
 .arcade-telemetry,
-.leaderboard-panel {
+.leaderboard-panel,
+.mission-panel {
   display: grid;
   gap: 10px;
   margin-top: 14px;
@@ -394,7 +395,10 @@ pre {
 }
 
 .arcade-telemetry > div,
-.leaderboard-panel {
+.leaderboard-panel,
+.mission-card,
+.heat-card,
+.game-event-feed {
   background: rgb(15 23 42 / 72%);
   border: 1px solid rgb(125 211 252 / 24%);
   border-radius: 8px;
@@ -405,6 +409,84 @@ pre {
   color: #a7f3d0;
   display: block;
   font-size: 22px;
+}
+
+.mission-panel {
+  grid-template-columns: minmax(0, 1.1fr) minmax(170px, 0.65fr) minmax(220px, 1fr);
+}
+
+.mission-card strong {
+  color: #fef08a;
+  display: block;
+  font-size: 20px;
+}
+
+.mission-card p {
+  color: #cbd5e1;
+  margin: 8px 0 0;
+}
+
+.heat-meter {
+  background: rgb(2 6 23 / 74%);
+  border: 1px solid rgb(103 232 249 / 22%);
+  border-radius: 999px;
+  height: 14px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.heat-meter span {
+  background: linear-gradient(90deg, #22d3ee, #fef08a, #fb7185);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 160ms ease;
+  width: 0;
+}
+
+.heat-card strong {
+  color: #67e8f9;
+  display: block;
+  font-size: 20px;
+}
+
+.game-event-feed {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+}
+
+.game-event-feed li {
+  border-left: 4px solid #64748b;
+  padding-left: 9px;
+}
+
+.game-event-feed li.tone-gold {
+  border-left-color: #fef08a;
+}
+
+.game-event-feed li.tone-green {
+  border-left-color: #86efac;
+}
+
+.game-event-feed li.tone-violet {
+  border-left-color: #e879f9;
+}
+
+.game-event-feed li.tone-brick {
+  border-left-color: #fb7185;
+}
+
+.game-event-feed strong,
+.game-event-feed span {
+  display: block;
+}
+
+.game-event-feed span {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-top: 3px;
 }
 
 .leaderboard-panel ol {
@@ -516,7 +598,7 @@ pre {
 }
 
 .schedule-filter {
-  grid-template-columns: minmax(160px, 1fr) minmax(132px, 0.45fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(132px, 0.45fr) auto auto auto;
 }
 
 .schedule-board {
@@ -641,6 +723,53 @@ pre {
   text-transform: uppercase;
 }
 
+.schedule-insights {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.7fr);
+  margin-top: 16px;
+}
+
+.schedule-insights > div {
+  background: #ffffff;
+  border: 1px solid #d7dfcf;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-cloud span {
+  background: rgb(132 204 22 / calc(0.12 + var(--weight) * 0.2));
+  border: 1px solid rgb(101 163 13 / 26%);
+  border-radius: 999px;
+  color: #315a2e;
+  display: inline-flex;
+  font-size: calc(12px + var(--weight) * 4px);
+  font-weight: 800;
+  min-height: 30px;
+  padding: 6px 10px;
+}
+
+.schedule-insights strong,
+.schedule-insights p {
+  display: block;
+}
+
+.schedule-insights strong {
+  color: #315a2e;
+  font-size: 18px;
+}
+
+.schedule-insights p {
+  color: #64748b;
+  margin: 8px 0 0;
+}
+
 .journal-panel {
   background: #ffffff;
   border: 1px solid #d7dfcf;
@@ -696,7 +825,7 @@ pre {
 }
 
 .weather-search {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 .saved-locations {
@@ -931,6 +1060,67 @@ pre {
   margin-top: 6px;
 }
 
+.weather-compare-panel {
+  background: #ffffff;
+  border: 1px solid #cbd7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.weather-compare-panel > div:first-child strong {
+  color: #1d4ed8;
+  display: block;
+  font-size: 18px;
+}
+
+.weather-compare-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.weather-compare-card {
+  align-items: stretch;
+  background:
+    linear-gradient(180deg, rgb(239 246 255 / 96%), rgb(255 255 255 / 98%)),
+    #fff;
+  border: 1px solid #cbd7e2;
+  color: #0f172a;
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  min-height: 104px;
+  padding: 12px;
+  text-align: left;
+}
+
+.weather-compare-card:hover {
+  background: #dbeafe;
+}
+
+.weather-compare-card strong,
+.weather-compare-card span,
+.weather-compare-card small {
+  display: block;
+}
+
+.weather-compare-card strong {
+  color: #1d4ed8;
+  font-size: 16px;
+}
+
+.weather-compare-card span {
+  font-weight: 800;
+}
+
+.weather-compare-card small {
+  color: #64748b;
+  line-height: 1.35;
+}
+
 @media (max-width: 860px) {
   .host-shell {
     grid-template-columns: 1fr;
@@ -954,8 +1144,10 @@ pre {
   .schedule-stats,
   .schedule-storage,
   .schedule-board,
+  .schedule-insights,
   .timeline-rail,
   .arcade-telemetry,
+  .mission-panel,
   .weather-search,
   .weather-metrics,
   .weather-quality,
@@ -964,7 +1156,8 @@ pre {
   .hourly-strip,
   .network-debug-panel,
   .journal-panel ol,
-  .network-history-panel ol {
+  .network-history-panel ol,
+  .weather-compare-grid {
     grid-template-columns: 1fr;
   }
 

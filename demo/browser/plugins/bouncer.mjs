@@ -35,10 +35,16 @@ const toggleButton = document.querySelector("#game-toggle");
 const resetButton = document.querySelector("#game-reset");
 const boostButton = document.querySelector("#game-boost");
 const powerupButton = document.querySelector("#game-powerup");
+const runSyncButton = document.querySelector("#game-run-sync");
 const saveButton = document.querySelector("#game-save");
 const snapshotSaveButton = document.querySelector("#game-snapshot-save");
 const snapshotLoadButton = document.querySelector("#game-snapshot-load");
 const snapshotList = document.querySelector("#snapshot-list");
+const missionTitle = document.querySelector("#mission-title");
+const missionDetail = document.querySelector("#mission-detail");
+const heatFill = document.querySelector("#heat-fill");
+const heatLabel = document.querySelector("#heat-label");
+const eventFeed = document.querySelector("#game-event-feed");
 
 let running = true;
 let lastFrame = performance.now();
@@ -55,11 +61,13 @@ let peakSpeed = 1;
 let shake = 0;
 let paddleX = 360;
 let startedAt = performance.now();
+let nextMission = "clear";
 const ball = { x: 180, y: 80, vx: 230, vy: 190, radius: 13 };
 let bricks = createBricks(level);
 let powerups = createPowerups(level);
 const particles = [];
 const trails = [];
+const events = [];
 
 client.onLifecycle((event) => {
   status.textContent = event.type;
@@ -97,6 +105,18 @@ powerupButton.addEventListener("click", () => {
     kind: powerupsCollected % 2 === 0 ? "wide" : "spark",
     x: paddleX,
     y: canvas.height - 70,
+  });
+});
+
+runSyncButton.addEventListener("click", async () => {
+  await callPlugin("game.run.sync", {
+    run: captureSnapshot(),
+    telemetry: {
+      events,
+      peak_speed: peakSpeed,
+      duration_ms: Math.round(performance.now() - startedAt),
+      canvas_size: `${canvas.width}x${canvas.height}`,
+    },
   });
 });
 
@@ -149,10 +169,12 @@ function update(dt) {
   if (ball.x < ball.radius || ball.x > canvas.width - ball.radius) {
     ball.vx *= -1;
     spawnParticles(ball.x, ball.y, "#38bdf8", 7);
+    rememberEvent("wall rebound", "blue");
   }
   if (ball.y < ball.radius) {
     ball.vy *= -1;
     spawnParticles(ball.x, ball.y, "#fef08a", 6);
+    rememberEvent("ceiling spark", "gold");
   }
   const paddleY = canvas.height - 44;
   if (ball.y + ball.radius > paddleY && ball.y < paddleY + 18 && Math.abs(ball.x - paddleX) < 72 && ball.vy > 0) {
@@ -161,6 +183,7 @@ function update(dt) {
     combo += 1;
     score += 3 + combo;
     spawnParticles(ball.x, paddleY, "#fef08a", 12);
+    rememberEvent(`paddle combo x${combo}`, "gold");
   }
   if (ball.y > canvas.height + 40) {
     resetBall();
@@ -186,6 +209,7 @@ function update(dt) {
       score += 11 + combo * 2 + level;
       shake = Math.min(10, shake + 1.4);
       spawnParticles(ball.x, ball.y, brick.color, 18);
+      rememberEvent(`brick cleared +${11 + combo * 2 + level}`, "brick");
     }
   }
   for (const powerup of powerups) {
@@ -206,6 +230,7 @@ function update(dt) {
     speed = Math.min(2.2, speed + 0.1);
     peakSpeed = Math.max(peakSpeed, speed);
     spawnParticles(canvas.width / 2, canvas.height / 2, "#a7f3d0", 28);
+    rememberEvent(`level ${level} opened`, "green");
   }
   updateTrails(dt);
   updateParticles(dt);
@@ -310,6 +335,7 @@ function resetRound() {
   startedAt = performance.now();
   particles.length = 0;
   trails.length = 0;
+  events.length = 0;
   bricks = createBricks(level);
   powerups = createPowerups(level);
   resetBall();
@@ -364,6 +390,7 @@ function collectPowerup(powerup) {
   peakSpeed = Math.max(peakSpeed, speed);
   energy = Math.min(100, energy + 18);
   spawnParticles(powerup.x, powerup.y, powerup.kind === "wide" ? "#a7f3d0" : "#f0abfc", 24);
+  rememberEvent(`${powerup.kind} power-up`, powerup.kind === "wide" ? "green" : "violet");
 }
 
 function updateTrails(dt) {
@@ -407,6 +434,12 @@ async function callPlugin(method, payload) {
     if (Array.isArray(data?.snapshots)) {
       renderSnapshots(data.snapshots);
     }
+    if (Array.isArray(data?.events)) {
+      renderEventFeed(data.events);
+    }
+    if (data?.mission) {
+      renderMission(data.mission);
+    }
     if (data?.snapshot && method === "game.snapshot.load") {
       applySnapshot(data.snapshot);
     }
@@ -433,6 +466,7 @@ function captureSnapshot() {
     lives,
     energy,
     speed,
+    next_mission: nextMission,
   };
 }
 
@@ -448,6 +482,7 @@ function applySnapshot(snapshot) {
   lives = Number(snapshot.lives ?? lives);
   energy = Number(snapshot.energy ?? energy);
   speed = Number(snapshot.speed ?? speed);
+  nextMission = String(snapshot.next_mission ?? nextMission);
   peakSpeed = Math.max(peakSpeed, speed);
   bricks = createBricks(level);
   powerups = createPowerups(level);
@@ -466,6 +501,16 @@ function updateHUD() {
   livesEl.textContent = String(lives);
   powerupsEl.textContent = String(powerupsCollected);
   elapsedEl.textContent = `${Math.round((performance.now() - startedAt) / 1000)}s`;
+  const heat = Math.min(100, Math.round((combo / Math.max(1, bricks.length)) * 120 + speed * 8));
+  heatFill.style.width = `${heat}%`;
+  heatLabel.textContent = `${heat}%`;
+  if (bricksCleared < 8) {
+    renderMission({ title: "Break the front line", detail: "Clear eight bricks before syncing the run.", key: "clear" });
+  } else if (combo < 6) {
+    renderMission({ title: "Build combo heat", detail: "Keep rebounds alive until combo reaches six.", key: "combo" });
+  } else {
+    renderMission({ title: "Bank the run", detail: "Sync the current run to host-backed plugin storage.", key: "sync" });
+  }
 }
 
 function renderLeaderboard(rows) {
@@ -491,6 +536,35 @@ function renderSnapshots(rows) {
   }));
 }
 
+function renderMission(mission) {
+  nextMission = String(mission.key ?? nextMission);
+  missionTitle.textContent = mission.title ?? "Bank the run";
+  missionDetail.textContent = mission.detail ?? "Sync the current run to host storage.";
+}
+
+function rememberEvent(label, tone) {
+  const entry = {
+    label,
+    tone,
+    score,
+    level,
+    combo,
+    at: new Date().toISOString(),
+  };
+  events.unshift(entry);
+  events.splice(8);
+  renderEventFeed(events);
+}
+
+function renderEventFeed(rows) {
+  eventFeed.replaceChildren(...rows.slice(0, 8).map((row) => {
+    const item = document.createElement("li");
+    item.className = `tone-${escapeClass(row.tone)}`;
+    item.innerHTML = `<strong>${escapeHTML(row.label)}</strong><span>L${Number(row.level ?? level)} · ${Number(row.score ?? score)} pts · combo ${Number(row.combo ?? 0)}</span>`;
+    return item;
+  }));
+}
+
 function writeResult(value) {
   result.textContent = formatJSON(value);
 }
@@ -503,6 +577,10 @@ function escapeHTML(value) {
     "\"": "&quot;",
     "'": "&#39;",
   })[char]);
+}
+
+function escapeClass(value) {
+  return String(value || "default").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "default";
 }
 
 function roundRect(ctx, x, y, w, h, radius) {

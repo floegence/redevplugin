@@ -59,6 +59,7 @@
         </select>
         <button id="schedule-refresh" type="button" class="secondary-button">Refresh</button>
         <button id="schedule-seed-week" type="button" class="secondary-button">Seed week</button>
+        <button id="schedule-bulk-plan" type="button" class="secondary-button">Plan sprint</button>
         <button id="schedule-archive-done" type="button" class="secondary-button">Archive done</button>
       </div>
 
@@ -90,6 +91,18 @@
           <strong id="timeline-next">No upcoming item</strong>
         </div>
         <div id="schedule-timeline" class="timeline-rail"></div>
+      </section>
+
+      <section class="schedule-insights" aria-label="Schedule storage insights">
+        <div>
+          <span class="metric-label">tag load</span>
+          <div id="schedule-tag-cloud" class="tag-cloud"></div>
+        </div>
+        <div>
+          <span class="metric-label">sqlite transaction</span>
+          <strong id="schedule-transaction">waiting</strong>
+          <p id="schedule-transaction-detail">No write transaction yet.</p>
+        </div>
       </section>
 
       <section class="journal-panel" aria-label="Schedule storage journal">

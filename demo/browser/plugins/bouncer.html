@@ -47,11 +47,26 @@
         </div>
       </section>
 
+      <section class="mission-panel" aria-label="Game mission and event stream">
+        <div class="mission-card">
+          <span class="metric-label">active mission</span>
+          <strong id="mission-title">Warm up</strong>
+          <p id="mission-detail">Clear bricks and build combo heat.</p>
+        </div>
+        <div class="heat-card">
+          <span class="metric-label">combo heat</span>
+          <div class="heat-meter" aria-hidden="true"><span id="heat-fill"></span></div>
+          <strong id="heat-label">0%</strong>
+        </div>
+        <ol id="game-event-feed" class="game-event-feed" aria-label="Recent game events"></ol>
+      </section>
+
       <div class="button-row">
         <button id="game-toggle" type="button">Pause</button>
         <button id="game-reset" type="button" class="ghost-button">Reset</button>
         <button id="game-boost" type="button" class="secondary-button">Boost</button>
         <button id="game-powerup" type="button" class="secondary-button">Power-up</button>
+        <button id="game-run-sync" type="button" class="secondary-button">Sync run</button>
         <button id="game-save" type="button" class="secondary-button">Save score</button>
         <button id="game-snapshot-save" type="button" class="secondary-button">Save snapshot</button>
         <button id="game-snapshot-load" type="button" class="secondary-button">Load snapshot</button>
