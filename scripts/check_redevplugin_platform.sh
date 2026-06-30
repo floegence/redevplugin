@@ -13,7 +13,8 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   tmp_signed_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal-signed.XXXXXX.redeven-plugin")
   tmp_private_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-private.XXXXXX.json")
   tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
-  trap 'rm -rf "$tmp_scaffold_dir"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_private_key" "$tmp_public_key"' EXIT
+  tmp_storage_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-storage.XXXXXX")
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_private_key" "$tmp_public_key"' EXIT
   go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
   go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
   go run ./cmd/redevplugin scaffold com.example.smoke "Smoke Plugin" "$tmp_scaffold_dir" >/dev/null
@@ -24,6 +25,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   go run ./cmd/redevplugin sign "$tmp_package" "$tmp_private_key" "$tmp_signed_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_signed_package" | grep -q '"signed": true'
   go run ./cmd/redevplugin install-verified "$tmp_signed_package" "$tmp_public_key" | grep -q '"trust_state": "verified"'
+  go run ./cmd/redevplugin inspect-storage "$tmp_storage_root" | grep -q '"namespace_count": 0'
   go run ./cmd/redevplugin install-local "$tmp_package" >/dev/null
   go run ./cmd/redevplugin enable "$tmp_package" >/dev/null
   go run ./cmd/redevplugin disable "$tmp_package" >/dev/null

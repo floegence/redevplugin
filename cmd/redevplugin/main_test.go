@@ -15,6 +15,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -221,6 +222,65 @@ func TestCLIVerifyCompatibilityManifest(t *testing.T) {
 	}
 	if _, err := captureCLIOutput(t, "verify-compatibility", tamperedFile, cliRepoRoot(t)); err == nil {
 		t.Fatal("verify-compatibility accepted tampered manifest")
+	}
+}
+
+func TestCLIInspectStorageReportsNamespacesWithoutFileContents(t *testing.T) {
+	dir := t.TempDir()
+	storageRoot := filepath.Join(dir, "storage")
+	broker, err := storage.NewFileBroker(storageRoot)
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	if err := broker.EnsureNamespace(context.Background(), storage.Namespace{
+		PluginInstanceID: "plugini_cli",
+		StoreID:          "workspace",
+		Kind:             storage.StoreFiles,
+		QuotaBytes:       4096,
+		SchemaVersion:    1,
+	}); err != nil {
+		t.Fatalf("EnsureNamespace() error = %v", err)
+	}
+	if _, err := broker.WriteFile(context.Background(), storage.FileWriteRequest{
+		PluginInstanceID: "plugini_cli",
+		StoreID:          "workspace",
+		Path:             "notes/private.txt",
+		Data:             []byte("secret contents"),
+	}); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	output, err := captureCLIOutput(t, "inspect-storage", storageRoot, "plugini_cli")
+	if err != nil {
+		t.Fatalf("inspect-storage command error = %v", err)
+	}
+	var summary storageInspectSummary
+	if err := json.Unmarshal(output, &summary); err != nil {
+		t.Fatalf("inspect-storage output decode error = %v: %s", err, output)
+	}
+	if !summary.OK || summary.NamespaceCount != 1 || summary.TotalUsageBytes != int64(len("secret contents")) {
+		t.Fatalf("inspect-storage summary mismatch: %#v", summary)
+	}
+	if summary.Namespaces[0].PluginInstanceID != "plugini_cli" ||
+		summary.Namespaces[0].StoreID != "workspace" ||
+		summary.Namespaces[0].Kind != storage.StoreFiles ||
+		summary.Namespaces[0].UsageBytes != int64(len("secret contents")) {
+		t.Fatalf("inspect-storage namespace mismatch: %#v", summary.Namespaces)
+	}
+	if bytes.Contains(output, []byte("secret contents")) {
+		t.Fatalf("inspect-storage leaked file contents: %s", output)
+	}
+
+	allOutput, err := captureCLIOutput(t, "inspect-storage", storageRoot)
+	if err != nil {
+		t.Fatalf("inspect-storage all command error = %v", err)
+	}
+	var allSummary storageInspectSummary
+	if err := json.Unmarshal(allOutput, &allSummary); err != nil {
+		t.Fatalf("inspect-storage all output decode error = %v: %s", err, allOutput)
+	}
+	if allSummary.NamespaceCount != 1 || allSummary.PluginInstanceID != "" {
+		t.Fatalf("inspect-storage all summary mismatch: %#v", allSummary)
 	}
 }
 

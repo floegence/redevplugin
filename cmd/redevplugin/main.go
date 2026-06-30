@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
+	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/version"
 )
@@ -74,6 +75,16 @@ type compatibilityVerifySummary struct {
 	OK            bool   `json:"ok"`
 	SchemaVersion string `json:"schema_version"`
 	Contracts     int    `json:"contracts"`
+}
+
+type storageInspectSummary struct {
+	OK               bool                      `json:"ok"`
+	StorageRoot      string                    `json:"storage_root"`
+	PluginInstanceID string                    `json:"plugin_instance_id,omitempty"`
+	NamespaceCount   int                       `json:"namespace_count"`
+	TotalUsageBytes  int64                     `json:"total_usage_bytes"`
+	Namespaces       []storage.NamespaceRecord `json:"namespaces"`
+	VersionMatrix    version.Matrix            `json:"version_matrix"`
 }
 
 type signingPrivateKeyFile struct {
@@ -141,6 +152,15 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return verifyCompatibility(args[1], args[2])
+	case "inspect-storage":
+		if len(args) != 2 && len(args) != 3 {
+			return usage()
+		}
+		pluginInstanceID := ""
+		if len(args) == 3 {
+			pluginInstanceID = args[2]
+		}
+		return inspectStorage(ctx, args[1], pluginInstanceID)
 	case "install-local":
 		if len(args) != 2 {
 			return usage()
@@ -187,6 +207,41 @@ func verifyCompatibility(manifestFile string, artifactRoot string) error {
 		OK:            true,
 		SchemaVersion: manifest.SchemaVersion,
 		Contracts:     len(manifest.Contracts),
+	})
+}
+
+func inspectStorage(ctx context.Context, root string, pluginInstanceID string) error {
+	root = strings.TrimSpace(root)
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if root == "" {
+		return fmt.Errorf("storage root is required")
+	}
+	broker, err := storage.NewFileBroker(root)
+	if err != nil {
+		return err
+	}
+	records, err := broker.ListNamespaces(ctx, pluginInstanceID)
+	if err != nil {
+		return err
+	}
+	totalUsage := int64(0)
+	for i := range records {
+		usage, err := broker.Usage(ctx, records[i].PluginInstanceID, records[i].StoreID)
+		if err != nil {
+			return err
+		}
+		records[i].UsageBytes = usage.UsageBytes
+		records[i].QuotaBytes = usage.QuotaBytes
+		totalUsage += usage.UsageBytes
+	}
+	return writeJSON(storageInspectSummary{
+		OK:               true,
+		StorageRoot:      broker.Root(),
+		PluginInstanceID: pluginInstanceID,
+		NamespaceCount:   len(records),
+		TotalUsageBytes:  totalUsage,
+		Namespaces:       records,
+		VersionMatrix:    version.CurrentMatrix(),
 	})
 }
 
@@ -509,7 +564,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

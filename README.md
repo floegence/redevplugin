@@ -67,6 +67,10 @@ capabilities.
   a released compatibility manifest against the current version matrix and the
   referenced contract artifact hashes. Host products can use this command before
   upgrading a published ReDevPlugin dependency set.
+- `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
+  filesystem broker namespaces, quota, and usage without dumping plugin file
+  contents. Host products can wrap this for diagnostics while keeping the
+  storage root selection in their own adapter layer.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
