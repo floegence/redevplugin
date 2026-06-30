@@ -73,6 +73,8 @@ export class PluginBridgeError extends Error {
   }
 }
 
+class PluginConfirmationRequiredError extends PluginBridgeError {}
+
 type PendingCall = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
@@ -216,8 +218,21 @@ export type PluginSurfaceHostOptions = {
   fetch?: FetchLike;
   apiBaseURL?: string;
   ownerSessionHashHeader?: string;
+  confirm?: PluginConfirmationHandler;
   onError?: (error: PluginBridgeError) => void;
 };
+
+export type PluginConfirmationHandler = (intent: PluginConfirmationIntent) => Promise<PluginConfirmationDecision> | PluginConfirmationDecision;
+
+export type PluginConfirmationIntent = {
+  requestId: string;
+  method: string;
+  params?: Record<string, unknown>;
+  requestHash: string;
+  confirmationTokenId: string;
+};
+
+export type PluginConfirmationDecision = boolean | { confirmed: boolean };
 
 export type FetchLike = (input: string, init: FetchInitLike) => Promise<FetchResponseLike>;
 
@@ -252,6 +267,13 @@ export type PluginMethodResult<T = unknown> = {
   request_hash?: string;
 };
 
+export type PluginConfirmationResult = {
+  confirmation_token: string;
+  confirmation_token_id: string;
+  request_hash: string;
+  expires_at?: string;
+};
+
 type HostEnvelope<T> =
   | { ok: true; data?: T }
   | { ok: false; error?: string; error_code?: string };
@@ -265,6 +287,7 @@ export class PluginSurfaceHost {
   #fetch: FetchLike;
   #apiBaseURL: string;
   #ownerSessionHashHeader?: string;
+  #confirm?: PluginConfirmationHandler;
   #onError?: (error: PluginBridgeError) => void;
   #gatewayToken?: string;
   #disposed = false;
@@ -284,6 +307,7 @@ export class PluginSurfaceHost {
     this.#fetch = options.fetch ?? defaultFetch();
     this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
     this.#ownerSessionHashHeader = options.ownerSessionHashHeader ?? options.bootstrap.ownerSessionHash;
+    this.#confirm = options.confirm;
     this.#onError = options.onError;
     this.#parentWindow.addEventListener?.("message", this.#onMessage);
   }
@@ -347,22 +371,68 @@ export class PluginSurfaceHost {
       return;
     }
     try {
-      const result = await this.#postJSON<PluginMethodResult>(`/_redeven_proxy/api/plugins/rpc`, {
-        plugin_instance_id: this.bootstrap.pluginInstanceId,
-        surface_instance_id: this.bootstrap.surfaceInstanceId,
-        session_channel_id_hash: this.bootstrap.sessionChannelIdHash,
-        owner_session_hash: this.bootstrap.ownerSessionHash,
-        owner_user_hash: this.bootstrap.ownerUserHash,
-        bridge_channel_id: this.bridgeChannelId,
-        plugin_gateway_token: this.#gatewayToken,
+      const result = await this.#callRPC(request);
+      this.#postToIframe({ type: "redeven.plugin.response", id: request.id, ok: true, data: result });
+    } catch (error) {
+      const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
+      if (bridgeError instanceof PluginConfirmationRequiredError) {
+        await this.#handleConfirmationRequired(request, bridgeError);
+        return;
+      }
+      this.#postError(request.id, bridgeError.errorCode, bridgeError.message);
+    }
+  }
+
+  async #handleConfirmationRequired(request: PluginBridgeRequest, originalError: PluginConfirmationRequiredError): Promise<void> {
+    if (!this.#confirm) {
+      this.#postError(request.id, originalError.errorCode, originalError.message);
+      return;
+    }
+    try {
+      const confirmation = await this.#prepareConfirmation(request);
+      const decision = await this.#confirm({
+        requestId: request.id,
         method: request.method,
-        params: request.params,
+        params: validRPCParams(request.params) ? request.params : undefined,
+        requestHash: confirmation.request_hash,
+        confirmationTokenId: confirmation.confirmation_token_id,
       });
+      if (!confirmationDecisionAccepted(decision)) {
+        this.#postError(request.id, "PLUGIN_CONFIRMATION_REJECTED", "Plugin method confirmation was rejected");
+        return;
+      }
+      const result = await this.#callRPC(request, confirmation.confirmation_token);
       this.#postToIframe({ type: "redeven.plugin.response", id: request.id, ok: true, data: result });
     } catch (error) {
       const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
       this.#postError(request.id, bridgeError.errorCode, bridgeError.message);
     }
+  }
+
+  #callRPC(request: PluginBridgeRequest, confirmationToken?: string): Promise<PluginMethodResult> {
+    return this.#postJSON<PluginMethodResult>(`/_redeven_proxy/api/plugins/rpc`, this.#rpcBody(request, confirmationToken));
+  }
+
+  #prepareConfirmation(request: PluginBridgeRequest): Promise<PluginConfirmationResult> {
+    return this.#postJSON<PluginConfirmationResult>(`/_redeven_proxy/api/plugins/confirm`, this.#rpcBody(request));
+  }
+
+  #rpcBody(request: PluginBridgeRequest, confirmationToken?: string): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      plugin_instance_id: this.bootstrap.pluginInstanceId,
+      surface_instance_id: this.bootstrap.surfaceInstanceId,
+      session_channel_id_hash: this.bootstrap.sessionChannelIdHash,
+      owner_session_hash: this.bootstrap.ownerSessionHash,
+      owner_user_hash: this.bootstrap.ownerUserHash,
+      bridge_channel_id: this.bridgeChannelId,
+      plugin_gateway_token: this.#gatewayToken,
+      method: request.method,
+      params: request.params,
+    };
+    if (confirmationToken) {
+      body.confirmation_token = confirmationToken;
+    }
+    return body;
   }
 
   async #postJSON<T>(path: string, body: unknown): Promise<T> {
@@ -384,7 +454,12 @@ export class PluginSurfaceHost {
       throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`);
     }
     if (!raw.ok) {
-      throw new PluginBridgeError(raw.error_code ?? "PLUGIN_PERMISSION_DENIED", raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`);
+      const errorCode = raw.error_code ?? "PLUGIN_PERMISSION_DENIED";
+      const message = raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`;
+      if (errorCode === "PLUGIN_CONFIRMATION_REQUIRED") {
+        throw new PluginConfirmationRequiredError(errorCode, message);
+      }
+      throw new PluginBridgeError(errorCode, message);
     }
     return raw.data as T;
   }
@@ -490,6 +565,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function validRPCParams(value: unknown): value is Record<string, unknown> | undefined {
   return value == null || (isRecord(value) && !Array.isArray(value));
+}
+
+function confirmationDecisionAccepted(decision: PluginConfirmationDecision): boolean {
+  return typeof decision === "boolean" ? decision : decision.confirmed;
 }
 
 function handshakeMatchesBootstrap(handshake: PluginBridgeHandshake, bootstrap: PluginSurfaceHostBootstrap): boolean {

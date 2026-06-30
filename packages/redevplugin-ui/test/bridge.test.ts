@@ -402,6 +402,173 @@ test("surface host maps rpc envelope errors into bridge responses", async () => 
   host.dispose();
 });
 
+test("surface host owns dangerous confirmation token and retries confirmed rpc", async () => {
+  const parent = new FakeWindow();
+  const iframe = new FakeWindow();
+  const fetch = new FakeFetch();
+  const confirmations: unknown[] = [];
+  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
+  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
+  fetch.push({
+    ok: true,
+    data: {
+      confirmation_token: "confirmation_secret",
+      confirmation_token_id: "confirmation_token_1",
+      request_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    },
+  });
+  fetch.push({ ok: true, data: { data: { done: true } } });
+  const host = new PluginSurfaceHost({
+    bootstrap: hostBootstrap,
+    iframeOrigin: "https://plugin.example",
+    iframeWindow: iframe,
+    parentWindow: parent,
+    bridgeChannelId: "bridge_channel_1",
+    fetch: fetch.fetch,
+    confirm: (intent) => {
+      confirmations.push(intent);
+      return { confirmed: true };
+    },
+  });
+
+  parent.emit("https://plugin.example", handshake, iframe);
+  await tick();
+  parent.emit("https://plugin.example", {
+    type: "redeven.plugin.call",
+    request: { id: "call_danger", method: "danger.run", params: { target: "db" } },
+  }, iframe);
+  await tick();
+
+  assert.equal(fetch.calls.length, 4);
+  assert.equal(fetch.calls[1]?.input, "/_redeven_proxy/api/plugins/rpc");
+  assert.equal(fetch.calls[2]?.input, "/_redeven_proxy/api/plugins/confirm");
+  assert.equal(fetch.calls[3]?.input, "/_redeven_proxy/api/plugins/rpc");
+  assert.deepEqual(confirmations, [{
+    requestId: "call_danger",
+    method: "danger.run",
+    params: { target: "db" },
+    requestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    confirmationTokenId: "confirmation_token_1",
+  }]);
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    surface_instance_id: "surface_1",
+    session_channel_id_hash: "session_channel_hash",
+    owner_session_hash: "owner_session_hash",
+    owner_user_hash: "owner_user_hash",
+    bridge_channel_id: "bridge_channel_1",
+    plugin_gateway_token: "gateway_secret",
+    method: "danger.run",
+    params: { target: "db" },
+  });
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    surface_instance_id: "surface_1",
+    session_channel_id_hash: "session_channel_hash",
+    owner_session_hash: "owner_session_hash",
+    owner_user_hash: "owner_user_hash",
+    bridge_channel_id: "bridge_channel_1",
+    plugin_gateway_token: "gateway_secret",
+    confirmation_token: "confirmation_secret",
+    method: "danger.run",
+    params: { target: "db" },
+  });
+  assert.deepEqual(iframe.sent[1], {
+    targetOrigin: "https://plugin.example",
+    message: {
+      type: "redeven.plugin.response",
+      id: "call_danger",
+      ok: true,
+      data: { data: { done: true } },
+    },
+  });
+  assert.equal(JSON.stringify(iframe.sent).includes("confirmation_secret"), false);
+  host.dispose();
+});
+
+test("surface host rejects dangerous call when confirmation callback declines", async () => {
+  const parent = new FakeWindow();
+  const iframe = new FakeWindow();
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
+  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
+  fetch.push({
+    ok: true,
+    data: {
+      confirmation_token: "confirmation_secret",
+      confirmation_token_id: "confirmation_token_1",
+      request_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    },
+  });
+  const host = new PluginSurfaceHost({
+    bootstrap: hostBootstrap,
+    iframeOrigin: "https://plugin.example",
+    iframeWindow: iframe,
+    parentWindow: parent,
+    bridgeChannelId: "bridge_channel_1",
+    fetch: fetch.fetch,
+    confirm: () => false,
+  });
+
+  parent.emit("https://plugin.example", handshake, iframe);
+  await tick();
+  parent.emit("https://plugin.example", {
+    type: "redeven.plugin.call",
+    request: { id: "call_declined", method: "danger.run", params: { target: "db" } },
+  }, iframe);
+  await tick();
+
+  assert.equal(fetch.calls.length, 3);
+  assert.deepEqual(iframe.sent[1], {
+    targetOrigin: "https://plugin.example",
+    message: {
+      type: "redeven.plugin.response",
+      id: "call_declined",
+      ok: false,
+      error_code: "PLUGIN_CONFIRMATION_REJECTED",
+      error: "Plugin method confirmation was rejected",
+    },
+  });
+  host.dispose();
+});
+
+test("surface host keeps dangerous call fail-closed without confirmation callback", async () => {
+  const parent = new FakeWindow();
+  const iframe = new FakeWindow();
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
+  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
+  const host = new PluginSurfaceHost({
+    bootstrap: hostBootstrap,
+    iframeOrigin: "https://plugin.example",
+    iframeWindow: iframe,
+    parentWindow: parent,
+    bridgeChannelId: "bridge_channel_1",
+    fetch: fetch.fetch,
+  });
+
+  parent.emit("https://plugin.example", handshake, iframe);
+  await tick();
+  parent.emit("https://plugin.example", {
+    type: "redeven.plugin.call",
+    request: { id: "call_no_confirm_handler", method: "danger.run", params: { target: "db" } },
+  }, iframe);
+  await tick();
+
+  assert.equal(fetch.calls.length, 2);
+  assert.deepEqual(iframe.sent[1], {
+    targetOrigin: "https://plugin.example",
+    message: {
+      type: "redeven.plugin.response",
+      id: "call_no_confirm_handler",
+      ok: false,
+      error_code: "PLUGIN_CONFIRMATION_REQUIRED",
+      error: "confirmation required",
+    },
+  });
+  host.dispose();
+});
+
 async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
