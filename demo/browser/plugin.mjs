@@ -1,5 +1,5 @@
 import { decodePluginStreamText, PluginBridgeClient, PluginBridgeError, readPluginStream } from "../../packages/redevplugin-ui/dist/index.js";
-import { demoBootstrap, formatJSON } from "./demo-platform.mjs";
+import { createDemoBootstrap, formatJSON } from "./demo-platform.mjs";
 
 const status = document.querySelector("#plugin-status");
 const result = document.querySelector("#plugin-result");
@@ -9,17 +9,25 @@ const streamButton = document.querySelector("#call-stream");
 const dangerousButton = document.querySelector("#call-dangerous");
 const actionButtons = [echoButton, listButton, streamButton, dangerousButton];
 
-const parentOrigin = new URLSearchParams(window.location.search).get("parent_origin");
+const params = new URLSearchParams(window.location.search);
+const parentOrigin = params.get("parent_origin");
 if (!parentOrigin || parentOrigin === "*") {
   throw new Error("parent_origin query parameter must be an exact origin");
 }
+const bootstrap = createDemoBootstrap({
+  pluginId: params.get("plugin_id"),
+  surfaceId: params.get("surface_id"),
+  surfaceInstanceId: params.get("surface_instance_id"),
+  activeFingerprint: params.get("active_fingerprint"),
+  bridgeNonce: params.get("bridge_nonce"),
+});
 
 const client = new PluginBridgeClient({
-  pluginId: demoBootstrap.pluginId,
-  surfaceId: demoBootstrap.surfaceId,
-  surfaceInstanceId: demoBootstrap.surfaceInstanceId,
-  activeFingerprint: demoBootstrap.activeFingerprint,
-  bridgeNonce: demoBootstrap.bridgeNonce,
+  pluginId: bootstrap.pluginId,
+  surfaceId: bootstrap.surfaceId,
+  surfaceInstanceId: bootstrap.surfaceInstanceId,
+  activeFingerprint: bootstrap.activeFingerprint,
+  bridgeNonce: bootstrap.bridgeNonce,
   parentOrigin,
 });
 

@@ -27,6 +27,37 @@ export function createDemoPlatformFetch(options = {}) {
     confirmationToken: "",
     confirmedDeletes: 0,
     streamTickets: 0,
+    gameBestScore: 0,
+    scheduleItems: [
+      {
+        id: "sched-standup",
+        title: "Platform standup",
+        date: "2026-06-30",
+        time: "09:30",
+        tag: "team",
+        notes: "Review bridge lifecycle and demo coverage.",
+        done: false,
+      },
+      {
+        id: "sched-design",
+        title: "Plugin UX review",
+        date: "2026-06-30",
+        time: "14:00",
+        tag: "design",
+        notes: "Check sandbox UI, storage broker, and weather flow.",
+        done: false,
+      },
+      {
+        id: "sched-release",
+        title: "Runtime smoke",
+        date: "2026-07-01",
+        time: "10:15",
+        tag: "qa",
+        notes: "Run browser demo and real Rust runtime checks.",
+        done: true,
+      },
+    ],
+    weatherLocation: "San Francisco",
   };
 
   async function fetch(input, init) {
@@ -130,6 +161,99 @@ export function createDemoPlatformFetch(options = {}) {
               },
             },
           });
+        case "game.score.save":
+          state.gameBestScore = Math.max(state.gameBestScore, Number(body.params?.score ?? 0));
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                saved: true,
+                best_score: state.gameBestScore,
+                storage: "host-backed kv store",
+              },
+            },
+          });
+        case "schedule.items.list":
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                items: state.scheduleItems,
+                source: "host storage broker",
+              },
+            },
+          });
+        case "schedule.item.add": {
+          const item = normalizeScheduleItem(body.params);
+          state.scheduleItems = [...state.scheduleItems, item].sort(compareScheduleItems);
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                item,
+                items: state.scheduleItems,
+                persisted: true,
+              },
+            },
+          });
+        }
+        case "schedule.item.toggle": {
+          const id = String(body.params?.id ?? "");
+          state.scheduleItems = state.scheduleItems.map((item) => item.id === id ? { ...item, done: !item.done } : item);
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                items: state.scheduleItems,
+                persisted: true,
+              },
+            },
+          });
+        }
+        case "schedule.item.delete": {
+          const id = String(body.params?.id ?? "");
+          state.scheduleItems = state.scheduleItems.filter((item) => item.id !== id);
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                items: state.scheduleItems,
+                persisted: true,
+              },
+            },
+          });
+        }
+        case "weather.location.get":
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                location: state.weatherLocation,
+                source: "plugin settings storage",
+              },
+            },
+          });
+        case "weather.location.save":
+          state.weatherLocation = normalizeLocation(body.params?.location);
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                location: state.weatherLocation,
+                saved: true,
+              },
+            },
+          });
+        case "weather.fetch": {
+          const location = normalizeLocation(body.params?.location ?? state.weatherLocation);
+          state.weatherLocation = location;
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: createWeatherPayload(location),
+            },
+          });
+        }
         default:
           return jsonResponse({ ok: false, error_code: "PLUGIN_METHOD_NOT_FOUND", error: `unknown method ${body.method}` }, 404);
       }
@@ -139,6 +263,68 @@ export function createDemoPlatformFetch(options = {}) {
   }
 
   return { fetch, calls, state };
+}
+
+function normalizeScheduleItem(params = {}) {
+  const now = Date.now().toString(36);
+  return {
+    id: `sched-${now}`,
+    title: String(params.title || "Untitled event").trim().slice(0, 80),
+    date: String(params.date || "2026-06-30"),
+    time: String(params.time || "09:00"),
+    tag: String(params.tag || "focus").trim().slice(0, 24),
+    notes: String(params.notes || "").trim().slice(0, 180),
+    done: false,
+  };
+}
+
+function compareScheduleItems(a, b) {
+  return `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`);
+}
+
+function normalizeLocation(value) {
+  const location = String(value || "San Francisco").trim();
+  return location === "" ? "San Francisco" : location.slice(0, 80);
+}
+
+function createWeatherPayload(location) {
+  const key = location.toLowerCase();
+  const presets = {
+    "san francisco": { temp: 17, condition: "Pacific fog clearing", wind: 18, humidity: 72, accent: "marine layer" },
+    "shanghai": { temp: 29, condition: "Warm evening haze", wind: 11, humidity: 78, accent: "river breeze" },
+    "beijing": { temp: 31, condition: "Dry and bright", wind: 9, humidity: 38, accent: "clear north sky" },
+    "london": { temp: 19, condition: "Patchy rain windows", wind: 16, humidity: 81, accent: "soft drizzle" },
+    "tokyo": { temp: 28, condition: "Humid cloud breaks", wind: 12, humidity: 74, accent: "neon rain" },
+  };
+  const weather = presets[key] ?? {
+    temp: 22 + (location.length % 9),
+    condition: "Synthetic forecast sample",
+    wind: 8 + (location.length % 12),
+    humidity: 48 + (location.length % 35),
+    accent: "demo network response",
+  };
+  return {
+    location,
+    current: {
+      temperature_c: weather.temp,
+      condition: weather.condition,
+      wind_kph: weather.wind,
+      humidity_percent: weather.humidity,
+      accent: weather.accent,
+    },
+    forecast: [0, 1, 2, 3, 4].map((offset) => ({
+      day: `D+${offset}`,
+      high_c: weather.temp + 2 + offset,
+      low_c: weather.temp - 4 + (offset % 2),
+      condition: offset % 2 === 0 ? weather.condition : "Light cloud shifts",
+    })),
+    network: {
+      connector_id: "weather_api",
+      transport: "http",
+      destination: "https://api.weather.example",
+      parsed: true,
+    },
+  };
 }
 
 export function jsonResponse(body, status = 200) {

@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -105,6 +106,7 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		"http://app.redevplugin.localhost:4175",
 		"http://plg-real.redevplugin.localhost:4176",
 		`{"plugin_id":"com.example.real.demo","plugin_instance_id":"plugin_real","surface_id":"com.example.real.demo.activity","surface_instance_id":"surface_real","active_fingerprint":"sha256:real","owner_session_hash":"owner","owner_user_hash":"user","session_channel_id_hash":"channel","asset_ticket":"ticket_secret","asset_ticket_id":"ticket_id","bridge_nonce":"nonce"}`,
+		`{"storage_handle_grant_token":"storage_secret","storage_store_id":"workspace","storage_path":"notes/from-real-demo.txt","storage_data_base64":"ZGF0YQ==","network_body_base64":"Ym9keQ=="}`,
 		"runtime_generation",
 	)
 
@@ -114,6 +116,8 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		`credentials: "include"`,
 		`surface_instance_id: bootstrap.surface_instance_id`,
 		`asset_ticket: bootstrap.asset_ticket`,
+		`body.method === "worker.brokerDemo"`,
+		`storage_handle_grant_token: brokerConfig.storage_handle_grant_token`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("real demo html missing %q", want)
@@ -128,4 +132,50 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 			t.Fatalf("real demo html contains forbidden legacy flow %q", forbidden)
 		}
 	}
+}
+
+func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
+	html := realDemoPluginHTML()
+	js := realDemoPluginJS()
+
+	for _, want := range []string{
+		`id="invoke-broker"`,
+		`worker.brokerDemo`,
+		`parseNetworkBody`,
+		`storage_grant_visible`,
+	} {
+		if !strings.Contains(html+js, want) {
+			t.Fatalf("real demo plugin surface missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`storage_handle_grant_token`,
+		`network_body_base64`,
+		`brokerConfig`,
+	} {
+		if strings.Contains(js, forbidden) {
+			t.Fatalf("plugin iframe script contains parent-only broker field %q", forbidden)
+		}
+	}
+}
+
+func TestRealDemoRefreshesPolicyAfterPermissionGrant(t *testing.T) {
+	source := readSourceForTest(t, "real_demo.go")
+	grantIndex := strings.Index(source, "grantRealDemoDeclaredPermissions(ctx, pluginHost, record)")
+	if grantIndex < 0 {
+		t.Fatal("real demo does not grant declared permissions")
+	}
+	refreshIndex := strings.Index(source[grantIndex:], "pluginHost.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})")
+	if refreshIndex < 0 {
+		t.Fatal("real demo must refresh enabled policy after permission grant")
+	}
+}
+
+func readSourceForTest(t *testing.T, filename string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
 	"github.com/floegence/redevplugin/pkg/manifest"
@@ -37,6 +39,8 @@ const (
 	realDemoChannel         = "real_demo_session_channel"
 	realDemoCapability      = "example.capability.real_demo"
 	realDemoAssetCookieName = "__Host-redevplugin-asset-session"
+	realDemoBrokerStoreID   = "workspace"
+	realDemoBrokerFilePath  = "notes/from-real-demo.txt"
 )
 
 type realDemoRuntimeResolver struct {
@@ -60,6 +64,45 @@ func (realDemoCapabilityAdapter) InvokeCapability(_ context.Context, req capabil
 	}}, nil
 }
 
+type realDemoNetworkExecutor struct{}
+
+func (realDemoNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+	body := strings.TrimSpace(string(req.Body))
+	if body == "" {
+		body = "<empty>"
+	}
+	response := map[string]any{
+		"demo":         true,
+		"transport":    "host-network-executor",
+		"connector_id": req.Grant.ConnectorID,
+		"destination":  req.Grant.Destination.Canonical(),
+		"method":       req.Method,
+		"path":         req.Path,
+		"body":         body,
+	}
+	raw, err := json.Marshal(response)
+	if err != nil {
+		return connectivity.HTTPResponse{}, err
+	}
+	return connectivity.HTTPResponse{
+		StatusCode: http.StatusOK,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+		Body:       raw,
+	}, nil
+}
+
+func (realDemoNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
+	return connectivity.WebSocketRoundTripResponse{}, errors.New("real demo websocket executor is not implemented")
+}
+
+func (realDemoNetworkExecutor) TCPRoundTrip(context.Context, connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
+	return connectivity.TCPRoundTripResponse{}, errors.New("real demo tcp executor is not implemented")
+}
+
+func (realDemoNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
+	return connectivity.UDPRoundTripResponse{}, errors.New("real demo udp executor is not implemented")
+}
+
 func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) error {
 	stateRoot = strings.TrimSpace(stateRoot)
 	runtimePath = strings.TrimSpace(runtimePath)
@@ -80,7 +123,10 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if _, err := createPluginScaffold(realDemoPluginID, realDemoPluginName, pluginDir); err != nil {
 		return err
 	}
-	if err := addRealDemoDangerousMethod(filepath.Join(pluginDir, "manifest.json")); err != nil {
+	if err := addRealDemoMethods(filepath.Join(pluginDir, "manifest.json")); err != nil {
+		return err
+	}
+	if err := writeBytesFile(filepath.Join(pluginDir, "workers", "broker.wasm"), realDemoBrokerWorkerWASM(), 0o644); err != nil {
 		return err
 	}
 	if err := writeBytesFile(filepath.Join(pluginDir, "ui", "index.html"), []byte(realDemoPluginHTML()), 0o644); err != nil {
@@ -102,6 +148,8 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		Policy:                  staticPolicyAdapter{},
 		RuntimeArtifactResolver: realDemoRuntimeResolver{path: runtimePath},
 		Storage:                 storageBroker,
+		Connectivity:            connectivity.NewMemoryBroker(),
+		NetworkExecutor:         realDemoNetworkExecutor{},
 	})
 	if err != nil {
 		return err
@@ -129,6 +177,10 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if err := grantRealDemoDeclaredPermissions(ctx, pluginHost, record); err != nil {
 		return err
 	}
+	record, err = pluginHost.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})
+	if err != nil {
+		return err
+	}
 	hostPort := demoEnv("REAL_DEMO_HOST_PORT", realDemoHostPort)
 	pluginPort := demoEnv("REAL_DEMO_PLUGIN_PORT", realDemoPluginPort)
 	hostName := demoEnv("REAL_DEMO_HOST_NAME", realDemoHostName)
@@ -154,7 +206,24 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), health.RuntimeGenerationID))
+		storageGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+			PluginInstanceID:    record.PluginInstanceID,
+			StoreID:             realDemoBrokerStoreID,
+			RuntimeInstanceID:   health.RuntimeInstanceID,
+			RuntimeGenerationID: health.RuntimeGenerationID,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		broker := realDemoBrokerPayload{
+			StorageHandleGrantToken: storageGrant.HandleGrant.HandleGrantToken,
+			StorageStoreID:          realDemoBrokerStoreID,
+			StoragePath:             realDemoBrokerFilePath,
+			StorageDataBase64:       base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker storage")),
+			NetworkBodyBase64:       base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker network")),
+		}
+		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), bootstrapJSON(broker), health.RuntimeGenerationID))
 	})
 	pluginMux := http.NewServeMux()
 	pluginMux.HandleFunc("/favicon.ico", noContentHandler)
@@ -199,6 +268,14 @@ type realDemoBootstrapPayload struct {
 	BridgeNonce          string `json:"bridge_nonce"`
 }
 
+type realDemoBrokerPayload struct {
+	StorageHandleGrantToken string `json:"storage_handle_grant_token"`
+	StorageStoreID          string `json:"storage_store_id"`
+	StoragePath             string `json:"storage_path"`
+	StorageDataBase64       string `json:"storage_data_base64"`
+	NetworkBodyBase64       string `json:"network_body_base64"`
+}
+
 func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPayload {
 	return realDemoBootstrapPayload{
 		PluginID:             bootstrap.PluginID,
@@ -233,7 +310,7 @@ func resetDirectory(dir string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
-func addRealDemoDangerousMethod(manifestFile string) error {
+func addRealDemoMethods(manifestFile string) error {
 	raw, err := os.ReadFile(manifestFile)
 	if err != nil {
 		return err
@@ -241,6 +318,41 @@ func addRealDemoDangerousMethod(manifestFile string) error {
 	var doc manifest.Manifest
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return err
+	}
+	doc.Workers = append(doc.Workers, manifest.WorkerSpec{
+		WorkerID:         "broker_backend",
+		Artifact:         "workers/broker.wasm",
+		ABI:              "redevplugin-wasm-worker-v1",
+		Mode:             manifest.WorkerModeJob,
+		Scope:            "user",
+		MemoryLimitBytes: 16 << 20,
+	})
+	doc.Storage = &manifest.StorageSpec{
+		Stores: []manifest.StoreSpec{{
+			StoreID:       realDemoBrokerStoreID,
+			Kind:          string(storage.StoreFiles),
+			Scope:         "user",
+			QuotaBytes:    1 << 20,
+			SchemaVersion: 1,
+			Migration: manifest.MigrationSpec{
+				FromVersion:    0,
+				ToVersion:      1,
+				Reversible:     true,
+				RequiresWorker: false,
+				EstimatedBytes: 0,
+				MaxDurationMS:  1000,
+				DataLossRisk:   false,
+				StepsHash:      "sha256:real-demo-storage",
+			},
+		}},
+	}
+	doc.NetworkAccess = &manifest.NetworkAccessSpec{
+		Connectors: []manifest.NetworkConnectorSpec{{
+			ConnectorID:  "api",
+			Transport:    string(connectivity.TransportHTTP),
+			Scope:        string(connectivity.ScopeUser),
+			Destinations: []string{"https://api.example.com"},
+		}},
 	}
 	doc.CapabilityBindings = append(doc.CapabilityBindings, manifest.CapabilityBinding{
 		BindingID:            "real_demo",
@@ -264,12 +376,71 @@ func addRealDemoDangerousMethod(manifestFile string) error {
 		},
 		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
 		ResponseSchema: map[string]any{"type": "object"},
+	}, manifest.MethodSpec{
+		Method:         "worker.brokerDemo",
+		Effect:         manifest.MethodEffectWrite,
+		Execution:      manifest.MethodExecutionSync,
+		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
+		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
+		ResponseSchema: map[string]any{"type": "object"},
 	})
 	updated, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeBytesFile(manifestFile, append(updated, '\n'), 0o644)
+}
+
+func realDemoBrokerWorkerWASM() []byte {
+	exportName := []byte("redevplugin_worker_invoke")
+	storageModule := []byte("redevplugin.storage")
+	storageImport := []byte("files_write_demo")
+	networkModule := []byte("redevplugin.network")
+	networkImport := []byte("http_request_demo")
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x02,
+		0x60, 0x00, 0x00,
+		0x60, 0x00, 0x00,
+		0x02,
+	}
+	importPayload := []byte{0x02, byte(len(storageModule))}
+	importPayload = append(importPayload, storageModule...)
+	importPayload = append(importPayload, byte(len(storageImport)))
+	importPayload = append(importPayload, storageImport...)
+	importPayload = append(importPayload, 0x00, 0x00, byte(len(networkModule)))
+	importPayload = append(importPayload, networkModule...)
+	importPayload = append(importPayload, byte(len(networkImport)))
+	importPayload = append(importPayload, networkImport...)
+	importPayload = append(importPayload, 0x00, 0x00)
+	module = appendLEBUint32(module, uint32(len(importPayload)))
+	module = append(module, importPayload...)
+	module = append(module, 0x03, 0x02, 0x01, 0x01, 0x07)
+	exportPayload := []byte{0x01, byte(len(exportName))}
+	exportPayload = append(exportPayload, exportName...)
+	exportPayload = append(exportPayload, 0x00, 0x02)
+	module = appendLEBUint32(module, uint32(len(exportPayload)))
+	module = append(module, exportPayload...)
+	codePayload := []byte{0x01, 0x06, 0x00, 0x10, 0x00, 0x10, 0x01, 0x0b}
+	module = append(module, 0x0a)
+	module = appendLEBUint32(module, uint32(len(codePayload)))
+	module = append(module, codePayload...)
+	return module
+}
+
+func appendLEBUint32(out []byte, value uint32) []byte {
+	for {
+		b := byte(value & 0x7f)
+		value >>= 7
+		if value != 0 {
+			b |= 0x80
+		}
+		out = append(out, b)
+		if value == 0 {
+			return out
+		}
+	}
 }
 
 func grantRealDemoDeclaredPermissions(ctx context.Context, pluginHost *host.Host, record registry.PluginRecord) error {
@@ -392,6 +563,7 @@ func realDemoPluginHTML() string {
         <div class="toolbar">
           <p class="status" id="status">Ready</p>
           <button id="invoke-worker" type="button">Invoke backend</button>
+          <button id="invoke-broker" type="button">Storage + network</button>
           <button id="invoke-danger" type="button">Dangerous action</button>
         </div>
         <pre id="result" aria-label="Latest result">Waiting for bridge handshake...</pre>
@@ -405,6 +577,7 @@ func realDemoPluginHTML() string {
 func realDemoPluginJS() string {
 	return `const status = document.getElementById('status');
 const invokeButton = document.getElementById('invoke-worker');
+const brokerButton = document.getElementById('invoke-broker');
 const dangerButton = document.getElementById('invoke-danger');
 const result = document.getElementById('result');
 const params = new URLSearchParams(window.location.search);
@@ -445,6 +618,21 @@ invokeButton?.addEventListener('click', async () => {
   } catch (error) {
     setStatus('Backend call failed');
     writeResult({ method: 'worker.echo', error: String(error?.message || error), error_code: error?.errorCode });
+  } finally {
+    setBusy(false);
+  }
+});
+
+brokerButton?.addEventListener('click', async () => {
+  try {
+    setBusy(true);
+    setStatus('Calling worker.brokerDemo...');
+    const response = await callHost('worker.brokerDemo', { note: 'Hello from the sandboxed UI' });
+    setStatus('Brokered backend responded');
+    writeResult({ method: 'worker.brokerDemo', response, parsed_network_body: parseNetworkBody(response), token_leak_check: tokenLeakCheck(response) });
+  } catch (error) {
+    setStatus('Brokered backend failed');
+    writeResult({ method: 'worker.brokerDemo', error: String(error?.message || error), error_code: error?.errorCode });
   } finally {
     setBusy(false);
   }
@@ -510,16 +698,34 @@ function callHost(method, callParams) {
 
 function tokenLeakCheck(value) {
   const serialized = JSON.stringify(value);
+  const storageGrantMarker = ['storage', 'handle', 'grant', 'token'].join('_');
+  const handleGrantMarker = ['handle', 'grant', 'token'].join('_');
   return {
     asset_ticket_visible: location.href.includes('asset_ticket') || document.cookie.includes('` + realDemoAssetCookieName + `'),
     gateway_token_visible: serialized.includes('plugin_gateway_token') || serialized.includes('gateway_token'),
     confirmation_token_visible: serialized.includes('confirmation_token'),
+    storage_grant_visible: serialized.includes(storageGrantMarker) || serialized.includes(handleGrantMarker),
   };
+}
+
+function parseNetworkBody(value) {
+  const encoded = value?.data?.network_execute?.body_base64 || value?.network_execute?.body_base64;
+  if (!encoded) {
+    return null;
+  }
+  try {
+    return JSON.parse(atob(encoded));
+  } catch (error) {
+    return { parse_error: String(error?.message || error) };
+  }
 }
 
 function setBusy(busy) {
   if (invokeButton) {
     invokeButton.disabled = busy;
+  }
+  if (brokerButton) {
+    brokerButton.disabled = busy;
   }
   if (dangerButton) {
     dangerButton.disabled = busy;
@@ -540,7 +746,7 @@ function writeResult(value) {
 `
 }
 
-func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, runtimeGenerationID string) string {
+func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, brokerConfig string, runtimeGenerationID string) string {
 	return `<!doctype html>
 <html lang="en">
   <head>
@@ -616,6 +822,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
     <script type="module">
       import { PluginSurfaceHost } from "/packages/redevplugin-ui/dist/index.js";
       const bootstrap = ` + bootstrap + `;
+      const brokerConfig = ` + brokerConfig + `;
       const pluginOrigin = "` + pluginOrigin + `";
       const pluginURL = new URL("/_redevplugin/assets/ui/index.html", pluginOrigin);
       pluginURL.searchParams.set("parent_origin", location.origin);
@@ -637,6 +844,18 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
       const hostFetch = async (input, init) => {
         const url = String(input);
         const body = init?.body ? JSON.parse(init.body) : {};
+        let nextInit = init;
+        if (url.endsWith("/rpc") && body.method === "worker.brokerDemo") {
+          body.params = {
+            ...(body.params || {}),
+            storage_handle_grant_token: brokerConfig.storage_handle_grant_token,
+            storage_store_id: brokerConfig.storage_store_id,
+            storage_path: brokerConfig.storage_path,
+            storage_data_base64: brokerConfig.storage_data_base64,
+            network_body_base64: brokerConfig.network_body_base64,
+          };
+          nextInit = { ...init, body: JSON.stringify(body) };
+        }
         const trackResult = url.endsWith("/bridge-token") || url.endsWith("/rpc") || url.endsWith("/confirm");
         if (url.endsWith("/bridge-token")) {
           handshakes += 1;
@@ -648,7 +867,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
           document.querySelector("#rpc-count").textContent = String(rpcCalls);
           log("rpc", { method: body.method, confirmed: Boolean(body.confirmation_token) });
         }
-        const response = await fetch(input, init);
+        const response = await fetch(input, nextInit);
         if (trackResult) {
           try {
             document.querySelector("#last-result").textContent = JSON.stringify(await response.clone().json(), null, 2);

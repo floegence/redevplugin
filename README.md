@@ -115,9 +115,14 @@ capabilities.
 - The browser demo under `demo/browser/` runs a real host page plus sandboxed
   iframe plugin page using the built `@floegence/redevplugin-ui` bridge package.
   Start it with `npm run demo:browser`, open the printed host URL, then exercise
-  handshake, lifecycle, ordinary RPC, storage-list RPC, and
-  dangerous-confirmation flows. The host and plugin page are served from
-  separate localhost origins to exercise exact-origin sandbox bridge behavior.
+  handshake, lifecycle, ordinary RPC, storage-list RPC, streaming,
+  dangerous-confirmation, and richer plugin surfaces. The host and plugin page
+  are served from separate localhost origins to exercise exact-origin sandbox
+  bridge behavior. The demo picker includes a workspace tools plugin, an
+  animated canvas bouncer game that saves score through the bridge, a schedule
+  planner that lists/adds/toggles/deletes host-backed stored items, and a
+  weather plugin that saves the current location, requests a host-network-backed
+  forecast payload, parses it, and renders a friendly weather card.
   For the Flower-generated plugin path, run `npm run demo:browser:generated`.
   That launcher scaffolds a plugin with a backend worker skeleton, packages it,
   installs it into a temporary dev state root, enables it, opens its activity
@@ -142,7 +147,11 @@ capabilities.
   packaged UI through `/_redevplugin/assets/ui/index.html`, and the smoke asserts
   the HttpOnly asset-session cookie plus absence of legacy `/ui/index.html`
   static loading. The generated plugin UI is clicked in the browser and must
-  receive a `worker.echo` result whose transport is `rust runtime ipc`.
+  receive a `worker.echo` result whose transport is `rust runtime ipc`. It also
+  clicks a `worker.brokerDemo` flow that routes through the Rust runtime and a
+  WASM worker into the Storage Broker and Network Broker, proving the backend
+  worker can persist a file and request host-mediated HTTP without exposing
+  parent-only grants to the iframe.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.

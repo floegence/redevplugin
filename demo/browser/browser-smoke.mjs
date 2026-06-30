@@ -99,6 +99,42 @@ try {
   await expectText(frame.locator("#plugin-status"), "visible");
   await expectText(frame.locator("#plugin-result"), "\"lifecycle\": \"visible\"");
 
+  await page.getByRole("button", { name: "Bouncer game" }).click();
+  await expectText(page.locator("#handshake-count"), "1");
+  const gameFrame = page.frameLocator("#plugin-frame");
+  await expectText(gameFrame.locator("#plugin-status"), "ready");
+  await gameFrame.getByRole("button", { name: "Boost" }).click();
+  await expectText(gameFrame.locator("#speed"), "1.2x");
+  await gameFrame.getByRole("button", { name: "Save score" }).click();
+  await expectText(gameFrame.locator("#plugin-result"), "game.score.save");
+  await expectText(gameFrame.locator("#plugin-result"), "host-backed kv store");
+  await expectText(page.locator("#rpc-count"), "1");
+
+  await page.getByRole("button", { name: "Schedule planner" }).click();
+  await expectText(page.locator("#handshake-count"), "1");
+  const scheduleFrame = page.frameLocator("#plugin-frame");
+  await expectText(scheduleFrame.locator("#plugin-status"), "ready");
+  await expectText(scheduleFrame.locator("#schedule-count"), "3");
+  await scheduleFrame.locator("#schedule-title").fill("Browser QA review");
+  await scheduleFrame.locator("#schedule-tag").fill("qa");
+  await scheduleFrame.getByRole("button", { name: "Add" }).click();
+  await expectText(scheduleFrame.locator("#schedule-list"), "Browser QA review");
+  await expectText(scheduleFrame.locator("#schedule-count"), "4");
+  await scheduleFrame.getByRole("button", { name: "Done" }).first().click();
+  await expectText(scheduleFrame.locator("#plugin-result"), "\"persisted\": true");
+
+  await page.getByRole("button", { name: "Weather console" }).click();
+  await expectText(page.locator("#handshake-count"), "1");
+  const weatherFrame = page.frameLocator("#plugin-frame");
+  await expectText(weatherFrame.locator("#plugin-status"), "ready");
+  await expectText(weatherFrame.locator("#weather-place"), "San Francisco");
+  await weatherFrame.locator("#weather-location").fill("Shanghai");
+  await weatherFrame.getByRole("button", { name: "Fetch" }).click();
+  await expectText(weatherFrame.locator("#weather-place"), "Shanghai");
+  await expectText(weatherFrame.locator("#weather-condition"), "Warm evening haze");
+  await expectText(weatherFrame.locator("#plugin-result"), "weather.fetch");
+  await expectText(weatherFrame.locator("#plugin-result"), "api.weather.example");
+
   const generatedURL = new URL(`http://127.0.0.1:${hostPort}/demo/browser/index.html`);
   generatedURL.searchParams.set("plugin_origin", `http://127.0.0.1:${pluginPort}`);
   generatedURL.searchParams.set("plugin_path", "/generated-plugin/ui/index.html");

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weather Plugin</title>
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body class="plugin-body weather-body">
+    <main class="plugin-shell weather-shell">
+      <div class="plugin-header">
+        <div>
+          <p class="eyebrow">demo.plugin.network</p>
+          <h1>Weather atlas</h1>
+        </div>
+        <span id="plugin-status" class="status-pill">booting</span>
+      </div>
+
+      <div id="weather-form" class="weather-search">
+        <input id="weather-location" autocomplete="off" placeholder="City or region" />
+        <button id="weather-fetch" type="button">Fetch</button>
+      </div>
+
+      <section class="weather-card" aria-label="Parsed weather result">
+        <div>
+          <span class="metric-label">saved location</span>
+          <strong id="weather-place">-</strong>
+        </div>
+        <div class="weather-temp"><span id="weather-temp">--</span><small>°C</small></div>
+        <p id="weather-condition">Waiting for network response...</p>
+        <div id="forecast" class="forecast-strip"></div>
+      </section>
+
+      <section class="result-panel" aria-label="Weather plugin result">
+        <span class="metric-label">network result</span>
+        <pre id="plugin-result">{}</pre>
+      </section>
+    </main>
+    <script type="module" src="./weather.mjs"></script>
+  </body>
+</html>

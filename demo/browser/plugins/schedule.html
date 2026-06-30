@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Schedule Plugin</title>
+    <link rel="stylesheet" href="../styles.css" />
+  </head>
+  <body class="plugin-body schedule-body">
+    <main class="plugin-shell schedule-shell">
+      <div class="plugin-header">
+        <div>
+          <p class="eyebrow">demo.plugin.storage</p>
+          <h1>Dayline planner</h1>
+        </div>
+        <span id="plugin-status" class="status-pill">booting</span>
+      </div>
+
+      <div id="schedule-form" class="schedule-form">
+        <input id="schedule-title" name="title" autocomplete="off" placeholder="Event title" required />
+        <input id="schedule-date" name="date" type="date" value="2026-06-30" required />
+        <input id="schedule-time" name="time" type="time" value="11:00" required />
+        <input id="schedule-tag" name="tag" autocomplete="off" placeholder="Tag" />
+        <button id="schedule-add" type="button">Add</button>
+      </div>
+
+      <section class="schedule-board" aria-label="Persisted schedule list">
+        <div>
+          <span class="metric-label">stored items</span>
+          <strong id="schedule-count">0</strong>
+        </div>
+        <ul id="schedule-list"></ul>
+      </section>
+
+      <section class="result-panel" aria-label="Schedule plugin result">
+        <span class="metric-label">storage result</span>
+        <pre id="plugin-result">{}</pre>
+      </section>
+    </main>
+    <script type="module" src="./schedule.mjs"></script>
+  </body>
+</html>

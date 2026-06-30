@@ -81,14 +81,59 @@ test("demo host embeds a sandboxed iframe", async () => {
   const html = await readFile(new URL("./index.html", import.meta.url), "utf8");
   assert.match(html, /sandbox="allow-scripts allow-same-origin"/);
   assert.match(html, /src="about:blank"/);
+  assert.match(html, /demo-picker/);
 
   const hostScript = await readFile(new URL("./host.mjs", import.meta.url), "utf8");
   assert.match(hostScript, /plugin_origin/);
   assert.match(hostScript, /iframeOrigin: pluginURL\.origin/);
+  assert.match(hostScript, /Bouncer game/);
+  assert.match(hostScript, /Schedule planner/);
+  assert.match(hostScript, /Weather console/);
 
   const pluginScript = await readFile(new URL("./plugin.mjs", import.meta.url), "utf8");
   assert.match(pluginScript, /parent_origin/);
   assert.match(pluginScript, /parentOrigin/);
+});
+
+test("rich demo plugins exercise game, storage, and network methods", async () => {
+  const platform = createDemoPlatformFetch();
+  await platform.fetch(`/_redevplugin/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
+    method: "POST",
+    headers: {},
+    body: JSON.stringify({ handshake: {} }),
+  });
+
+  const score = await rpc(platform, "game.score.save", { score: 42 });
+  assert.equal(score.data.data.best_score, 42);
+
+  const initial = await rpc(platform, "schedule.items.list", {});
+  assert.equal(initial.data.data.items.length, 3);
+  const added = await rpc(platform, "schedule.item.add", {
+    title: "Write browser demo",
+    date: "2026-06-30",
+    time: "16:30",
+    tag: "qa",
+  });
+  assert.equal(added.data.data.persisted, true);
+  assert.equal(added.data.data.items.length, 4);
+
+  const saved = await rpc(platform, "weather.location.save", { location: "Shanghai" });
+  assert.equal(saved.data.data.location, "Shanghai");
+  const weather = await rpc(platform, "weather.fetch", { location: "Shanghai" });
+  assert.equal(weather.data.data.current.condition, "Warm evening haze");
+  assert.equal(weather.data.data.network.transport, "http");
+
+  for (const filename of [
+    "./plugins/bouncer.html",
+    "./plugins/bouncer.mjs",
+    "./plugins/schedule.html",
+    "./plugins/schedule.mjs",
+    "./plugins/weather.html",
+    "./plugins/weather.mjs",
+  ]) {
+    const source = await readFile(new URL(filename, import.meta.url), "utf8");
+    assert.match(source, /PluginBridgeClient|plugin-status|game-canvas|schedule-form|weather-form/);
+  }
 });
 
 test("generated browser demo uses complete dev lifecycle and cleanup", async () => {
@@ -109,6 +154,19 @@ test("generated browser demo uses complete dev lifecycle and cleanup", async () 
   assert.match(launcher, /plugin_path", "\/generated-plugin\/ui\/index\.html"/);
   assert.match(launcher, /Press Ctrl\+C to disable, uninstall, delete plugin data/);
 });
+
+async function rpc(platform, method, params) {
+  const response = await platform.fetch("/_redevplugin/api/plugins/rpc", {
+    method: "POST",
+    headers: {},
+    body: JSON.stringify({
+      plugin_gateway_token: "gateway_token_parent_only_demo",
+      method,
+      params,
+    }),
+  });
+  return response.json();
+}
 
 test("real runtime demo launcher starts real host and cleans temporary state", async () => {
   const packageConfig = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
