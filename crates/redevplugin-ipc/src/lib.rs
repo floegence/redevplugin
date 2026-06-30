@@ -219,7 +219,7 @@ pub fn worker_success_result_json(
     wasm_byte_len: usize,
 ) -> String {
     format!(
-        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"validated wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}}}}}",
+        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}}}}}",
         escape_json_string(&identity.method),
         escape_json_string(&identity.worker_id),
         WASM_ABI_VERSION,

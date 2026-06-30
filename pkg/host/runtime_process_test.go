@@ -182,7 +182,7 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if !ok {
 		t.Fatalf("worker result data = %#v, want map", result.Data)
 	}
-	if data["backend"] != "validated wasm worker scaffold" ||
+	if data["backend"] != "executed wasm worker scaffold" ||
 		data["transport"] != "rust runtime ipc" ||
 		data["method"] != "worker.echo" ||
 		data["worker_id"] != "echo_worker" {

@@ -156,21 +156,20 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    let validated =
-        match redevplugin_wasm_abi::validate_worker_module(&wasm_bytes, &identity.export) {
-            Ok(validated) => validated,
-            Err(err) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
-                    Some(err.as_str()),
-                ));
-            }
-        };
+    let validated = match execute_worker_module(&wasm_bytes, &identity.export) {
+        Ok(validated) => validated,
+        Err(err) => {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
+                Some(err.as_str()),
+            ));
+        }
+    };
     let result = redevplugin_ipc::worker_success_result_json(&identity, validated.byte_len);
     Ok(redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -181,6 +180,28 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         None,
         None,
     ))
+}
+
+fn execute_worker_module(
+    wasm_bytes: &[u8],
+    export_name: &str,
+) -> Result<redevplugin_wasm_abi::ValidatedWorkerModule, String> {
+    let validated = redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
+    let engine = wasmi::Engine::default();
+    let module = wasmi::Module::new(&engine, wasm_bytes)
+        .map_err(|err| format!("compile wasm worker module: {err}"))?;
+    let linker = <wasmi::Linker<()>>::new(&engine);
+    let mut store = wasmi::Store::new(&engine, ());
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
+    let invoke = instance
+        .get_typed_func::<(), ()>(&store, export_name)
+        .map_err(|err| format!("resolve wasm worker export {export_name:?}: {err}"))?;
+    invoke
+        .call(&mut store, ())
+        .map_err(|err| format!("execute wasm worker export {export_name:?}: {err}"))?;
+    Ok(validated)
 }
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
@@ -234,5 +255,36 @@ mod tests {
     fn rejects_invalid_base64() {
         let err = decode_base64("abc$").expect_err("invalid base64");
         assert!(err.contains("invalid character"));
+    }
+
+    #[test]
+    fn executes_minimal_wasm_worker_export() {
+        let module = minimal_worker_wasm("redeven_worker_invoke");
+        let validated = execute_worker_module(&module, "redeven_worker_invoke")
+            .expect("minimal worker executes");
+        assert_eq!(validated.byte_len, module.len());
+    }
+
+    #[test]
+    fn rejects_wasm_worker_with_missing_export() {
+        let module = minimal_worker_wasm("other_export");
+        let err = execute_worker_module(&module, "redeven_worker_invoke")
+            .expect_err("missing worker export");
+        assert!(err.contains("required function export"));
+    }
+
+    fn minimal_worker_wasm(export_name: &str) -> Vec<u8> {
+        let export_name_bytes = export_name.as_bytes();
+        let mut module = vec![
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+            0x03, 0x02, 0x01, 0x00, 0x07,
+        ];
+        let mut export_payload = vec![0x01, export_name_bytes.len() as u8];
+        export_payload.extend_from_slice(export_name_bytes);
+        export_payload.extend_from_slice(&[0x00, 0x00]);
+        module.push(export_payload.len() as u8);
+        module.extend_from_slice(&export_payload);
+        module.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
+        module
     }
 }

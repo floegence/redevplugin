@@ -7,3 +7,4 @@ license = "MIT"
 [dependencies]
 redevplugin-ipc = { path = "../redevplugin-ipc" }
 redevplugin-wasm-abi = { path = "../redevplugin-wasm-abi" }
+wasmi = { version = "2.0.0-beta.3", default-features = false, features = ["std", "validate"] }
