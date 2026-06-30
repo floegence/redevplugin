@@ -2259,6 +2259,20 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redeven_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2638,6 +2652,48 @@ func workerFixtureManifestJSON() string {
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
 			}
 		]
+	}`
+}
+
+func workerNetworkFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker.network",
+			"display_name": "Worker Network",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redeven-wasm-worker-v1",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216,
+				"idle_timeout_ms": 0
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+			}
+		],
+		"network_access": {
+			"connectors": [
+				{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}
+			]
+		}
 	}`
 }
 

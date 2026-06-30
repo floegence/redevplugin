@@ -76,6 +76,10 @@ capabilities.
   bridge calls and backend worker hostcalls can share the same fail-closed
   network boundary. Long-lived WebSocket subscriptions remain tied to the
   streaming envelope contract instead of the one-shot round trip API.
+- Host tests include a black-box runtime subprocess path that invokes a worker
+  method, has the helper runtime request `network_execute` over IPC, mints the
+  grant through the Host connectivity broker, and records the HTTP executor
+  request/response before returning the worker result.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the

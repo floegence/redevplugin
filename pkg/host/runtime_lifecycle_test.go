@@ -138,10 +138,21 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 	}
 }
 
-type recordingHostNetworkExecutor struct{}
+type recordingHostNetworkExecutor struct {
+	httpCalls  int
+	lastHTTP   connectivity.HTTPRequest
+	httpStatus int
+	httpBody   []byte
+}
 
-func (e *recordingHostNetworkExecutor) DoHTTP(context.Context, connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
-	return connectivity.HTTPResponse{StatusCode: http.StatusOK}, nil
+func (e *recordingHostNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+	e.httpCalls++
+	e.lastHTTP = req
+	status := e.httpStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
 }
 
 func (e *recordingHostNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
