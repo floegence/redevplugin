@@ -216,6 +216,11 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return devStatus(args[1])
+	case "demo-real-server":
+		if len(args) != 3 {
+			return usage()
+		}
+		return demoRealServer(ctx, args[1], args[2])
 	case "enable":
 		if len(args) != 2 {
 			return usage()
@@ -359,17 +364,25 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 }
 
 func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
+	summary, err := createPluginScaffold(pluginID, displayName, outDir)
+	if err != nil {
+		return err
+	}
+	return writeJSON(summary)
+}
+
+func createPluginScaffold(pluginID string, displayName string, outDir string) (scaffoldSummary, error) {
 	pluginID = strings.TrimSpace(pluginID)
 	displayName = strings.TrimSpace(displayName)
 	outDir = strings.TrimSpace(outDir)
 	if pluginID == "" {
-		return fmt.Errorf("plugin_id is required")
+		return scaffoldSummary{}, fmt.Errorf("plugin_id is required")
 	}
 	if displayName == "" {
-		return fmt.Errorf("display_name is required")
+		return scaffoldSummary{}, fmt.Errorf("display_name is required")
 	}
 	if outDir == "" {
-		return fmt.Errorf("output directory is required")
+		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
 	manifestDoc := manifest.Manifest{
 		SchemaVersion: "redeven.plugin.manifest.v1",
@@ -411,7 +424,7 @@ func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
 	}
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
-		return err
+		return scaffoldSummary{}, err
 	}
 	files := map[string][]byte{
 		"manifest.json":        append(rawManifest, '\n'),
@@ -425,24 +438,24 @@ func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
 	if _, err := os.Stat(outDir); err == nil {
 		entries, err := os.ReadDir(outDir)
 		if err != nil {
-			return err
+			return scaffoldSummary{}, err
 		}
 		if len(entries) > 0 {
-			return fmt.Errorf("output directory %q is not empty", outDir)
+			return scaffoldSummary{}, fmt.Errorf("output directory %q is not empty", outDir)
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return scaffoldSummary{}, err
 	}
 	created := make([]string, 0, len(files))
 	for entryPath, content := range files {
 		filename := filepath.Join(outDir, filepath.FromSlash(entryPath))
 		if err := writeBytesFile(filename, content, 0o644); err != nil {
-			return err
+			return scaffoldSummary{}, err
 		}
 		created = append(created, entryPath)
 	}
 	sortStrings(created)
-	return writeJSON(scaffoldSummary{
+	return scaffoldSummary{
 		OK:          true,
 		Kind:        "plugin_scaffold",
 		PluginID:    pluginID,
@@ -450,7 +463,7 @@ func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
 		OutputDir:   outDir,
 		Files:       created,
 		VersionInfo: version.CurrentMatrix(),
-	})
+	}, nil
 }
 
 func keygen(keyID string, privateFile string, publicFile string) error {
@@ -609,7 +622,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

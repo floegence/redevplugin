@@ -404,6 +404,7 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http/bridge-token", map[string]any{
 		"bridge_channel_id": "bridge_http",
 		"handshake": map[string]any{
+			"type":                "redeven.plugin.handshake",
 			"plugin_id":           openResp.PluginID,
 			"surface_id":          openResp.SurfaceID,
 			"surface_instance_id": openResp.SurfaceInstanceID,
@@ -414,6 +415,61 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	})
 	if bridgeResp.GatewayToken == "" {
 		t.Fatalf("bridge token response is empty: %#v", bridgeResp)
+	}
+}
+
+func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
+	h := newHTTPTestHost(t)
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h}
+
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redeven_proxy/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_id":              "http.activity",
+		"surface_instance_id":     "surface_http_bad_type",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http_bad_type/bootstrap", map[string]any{
+		"asset_ticket": openResp.AssetTicket,
+	})
+	raw, err := json.Marshal(map[string]any{
+		"bridge_channel_id": "bridge_http",
+		"handshake": map[string]any{
+			"type":                "redeven.plugin.call",
+			"plugin_id":           openResp.PluginID,
+			"surface_id":          openResp.SurfaceID,
+			"surface_instance_id": openResp.SurfaceInstanceID,
+			"active_fingerprint":  openResp.ActiveFingerprint,
+			"bridge_nonce":        openResp.BridgeNonce,
+			"ui_protocol_version": "plugin-ui-v1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redeven_proxy/api/plugins/surfaces/surface_http_bad_type/bridge-token", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bridge token status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) {
+		t.Fatalf("bridge token envelope = %#v", envelope)
 	}
 }
 

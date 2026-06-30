@@ -7,7 +7,7 @@
     "build": "tsc -p packages/redevplugin-ui/tsconfig.json",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
     "test:demo": "node --test demo/browser/*.test.mjs",
-    "test:demo:browser": "npm run build && node demo/browser/browser-smoke.mjs",
+    "test:demo:browser": "npm run build && node demo/browser/browser-smoke.mjs && node demo/browser/real-runtime-smoke.mjs",
     "predemo:browser": "npm run build",
     "demo:browser": "node demo/browser/server.mjs",
     "demo:browser:generated": "npm run build && node demo/browser/generated-demo.mjs",

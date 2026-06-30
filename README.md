@@ -129,7 +129,12 @@ capabilities.
   demo flow, generates a fresh plugin with `redevplugin scaffold`, packages it,
   installs, enables, and opens it through the persistent dev lifecycle harness,
   serves that generated plugin from the sandbox origin, verifies its backend call
-  UI end to end, then disables and uninstalls it with data deletion.
+  UI end to end, then disables and uninstalls it with data deletion. The same
+  browser smoke now also starts `redevplugin demo-real-server`, which wires a
+  scaffolded plugin through the real Go Host library, the HTTP adapter, a
+  fresh asset-ticket/bootstrap exchange, a sandboxed iframe, and the built Rust
+  runtime process. The generated plugin UI is clicked in the browser and must
+  receive a `worker.echo` result whose transport is `rust runtime ipc`.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.

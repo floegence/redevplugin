@@ -91,8 +91,18 @@ type exchangeAssetTicketRequest struct {
 }
 
 type bridgeTokenRequest struct {
-	Handshake       bridge.Handshake `json:"handshake"`
-	BridgeChannelID string           `json:"bridge_channel_id"`
+	Handshake       pluginBridgeHandshake `json:"handshake"`
+	BridgeChannelID string                `json:"bridge_channel_id"`
+}
+
+type pluginBridgeHandshake struct {
+	Type              string `json:"type,omitempty"`
+	PluginID          string `json:"plugin_id"`
+	SurfaceID         string `json:"surface_id"`
+	SurfaceInstanceID string `json:"surface_instance_id"`
+	ActiveFingerprint string `json:"active_fingerprint"`
+	BridgeNonce       string `json:"bridge_nonce"`
+	UIProtocolVersion string `json:"ui_protocol_version"`
 }
 
 type rpcRequest struct {
@@ -157,6 +167,7 @@ type startRuntimeRequest struct {
 }
 
 const assetSessionCookieName = "__Host-redevplugin-asset-session"
+const pluginBridgeHandshakeType = "redeven.plugin.handshake"
 
 // OwnerSessionHashHeader optionally carries the host session binding used by
 // the configured WebSecurity guard for CSRF validation.
@@ -552,12 +563,16 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
+	if req.Handshake.Type != "" && req.Handshake.Type != pluginBridgeHandshakeType {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "handshake type is invalid", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
 	if req.Handshake.SurfaceInstanceID != surfaceInstanceID {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "surface_instance_id mismatch", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
 	result, err := h.Host.MintBridgeToken(r.Context(), host.MintBridgeTokenRequest{
-		Handshake:       req.Handshake,
+		Handshake:       bridgeHandshake(req.Handshake),
 		BridgeChannelID: req.BridgeChannelID,
 	})
 	if err != nil {
@@ -565,6 +580,17 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
+func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
+	return bridge.Handshake{
+		PluginID:          handshake.PluginID,
+		SurfaceID:         handshake.SurfaceID,
+		SurfaceInstanceID: handshake.SurfaceInstanceID,
+		ActiveFingerprint: handshake.ActiveFingerprint,
+		BridgeNonce:       handshake.BridgeNonce,
+		UIProtocolVersion: handshake.UIProtocolVersion,
+	}
 }
 
 func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
