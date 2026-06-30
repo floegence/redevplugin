@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
@@ -364,7 +365,8 @@ func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 }
 
 func TestHandlerSurfaceBridgeFlow(t *testing.T) {
-	h := newHTTPTestHost(t)
+	browserSite := browsersite.NewMemoryStore()
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{browserSite: browserSite})
 	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
@@ -382,9 +384,17 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 		"owner_session_hash":      "session_hash",
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
+		"sandbox_origin":          "https://plg-http.sandbox.redeven.local",
 	})
 	if openResp.AssetTicket == "" || openResp.BridgeNonce == "" {
 		t.Fatalf("open response missing ticket/nonce: %#v", openResp)
+	}
+	origins, err := browserSite.ListOrigins(context.Background(), browsersite.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(origins) != 1 || origins[0].Origin != "https://plg-http.sandbox.redeven.local" || origins[0].SurfaceInstanceID != "surface_http" {
+		t.Fatalf("registered browser origins mismatch: %#v", origins)
 	}
 
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redeven_proxy/api/plugins/surfaces/surface_http/bootstrap", map[string]any{
@@ -1256,6 +1266,7 @@ func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *hos
 
 type httpTestHostOptions struct {
 	storageBroker     storage.Broker
+	browserSite       browsersite.Store
 	secrets           host.SecretStoreAdapter
 	diagnostics       host.DiagnosticsSink
 	permissions       permissions.Store
@@ -1276,6 +1287,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		Policy:               httpTestPolicy{},
 		PackageTrustVerifier: httpTestPackageTrustVerifier{},
 		Storage:              opts.storageBroker,
+		BrowserSite:          opts.browserSite,
 		Secrets:              opts.secrets,
 		Diagnostics:          opts.diagnostics,
 		Permissions:          opts.permissions,

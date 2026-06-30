@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
@@ -356,6 +357,58 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 	}
 	if gateway.GatewayToken == "" {
 		t.Fatalf("gateway token is empty: %#v", gateway)
+	}
+}
+
+func TestOpenSurfaceRegistersBrowserOrigin(t *testing.T) {
+	browserSite := browsersite.NewMemoryStore()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		browserSite:    browserSite,
+	})
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "lifecycle.activity",
+		SurfaceInstanceID:    "surface_lifecycle_browser",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		SessionChannelIDHash: "session_channel_hash",
+		SandboxOrigin:        "https://plg-lifecycle.sandbox.redeven.local",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("OpenSurface() error = %v", err)
+	}
+	origins, err := browserSite.ListOrigins(context.Background(), browsersite.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(origins) != 1 {
+		t.Fatalf("registered origins = %#v", origins)
+	}
+	origin := origins[0]
+	if origin.State != browsersite.StateActive ||
+		origin.PluginID != installed.PluginID ||
+		origin.ActiveFingerprint != installed.ActiveFingerprint ||
+		origin.SurfaceID != "lifecycle.activity" ||
+		origin.SurfaceInstanceID != bootstrap.SurfaceInstanceID ||
+		origin.OwnerSessionHash != "owner_session_hash" ||
+		origin.OwnerUserHash != "owner_user_hash" ||
+		origin.Origin != "https://plg-lifecycle.sandbox.redeven.local" {
+		t.Fatalf("registered origin mismatch: %#v", origin)
+	}
+	if !audits.hasEvent("plugin.browser_origin.registered") {
+		t.Fatalf("missing browser origin audit event: %#v", audits.events)
 	}
 }
 
@@ -1385,6 +1438,131 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 }
 
+func TestUninstallRetainsOrDeletesBrowserSiteData(t *testing.T) {
+	ctx := context.Background()
+	retainBrowserSite := browsersite.NewMemoryStore()
+	retainHost, _, retainAudits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		browserSite:    retainBrowserSite,
+	})
+	retainedPlugin, err := InstallPackageBytes(ctx, retainHost, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retainHost.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:  retainedPlugin.PluginInstanceID,
+		SurfaceID:         "lifecycle.activity",
+		SurfaceInstanceID: "surface_retain_browser",
+		OwnerSessionHash:  "session_retain",
+		SandboxOrigin:     "https://plg-retain.sandbox.redeven.local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatalf("UninstallPlugin(retain) error = %v", err)
+	}
+	retainedOrigins, err := retainBrowserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: retainedPlugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retainedOrigins) != 1 || retainedOrigins[0].State != browsersite.StateRetained || retainedOrigins[0].RetainedAt == nil {
+		t.Fatalf("retained browser origins mismatch: %#v", retainedOrigins)
+	}
+	if !retainAudits.hasEvent("plugin.browser_site.retained") {
+		t.Fatalf("missing retained browser site audit event: %#v", retainAudits.events)
+	}
+
+	cleaner := &recordingBrowserSiteCleaner{}
+	deleteBrowserSite := browsersite.NewMemoryStore(browsersite.MemoryStoreOptions{Cleaner: cleaner})
+	deleteHost, _, deleteAudits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		browserSite:    deleteBrowserSite,
+	})
+	deletedPlugin, err := InstallPackageBytes(ctx, deleteHost, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deleteHost.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:  deletedPlugin.PluginInstanceID,
+		SurfaceID:         "lifecycle.activity",
+		SurfaceInstanceID: "surface_delete_browser",
+		OwnerSessionHash:  "session_delete",
+		SandboxOrigin:     "https://plg-delete.sandbox.redeven.local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin(delete) error = %v", err)
+	}
+	if len(cleaner.origins) != 1 || cleaner.origins[0] != "https://plg-delete.sandbox.redeven.local" {
+		t.Fatalf("cleaned origins mismatch: %#v", cleaner.origins)
+	}
+	deletedOrigins, err := deleteBrowserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: deletedPlugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deletedOrigins) != 1 || deletedOrigins[0].State != browsersite.StateCleanupComplete || deletedOrigins[0].CleanedAt == nil {
+		t.Fatalf("deleted browser origins mismatch: %#v", deletedOrigins)
+	}
+	if !deleteAudits.hasEvent("plugin.browser_site.deleted") {
+		t.Fatalf("missing deleted browser site audit event: %#v", deleteAudits.events)
+	}
+}
+
+func TestUninstallDeleteDataFailsWhenBrowserSiteCleanupFails(t *testing.T) {
+	ctx := context.Background()
+	cleaner := &recordingBrowserSiteCleaner{err: errors.New("browser profile locked")}
+	browserSite := browsersite.NewMemoryStore(browsersite.MemoryStoreOptions{Cleaner: cleaner})
+	diagnostics := &diagnosticSink{}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		browserSite:    browserSite,
+		diagnostics:    diagnostics,
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.activity",
+		SurfaceInstanceID: "surface_cleanup_failure",
+		OwnerSessionHash:  "session_failure",
+		SandboxOrigin:     "https://plg-failure.sandbox.redeven.local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); !errors.Is(err, browsersite.ErrCleanupFailed) {
+		t.Fatalf("UninstallPlugin(delete) error = %v, want ErrCleanupFailed", err)
+	}
+	if _, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID); err != nil {
+		t.Fatalf("plugin should remain installed after failed browser cleanup: %v", err)
+	}
+	origins, err := browserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(origins) != 1 || origins[0].State != browsersite.StateCleanupFailed || origins[0].CleanupError == "" {
+		t.Fatalf("failed browser origin mismatch: %#v", origins)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.browser_site.cleanup_failed" {
+		t.Fatalf("diagnostic events mismatch: %#v", diagnostics.events)
+	}
+}
+
 func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 	ctx := context.Background()
 	broker, err := storage.NewFileBroker(t.TempDir())
@@ -1897,6 +2075,7 @@ type testHostOptions struct {
 	storageBroker           storage.Broker
 	connectivityBroker      connectivity.Broker
 	cleanup                 cleanup.Orchestrator
+	browserSite             browsersite.Store
 	permissions             permissions.Store
 	runtimeSupervisor       runtimeclient.Supervisor
 	runtimeArtifactResolver RuntimeArtifactResolver
@@ -1937,6 +2116,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Storage:                 opts.storageBroker,
 		Connectivity:            opts.connectivityBroker,
 		Cleanup:                 opts.cleanup,
+		BrowserSite:             opts.browserSite,
 		Permissions:             opts.permissions,
 		RuntimeSupervisor:       opts.runtimeSupervisor,
 		RuntimeArtifactResolver: opts.runtimeArtifactResolver,
@@ -2695,6 +2875,16 @@ type diagnosticSink struct {
 func (s *diagnosticSink) AppendPluginDiagnostic(_ context.Context, event DiagnosticEvent) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+type recordingBrowserSiteCleaner struct {
+	origins []string
+	err     error
+}
+
+func (c *recordingBrowserSiteCleaner) ClearOriginData(_ context.Context, origin string) error {
+	c.origins = append(c.origins, origin)
+	return c.err
 }
 
 type recordingCapabilityAdapter struct {

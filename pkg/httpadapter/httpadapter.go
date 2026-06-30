@@ -83,6 +83,7 @@ type openSurfaceRequest struct {
 	OwnerSessionHash     string `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string `json:"session_channel_id_hash,omitempty"`
+	SandboxOrigin        string `json:"sandbox_origin,omitempty"`
 }
 
 type exchangeAssetTicketRequest struct {
@@ -501,6 +502,7 @@ func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
 		OwnerSessionHash:     req.OwnerSessionHash,
 		OwnerUserHash:        req.OwnerUserHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
+		SandboxOrigin:        req.SandboxOrigin,
 	})
 	if err != nil {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})

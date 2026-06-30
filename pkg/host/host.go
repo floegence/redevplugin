@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
@@ -160,6 +161,7 @@ type Adapters struct {
 	Operations              operation.Store
 	Permissions             permissions.Store
 	Cleanup                 cleanup.Orchestrator
+	BrowserSite             browsersite.Store
 	Settings                settings.Store
 	Streams                 stream.Store
 }
@@ -279,6 +281,7 @@ type OpenSurfaceRequest struct {
 	OwnerSessionHash     string
 	OwnerUserHash        string
 	SessionChannelIDHash string
+	SandboxOrigin        string
 	Now                  time.Time
 }
 
@@ -500,6 +503,9 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.Cleanup == nil {
 		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
 	}
+	if adapters.BrowserSite == nil {
+		adapters.BrowserSite = browsersite.NewMemoryStore()
+	}
 	if adapters.Settings == nil {
 		adapters.Settings = settings.NewMemoryStore()
 	}
@@ -552,8 +558,43 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
+	if err := h.registerBrowserOrigin(ctx, record, req, bootstrap); err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
 	h.audit(ctx, AuditEvent{Type: "plugin.surface.opened", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return bootstrap, nil
+}
+
+func (h *Host) registerBrowserOrigin(ctx context.Context, record registry.PluginRecord, req OpenSurfaceRequest, bootstrap bridge.SurfaceBootstrap) error {
+	if h.adapters.BrowserSite == nil || strings.TrimSpace(req.SandboxOrigin) == "" {
+		return nil
+	}
+	origin, err := h.adapters.BrowserSite.RegisterOrigin(ctx, browsersite.RegisterRequest{
+		PluginInstanceID:  record.PluginInstanceID,
+		PluginID:          record.PluginID,
+		ActiveFingerprint: record.ActiveFingerprint,
+		SurfaceID:         req.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		Origin:            req.SandboxOrigin,
+		OwnerSessionHash:  req.OwnerSessionHash,
+		OwnerUserHash:     req.OwnerUserHash,
+		Now:               req.Now,
+	})
+	if err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{
+		Type:             "plugin.browser_origin.registered",
+		PluginID:         record.PluginID,
+		PluginInstanceID: record.PluginInstanceID,
+		SurfaceID:        req.SurfaceID,
+		Details: map[string]any{
+			"origin":              origin.Origin,
+			"surface_instance_id": origin.SurfaceInstanceID,
+			"origin_state":        string(origin.State),
+		},
+	})
+	return nil
 }
 
 func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketRequest) (bridge.AssetSessionResult, error) {
@@ -1639,6 +1680,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	if err := h.deleteOrRetainSettings(ctx, record, req.DeleteData, req.Now); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := h.deleteOrRetainBrowserSiteData(ctx, record, req.DeleteData, req.Now); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	if err := h.adapters.Permissions.DeletePluginGrants(ctx, record.PluginInstanceID); err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2511,6 +2555,55 @@ func (h *Host) deleteOrRetainSettings(ctx context.Context, record registry.Plugi
 		eventType = "plugin.settings.deleted"
 	}
 	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
+}
+
+func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) error {
+	if h.adapters.BrowserSite == nil {
+		return nil
+	}
+	reason := "uninstall_keep_data"
+	if deleteData {
+		reason = "uninstall_delete_data"
+	}
+	result, err := h.adapters.BrowserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		DeleteData:       deleteData,
+		Reason:           reason,
+		Now:              now,
+	})
+	if err != nil {
+		if h.adapters.Diagnostics != nil {
+			_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+				Type:              "plugin.browser_site.cleanup_failed",
+				Severity:          "warning",
+				Message:           err.Error(),
+				PluginID:          record.PluginID,
+				PluginInstanceID:  record.PluginInstanceID,
+				ActiveFingerprint: record.ActiveFingerprint,
+				Details: map[string]any{
+					"origin_count": len(result.Records),
+					"delete_data":  deleteData,
+				},
+			})
+		}
+		return err
+	}
+	if len(result.Records) == 0 {
+		return nil
+	}
+	eventType := "plugin.browser_site.retained"
+	if deleteData {
+		eventType = "plugin.browser_site.deleted"
+	}
+	h.audit(ctx, AuditEvent{
+		Type:             eventType,
+		PluginID:         record.PluginID,
+		PluginInstanceID: record.PluginInstanceID,
+		Details: map[string]any{
+			"origin_count": len(result.Records),
+		},
+	})
 	return nil
 }
 
