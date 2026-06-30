@@ -27,9 +27,12 @@ const (
 
 var (
 	ErrInvalidNamespace  = errors.New("storage namespace is invalid")
+	ErrInvalidFilePath   = errors.New("storage file path is invalid")
 	ErrNamespaceNotFound = errors.New("storage namespace not found")
 	ErrQuotaExceeded     = errors.New("storage quota exceeded")
 	ErrArchiveNotFound   = errors.New("storage archive not found")
+	ErrFileNotFound      = errors.New("storage file not found")
+	ErrFileTooLarge      = errors.New("storage file too large")
 )
 
 type Namespace struct {
@@ -84,9 +87,70 @@ type Broker interface {
 	ImportData(ctx context.Context, req ImportRequest) error
 }
 
+type FilesBroker interface {
+	ReadFile(ctx context.Context, req FileReadRequest) (FileReadResult, error)
+	WriteFile(ctx context.Context, req FileWriteRequest) (FileWriteResult, error)
+	DeleteFile(ctx context.Context, req FileDeleteRequest) error
+	ListFiles(ctx context.Context, req FileListRequest) (FileListResult, error)
+}
+
 type Inspector interface {
 	ListNamespaces(ctx context.Context, pluginInstanceID string) ([]NamespaceRecord, error)
 	Usage(ctx context.Context, pluginInstanceID string, storeID string) (Usage, error)
+}
+
+type FileReadRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Path             string `json:"path"`
+	MaxBytes         int64  `json:"max_bytes,omitempty"`
+}
+
+type FileReadResult struct {
+	Path      string `json:"path"`
+	Data      []byte `json:"-"`
+	SizeBytes int64  `json:"size_bytes"`
+	Usage     Usage  `json:"usage"`
+}
+
+type FileWriteRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Path             string `json:"path"`
+	Data             []byte `json:"-"`
+}
+
+type FileWriteResult struct {
+	Path      string `json:"path"`
+	SizeBytes int64  `json:"size_bytes"`
+	Usage     Usage  `json:"usage"`
+}
+
+type FileDeleteRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Path             string `json:"path"`
+	Recursive        bool   `json:"recursive,omitempty"`
+}
+
+type FileListRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Path             string `json:"path,omitempty"`
+	MaxEntries       int    `json:"max_entries,omitempty"`
+}
+
+type FileListResult struct {
+	Path    string      `json:"path"`
+	Entries []FileEntry `json:"entries"`
+	Usage   Usage       `json:"usage"`
+}
+
+type FileEntry struct {
+	Path      string    `json:"path"`
+	Dir       bool      `json:"dir"`
+	SizeBytes int64     `json:"size_bytes,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type MemoryBroker struct {

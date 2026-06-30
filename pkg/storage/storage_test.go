@@ -351,6 +351,196 @@ func TestFileBrokerExportImportCopiesData(t *testing.T) {
 	}
 }
 
+func TestFileBrokerFilesStoreReadWriteListDelete(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_files",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		QuotaBytes:       64,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	written, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "notes/today.txt",
+		Data:             []byte("hello"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if written.Path != "notes/today.txt" || written.SizeBytes != 5 || written.Usage.UsageBytes != 5 {
+		t.Fatalf("write result mismatch: %#v", written)
+	}
+	read, err := broker.ReadFile(ctx, FileReadRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "notes/today.txt",
+	})
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(read.Data) != "hello" || read.Usage.UsageBytes != 5 {
+		t.Fatalf("read result mismatch: data=%q result=%#v", string(read.Data), read)
+	}
+	list, err := broker.ListFiles(ctx, FileListRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "notes",
+	})
+	if err != nil {
+		t.Fatalf("ListFiles() error = %v", err)
+	}
+	if len(list.Entries) != 1 || list.Entries[0].Path != "notes/today.txt" || list.Entries[0].Dir {
+		t.Fatalf("list result mismatch: %#v", list)
+	}
+	if err := broker.DeleteFile(ctx, FileDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "notes/today.txt",
+	}); err != nil {
+		t.Fatalf("DeleteFile() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.UsageBytes != 0 {
+		t.Fatalf("usage after delete = %d, want 0", usage.UsageBytes)
+	}
+}
+
+func TestFileBrokerFilesStoreEnforcesQuotaAndSafePaths(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_files",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		QuotaBytes:       8,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "too-large.txt",
+		Data:             []byte("0123456789"),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("WriteFile(quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "../escape.txt",
+		Data:             []byte("nope"),
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("WriteFile(traversal) error = %v, want ErrInvalidFilePath", err)
+	}
+	if _, err := broker.ReadFile(ctx, FileReadRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "/absolute.txt",
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("ReadFile(absolute) error = %v, want ErrInvalidFilePath", err)
+	}
+	if _, err := broker.ReadFile(ctx, FileReadRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "missing.txt",
+	}); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("ReadFile(missing) error = %v, want ErrFileNotFound", err)
+	}
+	if _, err := broker.ListFiles(ctx, FileListRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "missing",
+	}); !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("ListFiles(missing) error = %v, want ErrFileNotFound", err)
+	}
+	if _, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "small.txt",
+		Data:             []byte("12345678"),
+	}); err != nil {
+		t.Fatalf("WriteFile(small) error = %v", err)
+	}
+	if _, err := broker.ReadFile(ctx, FileReadRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "small.txt",
+		MaxBytes:         4,
+	}); !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("ReadFile(max bytes) error = %v, want ErrFileTooLarge", err)
+	}
+}
+
+func TestFileBrokerFilesStoreRejectsSymlinkTargets(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_files",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		QuotaBytes:       128,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dataPath, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable on this platform: %v", err)
+	}
+	if _, err := broker.ReadFile(ctx, FileReadRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "link.txt",
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("ReadFile(symlink) error = %v, want ErrInvalidFilePath", err)
+	}
+	if _, err := broker.ListFiles(ctx, FileListRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("ListFiles(symlink) error = %v, want ErrInvalidFilePath", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataPath, "dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dataPath, "dir", "link.txt")); err != nil {
+		t.Skipf("nested symlink unavailable on this platform: %v", err)
+	}
+	if err := broker.DeleteFile(ctx, FileDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "dir",
+		Recursive:        true,
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("DeleteFile(nested symlink) error = %v, want ErrInvalidFilePath", err)
+	}
+}
+
 func TestFileBrokerRejectsSymlinkNamespaces(t *testing.T) {
 	ctx := context.Background()
 	broker, err := NewFileBroker(t.TempDir())

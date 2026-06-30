@@ -376,6 +376,249 @@ func (b *FileBroker) NamespacePath(ctx context.Context, pluginInstanceID string,
 	return b.namespaceDataPath(record.PluginInstanceID, record.StoreID), nil
 }
 
+func (b *FileBroker) ReadFile(ctx context.Context, req FileReadRequest) (FileReadResult, error) {
+	if b == nil {
+		return FileReadResult{}, errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return FileReadResult{}, err
+	}
+	rel, err := cleanStorageFilePath(req.Path)
+	if err != nil {
+		return FileReadResult{}, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeFilesNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return FileReadResult{}, err
+	}
+	target, err := resolveStorageFilePath(dataPath, rel)
+	if err != nil {
+		return FileReadResult{}, err
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return FileReadResult{}, ErrFileNotFound
+		}
+		return FileReadResult{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return FileReadResult{}, fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+	}
+	if !info.Mode().IsRegular() {
+		return FileReadResult{}, fmt.Errorf("%w: path is not a regular file", ErrInvalidFilePath)
+	}
+	if req.MaxBytes > 0 && info.Size() > req.MaxBytes {
+		return FileReadResult{}, fmt.Errorf("%w: %d > %d", ErrFileTooLarge, info.Size(), req.MaxBytes)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return FileReadResult{}, err
+	}
+	usage, err := b.refreshUsageLocked(record)
+	if err != nil {
+		return FileReadResult{}, err
+	}
+	return FileReadResult{Path: rel, Data: data, SizeBytes: int64(len(data)), Usage: usage}, nil
+}
+
+func (b *FileBroker) WriteFile(ctx context.Context, req FileWriteRequest) (FileWriteResult, error) {
+	if b == nil {
+		return FileWriteResult{}, errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return FileWriteResult{}, err
+	}
+	rel, err := cleanStorageFilePath(req.Path)
+	if err != nil {
+		return FileWriteResult{}, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeFilesNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return FileWriteResult{}, err
+	}
+	target, err := resolveStorageFilePath(dataPath, rel)
+	if err != nil {
+		return FileWriteResult{}, err
+	}
+	if err := rejectSymlinkAncestors(dataPath, filepath.Dir(target)); err != nil {
+		return FileWriteResult{}, err
+	}
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return FileWriteResult{}, fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+		}
+		if !info.Mode().IsRegular() {
+			return FileWriteResult{}, fmt.Errorf("%w: existing path is not a regular file", ErrInvalidFilePath)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return FileWriteResult{}, err
+	}
+	usageBefore, err := directoryUsage(dataPath)
+	if err != nil {
+		return FileWriteResult{}, err
+	}
+	oldSize := int64(0)
+	if info, err := os.Lstat(target); err == nil && info.Mode().IsRegular() {
+		oldSize = info.Size()
+	}
+	projected := usageBefore - oldSize + int64(len(req.Data))
+	if projected > record.QuotaBytes {
+		return FileWriteResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return FileWriteResult{}, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".redevplugin-write-*")
+	if err != nil {
+		return FileWriteResult{}, err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(req.Data); err != nil {
+		_ = tmp.Close()
+		return FileWriteResult{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		return FileWriteResult{}, err
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return FileWriteResult{}, err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		return FileWriteResult{}, err
+	}
+	cleanup = false
+	usage, err := b.refreshUsageLocked(record)
+	if err != nil {
+		return FileWriteResult{}, err
+	}
+	return FileWriteResult{Path: rel, SizeBytes: int64(len(req.Data)), Usage: usage}, nil
+}
+
+func (b *FileBroker) DeleteFile(ctx context.Context, req FileDeleteRequest) error {
+	if b == nil {
+		return errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rel, err := cleanStorageFilePath(req.Path)
+	if err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeFilesNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return err
+	}
+	target, err := resolveStorageFilePath(dataPath, rel)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+	}
+	if info.IsDir() && !req.Recursive {
+		return fmt.Errorf("%w: recursive delete is required for directories", ErrInvalidFilePath)
+	}
+	if info.IsDir() {
+		if err := validateStorageTree(target); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	_, err = b.refreshUsageLocked(record)
+	return err
+}
+
+func (b *FileBroker) ListFiles(ctx context.Context, req FileListRequest) (FileListResult, error) {
+	if b == nil {
+		return FileListResult{}, errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return FileListResult{}, err
+	}
+	rel, err := cleanStorageDirPath(req.Path)
+	if err != nil {
+		return FileListResult{}, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeFilesNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return FileListResult{}, err
+	}
+	target, err := resolveStorageFilePath(dataPath, rel)
+	if err != nil {
+		return FileListResult{}, err
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return FileListResult{}, ErrFileNotFound
+		}
+		return FileListResult{}, err
+	}
+	limit := req.MaxEntries
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	resultEntries := make([]FileEntry, 0, len(entries))
+	for _, entry := range entries {
+		if len(resultEntries) >= limit {
+			break
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return FileListResult{}, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return FileListResult{}, fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+		}
+		childPath := pathJoin(rel, entry.Name())
+		resultEntries = append(resultEntries, FileEntry{
+			Path:      childPath,
+			Dir:       entry.IsDir(),
+			SizeBytes: regularFileSize(info),
+			UpdatedAt: info.ModTime().UTC(),
+		})
+	}
+	sort.Slice(resultEntries, func(i, j int) bool { return resultEntries[i].Path < resultEntries[j].Path })
+	usage, err := b.refreshUsageLocked(record)
+	if err != nil {
+		return FileListResult{}, err
+	}
+	return FileListResult{Path: rel, Entries: resultEntries, Usage: usage}, nil
+}
+
 func (b *FileBroker) Root() string {
 	if b == nil {
 		return ""
@@ -489,6 +732,46 @@ func (b *FileBroker) writeNamespaceRecordLocked(record NamespaceRecord) error {
 	return writeJSONFile(filepath.Join(b.namespaceBasePath(record.PluginInstanceID, record.StoreID), fileBrokerNamespaceFile), record)
 }
 
+func (b *FileBroker) activeFilesNamespaceLocked(pluginInstanceID string, storeID string) (NamespaceRecord, string, error) {
+	record, err := b.readNamespaceRecordLocked(pluginInstanceID, storeID)
+	if err != nil {
+		return NamespaceRecord{}, "", err
+	}
+	if record.State != NamespaceActive {
+		return NamespaceRecord{}, "", ErrNamespaceNotFound
+	}
+	if record.Kind != StoreFiles {
+		return NamespaceRecord{}, "", fmt.Errorf("%w: store %q is %s, not files", ErrInvalidNamespace, record.StoreID, record.Kind)
+	}
+	dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
+	if err := os.MkdirAll(dataPath, 0o700); err != nil {
+		return NamespaceRecord{}, "", err
+	}
+	return record, dataPath, nil
+}
+
+func (b *FileBroker) refreshUsageLocked(record NamespaceRecord) (Usage, error) {
+	dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
+	usageBytes, err := directoryUsage(dataPath)
+	if err != nil {
+		return Usage{}, err
+	}
+	if usageBytes > record.QuotaBytes {
+		return Usage{}, fmt.Errorf("%w: current usage %d exceeds quota %d", ErrQuotaExceeded, usageBytes, record.QuotaBytes)
+	}
+	record.UsageBytes = usageBytes
+	record.UpdatedAt = b.now()
+	if err := b.writeNamespaceRecordLocked(record); err != nil {
+		return Usage{}, err
+	}
+	return Usage{
+		PluginInstanceID: record.PluginInstanceID,
+		StoreID:          record.StoreID,
+		UsageBytes:       usageBytes,
+		QuotaBytes:       record.QuotaBytes,
+	}, nil
+}
+
 func (b *FileBroker) allocateArchivePathLocked() (string, string, error) {
 	for range 16 {
 		ref, err := randomArchiveRef()
@@ -578,6 +861,126 @@ func validArchiveRef(ref string) bool {
 		}
 	}
 	return true
+}
+
+func cleanStorageFilePath(raw string) (string, error) {
+	cleaned, err := cleanStoragePath(raw, false)
+	if err != nil {
+		return "", err
+	}
+	if cleaned == "." {
+		return "", fmt.Errorf("%w: file path is required", ErrInvalidFilePath)
+	}
+	return cleaned, nil
+}
+
+func cleanStorageDirPath(raw string) (string, error) {
+	return cleanStoragePath(raw, true)
+}
+
+func cleanStoragePath(raw string, allowRoot bool) (string, error) {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if raw == "" {
+		if allowRoot {
+			return ".", nil
+		}
+		return "", fmt.Errorf("%w: path is required", ErrInvalidFilePath)
+	}
+	if strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("%w: absolute paths are not allowed", ErrInvalidFilePath)
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(raw))
+	if cleaned == "." {
+		if allowRoot {
+			return ".", nil
+		}
+		return "", fmt.Errorf("%w: file path is required", ErrInvalidFilePath)
+	}
+	for _, part := range strings.Split(cleaned, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("%w: traversal segments are not allowed", ErrInvalidFilePath)
+		}
+	}
+	return cleaned, nil
+}
+
+func resolveStorageFilePath(root string, rel string) (string, error) {
+	if rel == "." {
+		return root, nil
+	}
+	target := filepath.Join(root, filepath.FromSlash(rel))
+	rootRel, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", err
+	}
+	if rootRel == "." || strings.HasPrefix(rootRel, ".."+string(filepath.Separator)) || rootRel == ".." || filepath.IsAbs(rootRel) {
+		return "", fmt.Errorf("%w: path escapes namespace", ErrInvalidFilePath)
+	}
+	return target, nil
+}
+
+func rejectSymlinkAncestors(root string, dir string) error {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	current := root
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "." || part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: symlink ancestor is not allowed", ErrInvalidFilePath)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%w: path ancestor is not a directory", ErrInvalidFilePath)
+		}
+	}
+	return nil
+}
+
+func pathJoin(parent string, child string) string {
+	if parent == "." || parent == "" {
+		return child
+	}
+	return filepath.ToSlash(filepath.Join(parent, child))
+}
+
+func regularFileSize(info fs.FileInfo) int64 {
+	if info.Mode().IsRegular() {
+		return info.Size()
+	}
+	return 0
+}
+
+func validateStorageTree(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: symlink is not allowed in storage namespace: %s", ErrInvalidFilePath, path)
+		}
+		if entry.IsDir() || info.Mode().IsRegular() {
+			return nil
+		}
+		return fmt.Errorf("%w: unsupported storage file mode %s at %s", ErrInvalidFilePath, info.Mode(), path)
+	})
 }
 
 func readJSONFile(path string, target any) error {
