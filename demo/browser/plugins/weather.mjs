@@ -31,6 +31,7 @@ const networkOperation = document.querySelector("#network-operation");
 const networkLatency = document.querySelector("#network-latency");
 const networkBytes = document.querySelector("#network-bytes");
 const networkConnector = document.querySelector("#network-connector");
+const networkBroker = document.querySelector("#network-broker");
 const networkResponse = document.querySelector("#network-response");
 const networkParser = document.querySelector("#network-parser");
 const forecast = document.querySelector("#forecast");
@@ -103,10 +104,13 @@ function renderWeather(data) {
   networkLatency.textContent = `${data.network?.latency_ms ?? "--"} ms`;
   networkBytes.textContent = `${data.network?.bytes_received ?? "--"} bytes`;
   networkConnector.textContent = data.network?.connector_id ?? "weather_api";
+  networkBroker.textContent = data.network?.upstream_mode ?? "host http fetch";
   networkResponse.textContent = `${data.network?.response_status ?? 200} · ${data.network?.response_headers?.["content-type"] ?? "application/json"}`;
   networkParser.textContent = `${data.parser?.format ?? "json"} · ${data.parser?.fields?.length ?? 0} fields`;
   rawWeatherResponse.textContent = formatJSON({
     request: data.network?.operation,
+    broker_endpoint: data.network?.broker_endpoint,
+    upstream_mode: data.network?.upstream_mode,
     response_headers: data.network?.response_headers,
     parsed_from_raw: true,
     sample: parsed,

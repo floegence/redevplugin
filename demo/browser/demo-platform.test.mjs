@@ -158,6 +158,7 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(weather.data.data.current.condition, "Warm evening haze");
   assert.equal(weather.data.data.network.transport, "http");
   assert.equal(weather.data.data.network.response_status, 200);
+  assert.equal(weather.data.data.network.upstream_mode, "in-memory fixture");
   assert.equal(JSON.parse(weather.data.data.raw_response_body).location, "Shanghai");
   assert.equal(weather.data.data.parser.format, "json");
   assert.equal(weather.data.data.hourly.length, 4);
@@ -173,6 +174,54 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
     const source = await readFile(new URL(filename, import.meta.url), "utf8");
     assert.match(source, /PluginBridgeClient|plugin-status|game-canvas|schedule-form|weather-form/);
   }
+});
+
+test("weather demo can fetch raw data through a host HTTP network broker", async () => {
+  const requestedURLs = [];
+  const platform = createDemoPlatformFetch({
+    networkBaseURL: "http://127.0.0.1:43000",
+    networkFetch: async (url, init) => {
+      requestedURLs.push({ url, headers: init.headers });
+      return {
+        status: 200,
+        headers: new Map([
+          ["content-type", "application/json; charset=utf-8"],
+          ["x-demo-weather-fetch", "miss"],
+        ]),
+        async text() {
+          return JSON.stringify({
+            location: "Tokyo",
+            current: {
+              temperature_c: 28,
+              condition: "Humid cloud breaks",
+              wind_kph: 12,
+              humidity_percent: 74,
+              pressure_hpa: 1008,
+              uv_index: 6,
+            },
+            hourly: [{ hour: "09:00", temperature_c: 26, condition: "Humid cloud breaks", wind_kph: 12 }],
+            forecast: [{ day: "D+0", high_c: 30, low_c: 24, condition: "Humid cloud breaks", precipitation_percent: 42 }],
+          });
+        },
+      };
+    },
+  });
+  await platform.fetch(`/_redevplugin/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
+    method: "POST",
+    headers: {},
+    body: JSON.stringify({ handshake: {} }),
+  });
+
+  const weather = await rpc(platform, "weather.fetch", { location: "Tokyo" });
+
+  assert.equal(requestedURLs.length, 1);
+  assert.match(requestedURLs[0].url, /^http:\/\/127\.0\.0\.1:43000\/demo\/weather-api\/v1\/forecast\?/);
+  assert.equal(requestedURLs[0].headers["x-redevplugin-connector"], "weather_api");
+  assert.equal(weather.data.data.current.condition, "Humid cloud breaks");
+  assert.equal(weather.data.data.network.upstream_mode, "host http fetch");
+  assert.match(weather.data.data.network.broker_endpoint, /\/demo\/weather-api\/v1\/forecast/);
+  assert.equal(weather.data.data.network.response_headers["content-type"], "application/json; charset=utf-8");
+  assert.equal(JSON.parse(weather.data.data.raw_response_body).location, "Tokyo");
 });
 
 test("demo platform persists plugin storage through host persistence adapter", async () => {

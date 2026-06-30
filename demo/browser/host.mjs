@@ -167,6 +167,8 @@ function openPlugin(plugin) {
 
   platform = createDemoPlatformFetch({
     bootstrap: demoBootstrap,
+    networkBaseURL: window.location.origin,
+    networkFetch: window.fetch.bind(window),
     onCall(path, body) {
       if (path.endsWith("/settings/schema") || path.endsWith("/settings")) {
         addLog("platform-client", { path, keys: Object.keys(body ?? {}) });

@@ -135,8 +135,10 @@ capabilities.
   lists/adds/toggles/deletes host-backed stored items, displays storage
   revision/quota/timeline metadata, and keeps data through host-page reloads;
   and a weather plugin that saves the current location, requests a
-  host-network-backed HTTP forecast payload, parses the raw JSON response, and
-  renders current, hourly, forecast, and network diagnostics views.
+  host-network-backed HTTP forecast payload through the demo network broker,
+  parses the raw JSON response inside the sandboxed plugin UI, and renders
+  current, hourly, forecast, broker endpoint, response headers, and parser
+  diagnostics views.
   For the Flower-generated plugin path, run `npm run demo:browser:generated`.
   That launcher scaffolds a plugin with a backend worker skeleton, packages it,
   installs it into a temporary dev state root, enables it, opens its activity

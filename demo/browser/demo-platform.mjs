@@ -23,6 +23,8 @@ export function createDemoPlatformFetch(options = {}) {
   const bootstrap = options.bootstrap ?? demoBootstrap;
   const calls = [];
   const persistence = createDemoPersistence(bootstrap, options.persistence);
+  const networkFetch = options.networkFetch ?? (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : null);
+  const networkBaseURL = options.networkBaseURL ?? "";
   const state = createDefaultDemoState();
   applyPersistedState(state, persistence.load());
 
@@ -319,7 +321,7 @@ export function createDemoPlatformFetch(options = {}) {
           return jsonResponse({
             ok: true,
             data: {
-              data: createWeatherPayload(location, state.weatherFetches),
+              data: await fetchWeatherPayload(location, state.weatherFetches, { networkBaseURL, networkFetch }),
             },
           });
         }
@@ -662,7 +664,55 @@ function rememberLocation(locations, location) {
   return next.slice(0, 6);
 }
 
+async function fetchWeatherPayload(location, fetchCount = 1, options = {}) {
+  if (typeof options.networkFetch !== "function" || !options.networkBaseURL) {
+    return createWeatherPayload(location, fetchCount);
+  }
+  const upstreamURL = new URL("/demo/weather-api/v1/forecast", options.networkBaseURL);
+  upstreamURL.searchParams.set("location", location);
+  upstreamURL.searchParams.set("fetch_count", String(fetchCount));
+
+  const startedAt = Date.now();
+  const response = await options.networkFetch(upstreamURL.href, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "x-redevplugin-connector": "weather_api",
+    },
+  });
+  const rawResponseBody = await response.text();
+  let rawPayload;
+  try {
+    rawPayload = JSON.parse(rawResponseBody);
+  } catch {
+    rawPayload = createWeatherAPIPayload(location);
+  }
+  return createWeatherPayloadFromRaw(location, rawPayload, rawResponseBody, {
+    brokerEndpoint: upstreamURL.href,
+    fetchCount,
+    latencyMs: Math.max(1, Date.now() - startedAt),
+    responseHeaders: headersToObject(response.headers),
+    responseStatus: response.status,
+    upstreamMode: "host http fetch",
+  });
+}
+
 function createWeatherPayload(location, fetchCount = 1) {
+  const rawPayload = createWeatherAPIPayload(location);
+  const rawResponseBody = JSON.stringify(rawPayload);
+  return createWeatherPayloadFromRaw(location, rawPayload, rawResponseBody, {
+    fetchCount,
+    latencyMs: 42 + fetchCount,
+    responseHeaders: {
+      "content-type": "application/json",
+      "x-demo-cache": fetchCount % 2 === 0 ? "hit" : "miss",
+    },
+    responseStatus: 200,
+    upstreamMode: "in-memory fixture",
+  });
+}
+
+export function createWeatherAPIPayload(location) {
   const key = location.toLowerCase();
   const presets = {
     "san francisco": { temp: 17, condition: "Pacific fog clearing", wind: 18, humidity: 72, pressure: 1015, uv: 4, accent: "marine layer" },
@@ -709,10 +759,16 @@ function createWeatherPayload(location, fetchCount = 1) {
     hourly,
     forecast,
   };
-  const rawResponseBody = JSON.stringify(rawPayload);
+  return rawPayload;
+}
+
+function createWeatherPayloadFromRaw(location, rawPayload, rawResponseBody, network) {
+  const current = rawPayload.current ?? {};
+  const hourly = Array.isArray(rawPayload.hourly) ? rawPayload.hourly : [];
+  const forecast = Array.isArray(rawPayload.forecast) ? rawPayload.forecast : [];
   return {
     location,
-    current: rawPayload.current,
+    current,
     hourly,
     forecast,
     network: {
@@ -720,26 +776,35 @@ function createWeatherPayload(location, fetchCount = 1) {
       transport: "http",
       operation: `GET /v1/forecast?location=${encodeURIComponent(location)}`,
       destination: "https://api.weather.example",
+      broker_endpoint: network.brokerEndpoint ?? "in-memory://weather-api/v1/forecast",
       request_headers: {
         accept: "application/json",
         "x-redevplugin-connector": "weather_api",
       },
-      response_status: 200,
-      response_headers: {
-        "content-type": "application/json",
-        "x-demo-cache": fetchCount % 2 === 0 ? "hit" : "miss",
-      },
-      latency_ms: 42 + fetchCount,
+      response_status: network.responseStatus ?? 200,
+      response_headers: network.responseHeaders ?? {},
+      latency_ms: network.latencyMs ?? 0,
       bytes_received: rawResponseBody.length,
       parsed: false,
+      upstream_mode: network.upstreamMode ?? "unknown",
     },
     raw_response_body: rawResponseBody,
     parser: {
       format: "json",
       fields: ["current.temperature_c", "current.condition", "forecast[]", "hourly[]"],
     },
-    parsed_summary: `${weather.condition}; ${weather.wind} kph wind; ${weather.humidity}% humidity`,
+    parsed_summary: `${current.condition ?? "Unknown"}; ${current.wind_kph ?? "--"} kph wind; ${current.humidity_percent ?? "--"}% humidity`,
   };
+}
+
+function headersToObject(headers) {
+  const output = {};
+  if (headers && typeof headers.forEach === "function") {
+    headers.forEach((value, key) => {
+      output[String(key).toLowerCase()] = String(value);
+    });
+  }
+  return output;
 }
 
 export function jsonResponse(body, status = 200) {

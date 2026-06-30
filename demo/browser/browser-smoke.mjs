@@ -176,9 +176,11 @@ try {
   await expectText(weatherFrame.locator("#weather-pressure"), "1009 hPa");
   await expectText(weatherFrame.locator("#network-operation"), "http GET /v1/forecast");
   await expectText(weatherFrame.locator("#network-latency"), "ms");
+  await expectText(weatherFrame.locator("#network-broker"), "host http fetch");
   await expectText(weatherFrame.locator("#network-response"), "200");
   await expectText(weatherFrame.locator("#network-parser"), "json");
   await expectText(weatherFrame.locator("#raw-weather-response"), "parsed_from_raw");
+  await expectText(weatherFrame.locator("#raw-weather-response"), "/demo/weather-api/v1/forecast");
   await expectText(weatherFrame.locator("#hourly"), "09:00");
   await expectText(weatherFrame.locator("#plugin-result"), "weather.fetch");
   await expectText(weatherFrame.locator("#plugin-result"), "api.weather.example");

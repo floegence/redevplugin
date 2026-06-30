@@ -2,6 +2,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createWeatherAPIPayload } from "./demo-platform.mjs";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const extraPluginRoot = process.env.EXTRA_PLUGIN_ROOT ? resolve(process.env.EXTRA_PLUGIN_ROOT) : "";
@@ -26,6 +27,10 @@ function serveStatic(label, request, response) {
   const requestURL = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
   if (requestURL.pathname === "/_redevplugin/stream/demo_stream_logs") {
     serveDemoStream(request, requestURL, response);
+    return;
+  }
+  if (requestURL.pathname === "/demo/weather-api/v1/forecast") {
+    serveWeatherAPI(requestURL, response);
     return;
   }
   let pathname = decodeURIComponent(requestURL.pathname);
@@ -105,6 +110,19 @@ function serveDemoStream(request, requestURL, response) {
     },
   ];
   response.end(events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+}
+
+function serveWeatherAPI(requestURL, response) {
+  const location = requestURL.searchParams.get("location") ?? "San Francisco";
+  const fetchCount = Number(requestURL.searchParams.get("fetch_count") ?? 1);
+  const payload = createWeatherAPIPayload(location);
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Demo-Weather-Fetch": Number.isFinite(fetchCount) && fetchCount % 2 === 0 ? "hit" : "miss",
+    "X-ReDevPlugin-Demo-Origin": "host-network-broker",
+  });
+  response.end(JSON.stringify(payload));
 }
 
 const hostServer = createDemoServer("host");
