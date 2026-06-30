@@ -49,6 +49,10 @@ capabilities.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.
+- `redevplugin version` emits a host-consumable compatibility manifest with the
+  current platform version matrix plus SHA-256 hashes for the released OpenAPI,
+  manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
+  target-classifier contracts.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
@@ -58,8 +62,9 @@ provide a local sibling integration path for host products.
 ```bash
 go test ./...
 npm install
-npm run typecheck
+npm run check
 ./scripts/check_redevplugin_runtime_contract.sh
+./scripts/check_redevplugin_platform.sh
 ```
 
 Rust checks require a local Rust toolchain:

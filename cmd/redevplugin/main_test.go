@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/trust"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
@@ -150,6 +151,35 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir); err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("scaffold non-empty dir error = %v, want not empty", err)
+	}
+}
+
+func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
+	output, err := captureCLIOutput(t, "version")
+	if err != nil {
+		t.Fatalf("version command error = %v", err)
+	}
+	var manifest version.CompatibilityManifest
+	if err := json.Unmarshal(output, &manifest); err != nil {
+		t.Fatalf("version output decode error = %v: %s", err, output)
+	}
+	if manifest.SchemaVersion != version.CompatibilityManifestVersion {
+		t.Fatalf("schema_version = %q, want %q", manifest.SchemaVersion, version.CompatibilityManifestVersion)
+	}
+	if manifest.Matrix.BridgeSchemaVersion != version.BridgeSchemaVersion {
+		t.Fatalf("bridge schema version = %q, want %q", manifest.Matrix.BridgeSchemaVersion, version.BridgeSchemaVersion)
+	}
+	contracts := map[string]version.ContractArtifact{}
+	for _, contract := range manifest.Contracts {
+		contracts[contract.ID] = contract
+	}
+	bridge := contracts["iframe-bridge-schema"]
+	if bridge.Path != "spec/plugin/bridge-v1.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
+		t.Fatalf("bridge contract mismatch: %#v", bridge)
+	}
+	openapi := contracts["plugin-platform-openapi"]
+	if openapi.Version != version.PluginPlatformOpenAPIVersion || openapi.SHA256 == "" {
+		t.Fatalf("openapi contract mismatch: %#v", openapi)
 	}
 }
 

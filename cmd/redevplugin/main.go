@@ -129,7 +129,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return signPackage(ctx, args[1], args[2], args[3])
 	case "version":
-		return writeJSON(version.CurrentMatrix())
+		return writeJSON(version.CurrentCompatibilityManifest())
 	case "install-local":
 		if len(args) != 2 {
 			return usage()
