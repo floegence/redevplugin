@@ -63,9 +63,26 @@ try {
   await expectText(frame.locator("#result"), "\"worker_id\": \"backend\"");
   await expectText(page.locator("#rpc-count"), "1");
 
+  await frame.getByRole("button", { name: "Dangerous action" }).click();
+  await expectText(page.locator("#confirmation-method"), "danger.run");
+  await page.getByRole("button", { name: "Deny" }).click();
+  await expectText(frame.locator("#status"), "Dangerous action blocked");
+  await expectText(frame.locator("#result"), "PLUGIN_CONFIRMATION_REJECTED");
+  await expectText(page.locator("#rpc-count"), "2");
+
+  await frame.getByRole("button", { name: "Dangerous action" }).click();
+  await expectText(page.locator("#confirmation-method"), "danger.run");
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expectText(frame.locator("#status"), "Dangerous action confirmed");
+  await expectText(frame.locator("#result"), "real http adapter confirmation");
+  await expectText(frame.locator("#result"), "\"asset_ticket_visible\": false");
+  await expectText(frame.locator("#result"), "\"gateway_token_visible\": false");
+  await expectText(frame.locator("#result"), "\"confirmation_token_visible\": false");
+  await expectText(page.locator("#rpc-count"), "4");
+
   const sandbox = await page.locator("#plugin-frame").getAttribute("sandbox");
   assert.equal(sandbox, "allow-scripts allow-same-origin");
-  assert.deepEqual(consoleErrors, []);
+  assert.deepEqual(consoleErrors.filter((entry) => !entry.includes("409 (Conflict)")), []);
   console.log("real runtime browser smoke passed");
 } finally {
   await browser?.close();
