@@ -77,3 +77,22 @@ test("demo host embeds a sandboxed iframe", async () => {
   assert.match(pluginScript, /parent_origin/);
   assert.match(pluginScript, /parentOrigin/);
 });
+
+test("generated browser demo uses complete dev lifecycle and cleanup", async () => {
+  const launcher = await readFile(new URL("./generated-demo.mjs", import.meta.url), "utf8");
+  for (const expected of [
+    "\"scaffold\"",
+    "\"package\"",
+    "\"dev-install\"",
+    "\"dev-enable\"",
+    "\"dev-open\"",
+    "\"dev-disable\"",
+    "\"dev-uninstall\"",
+    "\"--delete-data\"",
+  ]) {
+    assert.match(launcher, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(launcher, /EXTRA_PLUGIN_ROOT/);
+  assert.match(launcher, /plugin_path", "\/generated-plugin\/ui\/index\.html"/);
+  assert.match(launcher, /Press Ctrl\+C to disable, uninstall, delete plugin data/);
+});

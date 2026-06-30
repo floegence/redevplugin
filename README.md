@@ -97,6 +97,11 @@ capabilities.
   handshake, lifecycle, ordinary RPC, storage-list RPC, and
   dangerous-confirmation flows. The host and plugin page are served from
   separate localhost origins to exercise exact-origin sandbox bridge behavior.
+  For the Flower-generated plugin path, run `npm run demo:browser:generated`.
+  That launcher scaffolds a plugin with a backend worker skeleton, packages it,
+  installs it into a temporary dev state root, enables it, opens its activity
+  surface, prints a browser URL, and cleans up by disabling and uninstalling the
+  plugin with data deletion when the process exits.
   `npm run test:demo` covers the fake platform API and static sandbox contract;
   `npm run test:demo:browser` launches a real browser, clicks through the iframe
   demo flow, generates a fresh plugin with `redevplugin scaffold`, packages it,
