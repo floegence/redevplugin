@@ -366,7 +366,7 @@ type WorkerInvocationPayload struct {
 	SurfaceInstanceID    string         `json:"surface_instance_id,omitempty"`
 	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string         `json:"bridge_channel_id,omitempty"`
-	Params               map[string]any `json:"params,omitempty"`
+	Params               map[string]any `json:"params"`
 }
 
 type ConfirmMethodRequest = CallMethodRequest
@@ -2000,6 +2000,10 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return capability.Result{}, err
 	}
+	params := cloneParams(req.Params)
+	if params == nil {
+		params = map[string]any{}
+	}
 	payload := WorkerInvocationPayload{
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
@@ -2016,7 +2020,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
-		Params:               cloneParams(req.Params),
+		Params:               params,
 	}
 	rawPayload, err := json.Marshal(payload)
 	if err != nil {

@@ -15,7 +15,8 @@ capabilities.
 - Rust workspace: `redevplugin-runtime` and support crates
 - Contracts: OpenAPI, manifest schema, package-signature schema, token/ticket
   schema, iframe bridge schema, compatibility manifest schema, IPC schema,
-  WASM ABI schema, and target classifier fixture
+  WASM ABI schema, worker invocation payload schema, and target classifier
+  fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
@@ -52,7 +53,7 @@ capabilities.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
-  target-classifier contracts.
+  worker invocation, target-classifier contracts.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redeven_proxy/api/plugins/platform/compatibility`, allowing a product
   such as Redeven to verify the loaded platform artifact set without shelling out

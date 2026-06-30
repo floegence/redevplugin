@@ -26,6 +26,7 @@ const (
 	PluginPlatformOpenAPIVersion  = "plugin-platform-v1"
 	CompatibilityManifestVersion  = "redevplugin.compatibility.v1"
 	CompatibilitySchemaVersion    = "compatibility-manifest-v1"
+	WorkerInvocationSchemaVersion = "worker-invocation-v1"
 )
 
 type Matrix struct {
@@ -42,6 +43,7 @@ type Matrix struct {
 	TargetClassifierVersion       string `json:"target_classifier_version"`
 	PluginPlatformOpenAPIVersion  string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion    string `json:"compatibility_schema_version"`
+	WorkerInvocationSchemaVersion string `json:"worker_invocation_schema_version"`
 }
 
 type ContractArtifact struct {
@@ -79,6 +81,7 @@ func CurrentMatrix() Matrix {
 		TargetClassifierVersion:       TargetClassifierVersion,
 		PluginPlatformOpenAPIVersion:  PluginPlatformOpenAPIVersion,
 		CompatibilitySchemaVersion:    CompatibilitySchemaVersion,
+		WorkerInvocationSchemaVersion: WorkerInvocationSchemaVersion,
 	}
 }
 
@@ -121,13 +124,19 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "compatibility-manifest-schema",
 				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
 				Version: CompatibilitySchemaVersion,
-				SHA256:  "6bc1f42cc42c5ad2e2844366a7cfa08759d05035e376351001271a2530ec501c",
+				SHA256:  "4e3e347c78a530e566298b9f0e62625ce12bf37dfe6e67598f17c37b42984f54",
+			},
+			{
+				ID:      "worker-invocation-schema",
+				Path:    "spec/plugin/worker-invocation-v1.schema.json",
+				Version: WorkerInvocationSchemaVersion,
+				SHA256:  "7448b4c7dd3c495039e41651ae0a021f77d405e77277d1134e6c6c01274217b8",
 			},
 			{
 				ID:      "rust-ipc-schema",
 				Path:    "spec/plugin/ipc-v1.schema.json",
 				Version: RustIPCVersion,
-				SHA256:  "26ffdf7fff438fbf820d7d93b80861cc05fc1a7bb9e66ff6745c9f71c1ac8cf0",
+				SHA256:  "b4e2fb4188ccc995b37d54dba6eaaa70a6d132e39d467dbdf62026f53571907e",
 			},
 			{
 				ID:      "wasm-worker-schema",

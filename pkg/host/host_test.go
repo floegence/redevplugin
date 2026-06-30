@@ -697,6 +697,41 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() worker error = %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(runtime.lastPayload, &raw); err != nil {
+		t.Fatal(err)
+	}
+	params, ok := raw["params"].(map[string]any)
+	if !ok || len(params) != 0 {
+		t.Fatalf("worker payload params = %#v, want empty object", raw["params"])
+	}
+}
+
 func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")

@@ -27,12 +27,13 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	matrix := requireNestedObject(t, properties, "matrix")
 	matrixProps := requireNestedObject(t, matrix, "properties")
 	for name, want := range map[string]string{
-		"plugin_host_protocol_version": "plugin-host-v1",
-		"rust_ipc_version":             "rust-ipc-v1",
-		"wasm_abi_version":             "redeven-wasm-worker-v1",
-		"manifest_schema_version":      "manifest-v1",
-		"bridge_schema_version":        "bridge-v1",
-		"compatibility_schema_version": "compatibility-manifest-v1",
+		"plugin_host_protocol_version":     "plugin-host-v1",
+		"rust_ipc_version":                 "rust-ipc-v1",
+		"wasm_abi_version":                 "redeven-wasm-worker-v1",
+		"manifest_schema_version":          "manifest-v1",
+		"bridge_schema_version":            "bridge-v1",
+		"compatibility_schema_version":     "compatibility-manifest-v1",
+		"worker_invocation_schema_version": "worker-invocation-v1",
 	} {
 		property := requireNestedObject(t, matrixProps, name)
 		if got := property["const"]; got != want {
@@ -44,8 +45,10 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	for _, item := range requireStringSlice(t, matrix["required"], "matrix required") {
 		required[item] = true
 	}
-	if !required["compatibility_schema_version"] {
-		t.Fatal("matrix required fields missing compatibility_schema_version")
+	for _, name := range []string{"compatibility_schema_version", "worker_invocation_schema_version"} {
+		if !required[name] {
+			t.Fatalf("matrix required fields missing %s", name)
+		}
 	}
 
 	defs := requireNestedObject(t, schema, "$defs")
