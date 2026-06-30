@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtemp } from "node:fs/promises";
 import { createServer } from "node:net";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { tmpdir } from "node:os";
 import { chromium } from "playwright";
 
 const hostPort = await getFreePort();
 const pluginPort = await getFreePort(hostPort);
+const generatedRoot = await mkdtemp(join(tmpdir(), "redevplugin-generated-browser-"));
+const generatedPluginDir = join(generatedRoot, "plugin");
+await runScaffold(generatedPluginDir);
 const hostURL = `http://127.0.0.1:${hostPort}/demo/browser/index.html?plugin_origin=http://127.0.0.1:${pluginPort}`;
 const server = spawn(process.execPath, ["demo/browser/server.mjs"], {
   cwd: new URL("../..", import.meta.url),
@@ -14,6 +20,7 @@ const server = spawn(process.execPath, ["demo/browser/server.mjs"], {
     ...process.env,
     HOST_PORT: String(hostPort),
     PLUGIN_PORT: String(pluginPort),
+    EXTRA_PLUGIN_ROOT: generatedPluginDir,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -72,6 +79,19 @@ try {
   await expectText(frame.locator("#plugin-status"), "visible");
   await expectText(frame.locator("#plugin-result"), "\"lifecycle\": \"visible\"");
 
+  const generatedURL = `http://127.0.0.1:${hostPort}/demo/browser/index.html?plugin_origin=http://127.0.0.1:${pluginPort}&plugin_path=/generated-plugin/ui/index.html&plugin_id=com.example.generated.browser&surface_id=com.example.generated.browser.activity&surface_instance_id=surface_generated_browser&active_fingerprint=sha256:generated-browser&bridge_nonce=bridge_nonce_generated_browser`;
+  await page.goto(generatedURL, { waitUntil: "load" });
+  await expectText(page.locator("#host-status"), "listening");
+  await expectText(page.locator("#handshake-count"), "1");
+
+  const generatedFrame = page.frameLocator("#plugin-frame");
+  await expectText(generatedFrame.locator("#status"), "Ready");
+  await generatedFrame.getByRole("button", { name: "Invoke backend" }).click();
+  await expectText(generatedFrame.locator("#status"), "Backend responded");
+  await expectText(generatedFrame.locator("#result"), "generated wasm worker scaffold");
+  await expectText(generatedFrame.locator("#result"), "worker.echo");
+  await expectText(page.locator("#rpc-count"), "1");
+
   assert.deepEqual(consoleErrors, []);
   await browser.close();
   console.log("browser demo smoke passed");
@@ -116,6 +136,25 @@ async function waitForHTTP(url, timeoutMs = 5_000) {
     await delay(50);
   }
   throw new Error(`demo server was not ready: ${lastError?.message ?? "unknown error"}\n${serverOutput}`);
+}
+
+async function runScaffold(outDir) {
+  const command = spawn("go", ["run", "./cmd/redevplugin", "scaffold", "com.example.generated.browser", "Generated Browser Plugin", outDir], {
+    cwd: new URL("../..", import.meta.url),
+    env: { ...process.env, GOWORK: "off" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  command.stdout.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  command.stderr.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  const [code] = await once(command, "exit");
+  if (code !== 0) {
+    throw new Error(`failed to scaffold browser demo plugin with code ${code}\n${output}`);
+  }
 }
 
 function getFreePort(except) {

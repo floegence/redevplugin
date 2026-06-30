@@ -78,8 +78,10 @@ capabilities.
   dangerous-confirmation flows. The host and plugin page are served from
   separate localhost origins to exercise exact-origin sandbox bridge behavior.
   `npm run test:demo` covers the fake platform API and static sandbox contract;
-  `npm run test:demo:browser` launches a real browser and clicks through the
-  iframe demo flow end to end.
+  `npm run test:demo:browser` launches a real browser, clicks through the iframe
+  demo flow, generates a fresh plugin with `redevplugin scaffold`, serves that
+  generated plugin from the sandbox origin, and verifies its backend call UI end
+  to end.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.

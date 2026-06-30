@@ -370,7 +370,7 @@ func scaffoldPlugin(pluginID string, displayName string, outDir string) error {
 	}
 	files := map[string][]byte{
 		"manifest.json":        append(rawManifest, '\n'),
-		"ui/index.html":        []byte(scaffoldIndexHTML(displayName)),
+		"ui/index.html":        []byte(scaffoldIndexHTML(pluginID, displayName)),
 		"ui/assets/app.js":     []byte(scaffoldAppJS(displayName)),
 		"ui/assets/styles.css": []byte(scaffoldStylesCSS()),
 		"workers/backend.wat":  []byte(scaffoldWorkerWAT()),
@@ -678,10 +678,12 @@ func readSigningPublicKey(filename string) (signingPublicKeyFile, ed25519.Public
 	return doc, ed25519.PublicKey(publicKey), nil
 }
 
-func scaffoldIndexHTML(displayName string) string {
+func scaffoldIndexHTML(pluginID string, displayName string) string {
+	pluginID = htmlEscape(pluginID)
 	title := htmlEscape(displayName)
+	surfaceID := htmlEscape(pluginID + ".activity")
 	return "<!doctype html>\n" +
-		"<html>\n" +
+		"<html lang=\"en\">\n" +
 		"  <head>\n" +
 		"    <meta charset=\"utf-8\">\n" +
 		"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
@@ -690,12 +692,15 @@ func scaffoldIndexHTML(displayName string) string {
 		"    <script src=\"assets/app.js\" defer></script>\n" +
 		"  </head>\n" +
 		"  <body>\n" +
-		"    <main id=\"app\" data-plugin-title=\"" + title + "\">\n" +
+		"    <main id=\"app\" data-plugin-title=\"" + title + "\" data-plugin-id=\"" + pluginID + "\" data-surface-id=\"" + surfaceID + "\">\n" +
 		"      <section class=\"surface\">\n" +
 		"        <p class=\"eyebrow\">Plugin surface</p>\n" +
 		"        <h1>" + title + "</h1>\n" +
 		"        <p class=\"status\" id=\"status\">Ready</p>\n" +
-		"        <button id=\"invoke-worker\" type=\"button\">Invoke backend</button>\n" +
+		"        <div class=\"actions\">\n" +
+		"          <button id=\"invoke-worker\" type=\"button\">Invoke backend</button>\n" +
+		"        </div>\n" +
+		"        <pre id=\"result\" aria-label=\"Latest result\">Waiting for bridge handshake...</pre>\n" +
 		"      </section>\n" +
 		"    </main>\n" +
 		"  </body>\n" +
@@ -703,18 +708,99 @@ func scaffoldIndexHTML(displayName string) string {
 }
 
 func scaffoldAppJS(displayName string) string {
-	message, _ := json.Marshal(displayName + " loaded")
+	message, _ := json.Marshal("Hello from " + displayName)
 	return "const status = document.getElementById('status');\n" +
 		"const invokeButton = document.getElementById('invoke-worker');\n" +
-		"if (status) {\n" +
-		"  status.textContent = " + string(message) + ";\n" +
+		"const result = document.getElementById('result');\n" +
+		"const params = new URLSearchParams(window.location.search);\n" +
+		"const parentOrigin = params.get('parent_origin');\n" +
+		"const bootstrap = {\n" +
+		"  pluginId: params.get('plugin_id') || document.getElementById('app')?.dataset.pluginId || 'local.generated.plugin',\n" +
+		"  surfaceId: params.get('surface_id') || document.getElementById('app')?.dataset.surfaceId || 'local.generated.plugin.activity',\n" +
+		"  surfaceInstanceId: params.get('surface_instance_id') || 'surface_generated_preview',\n" +
+		"  activeFingerprint: params.get('active_fingerprint') || 'sha256:generated-preview',\n" +
+		"  bridgeNonce: params.get('bridge_nonce') || 'bridge_nonce_generated_preview',\n" +
+		"};\n" +
+		"let nextID = 1;\n" +
+		"const pending = new Map();\n" +
+		"if (!parentOrigin || parentOrigin === '*') {\n" +
+		"  setStatus('Missing exact parent_origin');\n" +
+		"} else {\n" +
+		"  window.addEventListener('message', handleMessage);\n" +
+		"  window.parent.postMessage({\n" +
+		"    type: 'redeven.plugin.handshake',\n" +
+		"    plugin_id: bootstrap.pluginId,\n" +
+		"    surface_id: bootstrap.surfaceId,\n" +
+		"    surface_instance_id: bootstrap.surfaceInstanceId,\n" +
+		"    active_fingerprint: bootstrap.activeFingerprint,\n" +
+		"    bridge_nonce: bootstrap.bridgeNonce,\n" +
+		"    ui_protocol_version: 'plugin-ui-v1',\n" +
+		"  }, parentOrigin);\n" +
+		"  setStatus('Handshaking with host...');\n" +
 		"}\n" +
 		"if (invokeButton) {\n" +
-		"  invokeButton.addEventListener('click', () => {\n" +
-		"    if (status) {\n" +
-		"      status.textContent = 'Backend method declared as worker.echo';\n" +
+		"  invokeButton.addEventListener('click', async () => {\n" +
+		"    try {\n" +
+		"      setStatus('Calling worker.echo...');\n" +
+		"      const response = await callHost('worker.echo', { message: " + string(message) + " });\n" +
+		"      setStatus('Backend responded');\n" +
+		"      writeResult({ method: 'worker.echo', response });\n" +
+		"    } catch (error) {\n" +
+		"      setStatus('Backend call failed');\n" +
+		"      writeResult({ error: String(error?.message || error), error_code: error?.errorCode });\n" +
 		"    }\n" +
 		"  });\n" +
+		"}\n" +
+		"function handleMessage(event) {\n" +
+		"  if (event.origin !== parentOrigin) {\n" +
+		"    return;\n" +
+		"  }\n" +
+		"  const data = event.data;\n" +
+		"  if (data?.type === 'redeven.plugin.lifecycle') {\n" +
+		"    setStatus(data.event?.type === 'ready' ? 'Ready' : `Lifecycle: ${data.event?.type || 'unknown'}`);\n" +
+		"    return;\n" +
+		"  }\n" +
+		"  if (data?.type !== 'redeven.plugin.response' || typeof data.id !== 'string') {\n" +
+		"    return;\n" +
+		"  }\n" +
+		"  const call = pending.get(data.id);\n" +
+		"  if (!call) {\n" +
+		"    return;\n" +
+		"  }\n" +
+		"  pending.delete(data.id);\n" +
+		"  window.clearTimeout(call.timer);\n" +
+		"  if (data.ok) {\n" +
+		"    call.resolve(data.data);\n" +
+		"  } else {\n" +
+		"    const error = new Error(data.error || 'Plugin call failed');\n" +
+		"    error.errorCode = data.error_code || 'PLUGIN_CALL_FAILED';\n" +
+		"    call.reject(error);\n" +
+		"  }\n" +
+		"}\n" +
+		"function callHost(method, callParams) {\n" +
+		"  if (!parentOrigin || parentOrigin === '*') {\n" +
+		"    return Promise.reject(new Error('parent_origin must be an exact origin'));\n" +
+		"  }\n" +
+		"  const id = String(nextID++);\n" +
+		"  const promise = new Promise((resolve, reject) => {\n" +
+		"    const timer = window.setTimeout(() => {\n" +
+		"      pending.delete(id);\n" +
+		"      reject(new Error(`Plugin bridge call ${id} timed out`));\n" +
+		"    }, 30000);\n" +
+		"    pending.set(id, { resolve, reject, timer });\n" +
+		"  });\n" +
+		"  window.parent.postMessage({ type: 'redeven.plugin.call', request: { id, method, params: callParams } }, parentOrigin);\n" +
+		"  return promise;\n" +
+		"}\n" +
+		"function setStatus(value) {\n" +
+		"  if (status) {\n" +
+		"    status.textContent = value;\n" +
+		"  }\n" +
+		"}\n" +
+		"function writeResult(value) {\n" +
+		"  if (result) {\n" +
+		"    result.textContent = JSON.stringify(value, null, 2);\n" +
+		"  }\n" +
 		"}\n"
 }
 

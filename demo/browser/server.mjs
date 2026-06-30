@@ -4,6 +4,7 @@ import { extname, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const extraPluginRoot = process.env.EXTRA_PLUGIN_ROOT ? resolve(process.env.EXTRA_PLUGIN_ROOT) : "";
 const hostPort = Number(process.env.HOST_PORT || process.env.PORT || 4173);
 const pluginPort = Number(process.env.PLUGIN_PORT || hostPort + 1);
 
@@ -27,12 +28,27 @@ function serveStatic(label, request, response) {
   if (pathname === "/") {
     pathname = "/demo/browser/index.html";
   }
+  if (extraPluginRoot && pathname.startsWith("/generated-plugin/")) {
+    const rel = normalize(pathname.slice("/generated-plugin/".length)).replace(/^[/\\]+/, "");
+    const filename = resolve(extraPluginRoot, rel);
+    if (filename !== extraPluginRoot && !filename.startsWith(extraPluginRoot + sep)) {
+      response.writeHead(403);
+      response.end("forbidden");
+      return;
+    }
+    serveFile(filename, label, response);
+    return;
+  }
   const filename = resolve(root, normalize(pathname).replace(/^[/\\]+/, ""));
   if (!filename.startsWith(root + sep)) {
     response.writeHead(403);
     response.end("forbidden");
     return;
   }
+  serveFile(filename, label, response);
+}
+
+function serveFile(filename, label, response) {
   if (!existsSync(filename) || !statSync(filename).isFile()) {
     response.writeHead(404);
     response.end("not found");

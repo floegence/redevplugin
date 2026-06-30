@@ -1,4 +1,4 @@
-export const demoBootstrap = Object.freeze({
+const defaultDemoBootstrap = Object.freeze({
   pluginId: "dev.redevplugin.demo",
   pluginInstanceId: "plugini_demo_1",
   surfaceId: "demo.activity",
@@ -10,7 +10,17 @@ export const demoBootstrap = Object.freeze({
   sessionChannelIdHash: "session_channel_demo",
 });
 
+export const demoBootstrap = createDemoBootstrap();
+
+export function createDemoBootstrap(overrides = {}) {
+  return Object.freeze({
+    ...defaultDemoBootstrap,
+    ...Object.fromEntries(Object.entries(overrides).filter(([, value]) => value != null && value !== "")),
+  });
+}
+
 export function createDemoPlatformFetch(options = {}) {
+  const bootstrap = options.bootstrap ?? demoBootstrap;
   const calls = [];
   const state = {
     bridgeTokenIssued: false,
@@ -24,7 +34,7 @@ export function createDemoPlatformFetch(options = {}) {
     calls.push({ path: url.pathname, body });
     options.onCall?.(url.pathname, body);
 
-    if (url.pathname.endsWith(`/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`)) {
+    if (url.pathname.endsWith(`/surfaces/${bootstrap.surfaceInstanceId}/bridge-token`)) {
       state.bridgeTokenIssued = true;
       return jsonResponse({
         ok: true,
@@ -63,6 +73,18 @@ export function createDemoPlatformFetch(options = {}) {
                 echoed: body.params?.message ?? "hello",
                 transport: "MessageChannel bridge",
                 time: "2026-06-30T00:00:05Z",
+              },
+            },
+          });
+        case "worker.echo":
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                method: "worker.echo",
+                echoed: body.params?.message ?? "hello from generated scaffold",
+                backend: "generated wasm worker scaffold",
+                transport: "MessageChannel bridge",
               },
             },
           });

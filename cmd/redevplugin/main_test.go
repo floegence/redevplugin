@@ -135,6 +135,22 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if !bytes.Contains(manifestRaw, []byte(`"workers"`)) || !bytes.Contains(manifestRaw, []byte(`"worker.echo"`)) {
 		t.Fatalf("scaffold manifest missing worker contract: %s", manifestRaw)
 	}
+	indexRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "ui", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(indexRaw, []byte(`data-plugin-id="com.example.generated"`)) || !bytes.Contains(indexRaw, []byte(`data-surface-id="com.example.generated.activity"`)) {
+		t.Fatalf("scaffold index missing plugin bootstrap data: %s", indexRaw)
+	}
+	appRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "ui", "assets", "app.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"redeven.plugin.handshake", "redeven.plugin.call", "parent_origin", "worker.echo"} {
+		if !bytes.Contains(appRaw, []byte(want)) {
+			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
+		}
+	}
 	wasmRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "backend.wasm"))
 	if err != nil {
 		t.Fatal(err)

@@ -1,5 +1,5 @@
 import { PluginSurfaceHost } from "../../packages/redevplugin-ui/dist/index.js";
-import { createDemoPlatformFetch, demoBootstrap } from "./demo-platform.mjs";
+import { createDemoBootstrap, createDemoPlatformFetch } from "./demo-platform.mjs";
 
 const iframe = document.querySelector("#plugin-frame");
 const status = document.querySelector("#host-status");
@@ -14,9 +14,28 @@ const approveConfirmation = document.querySelector("#approve-confirmation");
 const denyConfirmation = document.querySelector("#deny-confirmation");
 const sendVisible = document.querySelector("#send-visible");
 
-const pluginOrigin = new URLSearchParams(window.location.search).get("plugin_origin") ?? "http://127.0.0.1:4174";
-const pluginURL = new URL("/demo/browser/plugin.html", pluginOrigin);
+const params = new URLSearchParams(window.location.search);
+const pluginOrigin = params.get("plugin_origin") ?? "http://127.0.0.1:4174";
+const pluginPath = params.get("plugin_path") ?? "/demo/browser/plugin.html";
+const pluginID = params.get("plugin_id");
+const surfaceID = params.get("surface_id");
+const surfaceInstanceID = params.get("surface_instance_id");
+const activeFingerprint = params.get("active_fingerprint");
+const bridgeNonce = params.get("bridge_nonce");
+const demoBootstrap = createDemoBootstrap({
+  pluginId: pluginID,
+  surfaceId: surfaceID,
+  surfaceInstanceId: surfaceInstanceID,
+  activeFingerprint,
+  bridgeNonce,
+});
+const pluginURL = new URL(pluginPath, pluginOrigin);
 pluginURL.searchParams.set("parent_origin", window.location.origin);
+pluginURL.searchParams.set("plugin_id", demoBootstrap.pluginId);
+pluginURL.searchParams.set("surface_id", demoBootstrap.surfaceId);
+pluginURL.searchParams.set("surface_instance_id", demoBootstrap.surfaceInstanceId);
+pluginURL.searchParams.set("active_fingerprint", demoBootstrap.activeFingerprint);
+pluginURL.searchParams.set("bridge_nonce", demoBootstrap.bridgeNonce);
 iframe.src = pluginURL.href;
 
 let handshakes = 0;
@@ -25,6 +44,7 @@ let confirmations = 0;
 let pendingConfirmation = null;
 
 const platform = createDemoPlatformFetch({
+  bootstrap: demoBootstrap,
   onCall(path, body) {
     if (path.endsWith("/bridge-token")) {
       handshakes += 1;
