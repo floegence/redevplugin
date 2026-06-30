@@ -1,8 +1,12 @@
 package connectivity
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -215,6 +219,31 @@ func TestExecutorPerformsBoundedHTTPWithGrant(t *testing.T) {
 	}
 }
 
+func TestExecutorHTTPHostHeaderIncludesNonDefaultPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "api.example.com:8080" {
+			t.Errorf("Host header = %q, want grant host with port", r.Host)
+		}
+		_, _ = w.Write([]byte("ok"))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+	grant := testGrant(t, TransportHTTP, "http://api.example.com:8080", time.Minute)
+	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+	if err != nil {
+		t.Fatalf("DoHTTP() error = %v", err)
+	}
+	if string(response.Body) != "ok" {
+		t.Fatalf("HTTP response body = %q", response.Body)
+	}
+}
+
 func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	redirectListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -250,6 +279,106 @@ func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	largeGrant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
 	if _, err := NewExecutor(ExecutorOptions{MaxResponseBytes: 4, DialContext: mapDialer(largeListener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{Grant: largeGrant}); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("DoHTTP(large) error = %v, want ErrResponseTooLarge", err)
+	}
+}
+
+func TestExecutorWebSocketRoundTripUsesGrantEndpoint(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("ReadRequest() error = %v", err)
+			return
+		}
+		if req.Host != "stream.example.com" || req.URL.Path != "/events" || req.Header.Get("X-Test") != "ok" {
+			t.Errorf("websocket request mismatch: host=%q path=%q x-test=%q", req.Host, req.URL.Path, req.Header.Get("X-Test"))
+		}
+		if req.Header.Get("Sec-WebSocket-Protocol") != "" {
+			t.Errorf("Sec-WebSocket-Protocol should not be forwarded")
+		}
+		if err := writeTestWebSocketHandshake(conn, req.Header.Get("Sec-WebSocket-Key")); err != nil {
+			t.Errorf("write handshake error = %v", err)
+			return
+		}
+		opcode, payload, err := readWebSocketFrame(reader, 64)
+		if err != nil {
+			t.Errorf("read frame error = %v", err)
+			return
+		}
+		if opcode != 0x1 || string(payload) != "hello" {
+			t.Errorf("frame mismatch: opcode=%d payload=%q", opcode, payload)
+			return
+		}
+		if err := writeTestWebSocketFrame(conn, 0x1, []byte("ws:"+string(payload))); err != nil {
+			t.Errorf("write frame error = %v", err)
+		}
+	}()
+	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
+	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
+		Grant:            grant,
+		Path:             "/events",
+		Headers:          http.Header{"X-Test": []string{"ok"}, "Sec-WebSocket-Protocol": []string{"blocked"}},
+		MessageType:      WebSocketMessageText,
+		Payload:          []byte("hello"),
+		MaxResponseBytes: 32,
+		Timeout:          time.Second,
+	})
+	if err != nil {
+		t.Fatalf("WebSocketRoundTrip() error = %v", err)
+	}
+	if response.MessageType != WebSocketMessageText || string(response.Payload) != "ws:hello" {
+		t.Fatalf("websocket response mismatch: %#v payload=%q", response, response.Payload)
+	}
+	<-done
+}
+
+func TestExecutorWebSocketRoundTripRejectsOversizedResponse(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		if err := writeTestWebSocketHandshake(conn, req.Header.Get("Sec-WebSocket-Key")); err != nil {
+			return
+		}
+		if _, _, err := readWebSocketFrame(reader, 64); err != nil {
+			return
+		}
+		_ = writeTestWebSocketFrame(conn, 0x2, []byte("too-large"))
+	}()
+	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
+	_, err = NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
+		Grant:            grant,
+		MessageType:      WebSocketMessageBinary,
+		Payload:          []byte("ping"),
+		MaxResponseBytes: 4,
+		Timeout:          time.Second,
+	})
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("WebSocketRoundTrip(large) error = %v, want ErrResponseTooLarge", err)
 	}
 }
 
@@ -367,4 +496,33 @@ func mapDialer(target string) func(context.Context, string, string) (net.Conn, e
 	return func(ctx context.Context, network string, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, target)
 	}
+}
+
+func writeTestWebSocketHandshake(writer io.Writer, key string) error {
+	_, err := fmt.Fprintf(writer, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", websocketAcceptKey(key))
+	return err
+}
+
+func writeTestWebSocketFrame(writer io.Writer, opcode byte, payload []byte) error {
+	var header bytes.Buffer
+	header.WriteByte(0x80 | opcode)
+	switch {
+	case len(payload) < 126:
+		header.WriteByte(byte(len(payload)))
+	case len(payload) <= 65535:
+		header.WriteByte(126)
+		var ext [2]byte
+		binary.BigEndian.PutUint16(ext[:], uint16(len(payload)))
+		header.Write(ext[:])
+	default:
+		header.WriteByte(127)
+		var ext [8]byte
+		binary.BigEndian.PutUint64(ext[:], uint64(len(payload)))
+		header.Write(ext[:])
+	}
+	if _, err := writer.Write(header.Bytes()); err != nil {
+		return err
+	}
+	_, err := writer.Write(payload)
+	return err
 }

@@ -69,12 +69,13 @@ capabilities.
   upgrading a published ReDevPlugin dependency set.
 - Connectivity brokers compile manifest-declared HTTP, WebSocket, TCP, and UDP
   connectors into grantable policies. The host-neutral network executor now
-  consumes short-lived connection grants and performs bounded HTTP request/response
-  calls plus TCP/UDP round trips with explicit timeout, request-size, and
-  response-size limits. It revalidates grant expiry, transport, destination, and
-  the target classifier at execution time so UI bridge calls and backend worker
-  hostcalls can share the same fail-closed network boundary. WebSocket execution
-  remains a contract-level connector capability until its streaming envelope lands.
+  consumes short-lived connection grants and performs bounded HTTP
+  request/response calls plus WebSocket, TCP, and UDP round trips with explicit
+  timeout, request-size, and response-size limits. It revalidates grant expiry,
+  transport, destination, and the target classifier at execution time so UI
+  bridge calls and backend worker hostcalls can share the same fail-closed
+  network boundary. Long-lived WebSocket subscriptions remain tied to the
+  streaming envelope contract instead of the one-shot round trip API.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the

@@ -1,9 +1,14 @@
 package connectivity
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -50,6 +55,8 @@ var (
 	ErrGrantExpired     = errors.New("network grant expired")
 	ErrRequestTooLarge  = errors.New("network request too large")
 	ErrResponseTooLarge = errors.New("network response too large")
+	ErrConnectionClosed = errors.New("network connection closed")
+	ErrWebSocketFailed  = errors.New("websocket handshake failed")
 )
 
 type Broker interface {
@@ -501,8 +508,33 @@ type UDPRoundTripResponse struct {
 	Payload []byte `json:"-"`
 }
 
+type WebSocketMessageType string
+
+const (
+	WebSocketMessageText   WebSocketMessageType = "text"
+	WebSocketMessageBinary WebSocketMessageType = "binary"
+)
+
+type WebSocketRoundTripRequest struct {
+	Grant            ConnectionGrant      `json:"grant"`
+	Path             string               `json:"path,omitempty"`
+	Headers          http.Header          `json:"headers,omitempty"`
+	MessageType      WebSocketMessageType `json:"message_type,omitempty"`
+	Payload          []byte               `json:"-"`
+	MaxRequestBytes  int64                `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes int64                `json:"max_response_bytes,omitempty"`
+	Timeout          time.Duration        `json:"timeout,omitempty"`
+	Now              time.Time            `json:"now,omitempty"`
+}
+
+type WebSocketRoundTripResponse struct {
+	MessageType WebSocketMessageType `json:"message_type"`
+	Payload     []byte               `json:"-"`
+}
+
 type NetworkExecutor interface {
 	DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
+	WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTripRequest) (WebSocketRoundTripResponse, error)
 	TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (TCPRoundTripResponse, error)
 	UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (UDPRoundTripResponse, error)
 }
@@ -673,7 +705,7 @@ func (e *Executor) DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 	if err != nil {
 		return HTTPResponse{}, err
 	}
-	httpReq.Host = req.Grant.Destination.Host
+	httpReq.Host = hostHeader(req.Grant.Destination)
 	for key, values := range req.Headers {
 		if !safeForwardHeader(key) {
 			continue
@@ -696,6 +728,65 @@ func (e *Executor) DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 		Headers:    cloneHTTPHeader(resp.Header),
 		Body:       body,
 	}, nil
+}
+
+func (e *Executor) WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTripRequest) (WebSocketRoundTripResponse, error) {
+	if e == nil {
+		return WebSocketRoundTripResponse{}, errors.New("network executor is nil")
+	}
+	if err := validateGrantForTransport(req.Grant, TransportWebSocket, req.Now, e.now); err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	if err := checkSize(int64(len(req.Payload)), e.maxRequestBytes, req.MaxRequestBytes, ErrRequestTooLarge); err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	messageType := req.MessageType
+	if messageType == "" {
+		messageType = WebSocketMessageText
+	}
+	opcode, err := websocketOpcodeForMessageType(messageType)
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	path, err := cleanHTTPPath(req.Path)
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
+	defer cancel()
+	conn, err := e.dialWebSocket(ctx, req.Grant)
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if !deadline.IsZero() {
+		_ = conn.SetDeadline(deadline)
+	}
+	reader := bufio.NewReader(conn)
+	key, err := randomWebSocketKey()
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	if err := writeWebSocketHandshake(conn, req.Grant, path, key, req.Headers); err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	if err := readWebSocketHandshake(reader, key); err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	if err := writeWebSocketFrame(conn, opcode, req.Payload); err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	responseOpcode, payload, err := readWebSocketDataFrame(reader, responseLimit(req.MaxResponseBytes, e.maxResponseBytes))
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	responseType, err := websocketMessageTypeForOpcode(responseOpcode)
+	if err != nil {
+		return WebSocketRoundTripResponse{}, err
+	}
+	_ = writeWebSocketFrame(conn, 0x8, []byte{})
+	return WebSocketRoundTripResponse{MessageType: responseType, Payload: payload}, nil
 }
 
 func (e *Executor) TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (TCPRoundTripResponse, error) {
@@ -842,6 +933,280 @@ func timeoutOrDefault(timeout time.Duration, fallback time.Duration) time.Durati
 
 func grantEndpoint(grant ConnectionGrant) string {
 	return net.JoinHostPort(grant.Destination.Host, strconv.Itoa(grant.Destination.Port))
+}
+
+func (e *Executor) dialWebSocket(ctx context.Context, grant ConnectionGrant) (net.Conn, error) {
+	address := grantEndpoint(grant)
+	if grant.Destination.Scheme == "wss" {
+		dialer := tls.Dialer{
+			NetDialer: &net.Dialer{
+				Resolver: nil,
+			},
+			Config: &tls.Config{ServerName: grant.Destination.Host, MinVersion: tls.VersionTLS12},
+		}
+		if e.dialContext != nil {
+			netDialer := tls.Dialer{
+				NetDialer: &net.Dialer{},
+				Config:    &tls.Config{ServerName: grant.Destination.Host, MinVersion: tls.VersionTLS12},
+			}
+			rawConn, err := e.dialContext(ctx, "tcp", address)
+			if err != nil {
+				return nil, err
+			}
+			tlsConn := tls.Client(rawConn, netDialer.Config)
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				_ = rawConn.Close()
+				return nil, err
+			}
+			return tlsConn, nil
+		}
+		return dialer.DialContext(ctx, "tcp", address)
+	}
+	return e.dialContext(ctx, "tcp", address)
+}
+
+func randomWebSocketKey() (string, error) {
+	key := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(key), nil
+}
+
+func writeWebSocketHandshake(conn net.Conn, grant ConnectionGrant, path string, key string, headers http.Header) error {
+	host := websocketHostHeader(grant.Destination)
+	var request bytes.Buffer
+	fmt.Fprintf(&request, "GET %s HTTP/1.1\r\n", path)
+	fmt.Fprintf(&request, "Host: %s\r\n", host)
+	request.WriteString("Upgrade: websocket\r\n")
+	request.WriteString("Connection: Upgrade\r\n")
+	fmt.Fprintf(&request, "Sec-WebSocket-Key: %s\r\n", key)
+	request.WriteString("Sec-WebSocket-Version: 13\r\n")
+	for name, values := range headers {
+		if !safeForwardHeader(name) || !safeWebSocketHeader(name) {
+			continue
+		}
+		canonical := http.CanonicalHeaderKey(name)
+		for _, value := range values {
+			if strings.ContainsAny(value, "\r\n") {
+				return fmt.Errorf("%w: websocket header value is invalid", ErrInvalidConnector)
+			}
+			fmt.Fprintf(&request, "%s: %s\r\n", canonical, value)
+		}
+	}
+	request.WriteString("\r\n")
+	_, err := conn.Write(request.Bytes())
+	return err
+}
+
+func readWebSocketHandshake(reader *bufio.Reader, key string) error {
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		return fmt.Errorf("%w: read handshake response: %v", ErrWebSocketFailed, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		return fmt.Errorf("%w: status %d", ErrWebSocketFailed, resp.StatusCode)
+	}
+	if !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
+		return fmt.Errorf("%w: missing websocket upgrade", ErrWebSocketFailed)
+	}
+	if !headerTokenContains(resp.Header.Values("Connection"), "upgrade") {
+		return fmt.Errorf("%w: missing connection upgrade", ErrWebSocketFailed)
+	}
+	if got, want := resp.Header.Get("Sec-WebSocket-Accept"), websocketAcceptKey(key); got != want {
+		return fmt.Errorf("%w: invalid accept key", ErrWebSocketFailed)
+	}
+	return nil
+}
+
+func websocketAcceptKey(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func writeWebSocketFrame(writer io.Writer, opcode byte, payload []byte) error {
+	if opcode > 0xf {
+		return fmt.Errorf("%w: websocket opcode is invalid", ErrInvalidConnector)
+	}
+	var header [14]byte
+	header[0] = 0x80 | opcode
+	maskKey := header[10:14]
+	if _, err := rand.Read(maskKey); err != nil {
+		return err
+	}
+	payloadLen := len(payload)
+	switch {
+	case payloadLen < 126:
+		header[1] = 0x80 | byte(payloadLen)
+		header = websocketHeaderWithMask(header, 2)
+		if _, err := writer.Write(header[:6]); err != nil {
+			return err
+		}
+	case payloadLen <= 65535:
+		header[1] = 0x80 | 126
+		binary.BigEndian.PutUint16(header[2:4], uint16(payloadLen))
+		header = websocketHeaderWithMask(header, 4)
+		if _, err := writer.Write(header[:8]); err != nil {
+			return err
+		}
+	default:
+		header[1] = 0x80 | 127
+		binary.BigEndian.PutUint64(header[2:10], uint64(payloadLen))
+		header = websocketHeaderWithMask(header, 10)
+		if _, err := writer.Write(header[:14]); err != nil {
+			return err
+		}
+	}
+	masked := append([]byte(nil), payload...)
+	for i := range masked {
+		masked[i] ^= maskKey[i%4]
+	}
+	if len(masked) == 0 {
+		return nil
+	}
+	_, err := writer.Write(masked)
+	return err
+}
+
+func websocketHeaderWithMask(header [14]byte, maskOffset int) [14]byte {
+	copy(header[maskOffset:maskOffset+4], header[10:14])
+	return header
+}
+
+func readWebSocketDataFrame(reader *bufio.Reader, maxBytes int64) (byte, []byte, error) {
+	if maxBytes <= 0 {
+		return 0, nil, fmt.Errorf("%w: response limit must be positive", ErrResponseTooLarge)
+	}
+	for {
+		opcode, payload, err := readWebSocketFrame(reader, maxBytes)
+		if err != nil {
+			return 0, nil, err
+		}
+		switch opcode {
+		case 0x1, 0x2:
+			return opcode, payload, nil
+		case 0x8:
+			return 0, nil, ErrConnectionClosed
+		case 0x9:
+			continue
+		case 0xa:
+			continue
+		default:
+			return 0, nil, fmt.Errorf("%w: unsupported websocket opcode %d", ErrWebSocketFailed, opcode)
+		}
+	}
+}
+
+func readWebSocketFrame(reader *bufio.Reader, maxBytes int64) (byte, []byte, error) {
+	first, err := reader.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	second, err := reader.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	if first&0x80 == 0 {
+		return 0, nil, fmt.Errorf("%w: fragmented frames are not supported", ErrWebSocketFailed)
+	}
+	opcode := first & 0x0f
+	masked := second&0x80 != 0
+	length := uint64(second & 0x7f)
+	switch length {
+	case 126:
+		var ext [2]byte
+		if _, err := io.ReadFull(reader, ext[:]); err != nil {
+			return 0, nil, err
+		}
+		length = uint64(binary.BigEndian.Uint16(ext[:]))
+	case 127:
+		var ext [8]byte
+		if _, err := io.ReadFull(reader, ext[:]); err != nil {
+			return 0, nil, err
+		}
+		length = binary.BigEndian.Uint64(ext[:])
+		if length > uint64(^uint(0)>>1) {
+			return 0, nil, fmt.Errorf("%w: websocket payload length overflows", ErrResponseTooLarge)
+		}
+	}
+	if length > uint64(maxBytes) {
+		return 0, nil, fmt.Errorf("%w: response exceeded %d bytes", ErrResponseTooLarge, maxBytes)
+	}
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(reader, mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, int(length))
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return opcode, payload, nil
+}
+
+func websocketOpcodeForMessageType(messageType WebSocketMessageType) (byte, error) {
+	switch messageType {
+	case WebSocketMessageText:
+		return 0x1, nil
+	case WebSocketMessageBinary:
+		return 0x2, nil
+	default:
+		return 0, fmt.Errorf("%w: websocket message_type must be text or binary", ErrInvalidConnector)
+	}
+}
+
+func websocketMessageTypeForOpcode(opcode byte) (WebSocketMessageType, error) {
+	switch opcode {
+	case 0x1:
+		return WebSocketMessageText, nil
+	case 0x2:
+		return WebSocketMessageBinary, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported websocket opcode %d", ErrWebSocketFailed, opcode)
+	}
+}
+
+func safeWebSocketHeader(key string) bool {
+	key = http.CanonicalHeaderKey(strings.TrimSpace(key))
+	switch key {
+	case "Sec-Websocket-Key", "Sec-Websocket-Version", "Sec-Websocket-Accept", "Sec-Websocket-Extensions", "Sec-Websocket-Protocol":
+		return false
+	default:
+		return true
+	}
+}
+
+func hostHeader(destination Destination) string {
+	if destination.Scheme == "ws" && destination.Port == 80 || destination.Scheme == "wss" && destination.Port == 443 {
+		return destination.Host
+	}
+	if destination.Scheme == "http" && destination.Port == 80 || destination.Scheme == "https" && destination.Port == 443 {
+		return destination.Host
+	}
+	return net.JoinHostPort(destination.Host, strconv.Itoa(destination.Port))
+}
+
+func websocketHostHeader(destination Destination) string {
+	return hostHeader(destination)
+}
+
+func headerTokenContains(values []string, token string) bool {
+	token = strings.ToLower(token)
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			if strings.ToLower(strings.TrimSpace(part)) == token {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func readBounded(reader io.Reader, maxBytes int64) ([]byte, error) {
