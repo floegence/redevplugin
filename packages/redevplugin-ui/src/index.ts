@@ -319,6 +319,39 @@ export type PluginCatalogResult = {
   [key: string]: unknown;
 };
 
+export type PluginCompatibilityMatrix = {
+  redevplugin_go_version: string;
+  redevplugin_ui_version: string;
+  redevplugin_runtime_version: string;
+  plugin_host_protocol_version: string;
+  rust_ipc_version: string;
+  wasm_abi_version: string;
+  manifest_schema_version: string;
+  package_signature_schema_version: string;
+  token_ticket_schema_version: string;
+  bridge_schema_version: string;
+  target_classifier_version: string;
+  plugin_platform_openapi_version: string;
+  compatibility_schema_version: string;
+  worker_invocation_schema_version: string;
+  [key: string]: unknown;
+};
+
+export type PluginContractArtifact = {
+  id: string;
+  path: string;
+  version: string;
+  sha256: string;
+  [key: string]: unknown;
+};
+
+export type PluginCompatibilityManifest = {
+  schema_version: string;
+  matrix: PluginCompatibilityMatrix;
+  contracts: PluginContractArtifact[];
+  [key: string]: unknown;
+};
+
 export type PluginTrustState = "bundled" | "verified" | "unsigned_local" | "untrusted" | "needs_review" | "blocked_security";
 
 export type PluginEnableState = "disabled" | "enabled" | "disabled_by_policy";
@@ -627,6 +660,10 @@ export class PluginPlatformClient {
 
   catalog(): Promise<PluginCatalogResult> {
     return this.#getJSON("/_redevplugin/api/plugins/catalog");
+  }
+
+  getCompatibility(): Promise<PluginCompatibilityManifest> {
+    return this.#getJSON("/_redevplugin/api/plugins/platform/compatibility");
   }
 
   installPlugin(request: PluginInstallRequest): Promise<PluginRecord> {

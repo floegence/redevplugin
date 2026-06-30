@@ -57,22 +57,25 @@ capabilities.
   the TypeScript SDK.
 - The TypeScript package includes both sandbox iframe bridge helpers and a
   host-side `PluginPlatformClient` for existing platform management routes:
-  install/update/downgrade, enable/disable/uninstall, surface open, runtime
-  start/health/stop, settings schema/read/patch, operation list/get/cancel,
-  data export/import, permission grant/revoke/list, secret bind/test/delete,
-  host-mediated intent list/invoke, and audit/diagnostic event list. List
-  helpers preserve the same data wrapper fields returned by the Go HTTP adapter,
-  such as `operations`, `permissions`, `audit_events`, and `diagnostic_events`,
-  so host products can consume the SDK and raw HTTP contract consistently. The
-  browser demo uses this client from the host page to exercise settings
-  management without exposing management credentials to the sandboxed iframe.
+  compatibility manifest read, install/update/downgrade,
+  enable/disable/uninstall, surface open, runtime start/health/stop, settings
+  schema/read/patch, operation list/get/cancel, data export/import, permission
+  grant/revoke/list, secret bind/test/delete, host-mediated intent list/invoke,
+  and audit/diagnostic event list. List helpers preserve the same data wrapper
+  fields returned by the Go HTTP adapter, such as `operations`, `permissions`,
+  `audit_events`, and `diagnostic_events`, so host products can consume the SDK
+  and raw HTTP contract consistently. The browser demo uses this client from the
+  host page to exercise settings management without exposing management
+  credentials to the sandboxed iframe.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
   worker invocation, target-classifier contracts.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
-  verify the loaded platform artifact set without shelling out to the CLI.
+  verify the loaded platform artifact set without shelling out to the CLI; the
+  TypeScript `PluginPlatformClient.getCompatibility()` helper reads the same
+  endpoint for browser-hosted product shells.
 - `redevplugin verify-compatibility <compatibility.json> <artifact-root>` checks
   a released compatibility manifest against the current version matrix and the
   referenced contract artifact hashes. Host products can use this command before

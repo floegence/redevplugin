@@ -671,6 +671,65 @@ test("readPluginStream maps missing ticket and endpoint errors", async () => {
   );
 });
 
+test("platform client reads compatibility manifest through host API", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: true,
+    data: {
+      schema_version: "redevplugin.compatibility.v1",
+      matrix: {
+        redevplugin_go_version: "0.0.0-dev",
+        redevplugin_ui_version: "0.0.0-dev",
+        redevplugin_runtime_version: "0.0.0-dev",
+        plugin_host_protocol_version: "plugin-host-v1",
+        rust_ipc_version: "rust-ipc-v1",
+        wasm_abi_version: "redevplugin-wasm-worker-v1",
+        manifest_schema_version: "manifest-v1",
+        package_signature_schema_version: "package-signature-v1",
+        token_ticket_schema_version: "token-ticket-v1",
+        bridge_schema_version: "bridge-v1",
+        target_classifier_version: "target-classifier-v1",
+        plugin_platform_openapi_version: "plugin-platform-v1",
+        compatibility_schema_version: "compatibility-manifest-v1",
+        worker_invocation_schema_version: "worker-invocation-v1",
+      },
+      contracts: [
+        {
+          id: "plugin-platform-openapi",
+          path: "spec/openapi/plugin-platform-v1.yaml",
+          version: "plugin-platform-v1",
+          sha256: "sha256-openapi",
+        },
+        {
+          id: "rust-ipc-schema",
+          path: "spec/plugin/ipc-v1.schema.json",
+          version: "rust-ipc-v1",
+          sha256: "sha256-ipc",
+        },
+      ],
+    },
+  });
+  const client = new PluginPlatformClient({
+    apiBaseURL: "https://host.example/",
+    fetch: fetch.fetch,
+    ownerSessionHashHeader: "owner_session_hash",
+  });
+
+  const compatibility = await client.getCompatibility();
+
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v1");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v1");
+  assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
+  assert.equal(compatibility.contracts[0]?.sha256, "sha256-openapi");
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/platform/compatibility");
+  assert.equal(fetch.calls[0]?.init.method, "GET");
+  assert.equal(fetch.calls[0]?.init.body, undefined);
+  assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
+});
+
 test("platform client reads and patches plugin settings through host API", async () => {
   const fetch = new FakeFetch();
   fetch.push({
