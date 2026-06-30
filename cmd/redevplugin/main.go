@@ -70,6 +70,12 @@ type scaffoldSummary struct {
 	VersionInfo version.Matrix `json:"version_matrix"`
 }
 
+type compatibilityVerifySummary struct {
+	OK            bool   `json:"ok"`
+	SchemaVersion string `json:"schema_version"`
+	Contracts     int    `json:"contracts"`
+}
+
 type signingPrivateKeyFile struct {
 	SchemaVersion string `json:"schema_version"`
 	Algorithm     string `json:"algorithm"`
@@ -130,6 +136,11 @@ func run(ctx context.Context, args []string) error {
 		return signPackage(ctx, args[1], args[2], args[3])
 	case "version":
 		return writeJSON(version.CurrentCompatibilityManifest())
+	case "verify-compatibility":
+		if len(args) != 3 {
+			return usage()
+		}
+		return verifyCompatibility(args[1], args[2])
 	case "install-local":
 		if len(args) != 2 {
 			return usage()
@@ -158,6 +169,25 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return usage()
 	}
+}
+
+func verifyCompatibility(manifestFile string, artifactRoot string) error {
+	raw, err := os.ReadFile(manifestFile)
+	if err != nil {
+		return err
+	}
+	manifest, err := version.DecodeCompatibilityManifest(raw)
+	if err != nil {
+		return err
+	}
+	if err := version.VerifyCompatibilityManifest(manifest, artifactRoot); err != nil {
+		return err
+	}
+	return writeJSON(compatibilityVerifySummary{
+		OK:            true,
+		SchemaVersion: manifest.SchemaVersion,
+		Contracts:     len(manifest.Contracts),
+	})
 }
 
 func validate(ctx context.Context, filename string) error {
@@ -479,7 +509,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

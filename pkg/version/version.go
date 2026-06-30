@@ -1,5 +1,16 @@
 package version
 
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
 const (
 	GoModuleVersion               = "0.0.0-dev"
 	UIPackageVersion              = "0.0.0-dev"
@@ -45,6 +56,13 @@ type CompatibilityManifest struct {
 	Matrix        Matrix             `json:"matrix"`
 	Contracts     []ContractArtifact `json:"contracts"`
 }
+
+var (
+	ErrCompatibilitySchemaVersion = errors.New("compatibility manifest schema version mismatch")
+	ErrCompatibilityMatrix        = errors.New("compatibility manifest version matrix mismatch")
+	ErrCompatibilityContract      = errors.New("compatibility manifest contract mismatch")
+	ErrCompatibilityPath          = errors.New("compatibility manifest contract path is invalid")
+)
 
 func CurrentMatrix() Matrix {
 	return Matrix{
@@ -131,4 +149,95 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 			},
 		},
 	}
+}
+
+func DecodeCompatibilityManifest(raw []byte) (CompatibilityManifest, error) {
+	var manifest CompatibilityManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return CompatibilityManifest{}, err
+	}
+	return manifest, nil
+}
+
+func VerifyCompatibilityManifestFile(filename string, artifactRoot string) error {
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	manifest, err := DecodeCompatibilityManifest(raw)
+	if err != nil {
+		return err
+	}
+	return VerifyCompatibilityManifest(manifest, artifactRoot)
+}
+
+func VerifyCompatibilityManifest(manifest CompatibilityManifest, artifactRoot string) error {
+	expected := CurrentCompatibilityManifest()
+	if manifest.SchemaVersion != expected.SchemaVersion {
+		return fmt.Errorf("%w: got %q want %q", ErrCompatibilitySchemaVersion, manifest.SchemaVersion, expected.SchemaVersion)
+	}
+	if !matrixEqual(manifest.Matrix, expected.Matrix) {
+		return fmt.Errorf("%w: got %#v want %#v", ErrCompatibilityMatrix, manifest.Matrix, expected.Matrix)
+	}
+
+	expectedContracts := map[string]ContractArtifact{}
+	for _, contract := range expected.Contracts {
+		expectedContracts[contract.ID] = contract
+	}
+	seen := map[string]bool{}
+	for _, contract := range manifest.Contracts {
+		if seen[contract.ID] {
+			return fmt.Errorf("%w: duplicate contract id %q", ErrCompatibilityContract, contract.ID)
+		}
+		seen[contract.ID] = true
+		expectedContract, ok := expectedContracts[contract.ID]
+		if !ok {
+			return fmt.Errorf("%w: unexpected contract id %q", ErrCompatibilityContract, contract.ID)
+		}
+		if contract.Path != expectedContract.Path || contract.Version != expectedContract.Version || contract.SHA256 != expectedContract.SHA256 {
+			return fmt.Errorf("%w: contract %q metadata mismatch", ErrCompatibilityContract, contract.ID)
+		}
+		if err := verifyContractArtifactHash(artifactRoot, contract); err != nil {
+			return err
+		}
+	}
+	for id := range expectedContracts {
+		if !seen[id] {
+			return fmt.Errorf("%w: missing contract id %q", ErrCompatibilityContract, id)
+		}
+	}
+	return nil
+}
+
+func verifyContractArtifactHash(root string, contract ContractArtifact) error {
+	if err := validateContractPath(contract.Path); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(contract.Path)))
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != contract.SHA256 {
+		return fmt.Errorf("%w: %s sha256 got %s want %s", ErrCompatibilityContract, contract.Path, got, contract.SHA256)
+	}
+	return nil
+}
+
+func validateContractPath(path string) error {
+	if path == "" || filepath.IsAbs(path) || strings.Contains(path, "\\") {
+		return fmt.Errorf("%w: %q", ErrCompatibilityPath, path)
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+	if clean != path || strings.HasPrefix(clean, "../") || clean == ".." {
+		return fmt.Errorf("%w: %q", ErrCompatibilityPath, path)
+	}
+	if !strings.HasPrefix(path, "spec/openapi/") && !strings.HasPrefix(path, "spec/plugin/") {
+		return fmt.Errorf("%w: %q", ErrCompatibilityPath, path)
+	}
+	return nil
+}
+
+func matrixEqual(a Matrix, b Matrix) bool {
+	return a == b
 }

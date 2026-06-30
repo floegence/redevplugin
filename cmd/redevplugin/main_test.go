@@ -183,6 +183,47 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 	}
 }
 
+func TestCLIVerifyCompatibilityManifest(t *testing.T) {
+	dir := t.TempDir()
+	versionOutput, err := captureCLIOutput(t, "version")
+	if err != nil {
+		t.Fatalf("version command error = %v", err)
+	}
+	manifestFile := filepath.Join(dir, "compatibility.json")
+	if err := os.WriteFile(manifestFile, versionOutput, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	verifyOutput, err := captureCLIOutput(t, "verify-compatibility", manifestFile, cliRepoRoot(t))
+	if err != nil {
+		t.Fatalf("verify-compatibility command error = %v", err)
+	}
+	var summary compatibilityVerifySummary
+	if err := json.Unmarshal(verifyOutput, &summary); err != nil {
+		t.Fatalf("verify-compatibility output decode error = %v: %s", err, verifyOutput)
+	}
+	if !summary.OK || summary.SchemaVersion != version.CompatibilityManifestVersion || summary.Contracts == 0 {
+		t.Fatalf("verify-compatibility summary mismatch: %#v", summary)
+	}
+
+	var manifest version.CompatibilityManifest
+	if err := json.Unmarshal(versionOutput, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Matrix.PluginHostProtocolVersion = "plugin-host-v2"
+	tamperedFile := filepath.Join(dir, "tampered.json")
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tamperedFile, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "verify-compatibility", tamperedFile, cliRepoRoot(t)); err == nil {
+		t.Fatal("verify-compatibility accepted tampered manifest")
+	}
+}
+
 func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
 	t.Helper()
 	originalStdout := os.Stdout
@@ -208,6 +249,11 @@ func captureCLIOutput(t *testing.T, args ...string) ([]byte, error) {
 		return buf.Bytes(), closeErr
 	}
 	return buf.Bytes(), nil
+}
+
+func cliRepoRoot(t *testing.T) string {
+	t.Helper()
+	return filepath.Clean(filepath.Join("..", ".."))
 }
 
 func readCLITestPublicKey(t *testing.T, filename string) ed25519.PublicKey {

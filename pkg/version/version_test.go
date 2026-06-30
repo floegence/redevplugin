@@ -3,6 +3,8 @@ package version
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,6 +58,73 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 			t.Fatalf("compatibility manifest missing contract id %q", id)
 		}
 	}
+}
+
+func TestVerifyCompatibilityManifestAcceptsCurrentContracts(t *testing.T) {
+	if err := VerifyCompatibilityManifest(CurrentCompatibilityManifest(), repoRoot(t)); err != nil {
+		t.Fatalf("VerifyCompatibilityManifest() error = %v", err)
+	}
+}
+
+func TestVerifyCompatibilityManifestFailsClosed(t *testing.T) {
+	root := repoRoot(t)
+
+	missing := CurrentCompatibilityManifest()
+	missing.Contracts = missing.Contracts[:len(missing.Contracts)-1]
+	if err := VerifyCompatibilityManifest(missing, root); !errors.Is(err, ErrCompatibilityContract) {
+		t.Fatalf("missing contract error = %v, want %v", err, ErrCompatibilityContract)
+	}
+
+	tamperedHash := CurrentCompatibilityManifest()
+	tamperedHash.Contracts[0].SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	if err := VerifyCompatibilityManifest(tamperedHash, root); !errors.Is(err, ErrCompatibilityContract) {
+		t.Fatalf("tampered hash error = %v, want %v", err, ErrCompatibilityContract)
+	}
+
+	tamperedPath := CurrentCompatibilityManifest()
+	tamperedPath.Contracts[0].Path = "../outside"
+	if err := VerifyCompatibilityManifest(tamperedPath, root); !errors.Is(err, ErrCompatibilityContract) {
+		t.Fatalf("tampered path metadata error = %v, want %v", err, ErrCompatibilityContract)
+	}
+
+	driftedMatrix := CurrentCompatibilityManifest()
+	driftedMatrix.Matrix.PluginHostProtocolVersion = "plugin-host-v2"
+	if err := VerifyCompatibilityManifest(driftedMatrix, root); !errors.Is(err, ErrCompatibilityMatrix) {
+		t.Fatalf("matrix drift error = %v, want %v", err, ErrCompatibilityMatrix)
+	}
+}
+
+func TestDecodeAndVerifyCompatibilityManifestFile(t *testing.T) {
+	dir := t.TempDir()
+	filename := filepath.Join(dir, "compatibility.json")
+	raw := mustMarshalCompatibilityManifest(t, CurrentCompatibilityManifest())
+	if err := os.WriteFile(filename, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCompatibilityManifestFile(filename, repoRoot(t)); err != nil {
+		t.Fatalf("VerifyCompatibilityManifestFile() error = %v", err)
+	}
+}
+
+func TestVerifyCompatibilityManifestRejectsPathTraversalEvenIfExpected(t *testing.T) {
+	err := verifyContractArtifactHash(repoRoot(t), ContractArtifact{
+		ID:      "bad",
+		Path:    "spec/plugin/../outside.json",
+		Version: "v1",
+		SHA256:  "0000000000000000000000000000000000000000000000000000000000000000",
+	})
+	if !errors.Is(err, ErrCompatibilityPath) {
+		t.Fatalf("path traversal error = %v, want %v", err, ErrCompatibilityPath)
+	}
+}
+
+func mustMarshalCompatibilityManifest(t *testing.T, manifest CompatibilityManifest) []byte {
+	t.Helper()
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func repoRoot(t *testing.T) string {
