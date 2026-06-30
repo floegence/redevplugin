@@ -295,6 +295,11 @@ Expected gates for platform changes:
   checks.
 - TypeScript: clean install, typecheck, lint, unit tests, SDK contract tests,
   bridge replay tests, and build output checks.
+- Browser demo: keep a real sandboxed iframe demo that users can open in a
+  browser, and keep `npm run test:demo:browser` green. The browser smoke must
+  click through plugin UI behavior, bridge RPC, generated-plugin install,
+  enable, open, backend invocation, disable, uninstall, and delete-data cleanup
+  instead of only checking that static files exist.
 - Rust: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`, license/advisory audit, IPC fixture tests, WASM ABI
   tests, classifier tests, and runtime smoke tests for supported targets.
