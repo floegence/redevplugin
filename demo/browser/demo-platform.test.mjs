@@ -109,3 +109,25 @@ test("generated browser demo uses complete dev lifecycle and cleanup", async () 
   assert.match(launcher, /plugin_path", "\/generated-plugin\/ui\/index\.html"/);
   assert.match(launcher, /Press Ctrl\+C to disable, uninstall, delete plugin data/);
 });
+
+test("real runtime demo launcher starts real host and cleans temporary state", async () => {
+  const packageConfig = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+  assert.match(packageConfig.scripts["demo:browser:real"], /node demo\/browser\/real-demo\.mjs/);
+
+  const launcher = await readFile(new URL("./real-demo.mjs", import.meta.url), "utf8");
+  for (const expected of [
+    "\"demo-real-server\"",
+    "\"redevplugin-runtime\"",
+    "\"go\", [\"build\", \"-o\", filename, \"./cmd/redevplugin\"]",
+    "app.redevplugin.localhost",
+    "plg-real.redevplugin.localhost",
+    "Sandbox origin:",
+    "Press Ctrl+C to stop the demo server and delete the temporary demo state.",
+  ]) {
+    assert.match(launcher, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(launcher, /mkdtemp\(join\(tmpdir\(\), "redevplugin-real-demo-"\)\)/);
+  assert.match(launcher, /mkdtemp\(join\(tmpdir\(\), "redevplugin-real-demo-bin-"\)\)/);
+  assert.match(launcher, /rm\(stateRoot, \{ recursive: true, force: true \}\)/);
+  assert.match(launcher, /rm\(binRoot, \{ recursive: true, force: true \}\)/);
+});

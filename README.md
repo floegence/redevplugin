@@ -122,7 +122,11 @@ capabilities.
   That launcher scaffolds a plugin with a backend worker skeleton, packages it,
   installs it into a temporary dev state root, enables it, opens its activity
   surface, prints a browser URL, and cleans up by disabling and uninstalling the
-  plugin with data deletion when the process exits.
+  plugin with data deletion when the process exits. For the real runtime path,
+  run `npm run demo:browser:real`. That launcher builds `redevplugin-runtime`,
+  starts the host-neutral Go demo server, prints a browser URL, serves the plugin
+  through the sandbox asset-session protocol, and deletes the temporary demo
+  state when the process exits.
   `npm run test:demo` covers the fake platform API and static sandbox contract;
   `npm run test:demo:browser` launches a real browser, clicks through the iframe
   demo flow, generates a fresh plugin with `redevplugin scaffold`, packages it,
@@ -151,6 +155,7 @@ npm install
 npm run check
 npx playwright install chromium
 npm run demo:browser
+npm run demo:browser:real
 npm run test:demo:browser
 ./scripts/check_redevplugin_runtime_contract.sh
 ./scripts/check_redevplugin_platform.sh
