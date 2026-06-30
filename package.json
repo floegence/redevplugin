@@ -5,10 +5,10 @@
   "scripts": {
     "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
     "build": "tsc -p packages/redevplugin-ui/tsconfig.json",
-    "check": "npm run typecheck && npm run build"
+    "test:ui": "npm --prefix packages/redevplugin-ui run test",
+    "check": "npm run typecheck && npm run build && npm run test:ui"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
   }
 }
-
