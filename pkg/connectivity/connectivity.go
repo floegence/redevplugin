@@ -1,12 +1,15 @@
 package connectivity
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"sort"
@@ -44,6 +47,9 @@ var (
 	ErrInvalidConnector = errors.New("network connector is invalid")
 	ErrTargetDenied     = errors.New("network target denied")
 	ErrConnectorDenied  = errors.New("network connector denied")
+	ErrGrantExpired     = errors.New("network grant expired")
+	ErrRequestTooLarge  = errors.New("network request too large")
+	ErrResponseTooLarge = errors.New("network response too large")
 )
 
 type Broker interface {
@@ -453,6 +459,129 @@ type ConnectionGrant struct {
 	ExpiresAt               time.Time   `json:"expires_at"`
 }
 
+type HTTPRequest struct {
+	Grant            ConnectionGrant `json:"grant"`
+	Method           string          `json:"method"`
+	Path             string          `json:"path,omitempty"`
+	Headers          http.Header     `json:"headers,omitempty"`
+	Body             []byte          `json:"-"`
+	MaxRequestBytes  int64           `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes int64           `json:"max_response_bytes,omitempty"`
+	Timeout          time.Duration   `json:"timeout,omitempty"`
+	Now              time.Time       `json:"now,omitempty"`
+}
+
+type HTTPResponse struct {
+	StatusCode int         `json:"status_code"`
+	Headers    http.Header `json:"headers,omitempty"`
+	Body       []byte      `json:"-"`
+}
+
+type TCPRoundTripRequest struct {
+	Grant        ConnectionGrant `json:"grant"`
+	Payload      []byte          `json:"-"`
+	MaxReadBytes int64           `json:"max_read_bytes,omitempty"`
+	Timeout      time.Duration   `json:"timeout,omitempty"`
+	Now          time.Time       `json:"now,omitempty"`
+}
+
+type TCPRoundTripResponse struct {
+	Payload []byte `json:"-"`
+}
+
+type UDPRoundTripRequest struct {
+	Grant        ConnectionGrant `json:"grant"`
+	Payload      []byte          `json:"-"`
+	MaxReadBytes int64           `json:"max_read_bytes,omitempty"`
+	Timeout      time.Duration   `json:"timeout,omitempty"`
+	Now          time.Time       `json:"now,omitempty"`
+}
+
+type UDPRoundTripResponse struct {
+	Payload []byte `json:"-"`
+}
+
+type NetworkExecutor interface {
+	DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
+	TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (TCPRoundTripResponse, error)
+	UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (UDPRoundTripResponse, error)
+}
+
+type ExecutorOptions struct {
+	HTTPClient       *http.Client
+	Dialer           *net.Dialer
+	DialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
+	MaxRequestBytes  int64
+	MaxResponseBytes int64
+	DefaultTimeout   time.Duration
+	Now              func() time.Time
+}
+
+type Executor struct {
+	httpClient       *http.Client
+	dialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
+	maxRequestBytes  int64
+	maxResponseBytes int64
+	defaultTimeout   time.Duration
+	now              func() time.Time
+}
+
+const (
+	DefaultMaxNetworkRequestBytes  = 1 << 20
+	DefaultMaxNetworkResponseBytes = 1 << 20
+	DefaultNetworkTimeout          = 10 * time.Second
+)
+
+func NewExecutor(options ExecutorOptions) *Executor {
+	dialer := options.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{}
+	}
+	dialContext := options.DialContext
+	if dialContext == nil {
+		dialContext = dialer.DialContext
+	}
+	httpClient := options.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Transport: &http.Transport{
+				Proxy:             nil,
+				DialContext:       dialContext,
+				DisableKeepAlives: true,
+			},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	}
+	maxRequestBytes := options.MaxRequestBytes
+	if maxRequestBytes <= 0 {
+		maxRequestBytes = DefaultMaxNetworkRequestBytes
+	}
+	maxResponseBytes := options.MaxResponseBytes
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = DefaultMaxNetworkResponseBytes
+	}
+	defaultTimeout := options.DefaultTimeout
+	if defaultTimeout <= 0 {
+		defaultTimeout = DefaultNetworkTimeout
+	}
+	now := options.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &Executor{
+		httpClient:       httpClient,
+		dialContext:      dialContext,
+		maxRequestBytes:  maxRequestBytes,
+		maxResponseBytes: maxResponseBytes,
+		defaultTimeout:   defaultTimeout,
+		now:              now,
+	}
+}
+
+var _ NetworkExecutor = (*Executor)(nil)
+
 func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) (ConnectionGrant, error) {
 	now := req.Now
 	if now.IsZero() {
@@ -510,6 +639,234 @@ func MintConnectionGrant(_ context.Context, policy PolicySet, req GrantRequest) 
 	}
 	grant.GrantID = grantID
 	return grant, nil
+}
+
+func (e *Executor) DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error) {
+	if e == nil {
+		return HTTPResponse{}, errors.New("network executor is nil")
+	}
+	if err := validateGrantForTransport(req.Grant, TransportHTTP, req.Now, e.now); err != nil {
+		return HTTPResponse{}, err
+	}
+	if err := checkSize(int64(len(req.Body)), e.maxRequestBytes, req.MaxRequestBytes, ErrRequestTooLarge); err != nil {
+		return HTTPResponse{}, err
+	}
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	if method == http.MethodConnect {
+		return HTTPResponse{}, fmt.Errorf("%w: HTTP CONNECT is disabled", ErrInvalidConnector)
+	}
+	path, err := cleanHTTPPath(req.Path)
+	if err != nil {
+		return HTTPResponse{}, err
+	}
+	target := url.URL{
+		Scheme: req.Grant.Destination.Scheme,
+		Host:   net.JoinHostPort(req.Grant.Destination.Host, strconv.Itoa(req.Grant.Destination.Port)),
+		Path:   path,
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(req.Body))
+	if err != nil {
+		return HTTPResponse{}, err
+	}
+	httpReq.Host = req.Grant.Destination.Host
+	for key, values := range req.Headers {
+		if !safeForwardHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			httpReq.Header.Add(key, value)
+		}
+	}
+	resp, err := e.httpClient.Do(httpReq)
+	if err != nil {
+		return HTTPResponse{}, err
+	}
+	defer resp.Body.Close()
+	body, err := readBounded(resp.Body, responseLimit(req.MaxResponseBytes, e.maxResponseBytes))
+	if err != nil {
+		return HTTPResponse{}, err
+	}
+	return HTTPResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    cloneHTTPHeader(resp.Header),
+		Body:       body,
+	}, nil
+}
+
+func (e *Executor) TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (TCPRoundTripResponse, error) {
+	if e == nil {
+		return TCPRoundTripResponse{}, errors.New("network executor is nil")
+	}
+	if err := validateGrantForTransport(req.Grant, TransportTCP, req.Now, e.now); err != nil {
+		return TCPRoundTripResponse{}, err
+	}
+	if err := checkSize(int64(len(req.Payload)), e.maxRequestBytes, 0, ErrRequestTooLarge); err != nil {
+		return TCPRoundTripResponse{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
+	defer cancel()
+	conn, err := e.dialContext(ctx, "tcp", grantEndpoint(req.Grant))
+	if err != nil {
+		return TCPRoundTripResponse{}, err
+	}
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if !deadline.IsZero() {
+		_ = conn.SetDeadline(deadline)
+	}
+	if len(req.Payload) > 0 {
+		if _, err := conn.Write(req.Payload); err != nil {
+			return TCPRoundTripResponse{}, err
+		}
+	}
+	payload, err := readBounded(conn, responseLimit(req.MaxReadBytes, e.maxResponseBytes))
+	if err != nil {
+		return TCPRoundTripResponse{}, err
+	}
+	return TCPRoundTripResponse{Payload: payload}, nil
+}
+
+func (e *Executor) UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (UDPRoundTripResponse, error) {
+	if e == nil {
+		return UDPRoundTripResponse{}, errors.New("network executor is nil")
+	}
+	if err := validateGrantForTransport(req.Grant, TransportUDP, req.Now, e.now); err != nil {
+		return UDPRoundTripResponse{}, err
+	}
+	if err := checkSize(int64(len(req.Payload)), e.maxRequestBytes, 0, ErrRequestTooLarge); err != nil {
+		return UDPRoundTripResponse{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
+	defer cancel()
+	conn, err := e.dialContext(ctx, "udp", grantEndpoint(req.Grant))
+	if err != nil {
+		return UDPRoundTripResponse{}, err
+	}
+	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if !deadline.IsZero() {
+		_ = conn.SetDeadline(deadline)
+	}
+	if len(req.Payload) > 0 {
+		if _, err := conn.Write(req.Payload); err != nil {
+			return UDPRoundTripResponse{}, err
+		}
+	}
+	limit := responseLimit(req.MaxReadBytes, e.maxResponseBytes)
+	if limit <= 0 {
+		return UDPRoundTripResponse{}, fmt.Errorf("%w: max_read_bytes must be positive", ErrResponseTooLarge)
+	}
+	buf := make([]byte, limit)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return UDPRoundTripResponse{}, err
+	}
+	return UDPRoundTripResponse{Payload: append([]byte(nil), buf[:n]...)}, nil
+}
+
+func validateGrantForTransport(grant ConnectionGrant, transport Transport, now time.Time, nowFunc func() time.Time) error {
+	if strings.TrimSpace(grant.GrantID) == "" ||
+		strings.TrimSpace(grant.PluginInstanceID) == "" ||
+		strings.TrimSpace(grant.ActiveFingerprint) == "" ||
+		strings.TrimSpace(grant.ConnectorID) == "" {
+		return fmt.Errorf("%w: grant identity is incomplete", ErrConnectorDenied)
+	}
+	if grant.Transport != transport || grant.Destination.Transport != transport {
+		return fmt.Errorf("%w: grant transport mismatch", ErrConnectorDenied)
+	}
+	if grant.Destination.Host == "" || grant.Destination.Port <= 0 {
+		return fmt.Errorf("%w: grant destination is incomplete", ErrConnectorDenied)
+	}
+	if now.IsZero() {
+		now = nowFunc()
+	}
+	if grant.ExpiresAt.IsZero() || !grant.ExpiresAt.After(now) {
+		return ErrGrantExpired
+	}
+	return DefaultClassifier().Evaluate(grant.Destination)
+}
+
+func cleanHTTPPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", fmt.Errorf("%w: http path must start with /", ErrInvalidConnector)
+	}
+	if strings.Contains(path, "://") || strings.ContainsAny(path, "\r\n") {
+		return "", fmt.Errorf("%w: http path is invalid", ErrInvalidConnector)
+	}
+	return path, nil
+}
+
+func safeForwardHeader(key string) bool {
+	key = http.CanonicalHeaderKey(strings.TrimSpace(key))
+	switch key {
+	case "", "Host", "Connection", "Proxy-Authorization", "Proxy-Authenticate", "Upgrade", "Alt-Svc":
+		return false
+	default:
+		return true
+	}
+}
+
+func checkSize(size int64, defaultLimit int64, overrideLimit int64, err error) error {
+	limit := defaultLimit
+	if overrideLimit > 0 && overrideLimit < limit {
+		limit = overrideLimit
+	}
+	if limit > 0 && size > limit {
+		return fmt.Errorf("%w: %d > %d", err, size, limit)
+	}
+	return nil
+}
+
+func responseLimit(overrideLimit int64, defaultLimit int64) int64 {
+	if overrideLimit > 0 && overrideLimit < defaultLimit {
+		return overrideLimit
+	}
+	return defaultLimit
+}
+
+func timeoutOrDefault(timeout time.Duration, fallback time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return fallback
+}
+
+func grantEndpoint(grant ConnectionGrant) string {
+	return net.JoinHostPort(grant.Destination.Host, strconv.Itoa(grant.Destination.Port))
+}
+
+func readBounded(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("%w: response limit must be positive", ErrResponseTooLarge)
+	}
+	limited := io.LimitReader(reader, maxBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("%w: response exceeded %d bytes", ErrResponseTooLarge, maxBytes)
+	}
+	return body, nil
+}
+
+func cloneHTTPHeader(header http.Header) http.Header {
+	cloned := http.Header{}
+	for key, values := range header {
+		for _, value := range values {
+			cloned.Add(key, value)
+		}
+	}
+	return cloned
 }
 
 func (p PolicySet) connector(connectorID string) (ConnectorPolicy, bool) {
