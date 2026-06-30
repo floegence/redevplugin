@@ -37,11 +37,20 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"storage_file_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"storage_file_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"method": { "const": "storage.files" }' spec/plugin/ipc-v1.schema.json
+  grep -q '"network_grant_request_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"network_grant_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"network_destination"' spec/plugin/ipc-v1.schema.json
+  grep -q '"ttl_ms": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v1.schema.json
   grep -q 'FRAME_TYPE_STORAGE_FILE' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_STORAGE_FILE_FAILED' crates/redevplugin-ipc/src/lib.rs
   grep -q 'struct StorageFileRequest' crates/redevplugin-ipc/src/lib.rs
   grep -q 'storage_file_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_storage_file_response' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'FRAME_TYPE_NETWORK_GRANT' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_NETWORK_GRANT_FAILED' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'struct NetworkGrantRequest' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'network_grant_frame' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'validate_network_grant_response' crates/redevplugin-ipc/src/lib.rs
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json

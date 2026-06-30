@@ -131,3 +131,42 @@ func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
 		}
 	}
 }
+
+func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "network_grant_request_payload")
+	requestProps := requireNestedObject(t, request, "properties")
+	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "runtime_generation_id", "policy_revision", "management_revision", "revoke_epoch", "connector_id", "transport", "destination", "ttl_ms"} {
+		if _, ok := requestProps[name].(map[string]any); !ok {
+			t.Fatalf("network_grant request missing %s", name)
+		}
+	}
+	transport := requireNestedObject(t, requestProps, "transport")
+	enum, ok := transport["enum"].([]any)
+	if !ok || len(enum) != 4 {
+		t.Fatalf("network_grant transport enum = %#v", transport["enum"])
+	}
+	response := requireNestedObject(t, defs, "network_grant_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "grant_id", "connector_id", "transport", "destination", "runtime_generation_id", "target_classifier_version", "expires_at", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("network_grant response missing %s", name)
+		}
+	}
+	destination := requireNestedObject(t, defs, "network_destination")
+	destinationProps := requireNestedObject(t, destination, "properties")
+	for _, name := range []string{"transport", "scheme", "host", "port"} {
+		if _, ok := destinationProps[name].(map[string]any); !ok {
+			t.Fatalf("network_destination missing %s", name)
+		}
+	}
+}

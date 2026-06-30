@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -264,6 +265,98 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	broker := &recordingConnectivityBroker{
+		grant: connectivity.ConnectionGrant{
+			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
+			PluginInstanceID:        "plugini_1",
+			ActiveFingerprint:       "sha256:active",
+			PolicyRevision:          1,
+			ManagementRevision:      2,
+			RevokeEpoch:             3,
+			ConnectorID:             "api",
+			Transport:               connectivity.TransportHTTP,
+			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
+			RuntimeGenerationID:     "runtime_gen_test",
+			TargetClassifierVersion: version.TargetClassifierVersion,
+			ExpiresAt:               now.Add(30 * time.Second),
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+		Connectivity: broker,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	networkGrant, ok := decoded["network_grant"].(map[string]any)
+	if !ok {
+		t.Fatalf("network grant result missing: %#v", decoded)
+	}
+	if networkGrant["ok"] != true || networkGrant["grant_id"] != broker.grant.GrantID || networkGrant["connector_id"] != "api" || networkGrant["transport"] != "http" {
+		t.Fatalf("network grant result mismatch: %#v", networkGrant)
+	}
+	if broker.calls != 1 ||
+		broker.last.PluginInstanceID != "plugini_1" ||
+		broker.last.RuntimeGenerationID != health.RuntimeGenerationID ||
+		broker.last.ConnectorID != "api" ||
+		broker.last.Destination != "https://api.example.com" ||
+		broker.last.TTL != 30*time.Second {
+		t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 	validator := &recordingHandleGrantValidator{
 		result: HandleGrantValidationResult{
@@ -329,6 +422,29 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 	}
 	if validator.calls != 0 || files.readCalls != 0 {
 		t.Fatalf("storage outside worker should not touch validator or broker: validator=%d reads=%d", validator.calls, files.readCalls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T) {
+	broker := &recordingConnectivityBroker{}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE=1"),
+		Connectivity: broker,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if broker.calls != 0 {
+		t.Fatalf("network grant outside worker should not touch broker: %d", broker.calls)
 	}
 	stopRuntimeSupervisor(t, supervisor)
 }
@@ -517,6 +633,11 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT") == "1" {
+				if !requestNetworkGrantFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE") != "" {
 				if !requestStorageFileFromHelper(reader, encoder, request) {
 					continue
@@ -540,6 +661,11 @@ func runRuntimeClientHelper() {
 				Payload:             raw,
 			})
 		case ipcFrameTypeRevokeEpoch:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE") == "1" {
+				if !requestNetworkGrantFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE") != "" {
 				if !requestStorageFileFromHelper(reader, encoder, request) {
 					continue
@@ -743,6 +869,58 @@ func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, r
 	return false
 }
 
+func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
+	rawNetworkReq, _ := json.Marshal(networkGrantRequestFromInvoke(request))
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeNetworkGrant,
+		RequestID:           request.RequestID + ":network_grant",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             rawNetworkReq,
+	})
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(21)
+	}
+	var response ipcFrame
+	if err := json.Unmarshal(line, &response); err != nil {
+		os.Exit(22)
+	}
+	if response.FrameType != ipcFrameTypeNetworkGrant || response.RequestID != request.RequestID+":network_grant" {
+		os.Exit(23)
+	}
+	var networkGrant networkGrantResponsePayload
+	if err := json.Unmarshal(response.Payload, &networkGrant); err != nil {
+		os.Exit(24)
+	}
+	if !networkGrant.OK {
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkGrant.Code, Message: networkGrant.Message})
+		resultFrameType := ipcFrameTypeInvokeWorkerResult
+		if request.FrameType == ipcFrameTypeRevokeEpoch {
+			resultFrameType = ipcFrameTypeRevokeEpochAck
+		}
+		_ = encoder.Encode(ipcFrame{
+			IPCVersion:          version.RustIPCVersion,
+			FrameType:           resultFrameType,
+			RequestID:           request.RequestID,
+			RuntimeGenerationID: request.RuntimeGenerationID,
+			Payload:             raw,
+		})
+		return false
+	}
+	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+		"network_grant": networkGrant,
+	})})
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeInvokeWorkerResult,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             raw,
+	})
+	return false
+}
+
 func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFileRequestPayload {
 	req := storageFileRequestPayload{
 		HandleGrantToken:    "handle_grant_token_1",
@@ -762,6 +940,33 @@ func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFil
 		DataBase64:          base64.StdEncoding.EncodeToString([]byte("hello")),
 		MaxBytes:            1024,
 		MaxEntries:          10,
+	}
+	if request.FrameType == ipcFrameTypeInvokeWorker {
+		var payload invokeWorkerRequestPayload
+		if err := json.Unmarshal(request.Payload, &payload); err == nil {
+			req.PluginInstanceID = payload.Lease.PluginInstanceID
+			req.PolicyRevision = payload.Lease.PolicyRevision
+			req.ManagementRevision = payload.Lease.ManagementRevision
+			req.RevokeEpoch = payload.Lease.RevokeEpoch
+		}
+	}
+	return req
+}
+
+func networkGrantRequestFromInvoke(request ipcFrame) networkGrantRequestPayload {
+	req := networkGrantRequestPayload{
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		RuntimeShardID:      "runtime_shard_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+		ConnectorID:         "api",
+		Transport:           connectivity.TransportHTTP,
+		Destination:         "https://api.example.com",
+		TTLMillis:           30000,
 	}
 	if request.FrameType == ipcFrameTypeInvokeWorker {
 		var payload invokeWorkerRequestPayload
@@ -863,6 +1068,34 @@ type recordingStorageFilesBroker struct {
 	writeResult storage.FileWriteResult
 	listResult  storage.FileListResult
 	err         error
+}
+
+type recordingConnectivityBroker struct {
+	calls       int
+	installCall int
+	removeCall  int
+	last        connectivity.GrantRequest
+	grant       connectivity.ConnectionGrant
+	err         error
+}
+
+func (b *recordingConnectivityBroker) InstallPolicy(context.Context, connectivity.PolicySet) error {
+	b.installCall++
+	return nil
+}
+
+func (b *recordingConnectivityBroker) RemovePolicy(context.Context, string) error {
+	b.removeCall++
+	return nil
+}
+
+func (b *recordingConnectivityBroker) MintConnectionGrant(_ context.Context, req connectivity.GrantRequest) (connectivity.ConnectionGrant, error) {
+	b.calls++
+	b.last = req
+	if b.err != nil {
+		return connectivity.ConnectionGrant{}, b.err
+	}
+	return b.grant, nil
 }
 
 func (v *recordingHandleGrantValidator) ValidateHandleGrant(_ context.Context, req HandleGrantValidationRequest) (HandleGrantValidationResult, error) {

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -112,6 +113,7 @@ type ProcessSupervisorOptions struct {
 	Artifacts        ArtifactProvider
 	HandleGrants     HandleGrantValidator
 	StorageFiles     storage.FilesBroker
+	Connectivity     connectivity.Broker
 	Now              func() time.Time
 	HandshakeTimeout time.Duration
 }
@@ -128,6 +130,7 @@ type ProcessSupervisor struct {
 	artifacts        ArtifactProvider
 	handleGrants     HandleGrantValidator
 	storageFiles     storage.FilesBroker
+	connectivity     connectivity.Broker
 	now              func() time.Time
 	handshakeTimeout time.Duration
 	seq              uint64
@@ -164,6 +167,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		artifacts:        options.Artifacts,
 		handleGrants:     options.HandleGrants,
 		storageFiles:     options.StorageFiles,
+		connectivity:     options.Connectivity,
 		now:              now,
 		handshakeTimeout: handshakeTimeout,
 	}, nil
@@ -475,6 +479,7 @@ const (
 	ipcFrameTypeOpenHandle          = "open_handle"
 	ipcFrameTypeValidateHandleGrant = "validate_handle_grant"
 	ipcFrameTypeStorageFile         = "storage_file"
+	ipcFrameTypeNetworkGrant        = "network_grant"
 	ipcFrameTypeRevokeEpoch         = "revoke_epoch"
 	ipcFrameTypeRevokeEpochAck      = "revoke_epoch_ack"
 )
@@ -578,6 +583,39 @@ type storageFileResponsePayload struct {
 	Usage      *storage.Usage      `json:"usage,omitempty"`
 	Code       string              `json:"code,omitempty"`
 	Message    string              `json:"message,omitempty"`
+}
+
+type networkGrantRequestPayload struct {
+	PluginInstanceID    string                 `json:"plugin_instance_id"`
+	ActiveFingerprint   string                 `json:"active_fingerprint"`
+	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                 `json:"runtime_generation_id"`
+	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
+	PolicyRevision      uint64                 `json:"policy_revision"`
+	ManagementRevision  uint64                 `json:"management_revision"`
+	RevokeEpoch         uint64                 `json:"revoke_epoch"`
+	ConnectorID         string                 `json:"connector_id"`
+	Transport           connectivity.Transport `json:"transport"`
+	Destination         string                 `json:"destination"`
+	TTLMillis           int64                  `json:"ttl_ms,omitempty"`
+}
+
+type networkGrantResponsePayload struct {
+	OK                      bool                     `json:"ok"`
+	GrantID                 string                   `json:"grant_id,omitempty"`
+	PluginInstanceID        string                   `json:"plugin_instance_id,omitempty"`
+	ActiveFingerprint       string                   `json:"active_fingerprint,omitempty"`
+	PolicyRevision          uint64                   `json:"policy_revision,omitempty"`
+	ManagementRevision      uint64                   `json:"management_revision,omitempty"`
+	RevokeEpoch             uint64                   `json:"revoke_epoch,omitempty"`
+	ConnectorID             string                   `json:"connector_id,omitempty"`
+	Transport               connectivity.Transport   `json:"transport,omitempty"`
+	Destination             connectivity.Destination `json:"destination,omitempty"`
+	RuntimeGenerationID     string                   `json:"runtime_generation_id,omitempty"`
+	TargetClassifierVersion string                   `json:"target_classifier_version,omitempty"`
+	ExpiresAt               time.Time                `json:"expires_at,omitempty"`
+	Code                    string                   `json:"code,omitempty"`
+	Message                 string                   `json:"message,omitempty"`
 }
 
 func (p runtimeResponsePayload) err() error {
@@ -707,6 +745,12 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 			}
 			if got.frame.FrameType == ipcFrameTypeStorageFile {
 				if err := s.respondToStorageFile(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
+			if got.frame.FrameType == ipcFrameTypeNetworkGrant {
+				if err := s.respondToNetworkGrant(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
 					return ipcFrame{}, err
 				}
 				continue
@@ -1077,6 +1121,159 @@ func storageFileErrorResponse(err error) storageFileResponsePayload {
 		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: err.Error()}
 	default:
 		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_FAILED", Message: err.Error()}
+	}
+}
+
+func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	if allowedArtifact == nil {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_REQUEST_DENIED",
+			Message: "network grants are only available during worker invocation",
+		})
+	}
+	var req networkGrantRequestPayload
+	if len(frame.Payload) == 0 {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_REQUEST_INVALID",
+			Message: "missing network grant payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_REQUEST_INVALID",
+			Message: "decode network grant payload: " + err.Error(),
+		})
+	}
+	if err := validateNetworkGrantRequest(req, health.RuntimeGenerationID); err != nil {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_REQUEST_INVALID",
+			Message: err.Error(),
+		})
+	}
+	if s.connectivity == nil {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_BROKER_UNAVAILABLE",
+			Message: "runtime connectivity broker is unavailable",
+		})
+	}
+	ttl := time.Duration(req.TTLMillis) * time.Millisecond
+	grant, err := s.connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+		ConnectorID:         req.ConnectorID,
+		Transport:           req.Transport,
+		Destination:         req.Destination,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		Now:                 s.now(),
+		TTL:                 ttl,
+	})
+	if err != nil {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantErrorResponse(err))
+	}
+	if err := validateNetworkGrantResult(req, grant, health.RuntimeGenerationID); err != nil {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_VALIDATION_FAILED",
+			Message: err.Error(),
+		})
+	}
+	return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+		OK:                      true,
+		GrantID:                 grant.GrantID,
+		PluginInstanceID:        grant.PluginInstanceID,
+		ActiveFingerprint:       grant.ActiveFingerprint,
+		PolicyRevision:          grant.PolicyRevision,
+		ManagementRevision:      grant.ManagementRevision,
+		RevokeEpoch:             grant.RevokeEpoch,
+		ConnectorID:             grant.ConnectorID,
+		Transport:               grant.Transport,
+		Destination:             grant.Destination,
+		RuntimeGenerationID:     grant.RuntimeGenerationID,
+		TargetClassifierVersion: grant.TargetClassifierVersion,
+		ExpiresAt:               grant.ExpiresAt,
+	})
+}
+
+func (s *ProcessSupervisor) writeNetworkGrantResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload networkGrantResponsePayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeNetworkGrant,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write network_grant response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
+func validateNetworkGrantResult(req networkGrantRequestPayload, grant connectivity.ConnectionGrant, runtimeGenerationID string) error {
+	if strings.TrimSpace(grant.GrantID) == "" ||
+		strings.TrimSpace(grant.PluginInstanceID) != strings.TrimSpace(req.PluginInstanceID) ||
+		strings.TrimSpace(grant.ActiveFingerprint) != strings.TrimSpace(req.ActiveFingerprint) ||
+		grant.PolicyRevision != req.PolicyRevision ||
+		grant.ManagementRevision != req.ManagementRevision ||
+		grant.RevokeEpoch != req.RevokeEpoch ||
+		strings.TrimSpace(grant.ConnectorID) != strings.TrimSpace(req.ConnectorID) ||
+		grant.Transport != req.Transport ||
+		strings.TrimSpace(grant.RuntimeGenerationID) != runtimeGenerationID ||
+		strings.TrimSpace(grant.TargetClassifierVersion) == "" {
+		return errors.New("network grant result did not match request audience")
+	}
+	requested, err := connectivity.ParseDestination(req.Transport, req.Destination)
+	if err != nil {
+		return err
+	}
+	if grant.Destination != requested {
+		return errors.New("network grant destination did not match request")
+	}
+	if grant.ExpiresAt.IsZero() {
+		return errors.New("network grant expires_at is required")
+	}
+	return nil
+}
+
+func validateNetworkGrantRequest(req networkGrantRequestPayload, runtimeGenerationID string) error {
+	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
+		return errors.New("runtime_generation_id is not bound to this runtime generation")
+	}
+	if strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.ConnectorID) == "" ||
+		strings.TrimSpace(req.Destination) == "" {
+		return errors.New("plugin identity, connector id, and destination are required")
+	}
+	if !connectivity.ValidTransport(req.Transport) {
+		return errors.New("network transport is not supported")
+	}
+	if req.TTLMillis < 0 {
+		return errors.New("ttl_ms must not be negative")
+	}
+	return nil
+}
+
+func networkGrantErrorResponse(err error) networkGrantResponsePayload {
+	switch {
+	case errors.Is(err, connectivity.ErrInvalidConnector):
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_REQUEST_INVALID", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrTargetDenied):
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrConnectorDenied):
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: err.Error()}
+	default:
+		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_FAILED", Message: err.Error()}
 	}
 }
 

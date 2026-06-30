@@ -7,11 +7,13 @@ pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
 pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
 pub const FRAME_TYPE_VALIDATE_HANDLE_GRANT: &str = "validate_handle_grant";
 pub const FRAME_TYPE_STORAGE_FILE: &str = "storage_file";
+pub const FRAME_TYPE_NETWORK_GRANT: &str = "network_grant";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
 pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
 pub const ERR_HANDLE_GRANT_VALIDATION_FAILED: &str = "HANDLE_GRANT_VALIDATION_FAILED";
 pub const ERR_STORAGE_FILE_FAILED: &str = "STORAGE_FILE_FAILED";
+pub const ERR_NETWORK_GRANT_FAILED: &str = "NETWORK_GRANT_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 
@@ -26,6 +28,7 @@ pub enum FrameType {
     OpenHandle,
     ValidateHandleGrant,
     StorageFile,
+    NetworkGrant,
     CloseHandle,
     RevokeEpoch,
     RevokeEpochAck,
@@ -336,6 +339,86 @@ pub fn validate_storage_file_response(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkGrantRequest {
+    pub plugin_instance_id: String,
+    pub active_fingerprint: String,
+    pub runtime_instance_id: String,
+    pub runtime_generation_id: String,
+    pub runtime_shard_id: String,
+    pub policy_revision: u64,
+    pub management_revision: u64,
+    pub revoke_epoch: u64,
+    pub connector_id: String,
+    pub transport: String,
+    pub destination: String,
+    pub ttl_ms: u64,
+}
+
+pub fn network_grant_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    req: &NetworkGrantRequest,
+) -> String {
+    format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{}}}}}",
+        RUST_IPC_VERSION,
+        FRAME_TYPE_NETWORK_GRANT,
+        escape_json_string(request_id),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(&req.plugin_instance_id),
+        escape_json_string(&req.active_fingerprint),
+        escape_json_string(&req.runtime_instance_id),
+        escape_json_string(&req.runtime_generation_id),
+        escape_json_string(&req.runtime_shard_id),
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+        escape_json_string(&req.connector_id),
+        escape_json_string(&req.transport),
+        escape_json_string(&req.destination),
+        req.ttl_ms
+    )
+}
+
+pub fn validate_network_grant_response(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+    expected_connector_id: &str,
+    expected_transport: &str,
+) -> Result<(), String> {
+    let (frame_type, request_id, runtime_generation_id) =
+        parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_NETWORK_GRANT {
+        return Err("expected network_grant frame".to_string());
+    }
+    if request_id != expected_request_id {
+        return Err("network_grant request_id mismatch".to_string());
+    }
+    if runtime_generation_id != expected_runtime_generation_id {
+        return Err("network_grant runtime_generation_id mismatch".to_string());
+    }
+    if !extract_json_bool(input, "ok").unwrap_or(false) {
+        let code = extract_json_string(input, "code")
+            .unwrap_or_else(|| ERR_NETWORK_GRANT_FAILED.to_string());
+        let message = extract_json_string(input, "message")
+            .unwrap_or_else(|| "network grant request failed".to_string());
+        return Err(format!("{code}: {message}"));
+    }
+    let grant_id = extract_json_string(input, "grant_id").ok_or("missing grant_id")?;
+    if !grant_id.starts_with("netgrant_") || grant_id.len() != "netgrant_".len() + 32 {
+        return Err("invalid network grant id".to_string());
+    }
+    let connector_id =
+        extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
+    let transport = extract_json_string(input, "transport").ok_or("missing transport")?;
+    if connector_id != expected_connector_id || transport != expected_transport {
+        return Err("network_grant audience mismatch".to_string());
+    }
+    Ok(())
+}
+
 pub fn validate_hello_frame(input: &str) -> Result<(String, String), &'static str> {
     let ipc_version = extract_json_string(input, "ipc_version").ok_or("missing ipc_version")?;
     if ipc_version != RUST_IPC_VERSION {
@@ -603,6 +686,40 @@ mod tests {
         let err = validate_storage_file_response(failed, "r1:storage_file", "g1")
             .expect_err("failed storage file response");
         assert!(err.contains("STORAGE_FILE_NOT_FOUND"));
+    }
+
+    #[test]
+    fn renders_network_grant_frame() {
+        let req = NetworkGrantRequest {
+            plugin_instance_id: "plugini_1".to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: "runtime_shard_1".to_string(),
+            policy_revision: 1,
+            management_revision: 2,
+            revoke_epoch: 3,
+            connector_id: "api".to_string(),
+            transport: "http".to_string(),
+            destination: "https://api.example.com".to_string(),
+            ttl_ms: 30000,
+        };
+        let frame = network_grant_frame("r1:network_grant", "g1", &req);
+        assert!(frame.contains(r#""frame_type":"network_grant""#));
+        assert!(frame.contains(r#""connector_id":"api""#));
+        assert!(frame.contains(r#""transport":"http""#));
+        assert!(frame.contains(r#""ttl_ms":30000"#));
+    }
+
+    #[test]
+    fn validates_network_grant_response() {
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v1","expires_at":"2026-06-30T10:00:30Z"}}"#;
+        validate_network_grant_response(frame, "r1:network_grant", "g1", "api", "http")
+            .expect("valid network grant response");
+        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked"}}"#;
+        let err = validate_network_grant_response(failed, "r1:network_grant", "g1", "api", "http")
+            .expect_err("failed network grant response");
+        assert!(err.contains("NETWORK_TARGET_DENIED"));
     }
 
     #[test]
