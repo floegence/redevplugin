@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { chromium } from "playwright";
 
+const toolEnv = withUserToolchainPath(process.env);
 const hostPort = await getFreePort();
 const pluginPort = await getFreePort(hostPort);
 const stateRoot = await mkdtemp(join(tmpdir(), "redevplugin-real-runtime-demo-"));
@@ -76,7 +77,7 @@ try {
 async function buildRuntime() {
   const command = spawn("cargo", ["build", "-p", "redevplugin-runtime"], {
     cwd: new URL("../..", import.meta.url),
-    env: { ...process.env, CARGO_TERM_COLOR: "never" },
+    env: { ...toolEnv, CARGO_TERM_COLOR: "never" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -97,7 +98,7 @@ async function buildCLI(outDir) {
   const filename = join(outDir, process.platform === "win32" ? "redevplugin.exe" : "redevplugin");
   const command = spawn("go", ["build", "-o", filename, "./cmd/redevplugin"], {
     cwd: new URL("../..", import.meta.url),
-    env: { ...process.env, GOWORK: "off" },
+    env: { ...toolEnv, GOWORK: "off" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -197,4 +198,17 @@ async function launchBrowser() {
       return chromium.launch({ headless: true });
     }
   }
+}
+
+function withUserToolchainPath(env) {
+  const home = env.HOME;
+  if (!home) {
+    return { ...env };
+  }
+  const cargoBin = join(home, ".cargo", "bin");
+  const pathValue = env.PATH ?? "";
+  if (pathValue.split(":").includes(cargoBin)) {
+    return { ...env };
+  }
+  return { ...env, PATH: `${cargoBin}:${pathValue}` };
 }

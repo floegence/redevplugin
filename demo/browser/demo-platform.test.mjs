@@ -23,6 +23,19 @@ test("demo platform mints bridge token and handles rpc calls", async () => {
     }),
   });
   assert.deepEqual((await echoResponse.json()).data.data.echoed, "ok");
+
+  const streamResponse = await platform.fetch("/_redevplugin/api/plugins/rpc", {
+    method: "POST",
+    headers: {},
+    body: JSON.stringify({
+      plugin_gateway_token: "gateway_token_parent_only_demo",
+      method: "demo.logs.tail",
+      params: { source: "demo" },
+    }),
+  });
+  const streamBody = await streamResponse.json();
+  assert.equal(streamBody.data.stream_id, "demo_stream_logs");
+  assert.match(streamBody.data.stream_ticket, /^demo_stream_ticket_/);
 });
 
 test("demo platform requires confirmation before cache deletion", async () => {

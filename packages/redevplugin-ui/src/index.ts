@@ -249,6 +249,21 @@ export type FetchResponseLike = {
   json(): Promise<unknown>;
 };
 
+export type StreamFetchLike = (input: string, init?: StreamFetchInitLike) => Promise<StreamFetchResponseLike>;
+
+export type StreamFetchInitLike = {
+  method?: string;
+  headers?: Record<string, string>;
+  credentials?: "same-origin" | "include" | "omit";
+};
+
+export type StreamFetchResponseLike = {
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+  json?(): Promise<unknown>;
+};
+
 export type PluginGatewayTokenResult = {
   plugin_gateway_token: string;
   plugin_gateway_token_id: string;
@@ -265,6 +280,23 @@ export type PluginMethodResult<T = unknown> = {
   confirmation_required?: boolean;
   confirmation_token_id?: string;
   request_hash?: string;
+};
+
+export type PluginStreamEvent = {
+  stream_id: string;
+  sequence: number;
+  kind: string;
+  data?: string;
+  error?: string;
+  at: string;
+};
+
+export type ReadPluginStreamOptions = {
+  streamId?: string;
+  streamTicket?: string;
+  result?: PluginMethodResult;
+  fetch?: StreamFetchLike;
+  apiBaseURL?: string;
 };
 
 export type PluginConfirmationResult = {
@@ -483,6 +515,42 @@ export class PluginSurfaceHost {
   }
 }
 
+export async function readPluginStream(options: ReadPluginStreamOptions): Promise<PluginStreamEvent[]> {
+  const streamId = options.streamId ?? options.result?.stream_id;
+  const streamTicket = options.streamTicket ?? options.result?.stream_ticket;
+  if (!streamId || !streamTicket) {
+    throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "stream_id and stream_ticket are required to read a plugin stream");
+  }
+  const fetchLike = options.fetch ?? defaultStreamFetch();
+  const url = `${trimTrailingSlash(options.apiBaseURL ?? "")}/_redevplugin/stream/${encodeURIComponent(streamId)}?ticket=${encodeURIComponent(streamTicket)}`;
+  const response = await fetchLike(url, {
+    method: "GET",
+    headers: { "Accept": "application/x-ndjson, application/json" },
+    credentials: "same-origin",
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    throw streamErrorFromBody(raw, response.status);
+  }
+  return parseNDJSONEvents(raw);
+}
+
+export function decodePluginStreamText(event: PluginStreamEvent): string {
+  if (!event.data) {
+    return "";
+  }
+  if (typeof TextDecoder === "function" && typeof atob === "function") {
+    const binary = atob(event.data);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+  const bufferLike = (globalThis as { Buffer?: { from(value: string, encoding: "base64"): { toString(encoding: "utf8"): string } } }).Buffer;
+  if (bufferLike) {
+    return bufferLike.from(event.data, "base64").toString("utf8");
+  }
+  throw new PluginBridgeError("PLUGIN_STREAM_FAILED", "No base64 decoder is available for plugin stream data");
+}
+
 function normalizeTimeout(timeoutMs: number | undefined): number {
   if (timeoutMs == null) {
     return 30_000;
@@ -499,6 +567,14 @@ function defaultFetch(): FetchLike {
     throw new Error("fetch is required when globalThis.fetch is unavailable");
   }
   return fetchLike.bind(globalThis) as FetchLike;
+}
+
+function defaultStreamFetch(): StreamFetchLike {
+  const fetchLike = (globalThis as { fetch?: StreamFetchLike }).fetch;
+  if (!fetchLike) {
+    throw new Error("fetch is required when globalThis.fetch is unavailable");
+  }
+  return fetchLike.bind(globalThis) as StreamFetchLike;
 }
 
 function randomBridgeChannelID(): string {
@@ -550,6 +626,43 @@ function isHostEnvelope(value: unknown): value is HostEnvelope<unknown> {
     return true;
   }
   return value.error == null || typeof value.error === "string";
+}
+
+function parseNDJSONEvents(raw: string): PluginStreamEvent[] {
+  const events: PluginStreamEvent[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.trim() === "") {
+      continue;
+    }
+    const event = JSON.parse(line) as unknown;
+    if (!isStreamEvent(event)) {
+      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", "Plugin stream endpoint returned an invalid event");
+    }
+    events.push(event);
+  }
+  return events;
+}
+
+function streamErrorFromBody(raw: string, status: number): PluginBridgeError {
+  try {
+    const body = JSON.parse(raw) as unknown;
+    if (isHostEnvelope(body) && !body.ok) {
+      return new PluginBridgeError(body.error_code ?? "PLUGIN_STREAM_FAILED", body.error ?? `Plugin stream endpoint failed with HTTP ${status}`);
+    }
+  } catch {
+    // Fall back to a generic error when the stream endpoint did not return JSON.
+  }
+  return new PluginBridgeError("PLUGIN_STREAM_FAILED", `Plugin stream endpoint failed with HTTP ${status}`);
+}
+
+function isStreamEvent(value: unknown): value is PluginStreamEvent {
+  return isRecord(value) &&
+    typeof value.stream_id === "string" &&
+    typeof value.sequence === "number" &&
+    typeof value.kind === "string" &&
+    (value.data == null || typeof value.data === "string") &&
+    (value.error == null || typeof value.error === "string") &&
+    typeof value.at === "string";
 }
 
 function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessage {

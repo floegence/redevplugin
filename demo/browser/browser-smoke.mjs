@@ -73,6 +73,11 @@ try {
   await expectText(frame.locator("#plugin-result"), "workspace/readme.md");
   await expectText(page.locator("#rpc-count"), "2");
 
+  await frame.getByRole("button", { name: "Tail logs" }).click();
+  await expectText(frame.locator("#plugin-result"), "demo log line 1");
+  await expectText(frame.locator("#plugin-result"), "demo log line 2");
+  await expectText(page.locator("#rpc-count"), "3");
+
   await frame.getByRole("button", { name: "Delete cache" }).click();
   await expectText(page.locator("#confirmation-method"), "demo.cache.delete");
   assert.equal(await frame.locator("#call-dangerous").getAttribute("disabled"), "");
@@ -87,7 +92,7 @@ try {
   await page.getByRole("button", { name: "Approve" }).click();
   await expectText(frame.locator("#plugin-result"), "\"deleted\": true");
   assert.equal(await frame.locator("#call-dangerous").getAttribute("disabled"), null);
-  await expectText(page.locator("#rpc-count"), "5");
+  await expectText(page.locator("#rpc-count"), "6");
   await expectText(page.locator("#confirmation-count"), "2");
 
   await page.getByRole("button", { name: "Visible" }).click();

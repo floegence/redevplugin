@@ -26,6 +26,7 @@ export function createDemoPlatformFetch(options = {}) {
     bridgeTokenIssued: false,
     confirmationToken: "",
     confirmedDeletes: 0,
+    streamTickets: 0,
   };
 
   async function fetch(input, init) {
@@ -98,6 +99,20 @@ export function createDemoPlatformFetch(options = {}) {
                   { path: "workspace/cache/index.sqlite", size_bytes: 8192 },
                 ],
               },
+            },
+          });
+        case "demo.logs.tail":
+          state.streamTickets += 1;
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                started: true,
+                source: body.params?.source ?? "demo",
+              },
+              stream_id: "demo_stream_logs",
+              stream_ticket: `demo_stream_ticket_${state.streamTickets}`,
+              stream_ticket_id: `demo_stream_ticket_id_${state.streamTickets}`,
             },
           });
         case "demo.cache.delete":

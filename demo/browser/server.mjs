@@ -24,6 +24,10 @@ function createDemoServer(label) {
 
 function serveStatic(label, request, response) {
   const requestURL = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+  if (requestURL.pathname === "/_redevplugin/stream/demo_stream_logs") {
+    serveDemoStream(request, requestURL, response);
+    return;
+  }
   let pathname = decodeURIComponent(requestURL.pathname);
   if (pathname === "/") {
     pathname = "/demo/browser/index.html";
@@ -60,6 +64,47 @@ function serveFile(filename, label, response) {
     "X-ReDevPlugin-Demo-Origin": label,
   });
   createReadStream(filename).pipe(response);
+}
+
+function serveDemoStream(request, requestURL, response) {
+  const ticket = requestURL.searchParams.get("ticket") ?? "";
+  const origin = request.headers.origin ?? "";
+  const corsHeaders = origin === `http://127.0.0.1:${pluginPort}` ? {
+    "Access-Control-Allow-Origin": origin,
+    "Vary": "Origin",
+  } : {};
+  if (!ticket.startsWith("demo_stream_ticket_")) {
+    response.writeHead(403, {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json; charset=utf-8",
+      ...corsHeaders,
+    });
+    response.end(JSON.stringify({ ok: false, error_code: "PLUGIN_PERMISSION_DENIED", error: "stream ticket is required" }));
+    return;
+  }
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/x-ndjson",
+    "X-ReDevPlugin-Demo-Origin": "host",
+    ...corsHeaders,
+  });
+  const events = [
+    {
+      stream_id: "demo_stream_logs",
+      sequence: 1,
+      kind: "data",
+      data: Buffer.from("demo log line 1").toString("base64"),
+      at: "2026-06-30T00:00:10Z",
+    },
+    {
+      stream_id: "demo_stream_logs",
+      sequence: 2,
+      kind: "data",
+      data: Buffer.from("demo log line 2").toString("base64"),
+      at: "2026-06-30T00:00:11Z",
+    },
+  ];
+  response.end(events.map((event) => JSON.stringify(event)).join("\n") + "\n");
 }
 
 const hostServer = createDemoServer("host");

@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  decodePluginStreamText,
   PluginBridgeClient,
   PluginBridgeError,
   PluginSurfaceHost,
+  readPluginStream,
   type FetchInitLike,
   type FetchResponseLike,
   type MessageEventLike,
+  type StreamFetchInitLike,
+  type StreamFetchResponseLike,
   type WindowLike,
 } from "../src/index.js";
 
@@ -55,6 +59,30 @@ class FakeFetch {
       ok: true,
       status: 200,
       json: async () => body,
+    };
+  };
+}
+
+type StreamFetchCall = {
+  input: string;
+  init?: StreamFetchInitLike;
+};
+
+class FakeStreamFetch {
+  readonly calls: StreamFetchCall[] = [];
+  #responses: Array<{ ok: boolean; status: number; body: string }> = [];
+
+  push(body: string, status = 200): void {
+    this.#responses.push({ ok: status >= 200 && status < 300, status, body });
+  }
+
+  fetch = async (input: string, init?: StreamFetchInitLike): Promise<StreamFetchResponseLike> => {
+    this.calls.push({ input, init });
+    const response = this.#responses.shift() ?? { ok: false, status: 500, body: "missing fake stream response" };
+    return {
+      ok: response.ok,
+      status: response.status,
+      text: async () => response.body,
     };
   };
 }
@@ -567,6 +595,79 @@ test("surface host keeps dangerous call fail-closed without confirmation callbac
     },
   });
   host.dispose();
+});
+
+test("readPluginStream drains ndjson events with a single-use ticket", async () => {
+  const fetch = new FakeStreamFetch();
+  fetch.push([
+    JSON.stringify({
+      stream_id: "stream/a b",
+      sequence: 1,
+      kind: "data",
+      data: "bGluZSAxCg==",
+      at: "2026-06-30T00:00:00Z",
+    }),
+    JSON.stringify({
+      stream_id: "stream/a b",
+      sequence: 2,
+      kind: "done",
+      at: "2026-06-30T00:00:01Z",
+    }),
+    "",
+  ].join("\n"));
+
+  const events = await readPluginStream({
+    streamId: "stream/a b",
+    streamTicket: "ticket+1/=",
+    apiBaseURL: "https://host.example/",
+    fetch: fetch.fetch,
+  });
+
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/stream/stream%2Fa%20b?ticket=ticket%2B1%2F%3D");
+  assert.equal(fetch.calls[0]?.init?.method, "GET");
+  assert.equal(fetch.calls[0]?.init?.credentials, "same-origin");
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.sequence, 1);
+  assert.equal(decodePluginStreamText(events[0]!), "line 1\n");
+});
+
+test("readPluginStream accepts method results returned by bridge calls", async () => {
+  const fetch = new FakeStreamFetch();
+  fetch.push(`${JSON.stringify({
+    stream_id: "stream_result_1",
+    sequence: 1,
+    kind: "data",
+    data: "b2s=",
+    at: "2026-06-30T00:00:00Z",
+  })}\n`);
+
+  const events = await readPluginStream({
+    result: {
+      data: { started: true },
+      stream_id: "stream_result_1",
+      stream_ticket: "stream_ticket_1",
+    },
+    fetch: fetch.fetch,
+  });
+
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/stream/stream_result_1?ticket=stream_ticket_1");
+  assert.equal(decodePluginStreamText(events[0]!), "ok");
+});
+
+test("readPluginStream maps missing ticket and endpoint errors", async () => {
+  await assert.rejects(
+    readPluginStream({ streamId: "stream_missing_ticket" }),
+    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_INVALID_REQUEST",
+  );
+
+  const fetch = new FakeStreamFetch();
+  fetch.push(JSON.stringify({ ok: false, error_code: "PLUGIN_PERMISSION_DENIED", error: "stream ticket is required" }), 403);
+
+  await assert.rejects(
+    readPluginStream({ streamId: "stream_denied", streamTicket: "bad", fetch: fetch.fetch }),
+    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_PERMISSION_DENIED" && err.message === "stream ticket is required",
+  );
 });
 
 async function tick(): Promise<void> {

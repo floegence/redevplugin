@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
+if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
+  PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 (
   cd "$ROOT_DIR"
   go test ./pkg/protocol ./pkg/httpadapter
