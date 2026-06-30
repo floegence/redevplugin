@@ -766,6 +766,67 @@ test("platform client covers operation and data lifecycle routes", async () => {
   });
 });
 
+test("platform client lists and invokes host-mediated intents", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: true,
+    data: {
+      intents: [{
+        plugin_id: "com.example.intent",
+        plugin_instance_id: "plugin_instance_1",
+        publisher_id: "example",
+        display_name: "Intent plugin",
+        version: "1.0.0",
+        active_fingerprint: "sha256:intent",
+        intent_id: "example.echo",
+        method: "echo.ping",
+        effect: "read",
+        execution: "sync",
+        payload_schema: { type: "object" },
+      }],
+    },
+  });
+  fetch.push({ ok: true, data: { data: { ok: true } } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch, ownerSessionHashHeader: "owner_session_hash" });
+
+  const listed = await client.listIntents({ intent_id: "example.echo", plugin_instance_id: "plugin_instance_1" });
+  const result = await client.invokeIntent<{ ok: boolean }>({
+    plugin_instance_id: "plugin_instance_1",
+    intent_id: "example.echo",
+    owner_session_hash: "owner_session_hash",
+    owner_user_hash: "owner_user_hash",
+    session_channel_id_hash: "channel_hash",
+    params: { message: "hello" },
+  });
+
+  assert.equal(listed.intents?.[0]?.method, "echo.ping");
+  assert.equal(result.data?.ok, true);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/intents?intent_id=example.echo&plugin_instance_id=plugin_instance_1");
+  assert.equal(fetch.calls[0]?.init.method, "GET");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/intents/invoke");
+  assert.equal(fetch.calls[1]?.init.method, "POST");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    intent_id: "example.echo",
+    owner_session_hash: "owner_session_hash",
+    owner_user_hash: "owner_user_hash",
+    session_channel_id_hash: "channel_hash",
+    params: { message: "hello" },
+  });
+});
+
+test("platform client maps dangerous intent confirmation requirement", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "plugin method confirmation required" });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.invokeIntent({ plugin_instance_id: "plugin_instance_1", intent_id: "example.danger", params: { target: "db" } }),
+    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_CONFIRMATION_REQUIRED" && err.message === "plugin method confirmation required",
+  );
+});
+
 test("platform client manages permissions and secret refs without exposing local contracts", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { grants: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http" }] } });

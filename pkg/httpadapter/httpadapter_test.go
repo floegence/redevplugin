@@ -39,6 +39,8 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
 		"POST /_redevplugin/api/plugins/rpc":                                         false,
 		"POST /_redevplugin/api/plugins/data/export":                                 false,
+		"GET /_redevplugin/api/plugins/intents":                                      false,
+		"POST /_redevplugin/api/plugins/intents/invoke":                              false,
 		"GET /_redevplugin/api/plugins/platform/compatibility":                       false,
 		"GET /_redevplugin/api/plugins/permissions":                                  false,
 		"POST /_redevplugin/api/plugins/permissions/grant":                           false,
@@ -795,6 +797,126 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h}
+
+	listed := getJSON[struct {
+		Intents []host.IntentRecord `json:"intents"`
+	}](t, handler, "/_redevplugin/api/plugins/intents?intent_id=example.echo&plugin_instance_id="+installed.PluginInstanceID)
+	if len(listed.Intents) != 1 || listed.Intents[0].IntentID != "example.echo" || listed.Intents[0].Method != "echo.ping" || listed.Intents[0].PayloadSchema["type"] != "object" {
+		t.Fatalf("intent list mismatch: %#v", listed)
+	}
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/intents/invoke", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"intent_id":               "example.echo",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+		"params":                  map[string]any{"message": "from http intent"},
+	})
+	if result.Data == nil || adapter.last.PluginInstanceID != installed.PluginInstanceID || adapter.last.Method != "echo.ping" || adapter.last.Arguments["message"] != "from http intent" {
+		t.Fatalf("intent invoke mismatch: result=%#v invocation=%#v", result, adapter.last)
+	}
+}
+
+func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+	raw, err := json.Marshal(map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"intent_id":          "example.echo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("intent without grant status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+		t.Fatalf("intent without grant error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	if adapter.last.Method != "" {
+		t.Fatalf("capability adapter should not be called without grant: %#v", adapter.last)
+	}
+}
+
+func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"done": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, true), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h}
+	raw, err := json.Marshal(map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"intent_id":          "example.danger",
+		"params":             map[string]any{"target": "db"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/intents/invoke", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("danger intent status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrConfirmationRequired) {
+		t.Fatalf("danger intent error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	if adapter.last.Method != "" {
+		t.Fatalf("capability adapter should not be called for dangerous intent: %#v", adapter.last)
+	}
+}
+
 func TestHandlerOperationManagementFlow(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_http_1"}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -1421,6 +1543,22 @@ func buildHTTPDangerousRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildHTTPIntentFixturePackage(t *testing.T, dangerous bool) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := httpRPCFixtureManifestJSON()
+	if dangerous {
+		manifestJSON = httpDangerousRPCFixtureManifestJSON()
+	}
+	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), addHTTPIntentToManifestJSON(t, manifestJSON, dangerous))
+	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Intent</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -1867,6 +2005,29 @@ func httpBlockedNetworkFixtureManifestJSON() string {
 			]
 		}
 	}`
+}
+
+func addHTTPIntentToManifestJSON(t *testing.T, manifestJSON string, dangerous bool) string {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(manifestJSON), &doc); err != nil {
+		t.Fatal(err)
+	}
+	intent := map[string]any{
+		"intent_id":      "example.echo",
+		"method":         "echo.ping",
+		"payload_schema": map[string]any{"type": "object"},
+	}
+	if dangerous {
+		intent["intent_id"] = "example.danger"
+		intent["method"] = "danger.run"
+	}
+	doc["intents"] = []any{intent}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 func patchJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {

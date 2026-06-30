@@ -118,6 +118,15 @@ type rpcRequest struct {
 	Params               map[string]any `json:"params,omitempty"`
 }
 
+type invokeIntentRequest struct {
+	PluginInstanceID     string         `json:"plugin_instance_id,omitempty"`
+	IntentID             string         `json:"intent_id"`
+	Params               map[string]any `json:"params,omitempty"`
+	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+}
+
 type exportDataRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	IncludeSecrets   bool   `json:"include_secrets,omitempty"`
@@ -208,6 +217,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRPC(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/confirm":
 		h.handleConfirm(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/intents":
+		h.handleListIntents(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/intents/invoke":
+		h.handleInvokeIntent(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/operations":
 		h.handleListOperations(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/operations/"):
@@ -307,6 +320,8 @@ func RouteSet() []Route {
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirm"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/intents"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/intents/invoke"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations/{operation_id}"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/operations/{operation_id}/cancel"},
@@ -645,6 +660,47 @@ func (h Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForRPCError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
+}
+
+func (h Handler) handleListIntents(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	records, err := h.Host.ListIntents(r.Context(), host.ListIntentsRequest{
+		IntentID:         r.URL.Query().Get("intent_id"),
+		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForIntentError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"intents": records}})
+}
+
+func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req invokeIntentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	result, err := h.Host.InvokeIntent(r.Context(), host.InvokeIntentRequest{
+		PluginInstanceID:     req.PluginInstanceID,
+		IntentID:             req.IntentID,
+		Params:               req.Params,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForIntentError(err))})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -1477,6 +1533,36 @@ func httpStatusForRPCError(err error) int {
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusForbidden
+	}
+}
+
+func errorCodeForIntentError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, host.ErrConfirmationRequired):
+		return security.ErrConfirmationRequired
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return security.ErrPermissionDenied
+	case errors.Is(err, registry.ErrNotFound):
+		return security.ErrInvalidRequest
+	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+		return security.ErrRuntimeUnavailable
+	default:
+		return security.ErrInvalidRequest
+	}
+}
+
+func httpStatusForIntentError(err error) int {
+	switch {
+	case errors.Is(err, host.ErrConfirmationRequired):
+		return http.StatusConflict
+	case errors.Is(err, permissions.ErrPermissionDenied):
+		return http.StatusForbidden
+	case errors.Is(err, registry.ErrNotFound):
+		return http.StatusBadRequest
+	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadRequest
 	}
 }
 

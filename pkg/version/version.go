@@ -94,7 +94,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "plugin-platform-openapi",
 				Path:    "spec/openapi/plugin-platform-v1.yaml",
 				Version: PluginPlatformOpenAPIVersion,
-				SHA256:  "9e502c81ee5dea89c376c85e7ea60e4bb590c94f717ac7910919757557d386a3",
+				SHA256:  "d4f1fcf23a5f1dc56f912b24eff6c19c6561d9d2445f7ff37c15646a28dcc8a7",
 			},
 			{
 				ID:      "manifest-schema",

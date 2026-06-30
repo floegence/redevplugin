@@ -94,6 +94,20 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/intents:
+    get:
+      operationId: listPluginIntents
+      description: Lists enabled, runnable plugin intents available to host-mediated interop. The response data is `{ "intents": [...] }`.
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/intents/invoke:
+    post:
+      operationId: invokePluginIntent
+      description: Invokes a host-mediated plugin intent without iframe gateway tokens while preserving local policy, permission grants, and dangerous-method fail-closed checks.
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/operations:
     get:
       operationId: listPluginOperations

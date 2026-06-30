@@ -366,6 +366,39 @@ export type PluginOperationRecord = {
   orphaned_at?: string;
 };
 
+export type PluginIntentRecord = {
+  plugin_id: string;
+  plugin_instance_id: string;
+  publisher_id: string;
+  display_name: string;
+  version: string;
+  active_fingerprint: string;
+  intent_id: string;
+  method: string;
+  effect: string;
+  execution: string;
+  payload_schema?: Record<string, unknown>;
+};
+
+export type PluginIntentList = {
+  intents?: PluginIntentRecord[];
+  [key: string]: unknown;
+};
+
+export type PluginIntentListOptions = {
+  intent_id?: string;
+  plugin_instance_id?: string;
+};
+
+export type PluginIntentInvokeRequest = {
+  plugin_instance_id?: string;
+  intent_id: string;
+  params?: Record<string, unknown>;
+  owner_session_hash?: string;
+  owner_user_hash?: string;
+  session_channel_id_hash?: string;
+};
+
 export type PluginPermissionGrant = {
   plugin_instance_id: string;
   permission_id: string;
@@ -457,6 +490,22 @@ export class PluginPlatformClient {
   cancelOperation(operationId: string, reason?: string): Promise<PluginOperationRecord> {
     const body = reason ? { reason } : {};
     return this.#postJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, body);
+  }
+
+  listIntents(options: PluginIntentListOptions = {}): Promise<PluginIntentList> {
+    const params = new URLSearchParams();
+    if (options.intent_id) {
+      params.set("intent_id", options.intent_id);
+    }
+    if (options.plugin_instance_id) {
+      params.set("plugin_instance_id", options.plugin_instance_id);
+    }
+    const query = params.toString();
+    return this.#getJSON(`/_redevplugin/api/plugins/intents${query ? `?${query}` : ""}`);
+  }
+
+  invokeIntent<T = unknown>(request: PluginIntentInvokeRequest): Promise<PluginMethodResult<T>> {
+    return this.#postJSON("/_redevplugin/api/plugins/intents/invoke", request);
   }
 
   exportData(request: PluginDataExportRequest): Promise<PluginDataExportResult> {

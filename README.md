@@ -164,6 +164,11 @@ capabilities.
   the generated plugin's Network matrix flow, which routes HTTP, WebSocket, TCP,
   and UDP requests through the same WASM worker -> Rust runtime -> Host Network
   Broker boundary.
+- Host-mediated plugin intents are exposed end to end through the Go Host
+  library, HTTP adapter, OpenAPI route contract, and `PluginPlatformClient`.
+  Host products can list enabled runnable intents and invoke a chosen intent
+  without iframe gateway tokens while still preserving local policy evaluation,
+  permission grants, audit events, and dangerous-method fail-closed behavior.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.

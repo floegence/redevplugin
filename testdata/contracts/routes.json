@@ -12,6 +12,8 @@
   {"method": "POST", "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/rpc"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/confirm"},
+  {"method": "GET", "path": "/_redevplugin/api/plugins/intents"},
+  {"method": "POST", "path": "/_redevplugin/api/plugins/intents/invoke"},
   {"method": "GET", "path": "/_redevplugin/api/plugins/operations"},
   {"method": "GET", "path": "/_redevplugin/api/plugins/operations/{operation_id}"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel"},
