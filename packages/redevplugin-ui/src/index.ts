@@ -319,6 +319,118 @@ export type PluginCatalogResult = {
   [key: string]: unknown;
 };
 
+export type PluginTrustState = "bundled" | "verified" | "unsigned_local" | "untrusted" | "needs_review" | "blocked_security";
+
+export type PluginEnableState = "disabled" | "enabled" | "disabled_by_policy";
+
+export type PluginRetainedDataState = "none" | "retained" | "deleted" | "delete_failed_retryable";
+
+export type PluginRecord = {
+  plugin_instance_id: string;
+  publisher_id?: string;
+  plugin_id: string;
+  version: string;
+  active_fingerprint: string;
+  package_hash?: string;
+  manifest_hash?: string;
+  entries_hash?: string;
+  trust_state: PluginTrustState | string;
+  enable_state: PluginEnableState | string;
+  disabled_reason?: string;
+  retained_data_state?: PluginRetainedDataState | string;
+  policy_revision?: number;
+  management_revision?: number;
+  revoke_epoch?: number;
+  manifest?: Record<string, unknown>;
+  package_entries?: Array<Record<string, unknown>>;
+  version_history?: Array<Record<string, unknown>>;
+  installed_at?: string;
+  enabled_at?: string;
+  updated_at?: string;
+  deleted_at?: string;
+  metadata?: Record<string, string>;
+  [key: string]: unknown;
+};
+
+export type PluginInstallRequest = {
+  package_base64: string;
+  trust_state?: PluginTrustState | string;
+  plugin_instance_id?: string;
+};
+
+export type PluginUpdateRequest = {
+  plugin_instance_id: string;
+  package_base64: string;
+  trust_state?: PluginTrustState | string;
+};
+
+export type PluginDowngradeRequest = {
+  plugin_instance_id: string;
+  version?: string;
+  package_hash?: string;
+};
+
+export type PluginEnableRequest = {
+  plugin_instance_id: string;
+};
+
+export type PluginDisableRequest = {
+  plugin_instance_id: string;
+  reason?: string;
+};
+
+export type PluginUninstallRequest = {
+  plugin_instance_id: string;
+  delete_data: boolean;
+};
+
+export type PluginOpenSurfaceRequest = {
+  plugin_instance_id: string;
+  surface_id: string;
+  surface_instance_id?: string;
+  owner_session_hash?: string;
+  owner_user_hash?: string;
+  session_channel_id_hash?: string;
+  sandbox_origin?: string;
+};
+
+export type PluginSurfaceBootstrapResult = {
+  plugin_id: string;
+  plugin_instance_id: string;
+  surface_id: string;
+  surface_instance_id: string;
+  active_fingerprint: string;
+  owner_session_hash?: string;
+  session_channel_id_hash?: string;
+  asset_ticket: string;
+  asset_ticket_id: string;
+  bridge_nonce: string;
+  issued_at: string;
+  expires_at: string;
+};
+
+export type PluginRuntimeTarget = {
+  os?: string;
+  arch?: string;
+};
+
+export type PluginRuntimeStartRequest = {
+  target?: PluginRuntimeTarget;
+};
+
+export type PluginRuntimeHealth = {
+  runtime_instance_id: string;
+  runtime_generation_id: string;
+  runtime_version?: string;
+  rust_ipc_version?: string;
+  wasm_abi_version?: string;
+  ready: boolean;
+};
+
+export type PluginRuntimeStopResult = {
+  stopped: boolean;
+};
+
 export type PluginSettingsField = {
   key: string;
   type: string;
@@ -515,6 +627,46 @@ export class PluginPlatformClient {
 
   catalog(): Promise<PluginCatalogResult> {
     return this.#getJSON("/_redevplugin/api/plugins/catalog");
+  }
+
+  installPlugin(request: PluginInstallRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/install", request);
+  }
+
+  updatePlugin(request: PluginUpdateRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/update", request);
+  }
+
+  downgradePlugin(request: PluginDowngradeRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/downgrade", request);
+  }
+
+  enablePlugin(pluginInstanceIdOrRequest: string | PluginEnableRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/enable", pluginInstanceRequest(pluginInstanceIdOrRequest));
+  }
+
+  disablePlugin(request: PluginDisableRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/disable", request);
+  }
+
+  uninstallPlugin(request: PluginUninstallRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/uninstall", request);
+  }
+
+  openSurface(request: PluginOpenSurfaceRequest): Promise<PluginSurfaceBootstrapResult> {
+    return this.#postJSON("/_redevplugin/api/plugins/surfaces/open", request);
+  }
+
+  startRuntime(request: PluginRuntimeStartRequest = {}): Promise<PluginRuntimeHealth> {
+    return this.#postJSON("/_redevplugin/api/plugins/runtime/start", request);
+  }
+
+  stopRuntime(): Promise<PluginRuntimeStopResult> {
+    return this.#postJSON("/_redevplugin/api/plugins/runtime/stop", {});
+  }
+
+  runtimeHealth(): Promise<PluginRuntimeHealth> {
+    return this.#getJSON("/_redevplugin/api/plugins/runtime/health");
   }
 
   getSettingsSchema(pluginInstanceId: string): Promise<PluginSettingsSchema> {
@@ -921,6 +1073,10 @@ function queryString(values: Record<string, string | number | boolean | undefine
   }
   const query = params.toString();
   return query ? `?${query}` : "";
+}
+
+function pluginInstanceRequest(value: string | PluginEnableRequest): PluginEnableRequest {
+  return typeof value === "string" ? { plugin_instance_id: value } : value;
 }
 
 function isBridgeHandshake(value: unknown): value is PluginBridgeHandshake {

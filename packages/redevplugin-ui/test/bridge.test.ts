@@ -714,6 +714,100 @@ test("platform client reads and patches plugin settings through host API", async
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { values: { default_engine: "podman" } });
 });
 
+test("platform client manages plugin lifecycle and surface opening routes", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", disabled_reason: "admin" } });
+  fetch.push({
+    ok: true,
+    data: {
+      plugin_id: "com.example.plugin",
+      plugin_instance_id: "plugin_instance_1",
+      surface_id: "example.activity",
+      surface_instance_id: "surface_1",
+      active_fingerprint: "sha256:a",
+      asset_ticket: "asset_ticket_1",
+      asset_ticket_id: "asset_ticket_id_1",
+      bridge_nonce: "bridge_nonce_1",
+      issued_at: "2026-06-30T00:00:00Z",
+      expires_at: "2026-06-30T00:05:00Z",
+    },
+  });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", retained_data_state: "deleted" } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  const installed = await client.installPlugin({ package_base64: "cGtn", trust_state: "verified", plugin_instance_id: "plugin_instance_1" });
+  const updated = await client.updatePlugin({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", trust_state: "verified" });
+  const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0" });
+  const enabled = await client.enablePlugin("plugin_instance_1");
+  const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", reason: "admin" });
+  const surface = await client.openSurface({
+    plugin_instance_id: "plugin_instance_1",
+    surface_id: "example.activity",
+    surface_instance_id: "surface_1",
+    owner_session_hash: "owner_session_hash",
+    owner_user_hash: "owner_user_hash",
+    session_channel_id_hash: "channel_hash",
+    sandbox_origin: "https://plg.example",
+  });
+  const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", delete_data: true });
+
+  assert.equal(installed.enable_state, "disabled");
+  assert.equal(updated.version, "1.1.0");
+  assert.equal(downgraded.version, "1.0.0");
+  assert.equal(enabled.enable_state, "enabled");
+  assert.equal(disabled.disabled_reason, "admin");
+  assert.equal(surface.asset_ticket, "asset_ticket_1");
+  assert.equal(uninstalled.retained_data_state, "deleted");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", trust_state: "verified", plugin_instance_id: "plugin_instance_1" });
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", trust_state: "verified" });
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/downgrade");
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0" });
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/enable");
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
+  assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/disable");
+  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", reason: "admin" });
+  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/surfaces/open");
+  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    surface_id: "example.activity",
+    surface_instance_id: "surface_1",
+    owner_session_hash: "owner_session_hash",
+    owner_user_hash: "owner_user_hash",
+    session_channel_id_hash: "channel_hash",
+    sandbox_origin: "https://plg.example",
+  });
+  assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/uninstall");
+  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", delete_data: true });
+});
+
+test("platform client manages runtime lifecycle routes", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", runtime_version: "0.0.0-dev", rust_ipc_version: "rust-ipc-v1", wasm_abi_version: "redevplugin-wasm-worker-v1", ready: true } });
+  fetch.push({ ok: true, data: { runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", ready: true } });
+  fetch.push({ ok: true, data: { stopped: true } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  const started = await client.startRuntime({ target: { os: "darwin", arch: "arm64" } });
+  const health = await client.runtimeHealth();
+  const stopped = await client.stopRuntime();
+
+  assert.equal(started.ready, true);
+  assert.equal(health.runtime_generation_id, "gen_1");
+  assert.equal(stopped.stopped, true);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "darwin", arch: "arm64" } });
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/runtime/health");
+  assert.equal(fetch.calls[1]?.init.method, "GET");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/runtime/stop");
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {});
+});
+
 test("platform client covers operation and data lifecycle routes", async () => {
   const fetch = new FakeFetch();
   fetch.push({
