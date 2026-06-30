@@ -1529,6 +1529,7 @@ func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.Proces
 		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles:    storageFilesBroker(h.adapters.Storage),
+		StorageKV:       storageKVBroker(h.adapters.Storage),
 		Connectivity:    h.adapters.Connectivity,
 		NetworkExecutor: h.adapters.NetworkExecutor,
 	}
@@ -2189,6 +2190,14 @@ func storageFilesBroker(broker storage.Broker) storage.FilesBroker {
 		return nil
 	}
 	return files
+}
+
+func storageKVBroker(broker storage.Broker) storage.KVBroker {
+	kv, ok := broker.(storage.KVBroker)
+	if !ok {
+		return nil
+	}
+	return kv
 }
 
 func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req runtimeclient.HandleGrantValidationRequest) (runtimeclient.HandleGrantValidationResult, error) {

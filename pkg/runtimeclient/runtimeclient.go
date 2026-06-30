@@ -114,6 +114,7 @@ type ProcessSupervisorOptions struct {
 	Artifacts        ArtifactProvider
 	HandleGrants     HandleGrantValidator
 	StorageFiles     storage.FilesBroker
+	StorageKV        storage.KVBroker
 	Connectivity     connectivity.Broker
 	NetworkExecutor  connectivity.NetworkExecutor
 	Now              func() time.Time
@@ -132,6 +133,7 @@ type ProcessSupervisor struct {
 	artifacts        ArtifactProvider
 	handleGrants     HandleGrantValidator
 	storageFiles     storage.FilesBroker
+	storageKV        storage.KVBroker
 	connectivity     connectivity.Broker
 	networkExecutor  connectivity.NetworkExecutor
 	now              func() time.Time
@@ -170,6 +172,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		artifacts:        options.Artifacts,
 		handleGrants:     options.HandleGrants,
 		storageFiles:     options.StorageFiles,
+		storageKV:        options.StorageKV,
 		connectivity:     options.Connectivity,
 		networkExecutor:  options.NetworkExecutor,
 		now:              now,
@@ -483,6 +486,7 @@ const (
 	ipcFrameTypeOpenHandle          = "open_handle"
 	ipcFrameTypeValidateHandleGrant = "validate_handle_grant"
 	ipcFrameTypeStorageFile         = "storage_file"
+	ipcFrameTypeStorageKV           = "storage_kv"
 	ipcFrameTypeNetworkGrant        = "network_grant"
 	ipcFrameTypeNetworkExecute      = "network_execute"
 	ipcFrameTypeRevokeEpoch         = "revoke_epoch"
@@ -588,6 +592,39 @@ type storageFileResponsePayload struct {
 	Usage      *storage.Usage      `json:"usage,omitempty"`
 	Code       string              `json:"code,omitempty"`
 	Message    string              `json:"message,omitempty"`
+}
+
+type storageKVRequestPayload struct {
+	HandleGrantToken    string `json:"handle_grant_token"`
+	PluginInstanceID    string `json:"plugin_instance_id"`
+	ActiveFingerprint   string `json:"active_fingerprint"`
+	RuntimeInstanceID   string `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string `json:"runtime_generation_id"`
+	RuntimeShardID      string `json:"runtime_shard_id,omitempty"`
+	HandleID            string `json:"handle_id"`
+	Method              string `json:"method"`
+	PolicyRevision      uint64 `json:"policy_revision"`
+	ManagementRevision  uint64 `json:"management_revision"`
+	RevokeEpoch         uint64 `json:"revoke_epoch"`
+	Operation           string `json:"operation"`
+	StoreID             string `json:"store_id"`
+	Key                 string `json:"key,omitempty"`
+	ValueBase64         string `json:"value_base64,omitempty"`
+	Prefix              string `json:"prefix,omitempty"`
+	MaxBytes            int64  `json:"max_bytes,omitempty"`
+	MaxEntries          int    `json:"max_entries,omitempty"`
+}
+
+type storageKVResponsePayload struct {
+	OK          bool              `json:"ok"`
+	Key         string            `json:"key,omitempty"`
+	ValueBase64 string            `json:"value_base64,omitempty"`
+	SizeBytes   int64             `json:"size_bytes,omitempty"`
+	Prefix      string            `json:"prefix,omitempty"`
+	Entries     []storage.KVEntry `json:"entries,omitempty"`
+	Usage       *storage.Usage    `json:"usage,omitempty"`
+	Code        string            `json:"code,omitempty"`
+	Message     string            `json:"message,omitempty"`
 }
 
 type networkGrantRequestPayload struct {
@@ -791,6 +828,12 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 			}
 			if got.frame.FrameType == ipcFrameTypeStorageFile {
 				if err := s.respondToStorageFile(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
+			if got.frame.FrameType == ipcFrameTypeStorageKV {
+				if err := s.respondToStorageKV(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
 					return ipcFrame{}, err
 				}
 				continue
@@ -1173,6 +1216,207 @@ func storageFileErrorResponse(err error) storageFileResponsePayload {
 		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: err.Error()}
 	default:
 		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_FAILED", Message: err.Error()}
+	}
+}
+
+func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	if allowedArtifact == nil {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_KV_REQUEST_DENIED",
+			Message: "storage kv access is only available during worker invocation",
+		})
+	}
+	var req storageKVRequestPayload
+	if len(frame.Payload) == 0 {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_KV_REQUEST_INVALID",
+			Message: "missing storage kv payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_KV_REQUEST_INVALID",
+			Message: "decode storage kv payload: " + err.Error(),
+		})
+	}
+	if err := validateStorageKVRequest(req, health.RuntimeGenerationID); err != nil {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_KV_REQUEST_INVALID",
+			Message: err.Error(),
+		})
+	}
+	if s.storageKV == nil {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_KV_BROKER_UNAVAILABLE",
+			Message: "runtime storage kv broker is unavailable",
+		})
+	}
+	if s.handleGrants == nil {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
+			Message: "runtime handle grant validator is unavailable",
+		})
+	}
+	grant, err := s.handleGrants.ValidateHandleGrant(ctx, HandleGrantValidationRequest{
+		HandleGrantToken:    req.HandleGrantToken,
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		RuntimeInstanceID:   req.RuntimeInstanceID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		RuntimeShardID:      req.RuntimeShardID,
+		HandleID:            req.HandleID,
+		Method:              req.Method,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+	})
+	if err != nil {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: err.Error(),
+		})
+	}
+	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: "handle grant validation result did not match storage kv request",
+		})
+	}
+	payload := dispatchStorageKVRequest(ctx, s.storageKV, req)
+	return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
+}
+
+func (s *ProcessSupervisor) writeStorageKVResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageKVResponsePayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeStorageKV,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write storage_kv response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
+func validateStorageKVRequest(req storageKVRequestPayload, runtimeGenerationID string) error {
+	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
+		return errors.New("runtime_generation_id is not bound to this runtime generation")
+	}
+	if strings.TrimSpace(req.HandleGrantToken) == "" ||
+		strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.StoreID) == "" ||
+		strings.TrimSpace(req.HandleID) == "" ||
+		strings.TrimSpace(req.Method) == "" ||
+		strings.TrimSpace(req.Operation) == "" {
+		return errors.New("handle grant token, plugin identity, store id, handle id, method, and operation are required")
+	}
+	if req.Method != "storage.kv" {
+		return errors.New("storage kv access requires method storage.kv")
+	}
+	if req.HandleID != "storage:"+req.StoreID {
+		return errors.New("storage handle id must match store id")
+	}
+	switch req.Operation {
+	case "get", "put", "delete":
+		if strings.TrimSpace(req.Key) == "" {
+			return errors.New("storage kv key is required")
+		}
+		return nil
+	case "list":
+		return nil
+	default:
+		return errors.New("storage kv operation is not supported")
+	}
+}
+
+func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req storageKVRequestPayload) storageKVResponsePayload {
+	switch req.Operation {
+	case "get":
+		result, err := broker.GetKV(ctx, storage.KVGetRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Key:              req.Key,
+			MaxBytes:         req.MaxBytes,
+		})
+		if err != nil {
+			return storageKVErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageKVResponsePayload{
+			OK:          true,
+			Key:         result.Key,
+			ValueBase64: base64.StdEncoding.EncodeToString(result.Value),
+			SizeBytes:   result.SizeBytes,
+			Usage:       &usage,
+		}
+	case "put":
+		value, err := base64.StdEncoding.DecodeString(req.ValueBase64)
+		if err != nil {
+			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "decode value_base64: " + err.Error()}
+		}
+		result, err := broker.PutKV(ctx, storage.KVPutRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Key:              req.Key,
+			Value:            value,
+		})
+		if err != nil {
+			return storageKVErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageKVResponsePayload{OK: true, Key: result.Key, SizeBytes: result.SizeBytes, Usage: &usage}
+	case "delete":
+		if err := broker.DeleteKV(ctx, storage.KVDeleteRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Key:              req.Key,
+		}); err != nil {
+			return storageKVErrorResponse(err)
+		}
+		return storageKVResponsePayload{OK: true, Key: req.Key}
+	case "list":
+		result, err := broker.ListKV(ctx, storage.KVListRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Prefix:           req.Prefix,
+			MaxEntries:       req.MaxEntries,
+		})
+		if err != nil {
+			return storageKVErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageKVResponsePayload{OK: true, Prefix: result.Prefix, Entries: result.Entries, Usage: &usage}
+	default:
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: "storage kv operation is not supported"}
+	}
+}
+
+func storageKVErrorResponse(err error) storageKVResponsePayload {
+	switch {
+	case errors.Is(err, storage.ErrKVKeyNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_NOT_FOUND", Message: err.Error()}
+	case errors.Is(err, storage.ErrInvalidKVKey), errors.Is(err, storage.ErrInvalidNamespace):
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_INVALID_KEY", Message: err.Error()}
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_QUOTA_EXCEEDED", Message: err.Error()}
+	case errors.Is(err, storage.ErrKVValueTooLarge):
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: err.Error()}
+	default:
+		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_FAILED", Message: err.Error()}
 	}
 }
 

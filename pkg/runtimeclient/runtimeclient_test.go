@@ -266,6 +266,73 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:settings",
+			Method:              "storage.kv",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	kv := &recordingStorageKVBroker{
+		putResult: storage.KVPutResult{
+			Key:       "demo/last_broker_run",
+			SizeBytes: 8,
+			Usage:     storage.Usage{PluginInstanceID: "plugini_1", StoreID: "settings", UsageBytes: 8, QuotaBytes: 4096},
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
+		HandleGrants: validator,
+		StorageKV:    kv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	storageKV, ok := decoded["storage_kv"].(map[string]any)
+	if !ok {
+		t.Fatalf("storage kv result missing: %#v", decoded)
+	}
+	if storageKV["ok"] != true || storageKV["key"] != "demo/last_broker_run" || storageKV["size_bytes"] != float64(8) {
+		t.Fatalf("storage kv result mismatch: %#v", storageKV)
+	}
+	if validator.calls != 1 || validator.last.HandleID != "storage:settings" || validator.last.Method != "storage.kv" {
+		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
+	}
+	if kv.putCalls != 1 || kv.lastPut.PluginInstanceID != "plugini_1" || kv.lastPut.StoreID != "settings" || kv.lastPut.Key != "demo/last_broker_run" || string(kv.lastPut.Value) != "hello kv" {
+		t.Fatalf("storage kv put mismatch: calls=%d last=%#v", kv.putCalls, kv.lastPut)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) {
 	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
 	broker := &recordingConnectivityBroker{
@@ -663,6 +730,42 @@ func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:settings",
+			Method:              "storage.kv",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
+		HandleGrants: validator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if validator.calls != 0 {
+		t.Fatalf("validator should not be called when broker is unavailable: %d", validator.calls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T) {
 	validator := &recordingHandleGrantValidator{
 		result: HandleGrantValidationResult{
@@ -692,6 +795,39 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 	}
 	if validator.calls != 0 || files.readCalls != 0 {
 		t.Fatalf("storage outside worker should not touch validator or broker: validator=%d reads=%d", validator.calls, files.readCalls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:settings",
+			Method:              "storage.kv",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	kv := &recordingStorageKVBroker{}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE=put"),
+		HandleGrants: validator,
+		StorageKV:    kv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if validator.calls != 0 || kv.putCalls != 0 {
+		t.Fatalf("storage kv outside worker should not touch validator or broker: validator=%d puts=%d", validator.calls, kv.putCalls)
 	}
 	stopRuntimeSupervisor(t, supervisor)
 }
@@ -918,6 +1054,11 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV") != "" {
+				if !requestStorageKVFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE") == "1" {
 				if !validateHandleGrantFromHelper(reader, encoder, request) {
 					continue
@@ -943,6 +1084,11 @@ func runRuntimeClientHelper() {
 			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE") != "" {
 				if !requestStorageFileFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE") != "" {
+				if !requestStorageKVFromHelper(reader, encoder, request) {
 					continue
 				}
 			}
@@ -1144,6 +1290,58 @@ func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, r
 	return false
 }
 
+func requestStorageKVFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
+	rawStorageReq, _ := json.Marshal(storageKVRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV")))
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeStorageKV,
+		RequestID:           request.RequestID + ":storage_kv",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             rawStorageReq,
+	})
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(41)
+	}
+	var response ipcFrame
+	if err := json.Unmarshal(line, &response); err != nil {
+		os.Exit(42)
+	}
+	if response.FrameType != ipcFrameTypeStorageKV || response.RequestID != request.RequestID+":storage_kv" {
+		os.Exit(43)
+	}
+	var storageKV storageKVResponsePayload
+	if err := json.Unmarshal(response.Payload, &storageKV); err != nil {
+		os.Exit(44)
+	}
+	if !storageKV.OK {
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageKV.Code, Message: storageKV.Message})
+		resultFrameType := ipcFrameTypeInvokeWorkerResult
+		if request.FrameType == ipcFrameTypeRevokeEpoch {
+			resultFrameType = ipcFrameTypeRevokeEpochAck
+		}
+		_ = encoder.Encode(ipcFrame{
+			IPCVersion:          version.RustIPCVersion,
+			FrameType:           resultFrameType,
+			RequestID:           request.RequestID,
+			RuntimeGenerationID: request.RuntimeGenerationID,
+			Payload:             raw,
+		})
+		return false
+	}
+	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+		"storage_kv": storageKV,
+	})})
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeInvokeWorkerResult,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             raw,
+	})
+	return false
+}
+
 func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
 	rawNetworkReq, _ := json.Marshal(networkGrantRequestFromInvoke(request))
 	_ = encoder.Encode(ipcFrame{
@@ -1261,6 +1459,39 @@ func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFil
 		StoreID:             "workspace",
 		Path:                "notes/today.txt",
 		DataBase64:          base64.StdEncoding.EncodeToString([]byte("hello")),
+		MaxBytes:            1024,
+		MaxEntries:          10,
+	}
+	if request.FrameType == ipcFrameTypeInvokeWorker {
+		var payload invokeWorkerRequestPayload
+		if err := json.Unmarshal(request.Payload, &payload); err == nil {
+			req.PluginInstanceID = payload.Lease.PluginInstanceID
+			req.PolicyRevision = payload.Lease.PolicyRevision
+			req.ManagementRevision = payload.Lease.ManagementRevision
+			req.RevokeEpoch = payload.Lease.RevokeEpoch
+		}
+	}
+	return req
+}
+
+func storageKVRequestFromInvoke(request ipcFrame, operation string) storageKVRequestPayload {
+	req := storageKVRequestPayload{
+		HandleGrantToken:    "handle_grant_token_1",
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		RuntimeShardID:      "runtime_shard_1",
+		HandleID:            "storage:settings",
+		Method:              "storage.kv",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+		Operation:           operation,
+		StoreID:             "settings",
+		Key:                 "demo/last_broker_run",
+		ValueBase64:         base64.StdEncoding.EncodeToString([]byte("hello kv")),
+		Prefix:              "demo/",
 		MaxBytes:            1024,
 		MaxEntries:          10,
 	}
@@ -1434,6 +1665,21 @@ type recordingStorageFilesBroker struct {
 	err         error
 }
 
+type recordingStorageKVBroker struct {
+	getCalls    int
+	putCalls    int
+	deleteCalls int
+	listCalls   int
+	lastGet     storage.KVGetRequest
+	lastPut     storage.KVPutRequest
+	lastDelete  storage.KVDeleteRequest
+	lastList    storage.KVListRequest
+	getResult   storage.KVGetResult
+	putResult   storage.KVPutResult
+	listResult  storage.KVListResult
+	err         error
+}
+
 type recordingConnectivityBroker struct {
 	calls       int
 	installCall int
@@ -1552,6 +1798,39 @@ func (b *recordingStorageFilesBroker) ListFiles(_ context.Context, req storage.F
 	b.lastList = req
 	if b.err != nil {
 		return storage.FileListResult{}, b.err
+	}
+	return b.listResult, nil
+}
+
+func (b *recordingStorageKVBroker) GetKV(_ context.Context, req storage.KVGetRequest) (storage.KVGetResult, error) {
+	b.getCalls++
+	b.lastGet = req
+	if b.err != nil {
+		return storage.KVGetResult{}, b.err
+	}
+	return b.getResult, nil
+}
+
+func (b *recordingStorageKVBroker) PutKV(_ context.Context, req storage.KVPutRequest) (storage.KVPutResult, error) {
+	b.putCalls++
+	b.lastPut = req
+	if b.err != nil {
+		return storage.KVPutResult{}, b.err
+	}
+	return b.putResult, nil
+}
+
+func (b *recordingStorageKVBroker) DeleteKV(_ context.Context, req storage.KVDeleteRequest) error {
+	b.deleteCalls++
+	b.lastDelete = req
+	return b.err
+}
+
+func (b *recordingStorageKVBroker) ListKV(_ context.Context, req storage.KVListRequest) (storage.KVListResult, error) {
+	b.listCalls++
+	b.lastList = req
+	if b.err != nil {
+		return storage.KVListResult{}, b.err
 	}
 	return b.listResult, nil
 }

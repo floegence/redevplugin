@@ -40,7 +40,9 @@ const (
 	realDemoCapability      = "example.capability.real_demo"
 	realDemoAssetCookieName = "__Host-redevplugin-asset-session"
 	realDemoBrokerStoreID   = "workspace"
+	realDemoBrokerKVStoreID = "settings"
 	realDemoBrokerFilePath  = "notes/from-real-demo.txt"
+	realDemoBrokerKVKey     = "demo/last_broker_run"
 )
 
 var realDemoNetworkMatrix = []realDemoNetworkCase{
@@ -297,12 +299,26 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		storageKVGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+			PluginInstanceID:    record.PluginInstanceID,
+			StoreID:             realDemoBrokerKVStoreID,
+			RuntimeInstanceID:   health.RuntimeInstanceID,
+			RuntimeGenerationID: health.RuntimeGenerationID,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		broker := realDemoBrokerPayload{
-			StorageHandleGrantToken: storageGrant.HandleGrant.HandleGrantToken,
-			StorageStoreID:          realDemoBrokerStoreID,
-			StoragePath:             realDemoBrokerFilePath,
-			StorageDataBase64:       base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker storage")),
-			NetworkBodyBase64:       base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker network")),
+			StorageHandleGrantToken:   storageGrant.HandleGrant.HandleGrantToken,
+			StorageStoreID:            realDemoBrokerStoreID,
+			StoragePath:               realDemoBrokerFilePath,
+			StorageDataBase64:         base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker storage")),
+			StorageKVHandleGrantToken: storageKVGrant.HandleGrant.HandleGrantToken,
+			StorageKVStoreID:          realDemoBrokerKVStoreID,
+			StorageKVKey:              realDemoBrokerKVKey,
+			StorageKVValueBase64:      base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker kv")),
+			NetworkBodyBase64:         base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker network")),
 		}
 		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), bootstrapJSON(broker), health.RuntimeGenerationID))
 	})
@@ -350,11 +366,15 @@ type realDemoBootstrapPayload struct {
 }
 
 type realDemoBrokerPayload struct {
-	StorageHandleGrantToken string `json:"storage_handle_grant_token"`
-	StorageStoreID          string `json:"storage_store_id"`
-	StoragePath             string `json:"storage_path"`
-	StorageDataBase64       string `json:"storage_data_base64"`
-	NetworkBodyBase64       string `json:"network_body_base64"`
+	StorageHandleGrantToken   string `json:"storage_handle_grant_token"`
+	StorageStoreID            string `json:"storage_store_id"`
+	StoragePath               string `json:"storage_path"`
+	StorageDataBase64         string `json:"storage_data_base64"`
+	StorageKVHandleGrantToken string `json:"storage_kv_handle_grant_token"`
+	StorageKVStoreID          string `json:"storage_kv_store_id"`
+	StorageKVKey              string `json:"storage_kv_key"`
+	StorageKVValueBase64      string `json:"storage_kv_value_base64"`
+	NetworkBodyBase64         string `json:"network_body_base64"`
 }
 
 func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPayload {
@@ -434,6 +454,22 @@ func addRealDemoMethods(manifestFile string) error {
 				MaxDurationMS:  1000,
 				DataLossRisk:   false,
 				StepsHash:      "sha256:real-demo-storage",
+			},
+		}, {
+			StoreID:       realDemoBrokerKVStoreID,
+			Kind:          string(storage.StoreKV),
+			Scope:         "user",
+			QuotaBytes:    256 << 10,
+			SchemaVersion: 1,
+			Migration: manifest.MigrationSpec{
+				FromVersion:    0,
+				ToVersion:      1,
+				Reversible:     true,
+				RequiresWorker: false,
+				EstimatedBytes: 0,
+				MaxDurationMS:  1000,
+				DataLossRisk:   false,
+				StepsHash:      "sha256:real-demo-kv",
 			},
 		}},
 	}
@@ -529,41 +565,11 @@ func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {
 }
 
 func realDemoBrokerWorkerWASM() []byte {
-	exportName := []byte("redevplugin_worker_invoke")
-	storageModule := []byte("redevplugin.storage")
-	storageImport := []byte("files_write_demo")
-	networkModule := []byte("redevplugin.network")
-	networkImport := []byte("http_request_demo")
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x07, 0x02,
-		0x60, 0x00, 0x00,
-		0x60, 0x00, 0x00,
-		0x02,
-	}
-	importPayload := []byte{0x02, byte(len(storageModule))}
-	importPayload = append(importPayload, storageModule...)
-	importPayload = append(importPayload, byte(len(storageImport)))
-	importPayload = append(importPayload, storageImport...)
-	importPayload = append(importPayload, 0x00, 0x00, byte(len(networkModule)))
-	importPayload = append(importPayload, networkModule...)
-	importPayload = append(importPayload, byte(len(networkImport)))
-	importPayload = append(importPayload, networkImport...)
-	importPayload = append(importPayload, 0x00, 0x00)
-	module = appendLEBUint32(module, uint32(len(importPayload)))
-	module = append(module, importPayload...)
-	module = append(module, 0x03, 0x02, 0x01, 0x01, 0x07)
-	exportPayload := []byte{0x01, byte(len(exportName))}
-	exportPayload = append(exportPayload, exportName...)
-	exportPayload = append(exportPayload, 0x00, 0x02)
-	module = appendLEBUint32(module, uint32(len(exportPayload)))
-	module = append(module, exportPayload...)
-	codePayload := []byte{0x01, 0x06, 0x00, 0x10, 0x00, 0x10, 0x01, 0x0b}
-	module = append(module, 0x0a)
-	module = appendLEBUint32(module, uint32(len(codePayload)))
-	module = append(module, codePayload...)
-	return module
+	return importedNoArgHostcallWorkerWASM("redevplugin_worker_invoke", [][2]string{
+		{"redevplugin.storage", "files_write_demo"},
+		{"redevplugin.storage", "kv_put_demo"},
+		{"redevplugin.network", "http_request_demo"},
+	})
 }
 
 func realDemoNetworkWorkerWASM(networkCase realDemoNetworkCase) []byte {
@@ -1150,6 +1156,10 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
             storage_store_id: brokerConfig.storage_store_id,
             storage_path: brokerConfig.storage_path,
             storage_data_base64: brokerConfig.storage_data_base64,
+            storage_kv_handle_grant_token: brokerConfig.storage_kv_handle_grant_token,
+            storage_kv_store_id: brokerConfig.storage_kv_store_id,
+            storage_kv_key: brokerConfig.storage_kv_key,
+            storage_kv_value_base64: brokerConfig.storage_kv_value_base64,
             network_body_base64: brokerConfig.network_body_base64,
           };
           nextInit = { ...init, body: JSON.stringify(body) };

@@ -158,6 +158,16 @@ export function createDemoPlatformFetch(options = {}) {
                   bytes_written: 51,
                   executor: "host storage broker",
                 },
+                storage_kv: {
+                  ok: true,
+                  handle_id: "storage:settings",
+                  method: "storage.kv",
+                  operation: "put",
+                  store_id: "settings",
+                  key: "demo/last_broker_run",
+                  size_bytes: 35,
+                  executor: "host storage broker",
+                },
                 network_execute: {
                   ok: true,
                   connector_id: "api",

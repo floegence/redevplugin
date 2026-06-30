@@ -51,6 +51,7 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles:    storageFilesBroker(h.adapters.Storage),
+		StorageKV:       storageKVBroker(h.adapters.Storage),
 		Connectivity:    broker,
 		NetworkExecutor: executor,
 	})
@@ -146,6 +147,7 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 		Artifacts:    runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants: runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles: storageFilesBroker(h.adapters.Storage),
+		StorageKV:    storageKVBroker(h.adapters.Storage),
 		Connectivity: h.adapters.Connectivity,
 	})
 	if err != nil {
@@ -225,6 +227,7 @@ func TestCallPluginMethodWorkerNetworkHostcallThroughBuiltRustRuntime(t *testing
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles:     storageFilesBroker(h.adapters.Storage),
+		StorageKV:        storageKVBroker(h.adapters.Storage),
 		Connectivity:     broker,
 		NetworkExecutor:  executor,
 		HandshakeTimeout: 5 * time.Second,
@@ -323,6 +326,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles:     storageFilesBroker(h.adapters.Storage),
+		StorageKV:        storageKVBroker(h.adapters.Storage),
 		Connectivity:     broker,
 		NetworkExecutor:  executor,
 		HandshakeTimeout: 5 * time.Second,
@@ -415,6 +419,7 @@ func TestCallPluginMethodWorkerStorageHostcallThroughBuiltRustRuntime(t *testing
 		Artifacts:    runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants: runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles: storageFilesBroker(h.adapters.Storage),
+		StorageKV:    storageKVBroker(h.adapters.Storage),
 		Connectivity: h.adapters.Connectivity,
 	})
 	if err != nil {
@@ -522,6 +527,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles:     storageFilesBroker(h.adapters.Storage),
+		StorageKV:        storageKVBroker(h.adapters.Storage),
 		Connectivity:     h.adapters.Connectivity,
 		HandshakeTimeout: 5 * time.Second,
 	})

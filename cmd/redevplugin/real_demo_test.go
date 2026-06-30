@@ -121,6 +121,7 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		`asset_ticket: bootstrap.asset_ticket`,
 		`body.method === "worker.brokerDemo"`,
 		`storage_handle_grant_token: brokerConfig.storage_handle_grant_token`,
+		`storage_kv_handle_grant_token: brokerConfig.storage_kv_handle_grant_token`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("real demo html missing %q", want)
@@ -158,6 +159,8 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		`storage_handle_grant_token`,
+		`storage_kv_handle_grant_token`,
+		`storage_kv_value_base64`,
 		`network_body_base64`,
 		`brokerConfig`,
 	} {

@@ -7,6 +7,7 @@ pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
 pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
 pub const FRAME_TYPE_VALIDATE_HANDLE_GRANT: &str = "validate_handle_grant";
 pub const FRAME_TYPE_STORAGE_FILE: &str = "storage_file";
+pub const FRAME_TYPE_STORAGE_KV: &str = "storage_kv";
 pub const FRAME_TYPE_NETWORK_GRANT: &str = "network_grant";
 pub const FRAME_TYPE_NETWORK_EXECUTE: &str = "network_execute";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
@@ -14,6 +15,7 @@ pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
 pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
 pub const ERR_HANDLE_GRANT_VALIDATION_FAILED: &str = "HANDLE_GRANT_VALIDATION_FAILED";
 pub const ERR_STORAGE_FILE_FAILED: &str = "STORAGE_FILE_FAILED";
+pub const ERR_STORAGE_KV_FAILED: &str = "STORAGE_KV_FAILED";
 pub const ERR_NETWORK_GRANT_FAILED: &str = "NETWORK_GRANT_FAILED";
 pub const ERR_NETWORK_EXECUTE_FAILED: &str = "NETWORK_EXECUTE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
@@ -32,6 +34,7 @@ pub enum FrameType {
     OpenHandle,
     ValidateHandleGrant,
     StorageFile,
+    StorageKV,
     NetworkGrant,
     NetworkExecute,
     CloseHandle,
@@ -219,21 +222,26 @@ pub fn worker_success_result_json(
     identity: &WorkerInvocationIdentity,
     wasm_byte_len: usize,
     storage_file_result_json: Option<&str>,
+    storage_kv_result_json: Option<&str>,
     network_execute_result_json: Option<&str>,
 ) -> String {
     let storage_file = storage_file_result_json
         .map(|result| format!(",\"storage_file\":{result}"))
         .unwrap_or_default();
+    let storage_kv = storage_kv_result_json
+        .map(|result| format!(",\"storage_kv\":{result}"))
+        .unwrap_or_default();
     let network_execute = network_execute_result_json
         .map(|result| format!(",\"network_execute\":{result}"))
         .unwrap_or_default();
     format!(
-        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}{}}}}}",
+        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}{}{}}}}}",
         escape_json_string(&identity.method),
         escape_json_string(&identity.worker_id),
         WASM_ABI_VERSION,
         wasm_byte_len,
         storage_file,
+        storage_kv,
         network_execute
     )
 }
@@ -267,6 +275,14 @@ pub fn storage_file_payload_json(input: &str) -> Result<String, String> {
     let (frame_type, _, _) = parse_frame_identity(input).map_err(|err| err.to_string())?;
     if frame_type != FRAME_TYPE_STORAGE_FILE {
         return Err("expected storage_file frame".to_string());
+    }
+    frame_payload_json(input)
+}
+
+pub fn storage_kv_payload_json(input: &str) -> Result<String, String> {
+    let (frame_type, _, _) = parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_STORAGE_KV {
+        return Err("expected storage_kv frame".to_string());
     }
     frame_payload_json(input)
 }
@@ -469,6 +485,86 @@ pub fn validate_storage_file_response(
             .unwrap_or_else(|| ERR_STORAGE_FILE_FAILED.to_string());
         let message = extract_json_string(input, "message")
             .unwrap_or_else(|| "storage file request failed".to_string());
+        return Err(format!("{code}: {message}"));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageKVRequest {
+    pub handle_grant_token: String,
+    pub plugin_instance_id: String,
+    pub active_fingerprint: String,
+    pub runtime_instance_id: String,
+    pub runtime_generation_id: String,
+    pub runtime_shard_id: String,
+    pub handle_id: String,
+    pub method: String,
+    pub policy_revision: u64,
+    pub management_revision: u64,
+    pub revoke_epoch: u64,
+    pub operation: String,
+    pub store_id: String,
+    pub key: String,
+    pub value_base64: String,
+    pub prefix: String,
+    pub max_bytes: u64,
+    pub max_entries: u64,
+}
+
+pub fn storage_kv_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    req: &StorageKVRequest,
+) -> String {
+    format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"operation\":\"{}\",\"store_id\":\"{}\",\"key\":\"{}\",\"value_base64\":\"{}\",\"prefix\":\"{}\",\"max_bytes\":{},\"max_entries\":{}}}}}",
+        RUST_IPC_VERSION,
+        FRAME_TYPE_STORAGE_KV,
+        escape_json_string(request_id),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(&req.handle_grant_token),
+        escape_json_string(&req.plugin_instance_id),
+        escape_json_string(&req.active_fingerprint),
+        escape_json_string(&req.runtime_instance_id),
+        escape_json_string(&req.runtime_generation_id),
+        escape_json_string(&req.runtime_shard_id),
+        escape_json_string(&req.handle_id),
+        escape_json_string(&req.method),
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+        escape_json_string(&req.operation),
+        escape_json_string(&req.store_id),
+        escape_json_string(&req.key),
+        escape_json_string(&req.value_base64),
+        escape_json_string(&req.prefix),
+        req.max_bytes,
+        req.max_entries
+    )
+}
+
+pub fn validate_storage_kv_response(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+) -> Result<(), String> {
+    let (frame_type, request_id, runtime_generation_id) =
+        parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_STORAGE_KV {
+        return Err("expected storage_kv frame".to_string());
+    }
+    if request_id != expected_request_id {
+        return Err("storage_kv request_id mismatch".to_string());
+    }
+    if runtime_generation_id != expected_runtime_generation_id {
+        return Err("storage_kv runtime_generation_id mismatch".to_string());
+    }
+    if !extract_json_bool(input, "ok").unwrap_or(false) {
+        let code =
+            extract_json_string(input, "code").unwrap_or_else(|| ERR_STORAGE_KV_FAILED.to_string());
+        let message = extract_json_string(input, "message")
+            .unwrap_or_else(|| "storage kv request failed".to_string());
         return Err(format!("{code}: {message}"));
     }
     Ok(())
@@ -929,6 +1025,49 @@ mod tests {
     }
 
     #[test]
+    fn renders_storage_kv_frame() {
+        let req = StorageKVRequest {
+            handle_grant_token: "handle_grant.secret".to_string(),
+            plugin_instance_id: "plugini_1".to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: "runtime_shard_1".to_string(),
+            handle_id: "storage:settings".to_string(),
+            method: "storage.kv".to_string(),
+            policy_revision: 1,
+            management_revision: 2,
+            revoke_epoch: 3,
+            operation: "put".to_string(),
+            store_id: "settings".to_string(),
+            key: "demo/last_broker_run".to_string(),
+            value_base64: "aGVsbG8=".to_string(),
+            prefix: String::new(),
+            max_bytes: 0,
+            max_entries: 10,
+        };
+        let frame = storage_kv_frame("r1:storage_kv", "g1", &req);
+        assert!(frame.contains(r#""frame_type":"storage_kv""#));
+        assert!(frame.contains(r#""handle_id":"storage:settings""#));
+        assert!(frame.contains(r#""method":"storage.kv""#));
+        assert!(frame.contains(r#""operation":"put""#));
+        assert!(frame.contains(r#""key":"demo/last_broker_run""#));
+    }
+
+    #[test]
+    fn validates_storage_kv_response() {
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","size_bytes":5}}"#;
+        validate_storage_kv_response(frame, "r1:storage_kv", "g1")
+            .expect("valid storage kv response");
+        let payload = storage_kv_payload_json(frame).expect("storage kv payload");
+        assert!(payload.contains(r#""key":"demo/last_broker_run""#));
+        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing"}}"#;
+        let err = validate_storage_kv_response(failed, "r1:storage_kv", "g1")
+            .expect_err("failed storage kv response");
+        assert!(err.contains("STORAGE_KV_NOT_FOUND"));
+    }
+
+    #[test]
     fn renders_worker_success_with_storage_result() {
         let identity = WorkerInvocationIdentity {
             package_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -945,9 +1084,11 @@ mod tests {
             &identity,
             42,
             Some(r#"{"ok":true,"path":"notes/from-wasm.txt","size_bytes":5}"#),
+            Some(r#"{"ok":true,"key":"demo/last_broker_run","size_bytes":12}"#),
             Some(r#"{"ok":true,"transport":"http","status_code":201}"#),
         );
         assert!(result.contains(r#""storage_file":{"ok":true"#));
+        assert!(result.contains(r#""storage_kv":{"ok":true"#));
         assert!(result.contains(r#""network_execute":{"ok":true"#));
         assert!(result.contains(r#""wasm_byte_len":42"#));
     }

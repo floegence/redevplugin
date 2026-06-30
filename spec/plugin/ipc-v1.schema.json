@@ -8,7 +8,7 @@
   "properties": {
     "ipc_version": { "const": "rust-ipc-v1" },
     "frame_type": {
-      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "storage_file", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "storage_file", "storage_kv", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "runtime_generation_id": { "type": "string" },
@@ -136,6 +136,20 @@
             "oneOf": [
               { "$ref": "#/$defs/storage_file_request_payload" },
               { "$ref": "#/$defs/storage_file_response_payload" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "storage_kv" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "oneOf": [
+              { "$ref": "#/$defs/storage_kv_request_payload" },
+              { "$ref": "#/$defs/storage_kv_response_payload" }
             ]
           }
         }
@@ -330,6 +344,72 @@
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "dir": { "type": "boolean" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "storage_kv_request_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handle_grant_token",
+        "plugin_instance_id",
+        "active_fingerprint",
+        "runtime_generation_id",
+        "handle_id",
+        "method",
+        "policy_revision",
+        "management_revision",
+        "revoke_epoch",
+        "operation",
+        "store_id"
+      ],
+      "properties": {
+        "handle_grant_token": { "type": "string", "minLength": 1 },
+        "plugin_instance_id": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "runtime_instance_id": { "type": "string" },
+        "runtime_generation_id": { "type": "string", "minLength": 1 },
+        "runtime_shard_id": { "type": "string" },
+        "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
+        "method": { "const": "storage.kv" },
+        "policy_revision": { "type": "integer", "minimum": 0 },
+        "management_revision": { "type": "integer", "minimum": 0 },
+        "revoke_epoch": { "type": "integer", "minimum": 0 },
+        "operation": { "enum": ["get", "put", "delete", "list"] },
+        "store_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+        "key": { "type": "string" },
+        "value_base64": { "type": "string", "contentEncoding": "base64" },
+        "prefix": { "type": "string" },
+        "max_bytes": { "type": "integer", "minimum": 0 },
+        "max_entries": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "storage_kv_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "key": { "type": "string" },
+        "value_base64": { "type": "string", "contentEncoding": "base64" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "prefix": { "type": "string" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/storage_kv_entry" }
+        },
+        "usage": { "$ref": "#/$defs/storage_usage" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "storage_kv_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "size_bytes", "updated_at"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
         "size_bytes": { "type": "integer", "minimum": 0 },
         "updated_at": { "type": "string", "format": "date-time" }
       }

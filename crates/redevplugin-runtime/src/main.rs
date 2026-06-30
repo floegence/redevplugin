@@ -167,6 +167,14 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 line,
                 &request_json,
             ),
+            WorkerHostcallRequest::StorageKV(request_json) => perform_storage_kv_request(
+                reader,
+                stdout,
+                request_id,
+                runtime_generation_id,
+                line,
+                &request_json,
+            ),
             WorkerHostcallRequest::NetworkHTTP(request_json) => perform_network_http_request(
                 reader,
                 stdout,
@@ -249,10 +257,66 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             }
         }
     }
+    let mut memory_storage_kv_result = None;
+    if execution.storage_kv_requested {
+        match execution.storage_kv_result {
+            Some(Ok(result)) => {
+                memory_storage_kv_result = Some(result);
+            }
+            Some(Err(err)) => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(err.as_str()),
+                ));
+            }
+            None => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some("storage kv hostcall did not produce a response"),
+                ));
+            }
+        }
+    }
     let storage_file_result = match memory_storage_file_result {
         Some(result) => Some(result),
         None if execution.storage_file_write_demo_requested => {
             match perform_storage_file_write_demo(
+                reader,
+                stdout,
+                request_id,
+                runtime_generation_id,
+                line,
+            ) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    return Ok(redevplugin_ipc::response_frame(
+                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        request_id,
+                        runtime_generation_id,
+                        false,
+                        None,
+                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                        Some(err.as_str()),
+                    ));
+                }
+            }
+        }
+        None => None,
+    };
+    let storage_kv_result = match memory_storage_kv_result {
+        Some(result) => Some(result),
+        None if execution.storage_kv_put_demo_requested => {
+            match perform_storage_kv_put_demo(
                 reader,
                 stdout,
                 request_id,
@@ -303,6 +367,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         &identity,
         execution.validated.byte_len,
         storage_file_result.as_deref(),
+        storage_kv_result.as_deref(),
         memory_network_result
             .as_deref()
             .or(network_execute_result.as_deref()),
@@ -324,6 +389,9 @@ struct WorkerExecution {
     storage_file_write_demo_requested: bool,
     storage_file_requested: bool,
     storage_file_result: Option<Result<String, String>>,
+    storage_kv_put_demo_requested: bool,
+    storage_kv_requested: bool,
+    storage_kv_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
     network_http_request_requested: bool,
     network_http_request_result: Option<Result<String, String>>,
@@ -331,6 +399,7 @@ struct WorkerExecution {
 
 enum WorkerHostcallRequest {
     StorageFile(String),
+    StorageKV(String),
     NetworkHTTP(String),
 }
 
@@ -340,6 +409,9 @@ struct WorkerHostState<'a> {
     storage_file_write_demo_requested: bool,
     storage_file_requested: bool,
     storage_file_result: Option<Result<String, String>>,
+    storage_kv_put_demo_requested: bool,
+    storage_kv_requested: bool,
+    storage_kv_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
     network_http_request_requested: bool,
     network_http_request_result: Option<Result<String, String>>,
@@ -354,6 +426,9 @@ impl<'a> WorkerHostState<'a> {
             storage_file_write_demo_requested: false,
             storage_file_requested: false,
             storage_file_result: None,
+            storage_kv_put_demo_requested: false,
+            storage_kv_requested: false,
+            storage_kv_result: None,
             network_http_request_demo_requested: false,
             network_http_request_requested: false,
             network_http_request_result: None,
@@ -403,6 +478,35 @@ fn execute_worker_module<'a>(
         .map_err(|err| format!("define storage memory hostcall import: {err}"))?;
     linker
         .func_wrap(
+            "redevplugin.storage",
+            "kv_put_demo",
+            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
+                caller.data_mut().storage_kv_put_demo_requested = true;
+            },
+        )
+        .map_err(|err| format!("define storage kv demo hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.storage",
+            "kv",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             request_ptr: i32,
+             request_len: i32,
+             response_ptr: i32,
+             response_len: i32|
+             -> i32 {
+                perform_storage_kv_request_hostcall(
+                    &mut caller,
+                    request_ptr,
+                    request_len,
+                    response_ptr,
+                    response_len,
+                )
+            },
+        )
+        .map_err(|err| format!("define storage kv memory hostcall import: {err}"))?;
+    linker
+        .func_wrap(
             "redevplugin.network",
             "http_request_demo",
             |mut caller: wasmi::Caller<'_, WorkerHostState>| {
@@ -443,6 +547,9 @@ fn execute_worker_module<'a>(
     let storage_file_write_demo_requested = store.data().storage_file_write_demo_requested;
     let storage_file_requested = store.data().storage_file_requested;
     let storage_file_result = store.data().storage_file_result.clone();
+    let storage_kv_put_demo_requested = store.data().storage_kv_put_demo_requested;
+    let storage_kv_requested = store.data().storage_kv_requested;
+    let storage_kv_result = store.data().storage_kv_result.clone();
     let network_http_request_demo_requested = store.data().network_http_request_demo_requested;
     let network_http_request_requested = store.data().network_http_request_requested;
     let network_http_request_result = store.data().network_http_request_result.clone();
@@ -451,6 +558,9 @@ fn execute_worker_module<'a>(
         storage_file_write_demo_requested,
         storage_file_requested,
         storage_file_result,
+        storage_kv_put_demo_requested,
+        storage_kv_requested,
+        storage_kv_result,
         network_http_request_demo_requested,
         network_http_request_requested,
         network_http_request_result,
@@ -540,6 +650,93 @@ fn record_storage_hostcall_error(
 ) -> i32 {
     caller.data_mut().storage_file_result = Some(Err(format!(
         "storage files hostcall failed with ABI code {code}"
+    )));
+    code
+}
+
+fn perform_storage_kv_request_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    request_ptr: i32,
+    request_len: i32,
+    response_ptr: i32,
+    response_len: i32,
+) -> i32 {
+    caller.data_mut().storage_kv_requested = true;
+    let request_ptr = match usize::try_from(request_ptr) {
+        Ok(value) => value,
+        Err(_) => return record_storage_kv_hostcall_error(caller, -1),
+    };
+    let request_len = match usize::try_from(request_len) {
+        Ok(value) => value,
+        Err(_) => return record_storage_kv_hostcall_error(caller, -1),
+    };
+    let response_ptr = match usize::try_from(response_ptr) {
+        Ok(value) => value,
+        Err(_) => return record_storage_kv_hostcall_error(caller, -1),
+    };
+    let response_len = match usize::try_from(response_len) {
+        Ok(value) => value,
+        Err(_) => return record_storage_kv_hostcall_error(caller, -1),
+    };
+    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    {
+        return record_storage_kv_hostcall_error(caller, -2);
+    }
+    let Some(memory) = caller
+        .get_export("memory")
+        .and_then(wasmi::Extern::into_memory)
+    else {
+        return record_storage_kv_hostcall_error(caller, -3);
+    };
+    let mut request = vec![0_u8; request_len];
+    if memory
+        .read(caller.as_context(), request_ptr, &mut request)
+        .is_err()
+    {
+        return record_storage_kv_hostcall_error(caller, -4);
+    }
+    let request_json = match std::str::from_utf8(&request) {
+        Ok(value) => value,
+        Err(_) => return record_storage_kv_hostcall_error(caller, -5),
+    };
+    let response_json = {
+        let state = caller.data_mut();
+        (state.broker_hostcall)(WorkerHostcallRequest::StorageKV(request_json.to_string()))
+    };
+    let response_json = match response_json {
+        Ok(value) => value,
+        Err(err) => {
+            caller.data_mut().storage_kv_result = Some(Err(err));
+            return -6;
+        }
+    };
+    let response = response_json.as_bytes();
+    if response.len() > response_len {
+        caller.data_mut().storage_kv_result = Some(Err(
+            "storage kv response does not fit in the output buffer".to_string(),
+        ));
+        return -7;
+    }
+    if memory
+        .write(caller.as_context_mut(), response_ptr, response)
+        .is_err()
+    {
+        return record_storage_kv_hostcall_error(caller, -8);
+    }
+    let written = match i32::try_from(response.len()) {
+        Ok(value) => value,
+        Err(_) => return record_storage_kv_hostcall_error(caller, -9),
+    };
+    caller.data_mut().storage_kv_result = Some(Ok(response_json));
+    written
+}
+
+fn record_storage_kv_hostcall_error(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    code: i32,
+) -> i32 {
+    caller.data_mut().storage_kv_result.replace(Err(format!(
+        "storage kv hostcall failed with ABI code {code}"
     )));
     code
 }
@@ -654,6 +851,29 @@ fn perform_storage_file_request<R: BufRead, W: Write>(
     dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, req)
 }
 
+fn perform_storage_kv_put_demo<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    invocation_frame: &str,
+) -> Result<String, String> {
+    let req = storage_kv_put_demo_request(invocation_frame, runtime_generation_id)?;
+    dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, req)
+}
+
+fn perform_storage_kv_request<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    invocation_frame: &str,
+    request_json: &str,
+) -> Result<String, String> {
+    let req = storage_kv_request(invocation_frame, runtime_generation_id, request_json)?;
+    dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, req)
+}
+
 fn dispatch_storage_file_request<R: BufRead, W: Write>(
     reader: &mut R,
     stdout: &mut W,
@@ -682,6 +902,35 @@ fn dispatch_storage_file_request<R: BufRead, W: Write>(
         runtime_generation_id,
     )?;
     redevplugin_ipc::storage_file_payload_json(&response)
+}
+
+fn dispatch_storage_kv_request<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    req: redevplugin_ipc::StorageKVRequest,
+) -> Result<String, String> {
+    let storage_request_id = format!("{request_id}:storage_kv");
+    let frame = redevplugin_ipc::storage_kv_frame(&storage_request_id, runtime_generation_id, &req);
+    stdout
+        .write_all(frame.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush())
+        .map_err(|err| format!("write storage_kv request: {err}"))?;
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|err| format!("read storage_kv response: {err}"))?;
+    if response.is_empty() {
+        return Err("storage_kv response is empty".to_string());
+    }
+    redevplugin_ipc::validate_storage_kv_response(
+        &response,
+        &storage_request_id,
+        runtime_generation_id,
+    )?;
+    redevplugin_ipc::storage_kv_payload_json(&response)
 }
 
 fn storage_file_request(
@@ -730,6 +979,65 @@ fn storage_file_request(
     })
 }
 
+fn storage_kv_request(
+    invocation_frame: &str,
+    runtime_generation_id: &str,
+    request_json: &str,
+) -> Result<redevplugin_ipc::StorageKVRequest, String> {
+    let store_id = request_or_invocation_string(
+        request_json,
+        "store_id",
+        invocation_frame,
+        "storage_kv_store_id",
+    )
+    .or_else(|_| {
+        request_or_invocation_string(
+            request_json,
+            "store_id",
+            invocation_frame,
+            "storage_store_id",
+        )
+    })?;
+    let handle_grant_token =
+        redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_handle_grant_token")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
+            })
+            .ok_or_else(|| "missing storage_kv_handle_grant_token".to_string())?;
+    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
+    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
+    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
+    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
+    let management_revision = required_json_number(invocation_frame, "management_revision")?;
+    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    Ok(redevplugin_ipc::StorageKVRequest {
+        handle_grant_token,
+        plugin_instance_id,
+        active_fingerprint,
+        runtime_instance_id,
+        runtime_generation_id: runtime_generation_id.to_string(),
+        runtime_shard_id: String::new(),
+        handle_id: format!("storage:{store_id}"),
+        method: "storage.kv".to_string(),
+        policy_revision,
+        management_revision,
+        revoke_epoch,
+        operation: request_json_string(request_json, "operation")
+            .unwrap_or_else(|| "put".to_string()),
+        store_id,
+        key: request_json_string(request_json, "key")
+            .or_else(|| request_json_string(invocation_frame, "storage_kv_key"))
+            .unwrap_or_default(),
+        value_base64: request_json_string(request_json, "value_base64")
+            .or_else(|| request_json_string(invocation_frame, "storage_kv_value_base64"))
+            .unwrap_or_default(),
+        prefix: request_json_string(request_json, "prefix").unwrap_or_default(),
+        max_bytes: request_json_number(request_json, "max_bytes").unwrap_or(0),
+        max_entries: request_json_number(request_json, "max_entries").unwrap_or(0),
+    })
+}
+
 fn storage_file_write_demo_request(
     invocation_frame: &str,
     runtime_generation_id: &str,
@@ -763,6 +1071,54 @@ fn storage_file_write_demo_request(
         max_bytes: 0,
         max_entries: 0,
         recursive: false,
+    })
+}
+
+fn storage_kv_put_demo_request(
+    invocation_frame: &str,
+    runtime_generation_id: &str,
+) -> Result<redevplugin_ipc::StorageKVRequest, String> {
+    let handle_grant_token =
+        redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_handle_grant_token")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
+            })
+            .ok_or_else(|| "missing storage_kv_handle_grant_token".to_string())?;
+    let store_id = redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_store_id")
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "storage_store_id"))
+        .ok_or_else(|| "missing storage_kv_store_id".to_string())?;
+    let key = redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_key")
+        .unwrap_or_else(|| "demo/last_broker_run".to_string());
+    let value_base64 =
+        redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_value_base64")
+            .unwrap_or_else(|| "Z2VuZXJhdGVkIGJhY2tlbmQga3Ygc2FtcGxl".to_string());
+    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
+    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
+    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
+    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
+    let management_revision = required_json_number(invocation_frame, "management_revision")?;
+    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    Ok(redevplugin_ipc::StorageKVRequest {
+        handle_grant_token,
+        plugin_instance_id,
+        active_fingerprint,
+        runtime_instance_id,
+        runtime_generation_id: runtime_generation_id.to_string(),
+        runtime_shard_id: String::new(),
+        handle_id: format!("storage:{store_id}"),
+        method: "storage.kv".to_string(),
+        policy_revision,
+        management_revision,
+        revoke_epoch,
+        operation: "put".to_string(),
+        store_id,
+        key,
+        value_base64,
+        prefix: String::new(),
+        max_bytes: 0,
+        max_entries: 0,
     })
 }
 
@@ -1121,6 +1477,7 @@ mod tests {
     fn unexpected_hostcall(request: WorkerHostcallRequest) -> Result<String, String> {
         match request {
             WorkerHostcallRequest::StorageFile(_) => Err("unexpected storage call".to_string()),
+            WorkerHostcallRequest::StorageKV(_) => Err("unexpected storage kv call".to_string()),
             WorkerHostcallRequest::NetworkHTTP(_) => Err("unexpected network call".to_string()),
         }
     }

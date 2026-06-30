@@ -143,6 +143,8 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 		`"worker.brokerDemo"`,
 		`"storage"`,
 		`"workspace"`,
+		`"settings"`,
+		`"kv"`,
 		`"network_access"`,
 		`"api"`,
 	} {
@@ -385,8 +387,18 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(inspectOutput, &inspectSummary); err != nil {
 		t.Fatalf("inspect-storage output decode error = %v: %s", err, inspectOutput)
 	}
-	if inspectSummary.NamespaceCount != 1 || inspectSummary.Namespaces[0].StoreID != "workspace" || inspectSummary.Namespaces[0].State != storage.NamespaceActive {
+	if inspectSummary.NamespaceCount != 2 {
 		t.Fatalf("storage namespace mismatch after enable: %#v", inspectSummary)
+	}
+	namespacesByStoreID := map[string]storage.NamespaceRecord{}
+	for _, ns := range inspectSummary.Namespaces {
+		namespacesByStoreID[ns.StoreID] = ns
+	}
+	if namespacesByStoreID["workspace"].State != storage.NamespaceActive || namespacesByStoreID["workspace"].Kind != storage.StoreFiles {
+		t.Fatalf("workspace storage namespace mismatch after enable: %#v", inspectSummary)
+	}
+	if namespacesByStoreID["settings"].State != storage.NamespaceActive || namespacesByStoreID["settings"].Kind != storage.StoreKV {
+		t.Fatalf("settings storage namespace mismatch after enable: %#v", inspectSummary)
 	}
 	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
 	if err != nil {
