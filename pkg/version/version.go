@@ -14,6 +14,7 @@ const (
 	TargetClassifierVersion       = "target-classifier-v1"
 	PluginPlatformOpenAPIVersion  = "plugin-platform-v1"
 	CompatibilityManifestVersion  = "redevplugin.compatibility.v1"
+	CompatibilitySchemaVersion    = "compatibility-manifest-v1"
 )
 
 type Matrix struct {
@@ -29,6 +30,7 @@ type Matrix struct {
 	BridgeSchemaVersion           string `json:"bridge_schema_version"`
 	TargetClassifierVersion       string `json:"target_classifier_version"`
 	PluginPlatformOpenAPIVersion  string `json:"plugin_platform_openapi_version"`
+	CompatibilitySchemaVersion    string `json:"compatibility_schema_version"`
 }
 
 type ContractArtifact struct {
@@ -58,6 +60,7 @@ func CurrentMatrix() Matrix {
 		BridgeSchemaVersion:           BridgeSchemaVersion,
 		TargetClassifierVersion:       TargetClassifierVersion,
 		PluginPlatformOpenAPIVersion:  PluginPlatformOpenAPIVersion,
+		CompatibilitySchemaVersion:    CompatibilitySchemaVersion,
 	}
 }
 
@@ -95,6 +98,12 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				Path:    "spec/plugin/bridge-v1.schema.json",
 				Version: BridgeSchemaVersion,
 				SHA256:  "d6c82f67bb86695b5a018d10ba64d3aef99863083094543659f3f39cf3d3ed50",
+			},
+			{
+				ID:      "compatibility-manifest-schema",
+				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
+				Version: CompatibilitySchemaVersion,
+				SHA256:  "6bc1f42cc42c5ad2e2844366a7cfa08759d05035e376351001271a2530ec501c",
 			},
 			{
 				ID:      "rust-ipc-schema",

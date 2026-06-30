@@ -23,6 +23,11 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"type": { "const": "redeven.plugin.response" }' spec/plugin/bridge-v1.schema.json
   grep -q '"type": { "const": "redeven.plugin.lifecycle" }' spec/plugin/bridge-v1.schema.json
   grep -q '"ui_protocol_version": { "const": "plugin-ui-v1" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.compatibility.v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"bridge_schema_version": { "const": "bridge-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"compatibility_schema_version"' spec/plugin/compatibility-manifest-v1.schema.json
+  go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'
+  go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
   grep -q '"hello_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json

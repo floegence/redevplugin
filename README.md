@@ -14,8 +14,8 @@ capabilities.
 - TypeScript package: `@floegence/redevplugin-ui`
 - Rust workspace: `redevplugin-runtime` and support crates
 - Contracts: OpenAPI, manifest schema, package-signature schema, token/ticket
-  schema, iframe bridge schema, IPC schema, WASM ABI schema, and target
-  classifier fixture
+  schema, iframe bridge schema, compatibility manifest schema, IPC schema,
+  WASM ABI schema, and target classifier fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
