@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/connectivity"
 )
 
 func TestRealDemoSandboxHandlerOnlyExposesSandboxRoutes(t *testing.T) {
@@ -140,8 +143,13 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 
 	for _, want := range []string{
 		`id="invoke-broker"`,
+		`id="invoke-network-matrix"`,
 		`worker.brokerDemo`,
+		`worker.networkWebSocket`,
+		`worker.networkTCP`,
+		`worker.networkUDP`,
 		`parseNetworkBody`,
+		`parseNetworkPayload`,
 		`storage_grant_visible`,
 	} {
 		if !strings.Contains(html+js, want) {
@@ -156,6 +164,51 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 		if strings.Contains(js, forbidden) {
 			t.Fatalf("plugin iframe script contains parent-only broker field %q", forbidden)
 		}
+	}
+}
+
+func TestRealDemoNetworkExecutorCoversAllSupportedTransports(t *testing.T) {
+	executor := realDemoNetworkExecutor{}
+	ctx := context.Background()
+
+	httpResponse, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
+		Grant:  connectivity.ConnectionGrant{ConnectorID: "api", Destination: connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443}},
+		Method: http.MethodPost,
+		Path:   "/v1/matrix",
+		Body:   []byte("hello http"),
+	})
+	if err != nil {
+		t.Fatalf("DoHTTP() error = %v", err)
+	}
+	if !strings.Contains(string(httpResponse.Body), `"echo":"http:hello http"`) {
+		t.Fatalf("HTTP body = %s", httpResponse.Body)
+	}
+
+	wsResponse, err := executor.WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
+		MessageType: connectivity.WebSocketMessageText,
+		Payload:     []byte("hello websocket"),
+	})
+	if err != nil {
+		t.Fatalf("WebSocketRoundTrip() error = %v", err)
+	}
+	if wsResponse.MessageType != connectivity.WebSocketMessageText || string(wsResponse.Payload) != "websocket:hello websocket" {
+		t.Fatalf("websocket response = %#v", wsResponse)
+	}
+
+	tcpResponse, err := executor.TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{Payload: []byte("hello tcp")})
+	if err != nil {
+		t.Fatalf("TCPRoundTrip() error = %v", err)
+	}
+	if string(tcpResponse.Payload) != "tcp:hello tcp" {
+		t.Fatalf("tcp payload = %q", tcpResponse.Payload)
+	}
+
+	udpResponse, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{Payload: []byte("hello udp")})
+	if err != nil {
+		t.Fatalf("UDPRoundTrip() error = %v", err)
+	}
+	if string(udpResponse.Payload) != "udp:hello udp" {
+		t.Fatalf("udp payload = %q", udpResponse.Payload)
 	}
 }
 

@@ -116,12 +116,25 @@ try {
   await expectText(frame.locator("#result"), "\"storage_grant_visible\": false");
   await expectText(page.locator("#rpc-count"), "2");
 
+  await frame.getByRole("button", { name: "Network matrix" }).click();
+  await expectText(frame.locator("#status"), "Network matrix completed");
+  await expectText(frame.locator("#result"), "network.matrix");
+  await expectText(frame.locator("#result"), "http:hello http");
+  await expectText(frame.locator("#result"), "websocket:hello websocket");
+  await expectText(frame.locator("#result"), "tcp:hello tcp");
+  await expectText(frame.locator("#result"), "udp:hello udp");
+  await expectText(frame.locator("#result"), "\"transport\": \"websocket\"");
+  await expectText(frame.locator("#result"), "\"transport\": \"tcp\"");
+  await expectText(frame.locator("#result"), "\"transport\": \"udp\"");
+  await expectText(frame.locator("#result"), "\"gateway_token_visible\": false");
+  await expectText(page.locator("#rpc-count"), "6");
+
   await frame.getByRole("button", { name: "Dangerous action" }).click();
   await expectText(page.locator("#confirmation-method"), "danger.run");
   await page.getByRole("button", { name: "Deny" }).click();
   await expectText(frame.locator("#status"), "Dangerous action blocked");
   await expectText(frame.locator("#result"), "PLUGIN_CONFIRMATION_REJECTED");
-  await expectText(page.locator("#rpc-count"), "3");
+  await expectText(page.locator("#rpc-count"), "7");
 
   await frame.getByRole("button", { name: "Dangerous action" }).click();
   await expectText(page.locator("#confirmation-method"), "danger.run");
@@ -131,7 +144,7 @@ try {
   await expectText(frame.locator("#result"), "\"asset_ticket_visible\": false");
   await expectText(frame.locator("#result"), "\"gateway_token_visible\": false");
   await expectText(frame.locator("#result"), "\"confirmation_token_visible\": false");
-  await expectText(page.locator("#rpc-count"), "5");
+  await expectText(page.locator("#rpc-count"), "9");
 
   const sandbox = await page.locator("#plugin-frame").getAttribute("sandbox");
   assert.equal(sandbox, "allow-scripts allow-same-origin");

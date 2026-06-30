@@ -43,6 +43,73 @@ const (
 	realDemoBrokerFilePath  = "notes/from-real-demo.txt"
 )
 
+var realDemoNetworkMatrix = []realDemoNetworkCase{
+	{
+		Method:       "worker.networkHTTP",
+		WorkerID:     "network_http",
+		Artifact:     "workers/network-http.wasm",
+		Transport:    connectivity.TransportHTTP,
+		Operation:    "http",
+		ConnectorID:  "api",
+		Destination:  "https://api.example.com",
+		MethodName:   http.MethodPost,
+		Path:         "/v1/matrix",
+		BodyBase64:   base64.StdEncoding.EncodeToString([]byte("hello http")),
+		ExpectedText: "http:hello http",
+	},
+	{
+		Method:        "worker.networkWebSocket",
+		WorkerID:      "network_websocket",
+		Artifact:      "workers/network-websocket.wasm",
+		Transport:     connectivity.TransportWebSocket,
+		Operation:     "websocket_round_trip",
+		ConnectorID:   "stream",
+		Destination:   "wss://stream.example.com",
+		Path:          "/v1/socket",
+		MessageType:   string(connectivity.WebSocketMessageText),
+		PayloadBase64: base64.StdEncoding.EncodeToString([]byte("hello websocket")),
+		ExpectedText:  "websocket:hello websocket",
+	},
+	{
+		Method:        "worker.networkTCP",
+		WorkerID:      "network_tcp",
+		Artifact:      "workers/network-tcp.wasm",
+		Transport:     connectivity.TransportTCP,
+		Operation:     "tcp_round_trip",
+		ConnectorID:   "database",
+		Destination:   "tcp://db.example.com:5432",
+		PayloadBase64: base64.StdEncoding.EncodeToString([]byte("hello tcp")),
+		ExpectedText:  "tcp:hello tcp",
+	},
+	{
+		Method:        "worker.networkUDP",
+		WorkerID:      "network_udp",
+		Artifact:      "workers/network-udp.wasm",
+		Transport:     connectivity.TransportUDP,
+		Operation:     "udp_round_trip",
+		ConnectorID:   "metrics",
+		Destination:   "udp://metrics.example.com:8125",
+		PayloadBase64: base64.StdEncoding.EncodeToString([]byte("hello udp")),
+		ExpectedText:  "udp:hello udp",
+	},
+}
+
+type realDemoNetworkCase struct {
+	Method        string
+	WorkerID      string
+	Artifact      string
+	Transport     connectivity.Transport
+	Operation     string
+	ConnectorID   string
+	Destination   string
+	MethodName    string
+	Path          string
+	MessageType   string
+	BodyBase64    string
+	PayloadBase64 string
+	ExpectedText  string
+}
+
 type realDemoRuntimeResolver struct {
 	path string
 }
@@ -71,6 +138,7 @@ func (realDemoNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRe
 	if body == "" {
 		body = "<empty>"
 	}
+	echo := "http:" + body
 	response := map[string]any{
 		"demo":         true,
 		"transport":    "host-network-executor",
@@ -79,6 +147,7 @@ func (realDemoNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRe
 		"method":       req.Method,
 		"path":         req.Path,
 		"body":         body,
+		"echo":         echo,
 	}
 	raw, err := json.Marshal(response)
 	if err != nil {
@@ -91,16 +160,23 @@ func (realDemoNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRe
 	}, nil
 }
 
-func (realDemoNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	return connectivity.WebSocketRoundTripResponse{}, errors.New("real demo websocket executor is not implemented")
+func (realDemoNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
+	messageType := req.MessageType
+	if messageType == "" {
+		messageType = connectivity.WebSocketMessageText
+	}
+	return connectivity.WebSocketRoundTripResponse{
+		MessageType: messageType,
+		Payload:     []byte("websocket:" + string(req.Payload)),
+	}, nil
 }
 
-func (realDemoNetworkExecutor) TCPRoundTrip(context.Context, connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	return connectivity.TCPRoundTripResponse{}, errors.New("real demo tcp executor is not implemented")
+func (realDemoNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
+	return connectivity.TCPRoundTripResponse{Payload: []byte("tcp:" + string(req.Payload))}, nil
 }
 
-func (realDemoNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	return connectivity.UDPRoundTripResponse{}, errors.New("real demo udp executor is not implemented")
+func (realDemoNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
+	return connectivity.UDPRoundTripResponse{Payload: []byte("udp:" + string(req.Payload))}, nil
 }
 
 func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) error {
@@ -128,6 +204,11 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	}
 	if err := writeBytesFile(filepath.Join(pluginDir, "workers", "broker.wasm"), realDemoBrokerWorkerWASM(), 0o644); err != nil {
 		return err
+	}
+	for _, networkCase := range realDemoNetworkMatrix {
+		if err := writeBytesFile(filepath.Join(pluginDir, networkCase.Artifact), realDemoNetworkWorkerWASM(networkCase), 0o644); err != nil {
+			return err
+		}
 	}
 	if err := writeBytesFile(filepath.Join(pluginDir, "ui", "index.html"), []byte(realDemoPluginHTML()), 0o644); err != nil {
 		return err
@@ -327,6 +408,16 @@ func addRealDemoMethods(manifestFile string) error {
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
 	})
+	for _, networkCase := range realDemoNetworkMatrix {
+		doc.Workers = append(doc.Workers, manifest.WorkerSpec{
+			WorkerID:         networkCase.WorkerID,
+			Artifact:         networkCase.Artifact,
+			ABI:              "redevplugin-wasm-worker-v1",
+			Mode:             manifest.WorkerModeJob,
+			Scope:            "user",
+			MemoryLimitBytes: 16 << 20,
+		})
+	}
 	doc.Storage = &manifest.StorageSpec{
 		Stores: []manifest.StoreSpec{{
 			StoreID:       realDemoBrokerStoreID,
@@ -347,12 +438,7 @@ func addRealDemoMethods(manifestFile string) error {
 		}},
 	}
 	doc.NetworkAccess = &manifest.NetworkAccessSpec{
-		Connectors: []manifest.NetworkConnectorSpec{{
-			ConnectorID:  "api",
-			Transport:    string(connectivity.TransportHTTP),
-			Scope:        string(connectivity.ScopeUser),
-			Destinations: []string{"https://api.example.com"},
-		}},
+		Connectors: realDemoNetworkConnectors(),
 	}
 	doc.CapabilityBindings = append(doc.CapabilityBindings, manifest.CapabilityBinding{
 		BindingID:            "real_demo",
@@ -384,11 +470,34 @@ func addRealDemoMethods(manifestFile string) error {
 		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
 		ResponseSchema: map[string]any{"type": "object"},
 	})
+	for _, networkCase := range realDemoNetworkMatrix {
+		doc.Methods = append(doc.Methods, manifest.MethodSpec{
+			Method:         networkCase.Method,
+			Effect:         manifest.MethodEffectRead,
+			Execution:      manifest.MethodExecutionSync,
+			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: networkCase.WorkerID, Export: "redevplugin_worker_invoke"},
+			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
+			ResponseSchema: map[string]any{"type": "object"},
+		})
+	}
 	updated, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeBytesFile(manifestFile, append(updated, '\n'), 0o644)
+}
+
+func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {
+	connectors := make([]manifest.NetworkConnectorSpec, 0, len(realDemoNetworkMatrix))
+	for _, networkCase := range realDemoNetworkMatrix {
+		connectors = append(connectors, manifest.NetworkConnectorSpec{
+			ConnectorID:  networkCase.ConnectorID,
+			Transport:    string(networkCase.Transport),
+			Scope:        string(connectivity.ScopeUser),
+			Destinations: []string{networkCase.Destination},
+		})
+	}
+	return connectors
 }
 
 func realDemoBrokerWorkerWASM() []byte {
@@ -426,6 +535,120 @@ func realDemoBrokerWorkerWASM() []byte {
 	module = append(module, 0x0a)
 	module = appendLEBUint32(module, uint32(len(codePayload)))
 	module = append(module, codePayload...)
+	return module
+}
+
+func realDemoNetworkWorkerWASM(networkCase realDemoNetworkCase) []byte {
+	request := map[string]any{
+		"connector_id":       networkCase.ConnectorID,
+		"transport":          string(networkCase.Transport),
+		"destination":        networkCase.Destination,
+		"operation":          networkCase.Operation,
+		"method":             networkCase.MethodName,
+		"path":               networkCase.Path,
+		"message_type":       networkCase.MessageType,
+		"body_base64":        networkCase.BodyBase64,
+		"payload_base64":     networkCase.PayloadBase64,
+		"max_request_bytes":  1024,
+		"max_response_bytes": 4096,
+		"timeout_ms":         1000,
+	}
+	if networkCase.MethodName == "" {
+		delete(request, "method")
+	}
+	if networkCase.Path == "" {
+		delete(request, "path")
+	}
+	if networkCase.MessageType == "" {
+		delete(request, "message_type")
+	}
+	if networkCase.BodyBase64 == "" {
+		delete(request, "body_base64")
+	}
+	if networkCase.PayloadBase64 == "" {
+		delete(request, "payload_base64")
+	}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		return realDemoMinimalWorkerWASM("redevplugin_worker_invoke")
+	}
+	return importedMemoryHostcallWorkerWASM("redevplugin.network", "http_request", "redevplugin_worker_invoke", raw)
+}
+
+func realDemoMinimalWorkerWASM(exportName string) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+		0x03, 0x02, 0x01, 0x00,
+		0x07,
+	}
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x00)
+	module = append(module, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	return module
+}
+
+func importedMemoryHostcallWorkerWASM(importModuleName string, importNameName string, exportName string, request []byte) []byte {
+	exportNameBytes := []byte(exportName)
+	importModule := []byte(importModuleName)
+	importName := []byte(importNameName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x0c, 0x02,
+		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
+		0x60, 0x00, 0x00,
+		0x02,
+	}
+	importPayload := []byte{0x01, byte(len(importModule))}
+	importPayload = append(importPayload, importModule...)
+	importPayload = append(importPayload, byte(len(importName)))
+	importPayload = append(importPayload, importName...)
+	importPayload = append(importPayload, 0x00, 0x00)
+	module = appendLEBUint32(module, uint32(len(importPayload)))
+	module = append(module, importPayload...)
+	module = append(module,
+		0x03, 0x02, 0x01, 0x01,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07,
+	)
+	exportPayload := []byte{0x02, 0x06}
+	exportPayload = append(exportPayload, []byte("memory")...)
+	exportPayload = append(exportPayload, 0x02, 0x00, byte(len(exportNameBytes)))
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x01)
+	module = appendLEBUint32(module, uint32(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a)
+	codePayload := []byte{0x01}
+	body := []byte{
+		0x00,
+		0x41, 0x00,
+		0x41,
+	}
+	body = appendLEBUint32(body, uint32(len(request)))
+	body = append(body, 0x41)
+	body = appendLEBUint32(body, 1024)
+	body = append(body, 0x41)
+	body = appendLEBUint32(body, 4096)
+	body = append(body, 0x10, 0x00, 0x1a, 0x0b)
+	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
+	codePayload = append(codePayload, body...)
+	module = appendLEBUint32(module, uint32(len(codePayload)))
+	module = append(module, codePayload...)
+	module = append(module, 0x0b)
+	dataPayload := []byte{0x01, 0x00, 0x41}
+	dataPayload = appendLEBUint32(dataPayload, 0)
+	dataPayload = append(dataPayload, 0x0b)
+	dataPayload = appendLEBUint32(dataPayload, uint32(len(request)))
+	dataPayload = append(dataPayload, request...)
+	module = appendLEBUint32(module, uint32(len(dataPayload)))
+	module = append(module, dataPayload...)
 	return module
 }
 
@@ -564,6 +787,7 @@ func realDemoPluginHTML() string {
           <p class="status" id="status">Ready</p>
           <button id="invoke-worker" type="button">Invoke backend</button>
           <button id="invoke-broker" type="button">Storage + network</button>
+          <button id="invoke-network-matrix" type="button">Network matrix</button>
           <button id="invoke-danger" type="button">Dangerous action</button>
         </div>
         <pre id="result" aria-label="Latest result">Waiting for bridge handshake...</pre>
@@ -578,6 +802,7 @@ func realDemoPluginJS() string {
 	return `const status = document.getElementById('status');
 const invokeButton = document.getElementById('invoke-worker');
 const brokerButton = document.getElementById('invoke-broker');
+const networkMatrixButton = document.getElementById('invoke-network-matrix');
 const dangerButton = document.getElementById('invoke-danger');
 const result = document.getElementById('result');
 const params = new URLSearchParams(window.location.search);
@@ -633,6 +858,36 @@ brokerButton?.addEventListener('click', async () => {
   } catch (error) {
     setStatus('Brokered backend failed');
     writeResult({ method: 'worker.brokerDemo', error: String(error?.message || error), error_code: error?.errorCode });
+  } finally {
+    setBusy(false);
+  }
+});
+
+networkMatrixButton?.addEventListener('click', async () => {
+  const methods = [
+    ['http', 'worker.networkHTTP'],
+    ['websocket', 'worker.networkWebSocket'],
+    ['tcp', 'worker.networkTCP'],
+    ['udp', 'worker.networkUDP'],
+  ];
+  try {
+    setBusy(true);
+    setStatus('Calling network matrix...');
+    const results = {};
+    for (const [transport, method] of methods) {
+      const response = await callHost(method, { note: ` + "`Network matrix ${transport}`" + ` });
+      results[transport] = {
+        method,
+        response,
+        parsed_body: parseNetworkBody(response),
+        parsed_payload: parseNetworkPayload(response),
+      };
+    }
+    setStatus('Network matrix completed');
+    writeResult({ method: 'network.matrix', results, token_leak_check: tokenLeakCheck(results) });
+  } catch (error) {
+    setStatus('Network matrix failed');
+    writeResult({ method: 'network.matrix', error: String(error?.message || error), error_code: error?.errorCode });
   } finally {
     setBusy(false);
   }
@@ -720,12 +975,27 @@ function parseNetworkBody(value) {
   }
 }
 
+function parseNetworkPayload(value) {
+  const encoded = value?.data?.network_execute?.payload_base64 || value?.network_execute?.payload_base64;
+  if (!encoded) {
+    return null;
+  }
+  try {
+    return atob(encoded);
+  } catch (error) {
+    return ` + "`parse_error: ${String(error?.message || error)}`" + `;
+  }
+}
+
 function setBusy(busy) {
   if (invokeButton) {
     invokeButton.disabled = busy;
   }
   if (brokerButton) {
     brokerButton.disabled = busy;
+  }
+  if (networkMatrixButton) {
+    networkMatrixButton.disabled = busy;
   }
   if (dangerButton) {
     dangerButton.disabled = busy;

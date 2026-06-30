@@ -2989,7 +2989,7 @@ func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, sur
 func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	now := stableRecentTestNow()
 	installed, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
 	if err != nil {
 		t.Fatal(err)
@@ -3004,7 +3004,7 @@ func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packag
 func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, surfaceID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
 	t.Helper()
 	ctx := context.Background()
-	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	now := stableRecentTestNow()
 	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
@@ -3044,6 +3044,10 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 		t.Fatal(err)
 	}
 	return bootstrap, gateway
+}
+
+func stableRecentTestNow() time.Time {
+	return time.Now().UTC().Add(-1 * time.Minute)
 }
 
 func grantDeclaredPermissions(t *testing.T, h *Host, record registry.PluginRecord) {
