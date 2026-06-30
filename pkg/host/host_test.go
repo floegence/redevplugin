@@ -2074,6 +2074,7 @@ type testHostOptions struct {
 	trustVerifier           PackageTrustVerifier
 	storageBroker           storage.Broker
 	connectivityBroker      connectivity.Broker
+	networkExecutor         connectivity.NetworkExecutor
 	cleanup                 cleanup.Orchestrator
 	browserSite             browsersite.Store
 	permissions             permissions.Store
@@ -2115,6 +2116,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Diagnostics:             opts.diagnostics,
 		Storage:                 opts.storageBroker,
 		Connectivity:            opts.connectivityBroker,
+		NetworkExecutor:         opts.networkExecutor,
 		Cleanup:                 opts.cleanup,
 		BrowserSite:             opts.browserSite,
 		Permissions:             opts.permissions,

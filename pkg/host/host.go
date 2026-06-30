@@ -158,6 +158,7 @@ type Adapters struct {
 	SurfaceTokens           *bridge.SurfaceTokenService
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
+	NetworkExecutor         connectivity.NetworkExecutor
 	Operations              operation.Store
 	Permissions             permissions.Store
 	Cleanup                 cleanup.Orchestrator
@@ -493,6 +494,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Connectivity == nil {
 		adapters.Connectivity = connectivity.NewMemoryBroker()
+	}
+	if adapters.NetworkExecutor == nil {
+		adapters.NetworkExecutor = connectivity.NewExecutor(connectivity.ExecutorOptions{})
 	}
 	if adapters.Operations == nil {
 		adapters.Operations = operation.NewMemoryStore()
@@ -1270,15 +1274,7 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 			if err != nil {
 				return runtimeclient.Health{}, err
 			}
-			supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-				RuntimePath: runtimePath,
-				Diagnostics: h.adapters.Diagnostics,
-				Artifacts:   runtimeArtifactProvider{assets: h.adapters.Assets},
-				HandleGrants: runtimeHandleGrantValidator{
-					tokens: h.surfaceTokens,
-				},
-				StorageFiles: storageFilesBroker(h.adapters.Storage),
-			})
+			supervisor, err := runtimeclient.NewProcessSupervisor(h.processSupervisorOptions(runtimePath))
 			if err != nil {
 				return runtimeclient.Health{}, err
 			}
@@ -1295,6 +1291,18 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.runtime.started"})
 	return health, nil
+}
+
+func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.ProcessSupervisorOptions {
+	return runtimeclient.ProcessSupervisorOptions{
+		RuntimePath:     runtimePath,
+		Diagnostics:     h.adapters.Diagnostics,
+		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:    storageFilesBroker(h.adapters.Storage),
+		Connectivity:    h.adapters.Connectivity,
+		NetworkExecutor: h.adapters.NetworkExecutor,
+	}
 }
 
 func (h *Host) StopRuntime(ctx context.Context) error {

@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
@@ -73,6 +75,34 @@ func TestStartRuntimeUsesArtifactResolver(t *testing.T) {
 	}
 }
 
+func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.T) {
+	broker := connectivity.NewMemoryBroker()
+	executor := &recordingHostNetworkExecutor{}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		connectivityBroker: broker,
+		networkExecutor:    executor,
+	})
+
+	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
+	if options.RuntimePath != "/tmp/redevplugin-runtime" ||
+		options.Artifacts == nil ||
+		options.HandleGrants == nil ||
+		options.Connectivity != broker ||
+		options.NetworkExecutor != executor {
+		t.Fatalf("process supervisor options mismatch: %#v", options)
+	}
+}
+
+func TestNewHostProvidesDefaultNetworkExecutor(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
+	if options.Connectivity == nil || options.NetworkExecutor == nil {
+		t.Fatalf("default runtime network hostcalls missing: %#v", options)
+	}
+}
+
 func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	pkg, err := pluginPackageFromBytesForRuntimeTest(buildWorkerFixturePackage(t))
@@ -106,6 +136,24 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 	}); err == nil {
 		t.Fatal("ReadArtifact() expected sha mismatch error")
 	}
+}
+
+type recordingHostNetworkExecutor struct{}
+
+func (e *recordingHostNetworkExecutor) DoHTTP(context.Context, connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+	return connectivity.HTTPResponse{StatusCode: http.StatusOK}, nil
+}
+
+func (e *recordingHostNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
+	return connectivity.WebSocketRoundTripResponse{}, nil
+}
+
+func (e *recordingHostNetworkExecutor) TCPRoundTrip(context.Context, connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
+	return connectivity.TCPRoundTripResponse{}, nil
+}
+
+func (e *recordingHostNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
+	return connectivity.UDPRoundTripResponse{}, nil
 }
 
 func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
