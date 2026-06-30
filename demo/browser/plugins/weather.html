@@ -35,6 +35,13 @@
           <span>Pressure <strong id="weather-pressure">--</strong></span>
           <span>UV <strong id="weather-uv">--</strong></span>
         </div>
+        <div class="weather-metrics weather-quality" aria-label="Parsed air quality">
+          <span>AQI <strong id="weather-aqi">--</strong></span>
+          <span>Pollutant <strong id="weather-pollutant">--</strong></span>
+          <span>Category <strong id="weather-aqi-category">--</strong></span>
+          <span>Alerts <strong id="weather-alert-count">0</strong></span>
+        </div>
+        <div id="weather-alerts" class="weather-alerts" aria-label="Weather alerts"></div>
         <div class="network-strip" aria-label="Network broker metadata">
           <span id="network-operation">network idle</span>
           <strong id="network-latency">-- ms</strong>
@@ -62,6 +69,14 @@
           <strong id="network-parser">json</strong>
         </div>
         <pre id="raw-weather-response">{}</pre>
+      </section>
+
+      <section class="network-history-panel" aria-label="Recent network requests">
+        <div>
+          <span class="metric-label">recent requests</span>
+          <strong id="network-history-count">0</strong>
+        </div>
+        <ol id="network-history"></ol>
       </section>
 
       <section class="result-panel" aria-label="Weather plugin result">

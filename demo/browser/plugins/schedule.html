@@ -58,6 +58,8 @@
           <option value="done">Done only</option>
         </select>
         <button id="schedule-refresh" type="button" class="secondary-button">Refresh</button>
+        <button id="schedule-seed-week" type="button" class="secondary-button">Seed week</button>
+        <button id="schedule-archive-done" type="button" class="secondary-button">Archive done</button>
       </div>
 
       <div id="schedule-form" class="schedule-form">
@@ -88,6 +90,14 @@
           <strong id="timeline-next">No upcoming item</strong>
         </div>
         <div id="schedule-timeline" class="timeline-rail"></div>
+      </section>
+
+      <section class="journal-panel" aria-label="Schedule storage journal">
+        <div>
+          <span class="metric-label">storage journal</span>
+          <strong id="journal-count">0 entries</strong>
+        </div>
+        <ol id="schedule-journal"></ol>
       </section>
 
       <section class="result-panel" aria-label="Schedule plugin result">

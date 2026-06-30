@@ -36,6 +36,9 @@ const resetButton = document.querySelector("#game-reset");
 const boostButton = document.querySelector("#game-boost");
 const powerupButton = document.querySelector("#game-powerup");
 const saveButton = document.querySelector("#game-save");
+const snapshotSaveButton = document.querySelector("#game-snapshot-save");
+const snapshotLoadButton = document.querySelector("#game-snapshot-load");
+const snapshotList = document.querySelector("#snapshot-list");
 
 let running = true;
 let lastFrame = performance.now();
@@ -107,6 +110,14 @@ saveButton.addEventListener("click", async () => {
     peak_speed: peakSpeed,
     duration_ms: Math.round(performance.now() - startedAt),
   });
+});
+
+snapshotSaveButton.addEventListener("click", async () => {
+  await callPlugin("game.snapshot.save", captureSnapshot());
+});
+
+snapshotLoadButton.addEventListener("click", async () => {
+  await callPlugin("game.snapshot.load", {});
 });
 
 canvas.addEventListener("pointermove", (event) => {
@@ -393,6 +404,12 @@ async function callPlugin(method, payload) {
     if (Array.isArray(data?.leaderboard)) {
       renderLeaderboard(data.leaderboard);
     }
+    if (Array.isArray(data?.snapshots)) {
+      renderSnapshots(data.snapshots);
+    }
+    if (data?.snapshot && method === "game.snapshot.load") {
+      applySnapshot(data.snapshot);
+    }
     status.textContent = "ready";
     writeResult({ method, response });
     updateHUD();
@@ -404,6 +421,38 @@ async function callPlugin(method, payload) {
     }
     writeResult({ method, error: String(error) });
   }
+}
+
+function captureSnapshot() {
+  return {
+    score,
+    level,
+    combo,
+    bricks_cleared: bricksCleared,
+    powerups_collected: powerupsCollected,
+    lives,
+    energy,
+    speed,
+  };
+}
+
+function applySnapshot(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  score = Number(snapshot.score ?? score);
+  level = Number(snapshot.level ?? level);
+  combo = Number(snapshot.combo ?? combo);
+  bricksCleared = Number(snapshot.bricks_cleared ?? bricksCleared);
+  powerupsCollected = Number(snapshot.powerups_collected ?? powerupsCollected);
+  lives = Number(snapshot.lives ?? lives);
+  energy = Number(snapshot.energy ?? energy);
+  speed = Number(snapshot.speed ?? speed);
+  peakSpeed = Math.max(peakSpeed, speed);
+  bricks = createBricks(level);
+  powerups = createPowerups(level);
+  resetBall();
+  startedAt = performance.now();
 }
 
 function updateHUD() {
@@ -423,6 +472,21 @@ function renderLeaderboard(rows) {
   leaderboard.replaceChildren(...rows.map((row) => {
     const item = document.createElement("li");
     item.innerHTML = `<strong>#${Number(row.rank)} ${escapeHTML(row.name)}</strong><span>${Number(row.score)} pts</span>`;
+    return item;
+  }));
+}
+
+function renderSnapshots(rows) {
+  snapshotList.replaceChildren(...rows.map((row, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "snapshot-chip";
+    item.textContent = `#${index + 1} L${Number(row.level)} · ${Number(row.score)} pts · ${Number(row.energy)}%`;
+    item.addEventListener("click", () => {
+      applySnapshot(row);
+      writeResult({ method: "game.snapshot.apply_local", snapshot: row });
+      updateHUD();
+    });
     return item;
   }));
 }

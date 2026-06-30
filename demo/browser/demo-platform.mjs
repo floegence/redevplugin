@@ -33,10 +33,13 @@ export function createDemoPlatformFetch(options = {}) {
       gameBestScore: state.gameBestScore,
       gameLastRun: state.gameLastRun,
       gameSaves: state.gameSaves,
+      gameSnapshots: state.gameSnapshots,
       scheduleItems: state.scheduleItems,
+      scheduleJournal: state.scheduleJournal,
       scheduleRevision: state.scheduleRevision,
       weatherLocation: state.weatherLocation,
       weatherSavedLocations: state.weatherSavedLocations,
+      weatherNetworkEvents: state.weatherNetworkEvents,
       hostSettings: state.hostSettings,
       settingsRevision: state.settingsRevision,
       settingsUpdatedAt: state.settingsUpdatedAt,
@@ -239,7 +242,37 @@ export function createDemoPlatformFetch(options = {}) {
                 saves: state.gameSaves,
                 achievements: state.gameLastRun ? gameAchievements(state.gameLastRun) : [],
                 leaderboard: gameLeaderboard(state),
+                snapshots: state.gameSnapshots,
                 storage: "host-backed kv store",
+              },
+            },
+          });
+        case "game.snapshot.save": {
+          const snapshot = normalizeGameSnapshot(body.params);
+          state.gameSnapshots = [snapshot, ...state.gameSnapshots].slice(0, 5);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                saved: true,
+                snapshot,
+                snapshots: state.gameSnapshots,
+                storage: "host-backed kv store",
+                storage_key: "game/snapshots",
+              },
+            },
+          });
+        }
+        case "game.snapshot.load":
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                snapshot: state.gameSnapshots[0] ?? null,
+                snapshots: state.gameSnapshots,
+                storage: "host-backed kv store",
+                storage_key: "game/snapshots",
               },
             },
           });
@@ -252,6 +285,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted_at: new Date().toISOString(),
               },
@@ -261,6 +295,7 @@ export function createDemoPlatformFetch(options = {}) {
           const item = normalizeScheduleItem(body.params);
           state.scheduleItems = [...state.scheduleItems, item].sort(compareScheduleItems);
           state.scheduleRevision += 1;
+          appendScheduleJournal(state, "add", item.title);
           persistState();
           return jsonResponse({
             ok: true,
@@ -271,6 +306,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
@@ -282,6 +318,7 @@ export function createDemoPlatformFetch(options = {}) {
           const id = String(body.params?.id ?? "");
           state.scheduleItems = state.scheduleItems.map((item) => item.id === id ? { ...item, done: !item.done } : item);
           state.scheduleRevision += 1;
+          appendScheduleJournal(state, "toggle", id);
           persistState();
           return jsonResponse({
             ok: true,
@@ -291,6 +328,7 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
@@ -302,6 +340,7 @@ export function createDemoPlatformFetch(options = {}) {
           const id = String(body.params?.id ?? "");
           state.scheduleItems = state.scheduleItems.filter((item) => item.id !== id);
           state.scheduleRevision += 1;
+          appendScheduleJournal(state, "delete", id);
           persistState();
           return jsonResponse({
             ok: true,
@@ -311,6 +350,54 @@ export function createDemoPlatformFetch(options = {}) {
                 stats: scheduleStats(state.scheduleItems),
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
+                journal: state.scheduleJournal,
+                source: "host storage broker",
+                persisted: true,
+                persisted_at: new Date().toISOString(),
+              },
+            },
+          });
+        }
+        case "schedule.items.seedWeek": {
+          const seeded = createSeedScheduleItems(state.scheduleRevision);
+          state.scheduleItems = [...state.scheduleItems, ...seeded].sort(compareScheduleItems);
+          state.scheduleRevision += 1;
+          appendScheduleJournal(state, "seed_week", `${seeded.length} items`);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                added: seeded.length,
+                items: filterScheduleItems(state.scheduleItems, body.params?.view),
+                stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
+                journal: state.scheduleJournal,
+                source: "host storage broker",
+                persisted: true,
+                persisted_at: new Date().toISOString(),
+              },
+            },
+          });
+        }
+        case "schedule.items.archiveDone": {
+          const before = state.scheduleItems.length;
+          state.scheduleItems = state.scheduleItems.filter((item) => !item.done);
+          const archived = before - state.scheduleItems.length;
+          state.scheduleRevision += 1;
+          appendScheduleJournal(state, "archive_done", `${archived} items`);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                archived,
+                items: filterScheduleItems(state.scheduleItems, body.params?.view),
+                stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
+                journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
@@ -349,11 +436,14 @@ export function createDemoPlatformFetch(options = {}) {
           state.weatherLocation = location;
           state.weatherSavedLocations = rememberLocation(state.weatherSavedLocations, location);
           state.weatherFetches += 1;
+          const payload = await fetchWeatherPayload(location, state.weatherFetches, { networkBaseURL, networkFetch });
+          state.weatherNetworkEvents = rememberWeatherNetworkEvent(state.weatherNetworkEvents, payload.network);
+          payload.network_history = state.weatherNetworkEvents;
           persistState();
           return jsonResponse({
             ok: true,
             data: {
-              data: await fetchWeatherPayload(location, state.weatherFetches, { networkBaseURL, networkFetch }),
+              data: payload,
             },
           });
         }
@@ -373,7 +463,11 @@ function createDefaultDemoState() {
     gameBestScore: 0,
     gameLastRun: null,
     gameSaves: 0,
+    gameSnapshots: [],
     scheduleRevision: 1,
+    scheduleJournal: [
+      { action: "init", detail: "seed fixture", revision: 1, at: "2026-06-30T00:00:00Z" },
+    ],
     scheduleItems: [
       {
         id: "sched-standup",
@@ -411,6 +505,7 @@ function createDefaultDemoState() {
     ],
     weatherLocation: "San Francisco",
     weatherSavedLocations: ["San Francisco", "Shanghai", "London"],
+    weatherNetworkEvents: [],
     weatherFetches: 0,
     hostSettings: { accent_mode: "teal", telemetry_enabled: false },
     settingsRevision: 1,
@@ -508,8 +603,14 @@ function applyPersistedState(state, persisted = {}) {
   if (Number.isFinite(Number(persisted.gameSaves))) {
     state.gameSaves = Math.max(0, Math.round(Number(persisted.gameSaves)));
   }
+  if (Array.isArray(persisted.gameSnapshots)) {
+    state.gameSnapshots = persisted.gameSnapshots.map(normalizeGameSnapshot).slice(0, 5);
+  }
   if (Array.isArray(persisted.scheduleItems)) {
     state.scheduleItems = persisted.scheduleItems.map(normalizePersistedScheduleItem).sort(compareScheduleItems);
+  }
+  if (Array.isArray(persisted.scheduleJournal)) {
+    state.scheduleJournal = persisted.scheduleJournal.map(normalizeJournalEntry).slice(0, 8);
   }
   if (Number.isFinite(Number(persisted.scheduleRevision))) {
     state.scheduleRevision = Math.max(1, Math.round(Number(persisted.scheduleRevision)));
@@ -519,6 +620,9 @@ function applyPersistedState(state, persisted = {}) {
   }
   if (Array.isArray(persisted.weatherSavedLocations)) {
     state.weatherSavedLocations = persisted.weatherSavedLocations.map(normalizeLocation).slice(0, 6);
+  }
+  if (Array.isArray(persisted.weatherNetworkEvents)) {
+    state.weatherNetworkEvents = persisted.weatherNetworkEvents.map(normalizeWeatherNetworkEvent).slice(0, 6);
   }
   if (isRecord(persisted.hostSettings)) {
     state.hostSettings = normalizeDemoSettings(persisted.hostSettings);
@@ -574,6 +678,27 @@ function normalizeScheduleItem(params = {}) {
     notes: String(params.notes || "").trim().slice(0, 180),
     done: false,
   };
+}
+
+function createSeedScheduleItems(revision) {
+  const base = [
+    ["Mon", "Architecture sync", "10:00", "platform", "high", 40],
+    ["Tue", "Storage migration review", "13:30", "storage", "medium", 50],
+    ["Wed", "Weather connector test", "15:00", "network", "medium", 35],
+    ["Thu", "Sandbox UI polish", "11:20", "design", "low", 45],
+    ["Fri", "Browser smoke rehearsal", "16:00", "qa", "high", 30],
+  ];
+  return base.map(([day, title, time, tag, priority, duration], index) => ({
+    id: `sched-seed-${revision}-${index}`,
+    title: `${day} · ${title}`,
+    date: `2026-07-${String(index + 6).padStart(2, "0")}`,
+    time,
+    tag,
+    priority,
+    duration_minutes: duration,
+    notes: "Generated by a backend storage operation in the demo host.",
+    done: false,
+  }));
 }
 
 function compareScheduleItems(a, b) {
@@ -635,6 +760,21 @@ function normalizeGameRun(params = {}) {
   };
 }
 
+function normalizeGameSnapshot(params = {}) {
+  return {
+    id: String(params.id || `snapshot-${Date.now().toString(36)}`).slice(0, 80),
+    score: Math.max(0, Math.round(Number(params.score ?? 0))),
+    level: Math.max(1, Math.round(Number(params.level ?? 1))),
+    combo: Math.max(0, Math.round(Number(params.combo ?? 0))),
+    bricks_cleared: Math.max(0, Math.round(Number(params.bricks_cleared ?? 0))),
+    powerups_collected: Math.max(0, Math.round(Number(params.powerups_collected ?? 0))),
+    lives: Math.max(0, Math.round(Number(params.lives ?? 3))),
+    energy: Math.max(0, Math.min(100, Math.round(Number(params.energy ?? 100)))),
+    speed: Math.max(1, Number(params.speed ?? 1)),
+    saved_at: typeof params.saved_at === "string" ? params.saved_at : new Date().toISOString(),
+  };
+}
+
 function gameAchievements(run) {
   const achievements = [];
   if (run.score >= 50) {
@@ -667,8 +807,30 @@ function scheduleStorageMetadata(state) {
     namespace: "plugini_demo_1/schedule",
     revision: state.scheduleRevision,
     records: state.scheduleItems.length,
+    journal_entries: state.scheduleJournal.length,
     quota_bytes: 1048576,
-    used_bytes: 4096 + state.scheduleItems.length * 384,
+    used_bytes: 4096 + state.scheduleItems.length * 384 + state.scheduleJournal.length * 128,
+  };
+}
+
+function appendScheduleJournal(state, action, detail) {
+  state.scheduleJournal = [
+    {
+      action,
+      detail: String(detail || "").slice(0, 80),
+      revision: state.scheduleRevision,
+      at: new Date().toISOString(),
+    },
+    ...state.scheduleJournal,
+  ].slice(0, 8);
+}
+
+function normalizeJournalEntry(entry = {}) {
+  return {
+    action: String(entry.action || "unknown").slice(0, 40),
+    detail: String(entry.detail || "").slice(0, 80),
+    revision: Math.max(1, Math.round(Number(entry.revision ?? 1))),
+    at: typeof entry.at === "string" ? entry.at : "2026-06-30T00:00:00Z",
   };
 }
 
@@ -788,6 +950,18 @@ export function createWeatherAPIPayload(location) {
       uv_index: weather.uv,
       accent: weather.accent,
     },
+    air_quality: {
+      aqi: 35 + (location.length % 58),
+      dominant_pollutant: location.length % 2 === 0 ? "pm2.5" : "ozone",
+      category: location.length % 3 === 0 ? "moderate" : "good",
+    },
+    alerts: weather.wind > 15 ? [
+      {
+        severity: "advisory",
+        title: "Wind window",
+        detail: "Outdoor setup should account for gusts during the afternoon slot.",
+      },
+    ] : [],
     hourly,
     forecast,
   };
@@ -798,11 +972,14 @@ function createWeatherPayloadFromRaw(location, rawPayload, rawResponseBody, netw
   const current = rawPayload.current ?? {};
   const hourly = Array.isArray(rawPayload.hourly) ? rawPayload.hourly : [];
   const forecast = Array.isArray(rawPayload.forecast) ? rawPayload.forecast : [];
+  const alerts = Array.isArray(rawPayload.alerts) ? rawPayload.alerts : [];
   return {
     location,
     current,
     hourly,
     forecast,
+    alerts,
+    air_quality: rawPayload.air_quality ?? null,
     network: {
       connector_id: "weather_api",
       transport: "http",
@@ -823,9 +1000,34 @@ function createWeatherPayloadFromRaw(location, rawPayload, rawResponseBody, netw
     raw_response_body: rawResponseBody,
     parser: {
       format: "json",
-      fields: ["current.temperature_c", "current.condition", "forecast[]", "hourly[]"],
+      fields: ["current.temperature_c", "current.condition", "air_quality", "alerts[]", "forecast[]", "hourly[]"],
     },
     parsed_summary: `${current.condition ?? "Unknown"}; ${current.wind_kph ?? "--"} kph wind; ${current.humidity_percent ?? "--"}% humidity`,
+  };
+}
+
+function rememberWeatherNetworkEvent(events, network = {}) {
+  return [
+    normalizeWeatherNetworkEvent({
+      operation: network.operation,
+      response_status: network.response_status,
+      latency_ms: network.latency_ms,
+      bytes_received: network.bytes_received,
+      upstream_mode: network.upstream_mode,
+      at: new Date().toISOString(),
+    }),
+    ...events,
+  ].slice(0, 6);
+}
+
+function normalizeWeatherNetworkEvent(event = {}) {
+  return {
+    operation: String(event.operation || "GET /v1/forecast").slice(0, 120),
+    response_status: Math.round(Number(event.response_status ?? 200)),
+    latency_ms: Math.max(0, Math.round(Number(event.latency_ms ?? 0))),
+    bytes_received: Math.max(0, Math.round(Number(event.bytes_received ?? 0))),
+    upstream_mode: String(event.upstream_mode || "unknown").slice(0, 80),
+    at: typeof event.at === "string" ? event.at : "2026-06-30T00:00:00Z",
   };
 }
 

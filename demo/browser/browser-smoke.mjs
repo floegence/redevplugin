@@ -125,7 +125,13 @@ try {
   await expectText(gameFrame.locator("#plugin-result"), "host-backed kv store");
   await expectText(gameFrame.locator("#plugin-result"), "achievements");
   await expectText(gameFrame.locator("#leaderboard"), "Latest run");
-  await expectText(page.locator("#rpc-count"), "2");
+  await gameFrame.getByRole("button", { name: "Save snapshot" }).click();
+  await expectText(gameFrame.locator("#plugin-result"), "game.snapshot.save");
+  await expectText(gameFrame.locator("#snapshot-list"), "pts");
+  await gameFrame.getByRole("button", { name: "Load snapshot" }).click();
+  await expectText(gameFrame.locator("#plugin-result"), "game.snapshot.load");
+  await expectText(gameFrame.locator("#plugin-result"), "game/snapshots");
+  await expectText(page.locator("#rpc-count"), "4");
 
   await page.getByRole("button", { name: "Schedule planner" }).click();
   await expectText(page.locator("#handshake-count"), "1");
@@ -152,21 +158,33 @@ try {
   await expectText(scheduleFrame.locator("#timeline-next"), "09:30");
   await scheduleFrame.locator("#schedule-query").fill("browser");
   await expectText(scheduleFrame.locator("#schedule-count"), "1");
-  await scheduleFrame.getByRole("button", { name: "Done" }).first().click();
+  await expectText(scheduleFrame.locator("#schedule-list"), "Browser QA review");
+  await scheduleFrame.locator("#schedule-list li", { hasText: "Browser QA review" }).getByRole("button", { name: "Done" }).click();
   await expectText(scheduleFrame.locator("#plugin-result"), "\"persisted\": true");
   await expectText(scheduleFrame.locator("#schedule-count"), "0");
   await scheduleFrame.locator("#schedule-status").selectOption("all");
   await scheduleFrame.locator("#schedule-query").fill("");
   await expectText(scheduleFrame.locator("#schedule-count"), "4");
+  await expectText(scheduleFrame.locator("#schedule-journal"), "toggle");
+  await scheduleFrame.getByRole("button", { name: "Seed week" }).click();
+  await expectText(scheduleFrame.locator("#schedule-list"), "Architecture sync");
+  await expectText(scheduleFrame.locator("#schedule-count"), "9");
+  await expectText(scheduleFrame.locator("#schedule-journal"), "seed_week");
+  await scheduleFrame.getByRole("button", { name: "Archive done" }).click();
+  await expectText(scheduleFrame.locator("#schedule-count"), "7");
+  await expectText(scheduleFrame.locator("#schedule-journal"), "archive_done");
+  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 5");
   await page.reload({ waitUntil: "load" });
   await expectText(page.locator("#host-status"), "listening");
   await expectText(page.locator("#handshake-count"), "1");
   const reloadedScheduleFrame = page.frameLocator("#plugin-frame");
   await expectText(reloadedScheduleFrame.locator("#plugin-status"), "ready");
-  await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
-  await expectText(reloadedScheduleFrame.locator("#schedule-count"), "4");
+  await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Architecture sync");
+  await expectMissingText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
+  await expectText(reloadedScheduleFrame.locator("#schedule-count"), "7");
   await expectText(reloadedScheduleFrame.locator("#schedule-storage-source"), "host storage broker");
-  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 3");
+  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 5");
+  await expectText(reloadedScheduleFrame.locator("#schedule-journal"), "archive_done");
 
   await page.getByRole("button", { name: "Weather console" }).click();
   await expectText(page.locator("#handshake-count"), "1");
@@ -179,6 +197,8 @@ try {
   await expectText(weatherFrame.locator("#weather-place"), "Shanghai");
   await expectText(weatherFrame.locator("#weather-condition"), "Warm evening haze");
   await expectText(weatherFrame.locator("#weather-pressure"), "1009 hPa");
+  await expectText(weatherFrame.locator("#weather-aqi"), "43");
+  await expectText(weatherFrame.locator("#weather-aqi-category"), "good");
   await expectText(weatherFrame.locator("#network-operation"), "http GET /v1/forecast");
   await expectText(weatherFrame.locator("#network-latency"), "ms");
   await expectText(weatherFrame.locator("#network-broker"), "host http fetch");
@@ -187,11 +207,14 @@ try {
   await expectText(weatherFrame.locator("#raw-weather-response"), "parsed_from_raw");
   await expectText(weatherFrame.locator("#raw-weather-response"), "/demo/weather-api/v1/forecast");
   await expectText(weatherFrame.locator("#hourly"), "09:00");
+  await expectText(weatherFrame.locator("#network-history"), "GET /v1/forecast");
   await expectText(weatherFrame.locator("#plugin-result"), "weather.fetch");
   await expectText(weatherFrame.locator("#plugin-result"), "api.weather.example");
   await weatherFrame.getByRole("button", { name: "London" }).click();
   await expectText(weatherFrame.locator("#weather-place"), "London");
   await expectText(weatherFrame.locator("#weather-condition"), "Patchy rain windows");
+  await expectText(weatherFrame.locator("#weather-alerts"), "Wind window");
+  await expectText(weatherFrame.locator("#weather-alert-count"), "1");
 
   const generatedURL = new URL(`http://127.0.0.1:${hostPort}/demo/browser/index.html`);
   generatedURL.searchParams.set("plugin_origin", `http://127.0.0.1:${pluginPort}`);
@@ -254,6 +277,24 @@ async function expectText(locator, expected, timeoutMs = 5_000) {
     await delay(50);
   }
   throw new Error(`expected text ${JSON.stringify(expected)} but last saw ${JSON.stringify(last)}`);
+}
+
+async function expectMissingText(locator, unexpected, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    try {
+      last = (await locator.textContent()) ?? "";
+      if (last.includes(unexpected)) {
+        throw new Error(`unexpected text ${JSON.stringify(unexpected)} still visible in ${JSON.stringify(last)}`);
+      }
+    } catch (error) {
+      if (String(error?.message ?? "").startsWith("unexpected text")) {
+        throw error;
+      }
+    }
+    await delay(50);
+  }
 }
 
 async function canvasChecksum(locator) {

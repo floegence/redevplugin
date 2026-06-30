@@ -137,6 +137,11 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(score.data.data.best_score, 42);
   assert.equal(score.data.data.leaderboard.length, 3);
   assert.equal(score.data.data.achievements.includes("score-sprinter"), false);
+  const snapshot = await rpc(platform, "game.snapshot.save", { score: 52, level: 2, energy: 88 });
+  assert.equal(snapshot.data.data.storage_key, "game/snapshots");
+  assert.equal(snapshot.data.data.snapshots[0].score, 52);
+  const loadedSnapshot = await rpc(platform, "game.snapshot.load", {});
+  assert.equal(loadedSnapshot.data.data.snapshot.level, 2);
 
   const brokeredWorker = await rpc(platform, "worker.brokerDemo", { note: "generated plugin broker smoke" });
   assert.equal(brokeredWorker.data.data.method, "worker.brokerDemo");
@@ -158,6 +163,15 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(added.data.data.persisted, true);
   assert.equal(added.data.data.items.length, 4);
   assert.equal(added.data.data.storage.revision, 2);
+  assert.equal(added.data.data.journal[0].action, "add");
+  const seeded = await rpc(platform, "schedule.items.seedWeek", { view: { status: "all" } });
+  assert.equal(seeded.data.data.added, 5);
+  assert.equal(seeded.data.data.storage.records, 9);
+  assert.equal(seeded.data.data.journal[0].action, "seed_week");
+  const archived = await rpc(platform, "schedule.items.archiveDone", { view: { status: "all" } });
+  assert.equal(archived.data.data.archived, 1);
+  assert.equal(archived.data.data.storage.records, 8);
+  assert.equal(archived.data.data.journal[0].action, "archive_done");
 
   const saved = await rpc(platform, "weather.location.save", { location: "Shanghai" });
   assert.equal(saved.data.data.location, "Shanghai");
@@ -169,6 +183,9 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(JSON.parse(weather.data.data.raw_response_body).location, "Shanghai");
   assert.equal(weather.data.data.parser.format, "json");
   assert.equal(weather.data.data.hourly.length, 4);
+  assert.equal(weather.data.data.air_quality.category, "good");
+  assert.equal(weather.data.data.alerts.length, 0);
+  assert.equal(weather.data.data.network_history.length, 1);
 
   for (const filename of [
     "./plugins/bouncer.html",

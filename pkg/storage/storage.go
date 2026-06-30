@@ -28,11 +28,14 @@ const (
 var (
 	ErrInvalidNamespace  = errors.New("storage namespace is invalid")
 	ErrInvalidFilePath   = errors.New("storage file path is invalid")
+	ErrInvalidKVKey      = errors.New("storage kv key is invalid")
 	ErrNamespaceNotFound = errors.New("storage namespace not found")
 	ErrQuotaExceeded     = errors.New("storage quota exceeded")
 	ErrArchiveNotFound   = errors.New("storage archive not found")
 	ErrFileNotFound      = errors.New("storage file not found")
 	ErrFileTooLarge      = errors.New("storage file too large")
+	ErrKVKeyNotFound     = errors.New("storage kv key not found")
+	ErrKVValueTooLarge   = errors.New("storage kv value too large")
 )
 
 type Namespace struct {
@@ -94,6 +97,13 @@ type FilesBroker interface {
 	ListFiles(ctx context.Context, req FileListRequest) (FileListResult, error)
 }
 
+type KVBroker interface {
+	GetKV(ctx context.Context, req KVGetRequest) (KVGetResult, error)
+	PutKV(ctx context.Context, req KVPutRequest) (KVPutResult, error)
+	DeleteKV(ctx context.Context, req KVDeleteRequest) error
+	ListKV(ctx context.Context, req KVListRequest) (KVListResult, error)
+}
+
 type Inspector interface {
 	ListNamespaces(ctx context.Context, pluginInstanceID string) ([]NamespaceRecord, error)
 	Usage(ctx context.Context, pluginInstanceID string, storeID string) (Usage, error)
@@ -153,12 +163,68 @@ type FileEntry struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type KVGetRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Key              string `json:"key"`
+	MaxBytes         int64  `json:"max_bytes,omitempty"`
+}
+
+type KVGetResult struct {
+	Key       string `json:"key"`
+	Value     []byte `json:"-"`
+	SizeBytes int64  `json:"size_bytes"`
+	Usage     Usage  `json:"usage"`
+}
+
+type KVPutRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Key              string `json:"key"`
+	Value            []byte `json:"-"`
+}
+
+type KVPutResult struct {
+	Key       string `json:"key"`
+	SizeBytes int64  `json:"size_bytes"`
+	Usage     Usage  `json:"usage"`
+}
+
+type KVDeleteRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Key              string `json:"key"`
+}
+
+type KVListRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	StoreID          string `json:"store_id"`
+	Prefix           string `json:"prefix,omitempty"`
+	MaxEntries       int    `json:"max_entries,omitempty"`
+}
+
+type KVListResult struct {
+	Prefix  string    `json:"prefix,omitempty"`
+	Entries []KVEntry `json:"entries"`
+	Usage   Usage     `json:"usage"`
+}
+
+type KVEntry struct {
+	Key       string    `json:"key"`
+	SizeBytes int64     `json:"size_bytes"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+const MaxKVKeyBytes = 128
+
 type MemoryBroker struct {
 	mu         sync.Mutex
 	now        func() time.Time
 	nextExport int
 	namespaces map[namespaceKey]NamespaceRecord
 	archives   map[string]ArchiveRecord
+	kv         map[namespaceKey]map[string][]byte
+	kvArchives map[string]map[namespaceKey]map[string][]byte
 }
 
 type namespaceKey struct {
@@ -171,6 +237,8 @@ func NewMemoryBroker() *MemoryBroker {
 		now:        func() time.Time { return time.Now().UTC() },
 		namespaces: map[namespaceKey]NamespaceRecord{},
 		archives:   map[string]ArchiveRecord{},
+		kv:         map[namespaceKey]map[string][]byte{},
+		kvArchives: map[string]map[namespaceKey]map[string][]byte{},
 	}
 }
 
@@ -228,6 +296,7 @@ func (b *MemoryBroker) DeleteNamespace(_ context.Context, pluginInstanceID strin
 		}
 		if deleteData {
 			delete(b.namespaces, key)
+			delete(b.kv, key)
 			continue
 		}
 		record.State = NamespaceRetained
@@ -256,6 +325,13 @@ func (b *MemoryBroker) ExportData(_ context.Context, req ExportRequest) (string,
 	}
 	b.nextExport++
 	ref := fmt.Sprintf("archive_%06d", b.nextExport)
+	kvArchive := map[namespaceKey]map[string][]byte{}
+	for _, record := range namespaces {
+		key := makeKey(record.PluginInstanceID, record.StoreID)
+		if record.Kind == StoreKV {
+			kvArchive[key] = cloneKVMap(b.kv[key])
+		}
+	}
 	b.archives[ref] = ArchiveRecord{
 		ArchiveRef:             ref,
 		SourcePluginInstanceID: pluginInstanceID,
@@ -263,6 +339,7 @@ func (b *MemoryBroker) ExportData(_ context.Context, req ExportRequest) (string,
 		Namespaces:             cloneNamespaceRecords(namespaces),
 		CreatedAt:              b.now(),
 	}
+	b.kvArchives[ref] = kvArchive
 	return ref, nil
 }
 
@@ -290,6 +367,7 @@ func (b *MemoryBroker) ImportData(_ context.Context, req ImportRequest) error {
 		for key := range b.namespaces {
 			if key.pluginInstanceID == pluginInstanceID {
 				delete(b.namespaces, key)
+				delete(b.kv, key)
 			}
 		}
 	}
@@ -319,6 +397,10 @@ func (b *MemoryBroker) ImportData(_ context.Context, req ImportRequest) error {
 		record.RetainedAt = nil
 		key := makeKey(pluginInstanceID, record.StoreID)
 		b.namespaces[key] = record
+		sourceKey := makeKey(archive.SourcePluginInstanceID, archived.StoreID)
+		if record.Kind == StoreKV {
+			b.kv[key] = cloneKVMap(b.kvArchives[archiveRef][sourceKey])
+		}
 	}
 	return nil
 }
@@ -373,6 +455,127 @@ func (b *MemoryBroker) SetUsage(_ context.Context, pluginInstanceID string, stor
 	return nil
 }
 
+func (b *MemoryBroker) GetKV(_ context.Context, req KVGetRequest) (KVGetResult, error) {
+	if b == nil {
+		return KVGetResult{}, errors.New("storage broker is nil")
+	}
+	key, err := normalizeKVKey(req.Key)
+	if err != nil {
+		return KVGetResult{}, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return KVGetResult{}, err
+	}
+	value, ok := b.kv[nsKey][key]
+	if !ok {
+		return KVGetResult{}, ErrKVKeyNotFound
+	}
+	if req.MaxBytes > 0 && int64(len(value)) > req.MaxBytes {
+		return KVGetResult{}, fmt.Errorf("%w: %d > %d", ErrKVValueTooLarge, len(value), req.MaxBytes)
+	}
+	return KVGetResult{
+		Key:       key,
+		Value:     append([]byte(nil), value...),
+		SizeBytes: int64(len(value)),
+		Usage:     usageFromRecord(record),
+	}, nil
+}
+
+func (b *MemoryBroker) PutKV(_ context.Context, req KVPutRequest) (KVPutResult, error) {
+	if b == nil {
+		return KVPutResult{}, errors.New("storage broker is nil")
+	}
+	key, err := normalizeKVKey(req.Key)
+	if err != nil {
+		return KVPutResult{}, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return KVPutResult{}, err
+	}
+	oldSize := int64(0)
+	if old, ok := b.kv[nsKey][key]; ok {
+		oldSize = int64(len(old))
+	}
+	projected := record.UsageBytes - oldSize + int64(len(req.Value))
+	if projected > record.QuotaBytes {
+		return KVPutResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
+	}
+	if b.kv[nsKey] == nil {
+		b.kv[nsKey] = map[string][]byte{}
+	}
+	b.kv[nsKey][key] = append([]byte(nil), req.Value...)
+	record.UsageBytes = projected
+	record.UpdatedAt = b.now()
+	b.namespaces[nsKey] = record
+	return KVPutResult{
+		Key:       key,
+		SizeBytes: int64(len(req.Value)),
+		Usage:     usageFromRecord(record),
+	}, nil
+}
+
+func (b *MemoryBroker) DeleteKV(_ context.Context, req KVDeleteRequest) error {
+	if b == nil {
+		return errors.New("storage broker is nil")
+	}
+	key, err := normalizeKVKey(req.Key)
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return err
+	}
+	if old, ok := b.kv[nsKey][key]; ok {
+		delete(b.kv[nsKey], key)
+		record.UsageBytes -= int64(len(old))
+		if record.UsageBytes < 0 {
+			record.UsageBytes = 0
+		}
+		record.UpdatedAt = b.now()
+		b.namespaces[nsKey] = record
+	}
+	return nil
+}
+
+func (b *MemoryBroker) ListKV(_ context.Context, req KVListRequest) (KVListResult, error) {
+	if b == nil {
+		return KVListResult{}, errors.New("storage broker is nil")
+	}
+	prefix := strings.TrimSpace(req.Prefix)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	record, nsKey, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return KVListResult{}, err
+	}
+	limit := req.MaxEntries
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	entries := make([]KVEntry, 0, len(b.kv[nsKey]))
+	now := record.UpdatedAt
+	for key, value := range b.kv[nsKey] {
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entries = append(entries, KVEntry{Key: key, SizeBytes: int64(len(value)), UpdatedAt: now})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return KVListResult{Prefix: prefix, Entries: entries, Usage: usageFromRecord(record)}, nil
+}
+
 func (b *MemoryBroker) Archive(ref string) (ArchiveRecord, bool) {
 	if b == nil {
 		return ArchiveRecord{}, false
@@ -385,6 +588,18 @@ func (b *MemoryBroker) Archive(ref string) (ArchiveRecord, bool) {
 	}
 	archive.Namespaces = cloneNamespaceRecords(archive.Namespaces)
 	return archive, true
+}
+
+func (b *MemoryBroker) activeKVNamespaceLocked(pluginInstanceID string, storeID string) (NamespaceRecord, namespaceKey, error) {
+	key := makeKey(pluginInstanceID, storeID)
+	record, ok := b.namespaces[key]
+	if !ok || record.State != NamespaceActive {
+		return NamespaceRecord{}, namespaceKey{}, ErrNamespaceNotFound
+	}
+	if record.Kind != StoreKV {
+		return NamespaceRecord{}, namespaceKey{}, fmt.Errorf("%w: store %q is %s, not kv", ErrInvalidNamespace, record.StoreID, record.Kind)
+	}
+	return record, key, nil
 }
 
 func (b *MemoryBroker) listNamespacesLocked(pluginInstanceID string) []NamespaceRecord {
@@ -459,4 +674,32 @@ func cloneNamespaceRecords(records []NamespaceRecord) []NamespaceRecord {
 	cloned := make([]NamespaceRecord, len(records))
 	copy(cloned, records)
 	return cloned
+}
+
+func normalizeKVKey(raw string) (string, error) {
+	key := strings.TrimSpace(raw)
+	if key == "" {
+		return "", fmt.Errorf("%w: key is required", ErrInvalidKVKey)
+	}
+	if len([]byte(key)) > MaxKVKeyBytes {
+		return "", fmt.Errorf("%w: key exceeds %d bytes", ErrInvalidKVKey, MaxKVKeyBytes)
+	}
+	return key, nil
+}
+
+func cloneKVMap(values map[string][]byte) map[string][]byte {
+	cloned := map[string][]byte{}
+	for key, value := range values {
+		cloned[key] = append([]byte(nil), value...)
+	}
+	return cloned
+}
+
+func usageFromRecord(record NamespaceRecord) Usage {
+	return Usage{
+		PluginInstanceID: record.PluginInstanceID,
+		StoreID:          record.StoreID,
+		UsageBytes:       record.UsageBytes,
+		QuotaBytes:       record.QuotaBytes,
+	}
 }

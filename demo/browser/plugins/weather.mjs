@@ -27,6 +27,11 @@ const wind = document.querySelector("#weather-wind");
 const humidity = document.querySelector("#weather-humidity");
 const pressure = document.querySelector("#weather-pressure");
 const uv = document.querySelector("#weather-uv");
+const aqi = document.querySelector("#weather-aqi");
+const pollutant = document.querySelector("#weather-pollutant");
+const aqiCategory = document.querySelector("#weather-aqi-category");
+const alertCount = document.querySelector("#weather-alert-count");
+const weatherAlerts = document.querySelector("#weather-alerts");
 const networkOperation = document.querySelector("#network-operation");
 const networkLatency = document.querySelector("#network-latency");
 const networkBytes = document.querySelector("#network-bytes");
@@ -34,6 +39,8 @@ const networkConnector = document.querySelector("#network-connector");
 const networkBroker = document.querySelector("#network-broker");
 const networkResponse = document.querySelector("#network-response");
 const networkParser = document.querySelector("#network-parser");
+const networkHistoryCount = document.querySelector("#network-history-count");
+const networkHistory = document.querySelector("#network-history");
 const forecast = document.querySelector("#forecast");
 const hourly = document.querySelector("#hourly");
 const rawWeatherResponse = document.querySelector("#raw-weather-response");
@@ -52,6 +59,13 @@ fetchButton.addEventListener("click", async () => {
   const location = locationInput.value.trim() || "San Francisco";
   await callPlugin("weather.location.save", { location });
   await callPlugin("weather.fetch", { location });
+});
+
+locationInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    fetchButton.click();
+  }
 });
 
 async function loadSavedLocation() {
@@ -100,6 +114,10 @@ function renderWeather(data) {
   humidity.textContent = `${parsed.current.humidity_percent}%`;
   pressure.textContent = `${parsed.current.pressure_hpa ?? "--"} hPa`;
   uv.textContent = String(parsed.current.uv_index ?? "--");
+  aqi.textContent = String(parsed.air_quality?.aqi ?? "--");
+  pollutant.textContent = parsed.air_quality?.dominant_pollutant ?? "--";
+  aqiCategory.textContent = parsed.air_quality?.category ?? "--";
+  alertCount.textContent = String(parsed.alerts.length);
   networkOperation.textContent = `${data.network?.transport ?? "http"} ${data.network?.operation ?? "GET /v1/forecast"}`;
   networkLatency.textContent = `${data.network?.latency_ms ?? "--"} ms`;
   networkBytes.textContent = `${data.network?.bytes_received ?? "--"} bytes`;
@@ -115,6 +133,12 @@ function renderWeather(data) {
     parsed_from_raw: true,
     sample: parsed,
   });
+  weatherAlerts.replaceChildren(...parsed.alerts.map((alert) => {
+    const item = document.createElement("div");
+    item.innerHTML = `<strong>${escapeHTML(alert.title)}</strong><span>${escapeHTML(alert.severity)}</span><p>${escapeHTML(alert.detail)}</p>`;
+    return item;
+  }));
+  renderNetworkHistory(data.network_history ?? []);
   forecast.replaceChildren(...parsed.forecast.map((day) => {
     const item = document.createElement("div");
     item.innerHTML = `<strong>${escapeHTML(day.day)}</strong><span>${Number(day.high_c)}°/${Number(day.low_c)}°</span><small>${escapeHTML(day.condition)} · ${Number(day.precipitation_percent ?? 0)}% rain</small>`;
@@ -155,14 +179,35 @@ function parseWeatherResponse(data) {
       current: parsed.current ?? data.current,
       forecast: Array.isArray(parsed.forecast) ? parsed.forecast : data.forecast,
       hourly: Array.isArray(parsed.hourly) ? parsed.hourly : [],
+      air_quality: parsed.air_quality ?? data.air_quality ?? null,
+      alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [],
     };
   } catch {
     return {
       current: data.current,
       forecast: data.forecast ?? [],
       hourly: [],
+      air_quality: data.air_quality ?? null,
+      alerts: data.alerts ?? [],
     };
   }
+}
+
+function renderNetworkHistory(entries) {
+  networkHistoryCount.textContent = String(entries.length);
+  networkHistory.replaceChildren(...entries.slice(0, 6).map((entry) => {
+    const item = document.createElement("li");
+    item.innerHTML = `<strong>${escapeHTML(entry.operation)}</strong><span>${Number(entry.response_status)} · ${Number(entry.latency_ms)} ms · ${Number(entry.bytes_received)} bytes</span><small>${escapeHTML(entry.upstream_mode)} · ${formatTime(entry.at)}</small>`;
+    return item;
+  }));
+}
+
+function formatTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value || "--");
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function escapeHTML(value) {

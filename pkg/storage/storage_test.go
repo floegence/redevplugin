@@ -87,6 +87,154 @@ func TestMemoryBrokerRetainsAndDeletesNamespaces(t *testing.T) {
 	}
 }
 
+func TestMemoryBrokerKVStoreReadWriteListDelete(t *testing.T) {
+	broker := NewMemoryBroker()
+	ctx := context.Background()
+	ns := Namespace{
+		PluginInstanceID: "plugini_kv",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       16,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	written, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/theme",
+		Value:            []byte("dark"),
+	})
+	if err != nil {
+		t.Fatalf("PutKV() error = %v", err)
+	}
+	if written.Key != "ui/theme" || written.SizeBytes != 4 || written.Usage.UsageBytes != 4 {
+		t.Fatalf("PutKV() result mismatch: %#v", written)
+	}
+	read, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/theme",
+	})
+	if err != nil {
+		t.Fatalf("GetKV() error = %v", err)
+	}
+	if string(read.Value) != "dark" || read.Usage.UsageBytes != 4 {
+		t.Fatalf("GetKV() result mismatch: value=%q result=%#v", string(read.Value), read)
+	}
+	list, err := broker.ListKV(ctx, KVListRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Prefix:           "ui/",
+	})
+	if err != nil {
+		t.Fatalf("ListKV() error = %v", err)
+	}
+	if len(list.Entries) != 1 || list.Entries[0].Key != "ui/theme" || list.Usage.UsageBytes != 4 {
+		t.Fatalf("ListKV() result mismatch: %#v", list)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "blob",
+		Value:            []byte("0123456789abcdef0"),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("PutKV(quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/theme",
+		MaxBytes:         3,
+	}); !errors.Is(err, ErrKVValueTooLarge) {
+		t.Fatalf("GetKV(max bytes) error = %v, want ErrKVValueTooLarge", err)
+	}
+	if err := broker.DeleteKV(ctx, KVDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/theme",
+	}); err != nil {
+		t.Fatalf("DeleteKV() error = %v", err)
+	}
+	if _, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/theme",
+	}); !errors.Is(err, ErrKVKeyNotFound) {
+		t.Fatalf("GetKV(deleted) error = %v, want ErrKVKeyNotFound", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.UsageBytes != 0 {
+		t.Fatalf("usage after DeleteKV = %d, want 0", usage.UsageBytes)
+	}
+}
+
+func TestMemoryBrokerKVStoreExportImportAndDeleteData(t *testing.T) {
+	broker := NewMemoryBroker()
+	ctx := context.Background()
+	source := Namespace{
+		PluginInstanceID: "plugini_source",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       64,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		StoreID:          source.StoreID,
+		Key:              "city",
+		Value:            []byte("Shanghai"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := broker.ExportData(ctx, ExportRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("ExportData() error = %v", err)
+	}
+	if err := broker.DeleteNamespace(ctx, source.PluginInstanceID, true); err != nil {
+		t.Fatal(err)
+	}
+	target := Namespace{
+		StoreID:    "prefs",
+		Kind:       StoreKV,
+		QuotaBytes: 64,
+	}
+	if err := broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		TargetNamespaces: []Namespace{target},
+	}); err != nil {
+		t.Fatalf("ImportData() error = %v", err)
+	}
+	read, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: "plugini_target",
+		StoreID:          "prefs",
+		Key:              "city",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(imported) error = %v", err)
+	}
+	if string(read.Value) != "Shanghai" || read.Usage.UsageBytes != int64(len("Shanghai")) {
+		t.Fatalf("imported KV mismatch: value=%q result=%#v", string(read.Value), read)
+	}
+	if err := broker.DeleteNamespace(ctx, "plugini_target", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: "plugini_target",
+		StoreID:          "prefs",
+		Key:              "city",
+	}); !errors.Is(err, ErrNamespaceNotFound) {
+		t.Fatalf("GetKV(after delete data) error = %v, want ErrNamespaceNotFound", err)
+	}
+}
+
 func TestMemoryBrokerExportImport(t *testing.T) {
 	broker := NewMemoryBroker()
 	ctx := context.Background()
@@ -413,6 +561,135 @@ func TestFileBrokerFilesStoreReadWriteListDelete(t *testing.T) {
 	}
 	if usage.UsageBytes != 0 {
 		t.Fatalf("usage after delete = %d, want 0", usage.UsageBytes)
+	}
+}
+
+func TestFileBrokerKVStoreReadWriteListDelete(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_kv",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       64,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	written, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+		Value:            []byte("London"),
+	})
+	if err != nil {
+		t.Fatalf("PutKV() error = %v", err)
+	}
+	if written.Key != "weather.location" || written.SizeBytes != 6 || written.Usage.UsageBytes != 6 {
+		t.Fatalf("PutKV() result mismatch: %#v", written)
+	}
+	read, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+	})
+	if err != nil {
+		t.Fatalf("GetKV() error = %v", err)
+	}
+	if string(read.Value) != "London" || read.Usage.UsageBytes != 6 {
+		t.Fatalf("GetKV() result mismatch: value=%q result=%#v", string(read.Value), read)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "oversized",
+		Value:            []byte(strings.Repeat("x", 65)),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("PutKV(quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	list, err := broker.ListKV(ctx, KVListRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Prefix:           "weather.",
+	})
+	if err != nil {
+		t.Fatalf("ListKV() error = %v", err)
+	}
+	if len(list.Entries) != 1 || list.Entries[0].Key != "weather.location" || list.Usage.UsageBytes != 6 {
+		t.Fatalf("ListKV() result mismatch: %#v", list)
+	}
+	if err := broker.DeleteKV(ctx, KVDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+	}); err != nil {
+		t.Fatalf("DeleteKV() error = %v", err)
+	}
+	if _, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+	}); !errors.Is(err, ErrKVKeyNotFound) {
+		t.Fatalf("GetKV(deleted) error = %v, want ErrKVKeyNotFound", err)
+	}
+}
+
+func TestFileBrokerKVStoreExportImportCopiesValues(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	source := Namespace{
+		PluginInstanceID: "plugini_source",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       64,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		StoreID:          source.StoreID,
+		Key:              "theme",
+		Value:            []byte("teal"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := broker.ExportData(ctx, ExportRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("ExportData() error = %v", err)
+	}
+	if err := broker.DeleteNamespace(ctx, source.PluginInstanceID, true); err != nil {
+		t.Fatal(err)
+	}
+	target := Namespace{
+		StoreID:    "prefs",
+		Kind:       StoreKV,
+		QuotaBytes: 64,
+	}
+	if err := broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		TargetNamespaces: []Namespace{target},
+	}); err != nil {
+		t.Fatalf("ImportData() error = %v", err)
+	}
+	read, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: "plugini_target",
+		StoreID:          "prefs",
+		Key:              "theme",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(imported) error = %v", err)
+	}
+	if string(read.Value) != "teal" || read.Usage.UsageBytes != int64(len("teal")) {
+		t.Fatalf("imported KV mismatch: value=%q result=%#v", string(read.Value), read)
 	}
 }
 

@@ -425,6 +425,34 @@ pre {
   padding: 10px;
 }
 
+.snapshot-panel {
+  background: rgb(15 23 42 / 72%);
+  border: 1px solid rgb(125 211 252 / 24%);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.snapshot-panel > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.snapshot-chip {
+  background: rgb(103 232 249 / 12%);
+  border: 1px solid rgb(103 232 249 / 30%);
+  color: #cffafe;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.snapshot-chip:hover {
+  background: rgb(103 232 249 / 24%);
+}
+
 .arcade-shell pre {
   background: #020617;
   color: #a7f3d0;
@@ -613,6 +641,50 @@ pre {
   text-transform: uppercase;
 }
 
+.journal-panel {
+  background: #ffffff;
+  border: 1px solid #d7dfcf;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.journal-panel ol {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.journal-panel li {
+  background: #f8fafc;
+  border: 1px solid #dbe4d4;
+  border-radius: 8px;
+  min-height: 92px;
+  padding: 10px;
+}
+
+.journal-panel strong,
+.journal-panel span,
+.journal-panel p {
+  display: block;
+}
+
+.journal-panel span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 6px;
+}
+
+.journal-panel p {
+  margin: 8px 0 0;
+}
+
 .weather-body {
   background: #f3f7fb;
 }
@@ -690,6 +762,10 @@ pre {
   margin-bottom: 12px;
 }
 
+.weather-quality {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .weather-metrics span,
 .network-strip span,
 .network-strip strong,
@@ -714,6 +790,37 @@ pre {
 
 .network-strip {
   grid-template-columns: minmax(0, 1.5fr) minmax(104px, 0.55fr) minmax(112px, 0.65fr);
+}
+
+.weather-alerts {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.weather-alerts div {
+  background: rgb(254 240 138 / 18%);
+  border: 1px solid rgb(254 240 138 / 28%);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.weather-alerts strong,
+.weather-alerts span,
+.weather-alerts p {
+  display: block;
+}
+
+.weather-alerts span {
+  color: #fef9c3;
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+
+.weather-alerts p {
+  margin: 7px 0 0;
 }
 
 .forecast-strip,
@@ -781,6 +888,49 @@ pre {
   min-height: 150px;
 }
 
+.network-history-panel {
+  background: #ffffff;
+  border: 1px solid #cbd7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.network-history-panel ol {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.network-history-panel li {
+  background: #f8fafc;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.network-history-panel strong,
+.network-history-panel span,
+.network-history-panel small {
+  display: block;
+}
+
+.network-history-panel strong {
+  color: #1d4ed8;
+  overflow-wrap: anywhere;
+}
+
+.network-history-panel span,
+.network-history-panel small {
+  color: #64748b;
+  margin-top: 6px;
+}
+
 @media (max-width: 860px) {
   .host-shell {
     grid-template-columns: 1fr;
@@ -808,10 +958,13 @@ pre {
   .arcade-telemetry,
   .weather-search,
   .weather-metrics,
+  .weather-quality,
   .network-strip,
   .forecast-strip,
   .hourly-strip,
-  .network-debug-panel {
+  .network-debug-panel,
+  .journal-panel ol,
+  .network-history-panel ol {
     grid-template-columns: 1fr;
   }
 

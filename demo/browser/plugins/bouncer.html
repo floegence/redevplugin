@@ -53,11 +53,18 @@
         <button id="game-boost" type="button" class="secondary-button">Boost</button>
         <button id="game-powerup" type="button" class="secondary-button">Power-up</button>
         <button id="game-save" type="button" class="secondary-button">Save score</button>
+        <button id="game-snapshot-save" type="button" class="secondary-button">Save snapshot</button>
+        <button id="game-snapshot-load" type="button" class="secondary-button">Load snapshot</button>
       </div>
 
       <section class="leaderboard-panel" aria-label="Saved game leaderboard">
         <span class="metric-label">saved leaderboard</span>
         <ol id="leaderboard"></ol>
+      </section>
+
+      <section class="snapshot-panel" aria-label="Saved game snapshots">
+        <span class="metric-label">kv snapshots</span>
+        <div id="snapshot-list"></div>
       </section>
 
       <section class="result-panel" aria-label="Game plugin result">

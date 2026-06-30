@@ -1295,6 +1295,26 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	if namespaces[1].StoreID != "db" || namespaces[1].Kind != storage.StoreSQLite || namespaces[1].Scope != "environment" {
 		t.Fatalf("second namespace mismatch: %#v", namespaces[1])
 	}
+
+	if _, err := storageBroker.PutKV(context.Background(), storage.KVPutRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "schedule/current_location",
+		Value:            []byte("Shanghai"),
+	}); err != nil {
+		t.Fatalf("PutKV() after enable error = %v", err)
+	}
+	read, err := storageBroker.GetKV(context.Background(), storage.KVGetRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "schedule/current_location",
+	})
+	if err != nil {
+		t.Fatalf("GetKV() after enable error = %v", err)
+	}
+	if string(read.Value) != "Shanghai" {
+		t.Fatalf("GetKV() value = %q", string(read.Value))
+	}
 }
 
 func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
@@ -1517,6 +1537,14 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := retainBroker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: retainedPlugin.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatalf("PutKV(retain setup) error = %v", err)
+	}
 	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false}); err != nil {
 		t.Fatalf("UninstallPlugin(retain) error = %v", err)
 	}
@@ -1526,6 +1554,35 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 	if len(retained) != 2 || retained[0].State != storage.NamespaceRetained || retained[1].State != storage.NamespaceRetained {
 		t.Fatalf("retained namespaces mismatch: %#v", retained)
+	}
+	if _, err := retainBroker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: retainedPlugin.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
+		t.Fatalf("GetKV(retained inactive namespace) error = %v, want ErrNamespaceNotFound", err)
+	}
+	archiveRef, err := retainBroker.ExportData(ctx, storage.ExportRequest{PluginInstanceID: retainedPlugin.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("ExportData(retained data) error = %v", err)
+	}
+	if err := retainBroker.ImportData(ctx, storage.ImportRequest{
+		PluginInstanceID: "plugini_retained_restore",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+	}); err != nil {
+		t.Fatalf("ImportData(retained data) error = %v", err)
+	}
+	restoredValue, err := retainBroker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: "plugini_retained_restore",
+		StoreID:          "cache",
+		Key:              "planner/filter",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(restored retained data) error = %v", err)
+	}
+	if string(restoredValue.Value) != "qa" {
+		t.Fatalf("restored retained KV value = %q", string(restoredValue.Value))
 	}
 	retainExecutions, err := retainCleanup.ListExecutions(ctx, retainedPlugin.PluginInstanceID)
 	if err != nil {
@@ -1553,6 +1610,14 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := deleteBroker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: deletedPlugin.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatalf("PutKV(delete setup) error = %v", err)
+	}
 	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true}); err != nil {
 		t.Fatalf("UninstallPlugin(delete) error = %v", err)
 	}
@@ -1562,6 +1627,13 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 	if len(deleted) != 0 {
 		t.Fatalf("deleted namespaces still present: %#v", deleted)
+	}
+	if _, err := deleteBroker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: deletedPlugin.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
+		t.Fatalf("GetKV(deleted namespace) error = %v, want ErrNamespaceNotFound", err)
 	}
 	deleteExecutions, err := deleteCleanup.ListExecutions(ctx, deletedPlugin.PluginInstanceID)
 	if err != nil {

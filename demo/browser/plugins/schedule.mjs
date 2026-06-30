@@ -19,6 +19,8 @@ const client = new PluginBridgeClient({ ...bootstrap, parentOrigin });
 const status = document.querySelector("#plugin-status");
 const addButton = document.querySelector("#schedule-add");
 const refreshButton = document.querySelector("#schedule-refresh");
+const seedWeekButton = document.querySelector("#schedule-seed-week");
+const archiveDoneButton = document.querySelector("#schedule-archive-done");
 const titleInput = document.querySelector("#schedule-title");
 const dateInput = document.querySelector("#schedule-date");
 const timeInput = document.querySelector("#schedule-time");
@@ -38,6 +40,8 @@ const storageUsage = document.querySelector("#schedule-storage-usage");
 const persistedAt = document.querySelector("#schedule-persisted-at");
 const timelineNext = document.querySelector("#timeline-next");
 const timeline = document.querySelector("#schedule-timeline");
+const journalCount = document.querySelector("#journal-count");
+const journal = document.querySelector("#schedule-journal");
 const result = document.querySelector("#plugin-result");
 
 dateInput.value = new Date().toISOString().slice(0, 10);
@@ -67,6 +71,8 @@ addButton.addEventListener("click", async () => {
 });
 
 refreshButton.addEventListener("click", refreshItems);
+seedWeekButton.addEventListener("click", () => callPlugin("schedule.items.seedWeek", { view: currentView() }));
+archiveDoneButton.addEventListener("click", () => callPlugin("schedule.items.archiveDone", { view: currentView() }));
 statusInput.addEventListener("change", refreshItems);
 queryInput.addEventListener("input", debounce(refreshItems, 180));
 
@@ -87,6 +93,9 @@ async function callPlugin(method, payload) {
     }
     if (Array.isArray(data?.timeline)) {
       renderTimeline(data.timeline, data.stats);
+    }
+    if (Array.isArray(data?.journal)) {
+      renderJournal(data.journal);
     }
     if (data?.source || data?.persisted_at) {
       renderStorageState(data);
@@ -153,6 +162,15 @@ function renderTimeline(items) {
     node.style.setProperty("--lane", String(Number(item.lane ?? 0)));
     node.innerHTML = `<strong>${escapeHTML(item.slot)}</strong><span>${escapeHTML(item.label)}</span><small>${escapeHTML(item.tag)}</small>`;
     return node;
+  }));
+}
+
+function renderJournal(entries) {
+  journalCount.textContent = `${entries.length} entries`;
+  journal.replaceChildren(...entries.slice(0, 8).map((entry) => {
+    const row = document.createElement("li");
+    row.innerHTML = `<strong>${escapeHTML(entry.action)}</strong><span>rev ${Number(entry.revision ?? 0)} · ${formatTime(entry.at)}</span><p>${escapeHTML(entry.detail)}</p>`;
+    return row;
   }));
 }
 

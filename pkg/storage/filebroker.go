@@ -22,6 +22,7 @@ const (
 	fileBrokerNamespacesDir = "namespaces"
 	fileBrokerArchivesDir   = "archives"
 	fileBrokerDataDir       = "data"
+	fileBrokerKVDir         = "kv"
 	fileBrokerNamespaceFile = "namespace.json"
 	fileBrokerArchiveFile   = "archive.json"
 )
@@ -619,6 +620,238 @@ func (b *FileBroker) ListFiles(ctx context.Context, req FileListRequest) (FileLi
 	return FileListResult{Path: rel, Entries: resultEntries, Usage: usage}, nil
 }
 
+func (b *FileBroker) GetKV(ctx context.Context, req KVGetRequest) (KVGetResult, error) {
+	if b == nil {
+		return KVGetResult{}, errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return KVGetResult{}, err
+	}
+	key, err := normalizeKVKey(req.Key)
+	if err != nil {
+		return KVGetResult{}, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return KVGetResult{}, err
+	}
+	target := filepath.Join(dataPath, fileBrokerKVDir, kvKeySegment(key))
+	info, err := os.Lstat(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return KVGetResult{}, ErrKVKeyNotFound
+		}
+		return KVGetResult{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return KVGetResult{}, fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+	}
+	if !info.Mode().IsRegular() {
+		return KVGetResult{}, fmt.Errorf("%w: kv value is not a regular file", ErrInvalidFilePath)
+	}
+	if req.MaxBytes > 0 && info.Size() > req.MaxBytes {
+		return KVGetResult{}, fmt.Errorf("%w: %d > %d", ErrKVValueTooLarge, info.Size(), req.MaxBytes)
+	}
+	value, err := os.ReadFile(target)
+	if err != nil {
+		return KVGetResult{}, err
+	}
+	usage, err := b.refreshUsageLocked(record)
+	if err != nil {
+		return KVGetResult{}, err
+	}
+	return KVGetResult{Key: key, Value: value, SizeBytes: int64(len(value)), Usage: usage}, nil
+}
+
+func (b *FileBroker) PutKV(ctx context.Context, req KVPutRequest) (KVPutResult, error) {
+	if b == nil {
+		return KVPutResult{}, errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return KVPutResult{}, err
+	}
+	key, err := normalizeKVKey(req.Key)
+	if err != nil {
+		return KVPutResult{}, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return KVPutResult{}, err
+	}
+	kvPath := filepath.Join(dataPath, fileBrokerKVDir)
+	target := filepath.Join(kvPath, kvKeySegment(key))
+	if err := rejectSymlinkAncestors(dataPath, filepath.Dir(target)); err != nil {
+		return KVPutResult{}, err
+	}
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return KVPutResult{}, fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+		}
+		if !info.Mode().IsRegular() {
+			return KVPutResult{}, fmt.Errorf("%w: existing kv value is not a regular file", ErrInvalidFilePath)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return KVPutResult{}, err
+	}
+	usageBefore, err := directoryUsage(dataPath)
+	if err != nil {
+		return KVPutResult{}, err
+	}
+	oldSize := int64(0)
+	if info, err := os.Lstat(target); err == nil && info.Mode().IsRegular() {
+		oldSize = info.Size()
+	}
+	projected := usageBefore - oldSize + int64(len(req.Value))
+	if projected > record.QuotaBytes {
+		return KVPutResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
+	}
+	if err := os.MkdirAll(kvPath, 0o700); err != nil {
+		return KVPutResult{}, err
+	}
+	tmp, err := os.CreateTemp(kvPath, ".redevplugin-kv-*")
+	if err != nil {
+		return KVPutResult{}, err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(req.Value); err != nil {
+		_ = tmp.Close()
+		return KVPutResult{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		return KVPutResult{}, err
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return KVPutResult{}, err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		return KVPutResult{}, err
+	}
+	cleanup = false
+	usage, err := b.refreshUsageLocked(record)
+	if err != nil {
+		return KVPutResult{}, err
+	}
+	return KVPutResult{Key: key, SizeBytes: int64(len(req.Value)), Usage: usage}, nil
+}
+
+func (b *FileBroker) DeleteKV(ctx context.Context, req KVDeleteRequest) error {
+	if b == nil {
+		return errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	key, err := normalizeKVKey(req.Key)
+	if err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(dataPath, fileBrokerKVDir, kvKeySegment(key))
+	info, err := os.Lstat(target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: kv value is not a regular file", ErrInvalidFilePath)
+	}
+	if err := os.Remove(target); err != nil {
+		return err
+	}
+	_, err = b.refreshUsageLocked(record)
+	return err
+}
+
+func (b *FileBroker) ListKV(ctx context.Context, req KVListRequest) (KVListResult, error) {
+	if b == nil {
+		return KVListResult{}, errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return KVListResult{}, err
+	}
+	prefix := strings.TrimSpace(req.Prefix)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	record, dataPath, err := b.activeKVNamespaceLocked(req.PluginInstanceID, req.StoreID)
+	if err != nil {
+		return KVListResult{}, err
+	}
+	kvPath := filepath.Join(dataPath, fileBrokerKVDir)
+	dirEntries, err := os.ReadDir(kvPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			usage, err := b.refreshUsageLocked(record)
+			if err != nil {
+				return KVListResult{}, err
+			}
+			return KVListResult{Prefix: prefix, Usage: usage}, nil
+		}
+		return KVListResult{}, err
+	}
+	limit := req.MaxEntries
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	entries := make([]KVEntry, 0, len(dirEntries))
+	for _, entry := range dirEntries {
+		if len(entries) >= limit {
+			break
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return KVListResult{}, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return KVListResult{}, fmt.Errorf("%w: symlink is not allowed", ErrInvalidFilePath)
+		}
+		if !info.Mode().IsRegular() {
+			return KVListResult{}, fmt.Errorf("%w: kv value is not a regular file", ErrInvalidFilePath)
+		}
+		key, err := kvKeySegmentValue(entry.Name())
+		if err != nil {
+			return KVListResult{}, err
+		}
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		entries = append(entries, KVEntry{Key: key, SizeBytes: info.Size(), UpdatedAt: info.ModTime().UTC()})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
+	usage, err := b.refreshUsageLocked(record)
+	if err != nil {
+		return KVListResult{}, err
+	}
+	return KVListResult{Prefix: prefix, Entries: entries, Usage: usage}, nil
+}
+
 func (b *FileBroker) Root() string {
 	if b == nil {
 		return ""
@@ -750,6 +983,24 @@ func (b *FileBroker) activeFilesNamespaceLocked(pluginInstanceID string, storeID
 	return record, dataPath, nil
 }
 
+func (b *FileBroker) activeKVNamespaceLocked(pluginInstanceID string, storeID string) (NamespaceRecord, string, error) {
+	record, err := b.readNamespaceRecordLocked(pluginInstanceID, storeID)
+	if err != nil {
+		return NamespaceRecord{}, "", err
+	}
+	if record.State != NamespaceActive {
+		return NamespaceRecord{}, "", ErrNamespaceNotFound
+	}
+	if record.Kind != StoreKV {
+		return NamespaceRecord{}, "", fmt.Errorf("%w: store %q is %s, not kv", ErrInvalidNamespace, record.StoreID, record.Kind)
+	}
+	dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
+	if err := os.MkdirAll(filepath.Join(dataPath, fileBrokerKVDir), 0o700); err != nil {
+		return NamespaceRecord{}, "", err
+	}
+	return record, dataPath, nil
+}
+
 func (b *FileBroker) refreshUsageLocked(record NamespaceRecord) (Usage, error) {
 	dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
 	usageBytes, err := directoryUsage(dataPath)
@@ -822,6 +1073,25 @@ func pathSegmentValue(segment string) (string, error) {
 		return "", fmt.Errorf("%w: empty storage path segment", ErrInvalidNamespace)
 	}
 	return value, nil
+}
+
+func kvKeySegment(key string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(key))
+}
+
+func kvKeySegmentValue(segment string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(segment)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid kv key segment", ErrInvalidKVKey)
+	}
+	key, err := normalizeKVKey(string(raw))
+	if err != nil {
+		return "", err
+	}
+	if kvKeySegment(key) != segment {
+		return "", fmt.Errorf("%w: non-canonical kv key segment", ErrInvalidKVKey)
+	}
+	return key, nil
 }
 
 func validateNamespaceRecord(record NamespaceRecord, pluginInstanceID string, storeID string) (NamespaceRecord, error) {
