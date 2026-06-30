@@ -743,6 +743,8 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		payload.Artifact != "workers/echo.wasm" ||
 		payload.PackageHash != installed.PackageHash ||
 		payload.ArtifactSHA256 == "" ||
+		payload.RuntimeInstanceID != "runtime_1" ||
+		payload.RuntimeGenerationID != "runtime_gen_1" ||
 		payload.Params["message"] != "hello" ||
 		payload.PluginInstanceID != installed.PluginInstanceID {
 		t.Fatalf("worker payload mismatch: %#v", payload)
@@ -2273,6 +2275,20 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerStorageFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageHostcallWorkerWASMForTest("redeven_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2327,6 +2343,35 @@ func minimalWorkerWASMForTest(exportName string) []byte {
 	module = append(module, byte(len(exportPayload)))
 	module = append(module, exportPayload...)
 	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	return module
+}
+
+func storageHostcallWorkerWASMForTest(exportName string) []byte {
+	exportNameBytes := []byte(exportName)
+	importModule := []byte("redeven.storage")
+	importName := []byte("files_write_demo")
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x02,
+		0x60, 0x00, 0x00,
+		0x60, 0x00, 0x00,
+		0x02,
+	}
+	importPayload := []byte{0x01, byte(len(importModule))}
+	importPayload = append(importPayload, importModule...)
+	importPayload = append(importPayload, byte(len(importName)))
+	importPayload = append(importPayload, importName...)
+	importPayload = append(importPayload, 0x00, 0x00)
+	module = append(module, byte(len(importPayload)))
+	module = append(module, importPayload...)
+	module = append(module, 0x03, 0x02, 0x01, 0x01, 0x07)
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x01)
+	module = append(module, byte(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b)
 	return module
 }
 
@@ -2692,6 +2737,64 @@ func workerNetworkFixtureManifestJSON() string {
 		"network_access": {
 			"connectors": [
 				{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}
+			]
+		}
+	}`
+}
+
+func workerStorageFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redeven.plugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker.storage",
+			"display_name": "Worker Storage",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redeven-wasm-worker-v1",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216,
+				"idle_timeout_ms": 0
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "write",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redeven_worker_invoke"}
+			}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "workspace",
+					"kind": "files",
+					"scope": "user",
+					"quota_bytes": 4096,
+					"schema_version": 1,
+					"migration": {
+						"from_version": 1,
+						"to_version": 1,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				}
 			]
 		}
 	}`

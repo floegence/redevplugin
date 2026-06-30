@@ -358,6 +358,8 @@ type WorkerInvocationPayload struct {
 	PluginID             string         `json:"plugin_id"`
 	PluginInstanceID     string         `json:"plugin_instance_id"`
 	ActiveFingerprint    string         `json:"active_fingerprint"`
+	RuntimeInstanceID    string         `json:"runtime_instance_id"`
+	RuntimeGenerationID  string         `json:"runtime_generation_id"`
 	PackageHash          string         `json:"package_hash"`
 	WorkerID             string         `json:"worker_id"`
 	WorkerMode           string         `json:"worker_mode"`
@@ -2144,6 +2146,8 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
+		RuntimeInstanceID:    health.RuntimeInstanceID,
+		RuntimeGenerationID:  health.RuntimeGenerationID,
 		PackageHash:          record.PackageHash,
 		WorkerID:             worker.WorkerID,
 		WorkerMode:           string(worker.Mode),

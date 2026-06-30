@@ -156,8 +156,8 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    let validated = match execute_worker_module(&wasm_bytes, &identity.export) {
-        Ok(validated) => validated,
+    let execution = match execute_worker_module(&wasm_bytes, &identity.export) {
+        Ok(execution) => execution,
         Err(err) => {
             return Ok(redevplugin_ipc::response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -170,7 +170,35 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    let result = redevplugin_ipc::worker_success_result_json(&identity, validated.byte_len);
+    let storage_file_result = if execution.storage_file_write_demo_requested {
+        match perform_storage_file_write_demo(
+            reader,
+            stdout,
+            request_id,
+            runtime_generation_id,
+            line,
+        ) {
+            Ok(result) => Some(result),
+            Err(err) => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(err.as_str()),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let result = redevplugin_ipc::worker_success_result_json(
+        &identity,
+        execution.validated.byte_len,
+        storage_file_result.as_deref(),
+    );
     Ok(redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
         request_id,
@@ -182,16 +210,33 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     ))
 }
 
-fn execute_worker_module(
-    wasm_bytes: &[u8],
-    export_name: &str,
-) -> Result<redevplugin_wasm_abi::ValidatedWorkerModule, String> {
+#[derive(Debug)]
+struct WorkerExecution {
+    validated: redevplugin_wasm_abi::ValidatedWorkerModule,
+    storage_file_write_demo_requested: bool,
+}
+
+#[derive(Default)]
+struct WorkerHostState {
+    storage_file_write_demo_requested: bool,
+}
+
+fn execute_worker_module(wasm_bytes: &[u8], export_name: &str) -> Result<WorkerExecution, String> {
     let validated = redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
     let engine = wasmi::Engine::default();
     let module = wasmi::Module::new(&engine, wasm_bytes)
         .map_err(|err| format!("compile wasm worker module: {err}"))?;
-    let linker = <wasmi::Linker<()>>::new(&engine);
-    let mut store = wasmi::Store::new(&engine, ());
+    let mut linker = <wasmi::Linker<WorkerHostState>>::new(&engine);
+    linker
+        .func_wrap(
+            "redeven.storage",
+            "files_write_demo",
+            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
+                caller.data_mut().storage_file_write_demo_requested = true;
+            },
+        )
+        .map_err(|err| format!("define storage hostcall import: {err}"))?;
+    let mut store = wasmi::Store::new(&engine, WorkerHostState::default());
     let instance = linker
         .instantiate_and_start(&mut store, &module)
         .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
@@ -201,7 +246,91 @@ fn execute_worker_module(
     invoke
         .call(&mut store, ())
         .map_err(|err| format!("execute wasm worker export {export_name:?}: {err}"))?;
-    Ok(validated)
+    let storage_file_write_demo_requested = store.data().storage_file_write_demo_requested;
+    Ok(WorkerExecution {
+        validated,
+        storage_file_write_demo_requested,
+    })
+}
+
+fn perform_storage_file_write_demo<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    invocation_frame: &str,
+) -> Result<String, String> {
+    let req = storage_file_write_demo_request(invocation_frame, runtime_generation_id)?;
+    let storage_request_id = format!("{request_id}:storage_file");
+    let frame =
+        redevplugin_ipc::storage_file_frame(&storage_request_id, runtime_generation_id, &req);
+    stdout
+        .write_all(frame.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush())
+        .map_err(|err| format!("write storage_file request: {err}"))?;
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|err| format!("read storage_file response: {err}"))?;
+    if response.is_empty() {
+        return Err("storage_file response is empty".to_string());
+    }
+    redevplugin_ipc::validate_storage_file_response(
+        &response,
+        &storage_request_id,
+        runtime_generation_id,
+    )?;
+    redevplugin_ipc::storage_file_payload_json(&response)
+}
+
+fn storage_file_write_demo_request(
+    invocation_frame: &str,
+    runtime_generation_id: &str,
+) -> Result<redevplugin_ipc::StorageFileRequest, String> {
+    let handle_grant_token = required_json_string(invocation_frame, "storage_handle_grant_token")?;
+    let store_id = required_json_string(invocation_frame, "storage_store_id")?;
+    let path = required_json_string(invocation_frame, "storage_path")?;
+    let data_base64 = required_json_string(invocation_frame, "storage_data_base64")?;
+    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
+    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
+    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
+    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
+    let management_revision = required_json_number(invocation_frame, "management_revision")?;
+    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    Ok(redevplugin_ipc::StorageFileRequest {
+        handle_grant_token,
+        plugin_instance_id,
+        active_fingerprint,
+        runtime_instance_id,
+        runtime_generation_id: runtime_generation_id.to_string(),
+        runtime_shard_id: String::new(),
+        handle_id: format!("storage:{store_id}"),
+        method: "storage.files".to_string(),
+        policy_revision,
+        management_revision,
+        revoke_epoch,
+        operation: "write".to_string(),
+        store_id,
+        path,
+        data_base64,
+        max_bytes: 0,
+        max_entries: 0,
+        recursive: false,
+    })
+}
+
+fn required_json_string(input: &str, key: &str) -> Result<String, String> {
+    let value =
+        redevplugin_ipc::extract_json_string(input, key).ok_or_else(|| format!("missing {key}"))?;
+    if value.trim().is_empty() {
+        return Err(format!("empty {key}"));
+    }
+    Ok(value)
+}
+
+fn required_json_number(input: &str, key: &str) -> Result<u64, String> {
+    redevplugin_ipc::extract_json_number_u64(input, key).ok_or_else(|| format!("missing {key}"))
 }
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
@@ -260,9 +389,19 @@ mod tests {
     #[test]
     fn executes_minimal_wasm_worker_export() {
         let module = minimal_worker_wasm("redeven_worker_invoke");
-        let validated = execute_worker_module(&module, "redeven_worker_invoke")
+        let execution = execute_worker_module(&module, "redeven_worker_invoke")
             .expect("minimal worker executes");
-        assert_eq!(validated.byte_len, module.len());
+        assert_eq!(execution.validated.byte_len, module.len());
+        assert!(!execution.storage_file_write_demo_requested);
+    }
+
+    #[test]
+    fn executes_storage_hostcall_wasm_worker_export() {
+        let module = storage_hostcall_worker_wasm("redeven_worker_invoke");
+        let execution = execute_worker_module(&module, "redeven_worker_invoke")
+            .expect("storage hostcall worker executes");
+        assert_eq!(execution.validated.byte_len, module.len());
+        assert!(execution.storage_file_write_demo_requested);
     }
 
     #[test]
@@ -285,6 +424,31 @@ mod tests {
         module.push(export_payload.len() as u8);
         module.extend_from_slice(&export_payload);
         module.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
+        module
+    }
+
+    fn storage_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
+        let export_name_bytes = export_name.as_bytes();
+        let import_module = b"redeven.storage";
+        let import_name = b"files_write_demo";
+        let mut module = vec![
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x02, 0x60, 0x00, 0x00,
+            0x60, 0x00, 0x00, 0x02,
+        ];
+        let mut import_payload = vec![0x01, import_module.len() as u8];
+        import_payload.extend_from_slice(import_module);
+        import_payload.push(import_name.len() as u8);
+        import_payload.extend_from_slice(import_name);
+        import_payload.extend_from_slice(&[0x00, 0x00]);
+        module.push(import_payload.len() as u8);
+        module.extend_from_slice(&import_payload);
+        module.extend_from_slice(&[0x03, 0x02, 0x01, 0x01, 0x07]);
+        let mut export_payload = vec![0x01, export_name_bytes.len() as u8];
+        export_payload.extend_from_slice(export_name_bytes);
+        export_payload.extend_from_slice(&[0x00, 0x01]);
+        module.push(export_payload.len() as u8);
+        module.extend_from_slice(&export_payload);
+        module.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b]);
         module
     }
 }

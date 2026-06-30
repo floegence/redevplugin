@@ -19,6 +19,7 @@ pub const ERR_NETWORK_EXECUTE_FAILED: &str = "NETWORK_EXECUTE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 pub const ERR_WASM_WORKER_INVALID: &str = "WASM_WORKER_INVALID";
+pub const ERR_WASM_HOSTCALL_FAILED: &str = "WASM_HOSTCALL_FAILED";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
@@ -217,14 +218,83 @@ pub fn open_handle_content_base64(
 pub fn worker_success_result_json(
     identity: &WorkerInvocationIdentity,
     wasm_byte_len: usize,
+    storage_file_result_json: Option<&str>,
 ) -> String {
+    let storage_file = storage_file_result_json
+        .map(|result| format!(",\"storage_file\":{result}"))
+        .unwrap_or_default();
     format!(
-        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}}}}}",
+        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}}}}}",
         escape_json_string(&identity.method),
         escape_json_string(&identity.worker_id),
         WASM_ABI_VERSION,
-        wasm_byte_len
+        wasm_byte_len,
+        storage_file
     )
+}
+
+pub fn extract_json_number_u64(input: &str, key: &str) -> Option<u64> {
+    let pattern = format!("\"{key}\"");
+    let key_start = input.find(&pattern)?;
+    let after_key = &input[key_start + pattern.len()..];
+    let colon = after_key.find(':')?;
+    let after_colon = after_key[colon + 1..].trim_start();
+    let digits: String = after_colon
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+pub fn storage_file_payload_json(input: &str) -> Result<String, String> {
+    let (frame_type, _, _) = parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_STORAGE_FILE {
+        return Err("expected storage_file frame".to_string());
+    }
+    let payload_key = "\"payload\"";
+    let Some(payload_start) = input.find(payload_key) else {
+        return Err("missing payload".to_string());
+    };
+    let after_payload = &input[payload_start + payload_key.len()..];
+    let Some(colon) = after_payload.find(':') else {
+        return Err("missing payload colon".to_string());
+    };
+    let payload = after_payload[colon + 1..].trim_start();
+    if !payload.starts_with('{') {
+        return Err("payload is not an object".to_string());
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, ch) in payload.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Ok(payload[..=idx].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("unterminated payload object".to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -817,10 +887,34 @@ mod tests {
         let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5}}"#;
         validate_storage_file_response(frame, "r1:storage_file", "g1")
             .expect("valid storage file response");
+        let payload = storage_file_payload_json(frame).expect("storage file payload");
+        assert!(payload.contains(r#""path":"notes/today.txt""#));
         let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
         let err = validate_storage_file_response(failed, "r1:storage_file", "g1")
             .expect_err("failed storage file response");
         assert!(err.contains("STORAGE_FILE_NOT_FOUND"));
+    }
+
+    #[test]
+    fn renders_worker_success_with_storage_result() {
+        let identity = WorkerInvocationIdentity {
+            package_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            artifact: "workers/backend.wasm".to_string(),
+            artifact_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            worker_id: "backend".to_string(),
+            method: "worker.echo".to_string(),
+            export: "redeven_worker_invoke".to_string(),
+        };
+        let result = worker_success_result_json(
+            &identity,
+            42,
+            Some(r#"{"ok":true,"path":"notes/from-wasm.txt","size_bytes":5}"#),
+        );
+        assert!(result.contains(r#""storage_file":{"ok":true"#));
+        assert!(result.contains(r#""wasm_byte_len":42"#));
     }
 
     #[test]

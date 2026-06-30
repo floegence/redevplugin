@@ -130,7 +130,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "worker-invocation-schema",
 				Path:    "spec/plugin/worker-invocation-v1.schema.json",
 				Version: WorkerInvocationSchemaVersion,
-				SHA256:  "39d002c155b3bab9617518cb4223108260003d1e02b117cd6ab3f98bf9062938",
+				SHA256:  "2219ee6e96c2d1873bbfcf0be8378a82042a00775a2382703a6edaf851702f21",
 			},
 			{
 				ID:      "rust-ipc-schema",

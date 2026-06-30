@@ -38,7 +38,7 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	for _, item := range requireStringSlice(t, schema["required"], "worker invocation required") {
 		required[item] = true
 	}
-	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "package_hash", "worker_id", "artifact_sha256", "method", "params"} {
+	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "runtime_instance_id", "runtime_generation_id", "package_hash", "worker_id", "artifact_sha256", "method", "params"} {
 		if !required[name] {
 			t.Fatalf("worker invocation schema missing required field %q", name)
 		}
