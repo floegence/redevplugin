@@ -122,6 +122,7 @@ try {
   await expectText(scheduleFrame.locator("#schedule-count"), "3");
   await expectText(scheduleFrame.locator("#schedule-open"), "2");
   await expectText(scheduleFrame.locator("#schedule-minutes"), "75");
+  await expectText(scheduleFrame.locator("#schedule-storage-source"), "host storage broker");
   await scheduleFrame.locator("#schedule-status").selectOption("open");
   await expectText(scheduleFrame.locator("#schedule-count"), "2");
   await scheduleFrame.locator("#schedule-title").fill("Browser QA review");
@@ -140,6 +141,14 @@ try {
   await scheduleFrame.locator("#schedule-status").selectOption("all");
   await scheduleFrame.locator("#schedule-query").fill("");
   await expectText(scheduleFrame.locator("#schedule-count"), "4");
+  await page.reload({ waitUntil: "load" });
+  await expectText(page.locator("#host-status"), "listening");
+  await expectText(page.locator("#handshake-count"), "1");
+  const reloadedScheduleFrame = page.frameLocator("#plugin-frame");
+  await expectText(reloadedScheduleFrame.locator("#plugin-status"), "ready");
+  await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
+  await expectText(reloadedScheduleFrame.locator("#schedule-count"), "4");
+  await expectText(reloadedScheduleFrame.locator("#schedule-storage-source"), "host storage broker");
 
   await page.getByRole("button", { name: "Weather console" }).click();
   await expectText(page.locator("#handshake-count"), "1");

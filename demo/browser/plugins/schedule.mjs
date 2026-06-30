@@ -32,7 +32,11 @@ const count = document.querySelector("#schedule-count");
 const openCount = document.querySelector("#schedule-open");
 const doneCount = document.querySelector("#schedule-done");
 const minuteCount = document.querySelector("#schedule-minutes");
+const storageSource = document.querySelector("#schedule-storage-source");
+const persistedAt = document.querySelector("#schedule-persisted-at");
 const result = document.querySelector("#plugin-result");
+
+dateInput.value = new Date().toISOString().slice(0, 10);
 
 client.onLifecycle((event) => {
   status.textContent = event.type;
@@ -76,6 +80,9 @@ async function callPlugin(method, payload) {
     }
     if (data?.stats) {
       renderStats(data.stats, data.items ?? []);
+    }
+    if (data?.source || data?.persisted_at) {
+      renderStorageState(data);
     }
     status.textContent = "ready";
     writeResult({ method, response });
@@ -122,6 +129,11 @@ function renderStats(stats) {
   minuteCount.textContent = String(stats.planned_minutes ?? 0);
 }
 
+function renderStorageState(data) {
+  storageSource.textContent = data.source ?? "host storage broker";
+  persistedAt.textContent = formatTime(data.persisted_at);
+}
+
 function currentView() {
   return {
     status: statusInput.value,
@@ -141,6 +153,17 @@ function escapeHTML(value) {
     "\"": "&quot;",
     "'": "&#39;",
   })[char]);
+}
+
+function formatTime(value) {
+  if (!value) {
+    return "--";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function debounce(fn, delayMs) {

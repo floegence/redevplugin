@@ -22,53 +22,27 @@ export function createDemoBootstrap(overrides = {}) {
 export function createDemoPlatformFetch(options = {}) {
   const bootstrap = options.bootstrap ?? demoBootstrap;
   const calls = [];
-  const state = {
+  const persistence = createDemoPersistence(bootstrap, options.persistence);
+  const state = createDefaultDemoState();
+  applyPersistedState(state, persistence.load());
+
+  function persistState() {
+    persistence.save({
+      gameBestScore: state.gameBestScore,
+      gameLastRun: state.gameLastRun,
+      gameSaves: state.gameSaves,
+      scheduleItems: state.scheduleItems,
+      weatherLocation: state.weatherLocation,
+      weatherSavedLocations: state.weatherSavedLocations,
+    });
+  }
+
+  Object.assign(state, {
     bridgeTokenIssued: false,
     confirmationToken: "",
     confirmedDeletes: 0,
     streamTickets: 0,
-    gameBestScore: 0,
-    gameLastRun: null,
-    gameSaves: 0,
-    scheduleItems: [
-      {
-        id: "sched-standup",
-        title: "Platform standup",
-        date: "2026-06-30",
-        time: "09:30",
-        tag: "team",
-        priority: "high",
-        duration_minutes: 30,
-        notes: "Review bridge lifecycle and demo coverage.",
-        done: false,
-      },
-      {
-        id: "sched-design",
-        title: "Plugin UX review",
-        date: "2026-06-30",
-        time: "14:00",
-        tag: "design",
-        priority: "medium",
-        duration_minutes: 45,
-        notes: "Check sandbox UI, storage broker, and weather flow.",
-        done: false,
-      },
-      {
-        id: "sched-release",
-        title: "Runtime smoke",
-        date: "2026-07-01",
-        time: "10:15",
-        tag: "qa",
-        priority: "low",
-        duration_minutes: 20,
-        notes: "Run browser demo and real Rust runtime checks.",
-        done: true,
-      },
-    ],
-    weatherLocation: "San Francisco",
-    weatherSavedLocations: ["San Francisco", "Shanghai", "London"],
-    weatherFetches: 0,
-  };
+  });
 
   async function fetch(input, init) {
     const url = new URL(String(input), "http://demo.local");
@@ -175,6 +149,7 @@ export function createDemoPlatformFetch(options = {}) {
           state.gameSaves += 1;
           state.gameLastRun = normalizeGameRun(body.params);
           state.gameBestScore = Math.max(state.gameBestScore, state.gameLastRun.score);
+          persistState();
           return jsonResponse({
             ok: true,
             data: {
@@ -208,13 +183,14 @@ export function createDemoPlatformFetch(options = {}) {
                 items: filterScheduleItems(state.scheduleItems, body.params),
                 stats: scheduleStats(state.scheduleItems),
                 source: "host storage broker",
-                persisted_at: "2026-06-30T00:00:05Z",
+                persisted_at: new Date().toISOString(),
               },
             },
           });
         case "schedule.item.add": {
           const item = normalizeScheduleItem(body.params);
           state.scheduleItems = [...state.scheduleItems, item].sort(compareScheduleItems);
+          persistState();
           return jsonResponse({
             ok: true,
             data: {
@@ -222,8 +198,9 @@ export function createDemoPlatformFetch(options = {}) {
                 item,
                 items: filterScheduleItems(state.scheduleItems, body.params?.view),
                 stats: scheduleStats(state.scheduleItems),
+                source: "host storage broker",
                 persisted: true,
-                persisted_at: "2026-06-30T00:00:06Z",
+                persisted_at: new Date().toISOString(),
               },
             },
           });
@@ -231,14 +208,16 @@ export function createDemoPlatformFetch(options = {}) {
         case "schedule.item.toggle": {
           const id = String(body.params?.id ?? "");
           state.scheduleItems = state.scheduleItems.map((item) => item.id === id ? { ...item, done: !item.done } : item);
+          persistState();
           return jsonResponse({
             ok: true,
             data: {
               data: {
                 items: filterScheduleItems(state.scheduleItems, body.params?.view),
                 stats: scheduleStats(state.scheduleItems),
+                source: "host storage broker",
                 persisted: true,
-                persisted_at: "2026-06-30T00:00:07Z",
+                persisted_at: new Date().toISOString(),
               },
             },
           });
@@ -246,14 +225,16 @@ export function createDemoPlatformFetch(options = {}) {
         case "schedule.item.delete": {
           const id = String(body.params?.id ?? "");
           state.scheduleItems = state.scheduleItems.filter((item) => item.id !== id);
+          persistState();
           return jsonResponse({
             ok: true,
             data: {
               data: {
                 items: filterScheduleItems(state.scheduleItems, body.params?.view),
                 stats: scheduleStats(state.scheduleItems),
+                source: "host storage broker",
                 persisted: true,
-                persisted_at: "2026-06-30T00:00:08Z",
+                persisted_at: new Date().toISOString(),
               },
             },
           });
@@ -272,12 +253,14 @@ export function createDemoPlatformFetch(options = {}) {
         case "weather.location.save":
           state.weatherLocation = normalizeLocation(body.params?.location);
           state.weatherSavedLocations = rememberLocation(state.weatherSavedLocations, state.weatherLocation);
+          persistState();
           return jsonResponse({
             ok: true,
             data: {
               data: {
                 location: state.weatherLocation,
                 saved_locations: state.weatherSavedLocations,
+                source: "plugin settings storage",
                 saved: true,
               },
             },
@@ -287,6 +270,7 @@ export function createDemoPlatformFetch(options = {}) {
           state.weatherLocation = location;
           state.weatherSavedLocations = rememberLocation(state.weatherSavedLocations, location);
           state.weatherFetches += 1;
+          persistState();
           return jsonResponse({
             ok: true,
             data: {
@@ -303,6 +287,139 @@ export function createDemoPlatformFetch(options = {}) {
   }
 
   return { fetch, calls, state };
+}
+
+function createDefaultDemoState() {
+  return {
+    gameBestScore: 0,
+    gameLastRun: null,
+    gameSaves: 0,
+    scheduleItems: [
+      {
+        id: "sched-standup",
+        title: "Platform standup",
+        date: "2026-06-30",
+        time: "09:30",
+        tag: "team",
+        priority: "high",
+        duration_minutes: 30,
+        notes: "Review bridge lifecycle and demo coverage.",
+        done: false,
+      },
+      {
+        id: "sched-design",
+        title: "Plugin UX review",
+        date: "2026-06-30",
+        time: "14:00",
+        tag: "design",
+        priority: "medium",
+        duration_minutes: 45,
+        notes: "Check sandbox UI, storage broker, and weather flow.",
+        done: false,
+      },
+      {
+        id: "sched-release",
+        title: "Runtime smoke",
+        date: "2026-07-01",
+        time: "10:15",
+        tag: "qa",
+        priority: "low",
+        duration_minutes: 20,
+        notes: "Run browser demo and real Rust runtime checks.",
+        done: true,
+      },
+    ],
+    weatherLocation: "San Francisco",
+    weatherSavedLocations: ["San Francisco", "Shanghai", "London"],
+    weatherFetches: 0,
+  };
+}
+
+function createDemoPersistence(bootstrap, override) {
+  if (override) {
+    return normalizePersistenceAdapter(override);
+  }
+  if (typeof globalThis.localStorage !== "undefined") {
+    const key = `redevplugin.demo.storage.${bootstrap.pluginId}`;
+    return {
+      load() {
+        const raw = globalThis.localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : {};
+      },
+      save(value) {
+        globalThis.localStorage.setItem(key, JSON.stringify(value));
+      },
+      clear() {
+        globalThis.localStorage.removeItem(key);
+      },
+    };
+  }
+  return createMemoryPersistence();
+}
+
+export function createMemoryPersistence(initial = {}) {
+  let current = structuredCloneSafe(initial);
+  return {
+    load() {
+      return structuredCloneSafe(current);
+    },
+    save(value) {
+      current = structuredCloneSafe(value);
+    },
+    clear() {
+      current = {};
+    },
+  };
+}
+
+function normalizePersistenceAdapter(adapter) {
+  return {
+    load: typeof adapter.load === "function" ? adapter.load.bind(adapter) : () => ({}),
+    save: typeof adapter.save === "function" ? adapter.save.bind(adapter) : () => {},
+    clear: typeof adapter.clear === "function" ? adapter.clear.bind(adapter) : () => {},
+  };
+}
+
+function applyPersistedState(state, persisted = {}) {
+  if (typeof persisted !== "object" || persisted === null) {
+    return;
+  }
+  if (Number.isFinite(Number(persisted.gameBestScore))) {
+    state.gameBestScore = Math.max(0, Math.round(Number(persisted.gameBestScore)));
+  }
+  if (persisted.gameLastRun && typeof persisted.gameLastRun === "object") {
+    state.gameLastRun = normalizeGameRun(persisted.gameLastRun);
+  }
+  if (Number.isFinite(Number(persisted.gameSaves))) {
+    state.gameSaves = Math.max(0, Math.round(Number(persisted.gameSaves)));
+  }
+  if (Array.isArray(persisted.scheduleItems)) {
+    state.scheduleItems = persisted.scheduleItems.map(normalizePersistedScheduleItem).sort(compareScheduleItems);
+  }
+  if (typeof persisted.weatherLocation === "string") {
+    state.weatherLocation = normalizeLocation(persisted.weatherLocation);
+  }
+  if (Array.isArray(persisted.weatherSavedLocations)) {
+    state.weatherSavedLocations = persisted.weatherSavedLocations.map(normalizeLocation).slice(0, 6);
+  }
+}
+
+function normalizePersistedScheduleItem(item = {}) {
+  return {
+    id: String(item.id || `sched-${Date.now().toString(36)}`).slice(0, 80),
+    title: String(item.title || "Untitled event").trim().slice(0, 80),
+    date: String(item.date || "2026-06-30"),
+    time: String(item.time || "09:00"),
+    tag: String(item.tag || "focus").trim().slice(0, 24),
+    priority: normalizePriority(item.priority),
+    duration_minutes: normalizeDuration(item.duration_minutes),
+    notes: String(item.notes || "").trim().slice(0, 180),
+    done: Boolean(item.done),
+  };
+}
+
+function structuredCloneSafe(value) {
+  return JSON.parse(JSON.stringify(value ?? {}));
 }
 
 function normalizeScheduleItem(params = {}) {

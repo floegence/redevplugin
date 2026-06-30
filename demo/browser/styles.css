@@ -391,6 +391,27 @@ pre {
   line-height: 1;
 }
 
+.schedule-storage {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.45fr);
+  margin-top: 10px;
+}
+
+.schedule-storage > div {
+  background: #fff;
+  border: 1px dashed #a7c89b;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.schedule-storage strong {
+  color: #315a2e;
+  display: block;
+  font-size: 14px;
+  margin-top: 3px;
+}
+
 .schedule-form,
 .schedule-filter,
 .weather-search {
@@ -619,6 +640,7 @@ pre {
   .schedule-form,
   .schedule-filter,
   .schedule-stats,
+  .schedule-storage,
   .schedule-board,
   .weather-search,
   .weather-metrics,

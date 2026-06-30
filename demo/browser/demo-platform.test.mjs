@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { createDemoPlatformFetch, demoBootstrap } from "./demo-platform.mjs";
+import { createDemoPlatformFetch, createMemoryPersistence, demoBootstrap } from "./demo-platform.mjs";
 
 test("demo platform mints bridge token and handles rpc calls", async () => {
   const platform = createDemoPlatformFetch();
@@ -134,6 +134,37 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
     const source = await readFile(new URL(filename, import.meta.url), "utf8");
     assert.match(source, /PluginBridgeClient|plugin-status|game-canvas|schedule-form|weather-form/);
   }
+});
+
+test("demo platform persists plugin storage through host persistence adapter", async () => {
+  const persistence = createMemoryPersistence();
+  const firstPlatform = createDemoPlatformFetch({ persistence });
+  await firstPlatform.fetch(`/_redevplugin/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
+    method: "POST",
+    headers: {},
+    body: JSON.stringify({ handshake: {} }),
+  });
+
+  const added = await rpc(firstPlatform, "schedule.item.add", {
+    title: "Persist across host reload",
+    date: "2026-07-02",
+    time: "12:20",
+    tag: "storage",
+    duration_minutes: 35,
+  });
+  assert.equal(added.data.data.persisted, true);
+  assert.equal(added.data.data.source, "host storage broker");
+
+  const secondPlatform = createDemoPlatformFetch({ persistence });
+  await secondPlatform.fetch(`/_redevplugin/api/plugins/surfaces/${demoBootstrap.surfaceInstanceId}/bridge-token`, {
+    method: "POST",
+    headers: {},
+    body: JSON.stringify({ handshake: {} }),
+  });
+  const reloaded = await rpc(secondPlatform, "schedule.items.list", { query: "persist across" });
+  assert.equal(reloaded.data.data.items.length, 1);
+  assert.equal(reloaded.data.data.items[0].title, "Persist across host reload");
+  assert.equal(reloaded.data.data.source, "host storage broker");
 });
 
 test("generated browser demo uses complete dev lifecycle and cleanup", async () => {

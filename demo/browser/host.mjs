@@ -50,6 +50,7 @@ const requestedSurfaceID = params.get("surface_id");
 const requestedSurfaceInstanceID = params.get("surface_instance_id");
 const requestedActiveFingerprint = params.get("active_fingerprint");
 const requestedBridgeNonce = params.get("bridge_nonce");
+const selectionStorageKey = "redevplugin.demo.selected_plugin";
 
 let surfaceHost = null;
 let platform = null;
@@ -97,10 +98,11 @@ if (requestedPluginPath) {
     bridgeNonce: requestedBridgeNonce,
   });
 } else {
-  openBuiltinPlugin(builtinPlugins[0]);
+  openBuiltinPlugin(findInitialBuiltinPlugin());
 }
 
 function openBuiltinPlugin(plugin) {
+  saveSelectedBuiltinPlugin(plugin.key);
   const token = crypto.randomUUID().replaceAll("-", "");
   openPlugin({
     ...plugin,
@@ -109,6 +111,27 @@ function openBuiltinPlugin(plugin) {
     activeFingerprint: `sha256:${plugin.key}_${token}`,
     bridgeNonce: `bridge_nonce_${plugin.key}_${token}`,
   });
+}
+
+function findInitialBuiltinPlugin() {
+  const savedKey = loadSelectedBuiltinPlugin();
+  return builtinPlugins.find((plugin) => plugin.key === savedKey) ?? builtinPlugins[0];
+}
+
+function loadSelectedBuiltinPlugin() {
+  try {
+    return window.localStorage.getItem(selectionStorageKey);
+  } catch {
+    return "";
+  }
+}
+
+function saveSelectedBuiltinPlugin(key) {
+  try {
+    window.localStorage.setItem(selectionStorageKey, key);
+  } catch {
+    // Ignore storage failures; the demo can still open the selected plugin.
+  }
 }
 
 function openPlugin(plugin) {

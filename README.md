@@ -120,9 +120,10 @@ capabilities.
   are served from separate localhost origins to exercise exact-origin sandbox
   bridge behavior. The demo picker includes a workspace tools plugin, an
   animated canvas bouncer game that saves score through the bridge, a schedule
-  planner that lists/adds/toggles/deletes host-backed stored items, and a
-  weather plugin that saves the current location, requests a host-network-backed
-  forecast payload, parses it, and renders a friendly weather card.
+  planner that lists/adds/toggles/deletes host-backed stored items and keeps
+  them through host-page reloads, and a weather plugin that saves the current
+  location, requests a host-network-backed forecast payload, parses it, and
+  renders a friendly weather card.
   For the Flower-generated plugin path, run `npm run demo:browser:generated`.
   That launcher scaffolds a plugin with a backend worker skeleton, packages it,
   installs it into a temporary dev state root, enables it, opens its activity
@@ -151,7 +152,10 @@ capabilities.
   clicks a `worker.brokerDemo` flow that routes through the Rust runtime and a
   WASM worker into the Storage Broker and Network Broker, proving the backend
   worker can persist a file and request host-mediated HTTP without exposing
-  parent-only grants to the iframe.
+  parent-only grants to the iframe. The real runtime browser smoke also clicks
+  the generated plugin's Network matrix flow, which routes HTTP, WebSocket, TCP,
+  and UDP requests through the same WASM worker -> Rust runtime -> Host Network
+  Broker boundary.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
