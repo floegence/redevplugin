@@ -100,3 +100,34 @@ func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 		}
 	}
 }
+
+func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "storage_file_request_payload")
+	requestProps := requireNestedObject(t, request, "properties")
+	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "handle_id", "method", "operation", "store_id", "path", "data_base64"} {
+		if _, ok := requestProps[name].(map[string]any); !ok {
+			t.Fatalf("storage_file request missing %s", name)
+		}
+	}
+	method := requireNestedObject(t, requestProps, "method")
+	if method["const"] != "storage.files" {
+		t.Fatalf("storage_file method = %#v", method["const"])
+	}
+	response := requireNestedObject(t, defs, "storage_file_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "path", "data_base64", "entries", "usage", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("storage_file response missing %s", name)
+		}
+	}
+}

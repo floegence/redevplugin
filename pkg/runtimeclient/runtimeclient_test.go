@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -191,6 +192,143 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 	}
 	if validator.calls != 1 || validator.last.RuntimeGenerationID != health.RuntimeGenerationID || validator.last.HandleID != "storage:db" {
 		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:workspace",
+			Method:              "storage.files",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	files := &recordingStorageFilesBroker{
+		readResult: storage.FileReadResult{
+			Path:      "notes/today.txt",
+			Data:      []byte("hello"),
+			SizeBytes: 5,
+			Usage:     storage.Usage{PluginInstanceID: "plugini_1", StoreID: "workspace", UsageBytes: 5, QuotaBytes: 4096},
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
+		HandleGrants: validator,
+		StorageFiles: files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	storageFile, ok := decoded["storage_file"].(map[string]any)
+	if !ok {
+		t.Fatalf("storage file result missing: %#v", decoded)
+	}
+	if storageFile["ok"] != true || storageFile["path"] != "notes/today.txt" || storageFile["data_base64"] != base64.StdEncoding.EncodeToString([]byte("hello")) {
+		t.Fatalf("storage file result mismatch: %#v", storageFile)
+	}
+	if validator.calls != 1 || validator.last.HandleID != "storage:workspace" || validator.last.Method != "storage.files" {
+		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
+	}
+	if files.readCalls != 1 || files.lastRead.PluginInstanceID != "plugini_1" || files.lastRead.StoreID != "workspace" || files.lastRead.Path != "notes/today.txt" {
+		t.Fatalf("storage read mismatch: calls=%d last=%#v", files.readCalls, files.lastRead)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:workspace",
+			Method:              "storage.files",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
+		HandleGrants: validator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if validator.calls != 0 {
+		t.Fatalf("validator should not be called when broker is unavailable: %d", validator.calls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:workspace",
+			Method:              "storage.files",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	files := &recordingStorageFilesBroker{}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE=read"),
+		HandleGrants: validator,
+		StorageFiles: files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if validator.calls != 0 || files.readCalls != 0 {
+		t.Fatalf("storage outside worker should not touch validator or broker: validator=%d reads=%d", validator.calls, files.readCalls)
 	}
 	stopRuntimeSupervisor(t, supervisor)
 }
@@ -379,6 +517,11 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE") != "" {
+				if !requestStorageFileFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE") == "1" {
 				if !validateHandleGrantFromHelper(reader, encoder, request) {
 					continue
@@ -397,6 +540,11 @@ func runRuntimeClientHelper() {
 				Payload:             raw,
 			})
 		case ipcFrameTypeRevokeEpoch:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE") != "" {
+				if !requestStorageFileFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE") == "1" {
 				if !validateHandleGrantFromHelper(reader, encoder, request) {
 					continue
@@ -543,6 +691,90 @@ func validateHandleGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 	return false
 }
 
+func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
+	rawStorageReq, _ := json.Marshal(storageFileRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE")))
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeStorageFile,
+		RequestID:           request.RequestID + ":storage_file",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             rawStorageReq,
+	})
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(17)
+	}
+	var response ipcFrame
+	if err := json.Unmarshal(line, &response); err != nil {
+		os.Exit(18)
+	}
+	if response.FrameType != ipcFrameTypeStorageFile || response.RequestID != request.RequestID+":storage_file" {
+		os.Exit(19)
+	}
+	var storageFile storageFileResponsePayload
+	if err := json.Unmarshal(response.Payload, &storageFile); err != nil {
+		os.Exit(20)
+	}
+	if !storageFile.OK {
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageFile.Code, Message: storageFile.Message})
+		resultFrameType := ipcFrameTypeInvokeWorkerResult
+		if request.FrameType == ipcFrameTypeRevokeEpoch {
+			resultFrameType = ipcFrameTypeRevokeEpochAck
+		}
+		_ = encoder.Encode(ipcFrame{
+			IPCVersion:          version.RustIPCVersion,
+			FrameType:           resultFrameType,
+			RequestID:           request.RequestID,
+			RuntimeGenerationID: request.RuntimeGenerationID,
+			Payload:             raw,
+		})
+		return false
+	}
+	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+		"storage_file": storageFile,
+	})})
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeInvokeWorkerResult,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             raw,
+	})
+	return false
+}
+
+func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFileRequestPayload {
+	req := storageFileRequestPayload{
+		HandleGrantToken:    "handle_grant_token_1",
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		RuntimeShardID:      "runtime_shard_1",
+		HandleID:            "storage:workspace",
+		Method:              "storage.files",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+		Operation:           operation,
+		StoreID:             "workspace",
+		Path:                "notes/today.txt",
+		DataBase64:          base64.StdEncoding.EncodeToString([]byte("hello")),
+		MaxBytes:            1024,
+		MaxEntries:          10,
+	}
+	if request.FrameType == ipcFrameTypeInvokeWorker {
+		var payload invokeWorkerRequestPayload
+		if err := json.Unmarshal(request.Payload, &payload); err == nil {
+			req.PluginInstanceID = payload.Lease.PluginInstanceID
+			req.PolicyRevision = payload.Lease.PolicyRevision
+			req.ManagementRevision = payload.Lease.ManagementRevision
+			req.RevokeEpoch = payload.Lease.RevokeEpoch
+		}
+	}
+	return req
+}
+
 func handleGrantValidationRequestFromInvoke(request ipcFrame) HandleGrantValidationRequest {
 	req := HandleGrantValidationRequest{
 		HandleGrantToken:    "handle_grant_token_1",
@@ -618,6 +850,21 @@ type recordingHandleGrantValidator struct {
 	err    error
 }
 
+type recordingStorageFilesBroker struct {
+	readCalls   int
+	writeCalls  int
+	deleteCalls int
+	listCalls   int
+	lastRead    storage.FileReadRequest
+	lastWrite   storage.FileWriteRequest
+	lastDelete  storage.FileDeleteRequest
+	lastList    storage.FileListRequest
+	readResult  storage.FileReadResult
+	writeResult storage.FileWriteResult
+	listResult  storage.FileListResult
+	err         error
+}
+
 func (v *recordingHandleGrantValidator) ValidateHandleGrant(_ context.Context, req HandleGrantValidationRequest) (HandleGrantValidationResult, error) {
 	v.calls++
 	v.last = req
@@ -625,6 +872,39 @@ func (v *recordingHandleGrantValidator) ValidateHandleGrant(_ context.Context, r
 		return HandleGrantValidationResult{}, v.err
 	}
 	return v.result, nil
+}
+
+func (b *recordingStorageFilesBroker) ReadFile(_ context.Context, req storage.FileReadRequest) (storage.FileReadResult, error) {
+	b.readCalls++
+	b.lastRead = req
+	if b.err != nil {
+		return storage.FileReadResult{}, b.err
+	}
+	return b.readResult, nil
+}
+
+func (b *recordingStorageFilesBroker) WriteFile(_ context.Context, req storage.FileWriteRequest) (storage.FileWriteResult, error) {
+	b.writeCalls++
+	b.lastWrite = req
+	if b.err != nil {
+		return storage.FileWriteResult{}, b.err
+	}
+	return b.writeResult, nil
+}
+
+func (b *recordingStorageFilesBroker) DeleteFile(_ context.Context, req storage.FileDeleteRequest) error {
+	b.deleteCalls++
+	b.lastDelete = req
+	return b.err
+}
+
+func (b *recordingStorageFilesBroker) ListFiles(_ context.Context, req storage.FileListRequest) (storage.FileListResult, error) {
+	b.listCalls++
+	b.lastList = req
+	if b.err != nil {
+		return storage.FileListResult{}, b.err
+	}
+	return b.listResult, nil
 }
 
 func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req ArtifactRequest) (ArtifactResult, error) {

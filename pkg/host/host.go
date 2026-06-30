@@ -1236,6 +1236,7 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 				HandleGrants: runtimeHandleGrantValidator{
 					tokens: h.surfaceTokens,
 				},
+				StorageFiles: storageFilesBroker(h.adapters.Storage),
 			})
 			if err != nil {
 				return runtimeclient.Health{}, err
@@ -1899,6 +1900,14 @@ func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimecl
 
 type runtimeHandleGrantValidator struct {
 	tokens *bridge.SurfaceTokenService
+}
+
+func storageFilesBroker(broker storage.Broker) storage.FilesBroker {
+	files, ok := broker.(storage.FilesBroker)
+	if !ok {
+		return nil
+	}
+	return files
 }
 
 func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req runtimeclient.HandleGrantValidationRequest) (runtimeclient.HandleGrantValidationResult, error) {

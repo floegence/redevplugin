@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/observability"
+	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -110,6 +111,7 @@ type ProcessSupervisorOptions struct {
 	Diagnostics      observability.DiagnosticsSink
 	Artifacts        ArtifactProvider
 	HandleGrants     HandleGrantValidator
+	StorageFiles     storage.FilesBroker
 	Now              func() time.Time
 	HandshakeTimeout time.Duration
 }
@@ -125,6 +127,7 @@ type ProcessSupervisor struct {
 	diagnostics      observability.DiagnosticsSink
 	artifacts        ArtifactProvider
 	handleGrants     HandleGrantValidator
+	storageFiles     storage.FilesBroker
 	now              func() time.Time
 	handshakeTimeout time.Duration
 	seq              uint64
@@ -160,6 +163,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		diagnostics:      options.Diagnostics,
 		artifacts:        options.Artifacts,
 		handleGrants:     options.HandleGrants,
+		storageFiles:     options.StorageFiles,
 		now:              now,
 		handshakeTimeout: handshakeTimeout,
 	}, nil
@@ -470,6 +474,7 @@ const (
 	ipcFrameTypeInvokeWorkerResult  = "invoke_worker_result"
 	ipcFrameTypeOpenHandle          = "open_handle"
 	ipcFrameTypeValidateHandleGrant = "validate_handle_grant"
+	ipcFrameTypeStorageFile         = "storage_file"
 	ipcFrameTypeRevokeEpoch         = "revoke_epoch"
 	ipcFrameTypeRevokeEpochAck      = "revoke_epoch_ack"
 )
@@ -541,6 +546,38 @@ type handleGrantValidationResultPayload struct {
 	MaxTotalBytes       int64  `json:"max_total_bytes,omitempty"`
 	Code                string `json:"code,omitempty"`
 	Message             string `json:"message,omitempty"`
+}
+
+type storageFileRequestPayload struct {
+	HandleGrantToken    string `json:"handle_grant_token"`
+	PluginInstanceID    string `json:"plugin_instance_id"`
+	ActiveFingerprint   string `json:"active_fingerprint"`
+	RuntimeInstanceID   string `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string `json:"runtime_generation_id"`
+	RuntimeShardID      string `json:"runtime_shard_id,omitempty"`
+	HandleID            string `json:"handle_id"`
+	Method              string `json:"method"`
+	PolicyRevision      uint64 `json:"policy_revision"`
+	ManagementRevision  uint64 `json:"management_revision"`
+	RevokeEpoch         uint64 `json:"revoke_epoch"`
+	Operation           string `json:"operation"`
+	StoreID             string `json:"store_id"`
+	Path                string `json:"path,omitempty"`
+	DataBase64          string `json:"data_base64,omitempty"`
+	MaxBytes            int64  `json:"max_bytes,omitempty"`
+	MaxEntries          int    `json:"max_entries,omitempty"`
+	Recursive           bool   `json:"recursive,omitempty"`
+}
+
+type storageFileResponsePayload struct {
+	OK         bool                `json:"ok"`
+	Path       string              `json:"path,omitempty"`
+	DataBase64 string              `json:"data_base64,omitempty"`
+	SizeBytes  int64               `json:"size_bytes,omitempty"`
+	Entries    []storage.FileEntry `json:"entries,omitempty"`
+	Usage      *storage.Usage      `json:"usage,omitempty"`
+	Code       string              `json:"code,omitempty"`
+	Message    string              `json:"message,omitempty"`
 }
 
 func (p runtimeResponsePayload) err() error {
@@ -664,6 +701,12 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 			}
 			if got.frame.FrameType == ipcFrameTypeValidateHandleGrant {
 				if err := s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
+			if got.frame.FrameType == ipcFrameTypeStorageFile {
+				if err := s.respondToStorageFile(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
 					return ipcFrame{}, err
 				}
 				continue
@@ -838,6 +881,203 @@ func (s *ProcessSupervisor) writeHandleGrantValidationResponse(stdin io.Writer, 
 		return fmt.Errorf("%w: write validate_handle_grant response: %v", ErrRuntimeIPCUnavailable, err)
 	}
 	return nil
+}
+
+func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	if allowedArtifact == nil {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_FILE_REQUEST_DENIED",
+			Message: "storage file access is only available during worker invocation",
+		})
+	}
+	var req storageFileRequestPayload
+	if len(frame.Payload) == 0 {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_FILE_REQUEST_INVALID",
+			Message: "missing storage file payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_FILE_REQUEST_INVALID",
+			Message: "decode storage file payload: " + err.Error(),
+		})
+	}
+	if err := validateStorageFileRequest(req, health.RuntimeGenerationID); err != nil {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_FILE_REQUEST_INVALID",
+			Message: err.Error(),
+		})
+	}
+	if s.storageFiles == nil {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_FILE_BROKER_UNAVAILABLE",
+			Message: "runtime storage files broker is unavailable",
+		})
+	}
+	if s.handleGrants == nil {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
+			Message: "runtime handle grant validator is unavailable",
+		})
+	}
+	grant, err := s.handleGrants.ValidateHandleGrant(ctx, HandleGrantValidationRequest{
+		HandleGrantToken:    req.HandleGrantToken,
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		RuntimeInstanceID:   req.RuntimeInstanceID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		RuntimeShardID:      req.RuntimeShardID,
+		HandleID:            req.HandleID,
+		Method:              req.Method,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+	})
+	if err != nil {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: err.Error(),
+		})
+	}
+	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: "handle grant validation result did not match storage file request",
+		})
+	}
+	payload := dispatchStorageFileRequest(ctx, s.storageFiles, req)
+	return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
+}
+
+func (s *ProcessSupervisor) writeStorageFileResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageFileResponsePayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeStorageFile,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write storage_file response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
+func validateStorageFileRequest(req storageFileRequestPayload, runtimeGenerationID string) error {
+	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
+		return errors.New("runtime_generation_id is not bound to this runtime generation")
+	}
+	if strings.TrimSpace(req.HandleGrantToken) == "" ||
+		strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.StoreID) == "" ||
+		strings.TrimSpace(req.HandleID) == "" ||
+		strings.TrimSpace(req.Method) == "" ||
+		strings.TrimSpace(req.Operation) == "" {
+		return errors.New("handle grant token, plugin identity, store id, handle id, method, and operation are required")
+	}
+	if req.Method != "storage.files" {
+		return errors.New("storage file access requires method storage.files")
+	}
+	if req.HandleID != "storage:"+req.StoreID {
+		return errors.New("storage handle id must match store id")
+	}
+	switch req.Operation {
+	case "read", "write", "delete", "list":
+		return nil
+	default:
+		return errors.New("storage file operation is not supported")
+	}
+}
+
+func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker, req storageFileRequestPayload) storageFileResponsePayload {
+	switch req.Operation {
+	case "read":
+		result, err := broker.ReadFile(ctx, storage.FileReadRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Path:             req.Path,
+			MaxBytes:         req.MaxBytes,
+		})
+		if err != nil {
+			return storageFileErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageFileResponsePayload{
+			OK:         true,
+			Path:       result.Path,
+			DataBase64: base64.StdEncoding.EncodeToString(result.Data),
+			SizeBytes:  result.SizeBytes,
+			Usage:      &usage,
+		}
+	case "write":
+		data, err := base64.StdEncoding.DecodeString(req.DataBase64)
+		if err != nil {
+			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "decode data_base64: " + err.Error()}
+		}
+		result, err := broker.WriteFile(ctx, storage.FileWriteRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Path:             req.Path,
+			Data:             data,
+		})
+		if err != nil {
+			return storageFileErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageFileResponsePayload{OK: true, Path: result.Path, SizeBytes: result.SizeBytes, Usage: &usage}
+	case "delete":
+		if err := broker.DeleteFile(ctx, storage.FileDeleteRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Path:             req.Path,
+			Recursive:        req.Recursive,
+		}); err != nil {
+			return storageFileErrorResponse(err)
+		}
+		return storageFileResponsePayload{OK: true, Path: req.Path}
+	case "list":
+		result, err := broker.ListFiles(ctx, storage.FileListRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Path:             req.Path,
+			MaxEntries:       req.MaxEntries,
+		})
+		if err != nil {
+			return storageFileErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageFileResponsePayload{OK: true, Path: result.Path, Entries: result.Entries, Usage: &usage}
+	default:
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: "storage file operation is not supported"}
+	}
+}
+
+func storageFileErrorResponse(err error) storageFileResponsePayload {
+	switch {
+	case errors.Is(err, storage.ErrFileNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_NOT_FOUND", Message: err.Error()}
+	case errors.Is(err, storage.ErrInvalidFilePath), errors.Is(err, storage.ErrInvalidNamespace):
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_INVALID_PATH", Message: err.Error()}
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_QUOTA_EXCEEDED", Message: err.Error()}
+	case errors.Is(err, storage.ErrFileTooLarge):
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: err.Error()}
+	default:
+		return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_FAILED", Message: err.Error()}
+	}
 }
 
 func artifactRequestFromInvocation(invocation json.RawMessage) (ArtifactRequest, error) {

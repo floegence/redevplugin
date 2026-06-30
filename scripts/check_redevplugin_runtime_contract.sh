@@ -34,6 +34,9 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"open_handle_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"validate_handle_grant_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"validate_handle_grant_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"storage_file_request_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"storage_file_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"method": { "const": "storage.files" }' spec/plugin/ipc-v1.schema.json
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
