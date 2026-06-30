@@ -18,6 +18,11 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"stream_id",' spec/plugin/token-ticket-v1.schema.json
   grep -q '"stream_direction"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"method"' spec/plugin/token-ticket-v1.schema.json
+  grep -q '"type": { "const": "redeven.plugin.handshake" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redeven.plugin.call" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redeven.plugin.response" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"type": { "const": "redeven.plugin.lifecycle" }' spec/plugin/bridge-v1.schema.json
+  grep -q '"ui_protocol_version": { "const": "plugin-ui-v1" }' spec/plugin/bridge-v1.schema.json
   grep -q '"hello_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json

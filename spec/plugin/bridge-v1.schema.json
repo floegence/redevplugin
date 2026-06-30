@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/bridge-v1.schema.json",
+  "title": "ReDevPlugin iframe bridge v1",
+  "description": "Message contract between a sandboxed plugin iframe and the host-owned parent bridge. Gateway and confirmation tokens are parent-only and are intentionally absent from this schema.",
+  "oneOf": [
+    { "$ref": "#/$defs/handshake" },
+    { "$ref": "#/$defs/call" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/lifecycle" }
+  ],
+  "$defs": {
+    "handshake": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "plugin_id",
+        "surface_id",
+        "surface_instance_id",
+        "active_fingerprint",
+        "bridge_nonce",
+        "ui_protocol_version"
+      ],
+      "properties": {
+        "type": { "const": "redeven.plugin.handshake" },
+        "plugin_id": { "type": "string", "minLength": 1 },
+        "surface_id": { "type": "string", "minLength": 1 },
+        "surface_instance_id": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "bridge_nonce": { "type": "string", "minLength": 1 },
+        "ui_protocol_version": { "const": "plugin-ui-v1" }
+      }
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request"],
+      "properties": {
+        "type": { "const": "redeven.plugin.call" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "method"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "method": { "type": "string", "minLength": 1 },
+            "params": {
+              "type": "object",
+              "description": "Optional JSON object. Arrays are rejected so iframe calls match the Host RPC map contract."
+            }
+          }
+        }
+      }
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "type": { "const": "redeven.plugin.response" },
+            "id": { "type": "string", "minLength": 1 },
+            "ok": { "const": true },
+            "data": true
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "ok", "error_code", "error"],
+          "properties": {
+            "type": { "const": "redeven.plugin.response" },
+            "id": { "type": "string", "minLength": 1 },
+            "ok": { "const": false },
+            "error_code": {
+              "enum": [
+                "PLUGIN_INVALID_REQUEST",
+                "PLUGIN_PERMISSION_DENIED",
+                "PLUGIN_CONFIRMATION_REQUIRED",
+                "PLUGIN_CONFIRMATION_REJECTED",
+                "PLUGIN_TOKEN_EXPIRED",
+                "PLUGIN_TOKEN_REPLAY",
+                "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH",
+                "PLUGIN_STORAGE_QUOTA_EXCEEDED",
+                "PLUGIN_OPERATION_BLOCKED",
+                "PLUGIN_NETWORK_TARGET_DENIED",
+                "PLUGIN_RUNTIME_UNAVAILABLE",
+                "PLUGIN_CONTRACT_MISMATCH",
+                "PLUGIN_BRIDGE_TIMEOUT",
+                "PLUGIN_BRIDGE_DISPOSED",
+                "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
+                "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"
+              ]
+            },
+            "error": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "event"],
+      "properties": {
+        "type": { "const": "redeven.plugin.lifecycle" },
+        "event": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "enum": ["ready", "visible", "hidden", "dispose"] }
+          }
+        }
+      }
+    }
+  }
+}

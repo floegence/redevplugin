@@ -14,7 +14,8 @@ capabilities.
 - TypeScript package: `@floegence/redevplugin-ui`
 - Rust workspace: `redevplugin-runtime` and support crates
 - Contracts: OpenAPI, manifest schema, package-signature schema, token/ticket
-  schema, IPC schema, WASM ABI schema, and target classifier fixture
+  schema, iframe bridge schema, IPC schema, WASM ABI schema, and target
+  classifier fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
@@ -45,6 +46,9 @@ capabilities.
   host product.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, and route
   fixture aligned.
+- Bridge contract checks that keep sandbox iframe message names, exact-origin
+  messaging, UI protocol version, and parent-only token boundaries aligned with
+  the TypeScript SDK.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
