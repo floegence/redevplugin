@@ -2317,6 +2317,20 @@ func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage Memory Hostcall</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redeven_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2409,9 +2423,18 @@ func importedHostcallWorkerWASMForTest(importModule string, importName string, e
 
 func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
+	return importedMemoryHostcallWorkerWASMForTest("redeven.network", "http_request", exportName, request)
+}
+
+func storageMemoryHostcallWorkerWASMForTest(exportName string) []byte {
+	request := []byte(`{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}`)
+	return importedMemoryHostcallWorkerWASMForTest("redeven.storage", "files", exportName, request)
+}
+
+func importedMemoryHostcallWorkerWASMForTest(importModuleName string, importNameName string, exportName string, request []byte) []byte {
 	exportNameBytes := []byte(exportName)
-	importModule := []byte("redeven.network")
-	importName := []byte("http_request")
+	importModule := []byte(importModuleName)
+	importName := []byte(importNameName)
 	module := []byte{
 		0x00, 0x61, 0x73, 0x6d,
 		0x01, 0x00, 0x00, 0x00,

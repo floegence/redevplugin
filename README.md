@@ -88,14 +88,16 @@ capabilities.
   also exposes the first brokered hostcall slices. The early
   `redeven.storage/files_write_demo` and `redeven.network/http_request_demo`
   imports prove storage and network broker routing. The newer
+  `redeven.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32` and
   `redeven.network/http_request(req_ptr, req_len, out_ptr, out_len) -> i32`
-  import is the first linear-memory ABI slice: the worker writes a bounded JSON
-  network request into WASM memory, the Rust runtime injects Host-owned
-  identity, policy, and revoke context, executes the request through the
-  `network_execute` IPC path, and writes the JSON response back into the
-  worker-provided output buffer. Host integration tests build and exercise the
-  real Rust runtime whenever a local Cargo toolchain is available, including
-  FileBroker, fixed network demo, and linear-memory HTTP executor paths.
+  imports are the first linear-memory ABI slices: the worker writes bounded
+  JSON broker requests into WASM memory, the Rust runtime injects Host-owned
+  identity, policy, grant, and revoke context, executes the requests through
+  the `storage_file` and `network_execute` IPC paths, and writes JSON responses
+  back into worker-provided output buffers. Host integration tests build and
+  exercise the real Rust runtime whenever a local Cargo toolchain is available,
+  including FileBroker, fixed demo imports, linear-memory file writes, and
+  linear-memory HTTP executor paths.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the
