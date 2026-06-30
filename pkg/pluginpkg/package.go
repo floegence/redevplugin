@@ -56,6 +56,7 @@ type ReadOptions struct {
 
 const PackageSignaturePath = "signatures/package.sig"
 const PackageSignatureAlgorithmEd25519 = "ed25519"
+const workerABIPath = "workers/abi.json"
 
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
@@ -68,6 +69,12 @@ type PackageSignature struct {
 	EntriesHash   string `json:"entries_hash"`
 	Signature     string `json:"signature"`
 	SignedAt      string `json:"signed_at,omitempty"`
+}
+
+type workerABIDescriptor struct {
+	ABIVersion string   `json:"abi_version"`
+	Exports    []string `json:"exports"`
+	Imports    []string `json:"imports"`
 }
 
 type Reader interface {
@@ -403,6 +410,10 @@ func validateEntryPath(entryPath string) (string, error) {
 }
 
 func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) error {
+	workerABI, err := validateWorkerABIDescriptor(m, files)
+	if err != nil {
+		return err
+	}
 	workerExports := map[string]map[string]struct{}{}
 	for i, worker := range m.Workers {
 		artifact, err := validateEntryPath(worker.Artifact)
@@ -427,11 +438,94 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		if !ok {
 			return fmt.Errorf("methods[%d].route.worker_id %q does not reference a packaged worker", i, method.Route.WorkerID)
 		}
+		if _, ok := workerABI.Exports[method.Route.Export]; !ok {
+			return fmt.Errorf("methods[%d].route.export %q is not declared by %s", i, method.Route.Export, workerABIPath)
+		}
 		if _, ok := exports[method.Route.Export]; !ok {
 			return fmt.Errorf("methods[%d].route.export %q is not exported by worker %q", i, method.Route.Export, method.Route.WorkerID)
 		}
 	}
 	return nil
+}
+
+type validatedWorkerABI struct {
+	Exports map[string]struct{}
+	Imports map[string]struct{}
+}
+
+func validateWorkerABIDescriptor(m manifest.Manifest, files map[string][]byte) (validatedWorkerABI, error) {
+	if len(m.Workers) == 0 {
+		return validatedWorkerABI{Exports: map[string]struct{}{}, Imports: map[string]struct{}{}}, nil
+	}
+	raw, ok := files[workerABIPath]
+	if !ok {
+		return validatedWorkerABI{}, fmt.Errorf("%s is required for packages with workers", workerABIPath)
+	}
+	var descriptor workerABIDescriptor
+	if err := json.Unmarshal(raw, &descriptor); err != nil {
+		return validatedWorkerABI{}, fmt.Errorf("%s: %w", workerABIPath, err)
+	}
+	if descriptor.ABIVersion != "redeven-wasm-worker-v1" {
+		return validatedWorkerABI{}, fmt.Errorf("%s: abi_version must be redeven-wasm-worker-v1", workerABIPath)
+	}
+	exports, err := validateWorkerABISet(workerABIPath, "exports", descriptor.Exports, allowedWorkerABIExports())
+	if err != nil {
+		return validatedWorkerABI{}, err
+	}
+	if len(exports) == 0 {
+		return validatedWorkerABI{}, fmt.Errorf("%s: exports must not be empty", workerABIPath)
+	}
+	imports, err := validateWorkerABISet(workerABIPath, "imports", descriptor.Imports, allowedWorkerABIImports())
+	if err != nil {
+		return validatedWorkerABI{}, err
+	}
+	for i, worker := range m.Workers {
+		if worker.Mode != manifest.WorkerModeActor {
+			continue
+		}
+		for _, requiredExport := range []string{"redeven_actor_start", "redeven_actor_stop"} {
+			if _, ok := exports[requiredExport]; !ok {
+				return validatedWorkerABI{}, fmt.Errorf("workers[%d].mode actor requires %s export in %s", i, requiredExport, workerABIPath)
+			}
+		}
+	}
+	return validatedWorkerABI{Exports: exports, Imports: imports}, nil
+}
+
+func validateWorkerABISet(abiPath string, field string, values []string, allowed map[string]struct{}) (map[string]struct{}, error) {
+	out := map[string]struct{}{}
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("%s: %s[%d] is empty", abiPath, field, i)
+		}
+		if _, ok := allowed[value]; !ok {
+			return nil, fmt.Errorf("%s: %s[%d] %q is not supported", abiPath, field, i, value)
+		}
+		if _, exists := out[value]; exists {
+			return nil, fmt.Errorf("%s: %s[%d] %q is duplicated", abiPath, field, i, value)
+		}
+		out[value] = struct{}{}
+	}
+	return out, nil
+}
+
+func allowedWorkerABIExports() map[string]struct{} {
+	return map[string]struct{}{
+		"redeven_worker_invoke": {},
+		"redeven_actor_start":   {},
+		"redeven_actor_stop":    {},
+	}
+}
+
+func allowedWorkerABIImports() map[string]struct{} {
+	return map[string]struct{}{
+		"redeven.log":       {},
+		"redeven.storage":   {},
+		"redeven.network":   {},
+		"redeven.operation": {},
+		"redeven.clock":     {},
+	}
 }
 
 func wasmExports(module []byte) (map[string]struct{}, error) {

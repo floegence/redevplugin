@@ -1391,6 +1391,7 @@ func buildHTTPWorkerFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpWorkerFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Worker</title>")
 	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redeven_worker_invoke"))
+	writeHTTPFile(t, filepath.Join(dir, "workers", "abi.json"), httpWorkerFixtureABIJSON("redeven_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -1453,6 +1454,18 @@ func minimalHTTPWorkerWASMForTest(exportName string) []byte {
 	module = append(module, exportPayload...)
 	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
 	return module
+}
+
+func httpWorkerFixtureABIJSON(exports ...string) string {
+	rawExports, err := json.Marshal(exports)
+	if err != nil {
+		panic(err)
+	}
+	return "{\n" +
+		"  \"abi_version\": \"redeven-wasm-worker-v1\",\n" +
+		"  \"exports\": " + string(rawExports) + ",\n" +
+		"  \"imports\": [\"redeven.log\", \"redeven.storage\", \"redeven.network\", \"redeven.operation\", \"redeven.clock\"]\n" +
+		"}\n"
 }
 
 func httpFixtureManifestJSON() string {
