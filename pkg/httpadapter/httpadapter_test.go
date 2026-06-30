@@ -37,6 +37,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
 		"POST /_redeven_proxy/api/plugins/rpc":                                         false,
 		"POST /_redeven_proxy/api/plugins/data/export":                                 false,
+		"GET /_redeven_proxy/api/plugins/platform/compatibility":                       false,
 		"GET /_redeven_proxy/api/plugins/permissions":                                  false,
 		"POST /_redeven_proxy/api/plugins/permissions/grant":                           false,
 		"POST /_redeven_proxy/api/plugins/permissions/revoke":                          false,
@@ -81,6 +82,46 @@ func TestRouteSetRoutesAreHandled(t *testing.T) {
 				t.Fatalf("declared route fell through to 404: %s %s body = %s", route.Method, route.Path, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandlerCompatibilityManifest(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	got := getJSON[struct {
+		SchemaVersion string `json:"schema_version"`
+		Matrix        struct {
+			PluginHostProtocolVersion string `json:"plugin_host_protocol_version"`
+			PluginPlatformOpenAPI     string `json:"plugin_platform_openapi_version"`
+		} `json:"matrix"`
+		Contracts []struct {
+			ID     string `json:"id"`
+			Path   string `json:"path"`
+			SHA256 string `json:"sha256"`
+		} `json:"contracts"`
+	}](t, handler, "/_redeven_proxy/api/plugins/platform/compatibility")
+
+	if got.SchemaVersion != "redevplugin.compatibility.v1" {
+		t.Fatalf("schema_version = %q", got.SchemaVersion)
+	}
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v1" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v1" {
+		t.Fatalf("matrix mismatch: %#v", got.Matrix)
+	}
+	contracts := map[string]struct {
+		Path   string
+		SHA256 string
+	}{}
+	for _, contract := range got.Contracts {
+		contracts[contract.ID] = struct {
+			Path   string
+			SHA256 string
+		}{Path: contract.Path, SHA256: contract.SHA256}
+	}
+	openapi, ok := contracts["plugin-platform-openapi"]
+	if !ok {
+		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
+	}
+	if openapi.Path != "spec/openapi/plugin-platform-v1.yaml" || openapi.SHA256 == "" {
+		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -183,6 +184,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleDowngrade(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/catalog":
 		h.handleCatalog(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redeven_proxy/api/plugins/platform/compatibility":
+		h.handleCompatibility(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redeven_proxy/api/plugins/surfaces/open":
 		h.handleOpenSurface(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redeven_proxy/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bootstrap"):
@@ -286,6 +289,7 @@ func RouteSet() []Route {
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/update"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/downgrade"},
 		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/catalog"},
+		{Method: http.MethodGet, Path: "/_redeven_proxy/api/plugins/platform/compatibility"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/surfaces/open"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
 		{Method: http.MethodPost, Path: "/_redeven_proxy/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
@@ -474,6 +478,10 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"plugins": records}})
+}
+
+func (h Handler) handleCompatibility(w http.ResponseWriter, _ *http.Request) {
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: version.CurrentCompatibilityManifest()})
 }
 
 func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {

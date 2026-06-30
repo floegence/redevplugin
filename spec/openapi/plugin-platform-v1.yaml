@@ -51,6 +51,12 @@ paths:
       operationId: listPlugins
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redeven_proxy/api/plugins/platform/compatibility:
+    get:
+      operationId: getPluginPlatformCompatibility
+      description: Returns the host-consumable ReDevPlugin compatibility manifest for the mounted platform artifact set.
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
   /_redeven_proxy/api/plugins/surfaces/open:
     post:
       operationId: openPluginSurface

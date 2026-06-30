@@ -53,6 +53,10 @@ capabilities.
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
   target-classifier contracts.
+- Mounted hosts can also expose the same compatibility manifest through
+  `GET /_redeven_proxy/api/plugins/platform/compatibility`, allowing a product
+  such as Redeven to verify the loaded platform artifact set without shelling out
+  to the CLI.
 - `redevplugin verify-compatibility <compatibility.json> <artifact-root>` checks
   a released compatibility manifest against the current version matrix and the
   referenced contract artifact hashes. Host products can use this command before
