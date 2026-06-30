@@ -71,6 +71,15 @@ capabilities.
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the
   storage root selection in their own adapter layer.
+- The browser demo under `demo/browser/` runs a real host page plus sandboxed
+  iframe plugin page using the built `@floegence/redevplugin-ui` bridge package.
+  Start it with `npm run demo:browser`, open the printed host URL, then exercise
+  handshake, lifecycle, ordinary RPC, storage-list RPC, and
+  dangerous-confirmation flows. The host and plugin page are served from
+  separate localhost origins to exercise exact-origin sandbox bridge behavior.
+  `npm run test:demo` covers the fake platform API and static sandbox contract;
+  `npm run test:demo:browser` launches a real browser and clicks through the
+  iframe demo flow end to end.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
@@ -81,6 +90,9 @@ provide a local sibling integration path for host products.
 go test ./...
 npm install
 npm run check
+npm run demo:browser
+npx playwright install chromium
+npm run test:demo:browser
 ./scripts/check_redevplugin_runtime_contract.sh
 ./scripts/check_redevplugin_platform.sh
 ```

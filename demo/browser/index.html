@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ReDevPlugin Browser Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="host-shell">
+      <section class="host-panel" aria-label="Host console">
+        <div class="brand-row">
+          <div>
+            <p class="eyebrow">ReDevPlugin demo</p>
+            <h1>Sandbox bridge lab</h1>
+          </div>
+          <span id="host-status" class="status-pill">starting</span>
+        </div>
+
+        <div class="metric-grid" aria-label="Runtime counters">
+          <div>
+            <span class="metric-label">handshakes</span>
+            <strong id="handshake-count">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">rpc calls</span>
+            <strong id="rpc-count">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">confirmations</span>
+            <strong id="confirmation-count">0</strong>
+          </div>
+        </div>
+
+        <div id="confirmation-panel" class="confirmation-panel" hidden>
+          <div>
+            <span class="metric-label">pending confirmation</span>
+            <strong id="confirmation-method">-</strong>
+            <code id="confirmation-hash">-</code>
+          </div>
+          <div class="button-row">
+            <button id="deny-confirmation" type="button" class="ghost-button">Deny</button>
+            <button id="approve-confirmation" type="button">Approve</button>
+          </div>
+        </div>
+
+        <ol id="event-log" class="event-log" aria-label="Bridge event log"></ol>
+      </section>
+
+      <section class="surface-panel" aria-label="Sandboxed plugin surface">
+        <div class="surface-toolbar">
+          <div>
+            <p class="eyebrow">sandboxed iframe</p>
+            <h2>Plugin surface</h2>
+          </div>
+          <button id="send-visible" type="button" class="ghost-button">Visible</button>
+        </div>
+        <iframe
+          id="plugin-frame"
+          title="ReDevPlugin demo plugin"
+          sandbox="allow-scripts allow-same-origin"
+          src="about:blank"
+        ></iframe>
+      </section>
+    </main>
+    <script type="module" src="./host.mjs"></script>
+  </body>
+</html>

@@ -6,9 +6,14 @@
     "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
     "build": "tsc -p packages/redevplugin-ui/tsconfig.json",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
-    "check": "npm run typecheck && npm run build && npm run test:ui"
+    "test:demo": "node --test demo/browser/*.test.mjs",
+    "test:demo:browser": "npm run build && node demo/browser/browser-smoke.mjs",
+    "predemo:browser": "npm run build",
+    "demo:browser": "node demo/browser/server.mjs",
+    "check": "npm run typecheck && npm run build && npm run test:ui && npm run test:demo"
   },
   "devDependencies": {
+    "playwright": "^1.61.1",
     "typescript": "^5.9.3"
   }
 }

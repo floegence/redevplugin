@@ -37,6 +37,7 @@ if command -v npm >/dev/null 2>&1; then
   (
     cd "$ROOT_DIR"
     npm run typecheck
+    npm run test:demo
   )
 else
   echo "npm not found; skipping TypeScript check" >&2
