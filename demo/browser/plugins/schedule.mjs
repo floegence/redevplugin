@@ -33,7 +33,11 @@ const openCount = document.querySelector("#schedule-open");
 const doneCount = document.querySelector("#schedule-done");
 const minuteCount = document.querySelector("#schedule-minutes");
 const storageSource = document.querySelector("#schedule-storage-source");
+const storageRevision = document.querySelector("#schedule-storage-revision");
+const storageUsage = document.querySelector("#schedule-storage-usage");
 const persistedAt = document.querySelector("#schedule-persisted-at");
+const timelineNext = document.querySelector("#timeline-next");
+const timeline = document.querySelector("#schedule-timeline");
 const result = document.querySelector("#plugin-result");
 
 dateInput.value = new Date().toISOString().slice(0, 10);
@@ -81,6 +85,9 @@ async function callPlugin(method, payload) {
     if (data?.stats) {
       renderStats(data.stats, data.items ?? []);
     }
+    if (Array.isArray(data?.timeline)) {
+      renderTimeline(data.timeline, data.stats);
+    }
     if (data?.source || data?.persisted_at) {
       renderStorageState(data);
     }
@@ -127,11 +134,26 @@ function renderStats(stats) {
   openCount.textContent = String(stats.open ?? 0);
   doneCount.textContent = String(stats.done ?? 0);
   minuteCount.textContent = String(stats.planned_minutes ?? 0);
+  timelineNext.textContent = stats.next ? `${stats.next.time} · ${stats.next.title}` : "No upcoming item";
 }
 
 function renderStorageState(data) {
   storageSource.textContent = data.source ?? "host storage broker";
+  if (data.storage) {
+    storageRevision.textContent = `rev ${Number(data.storage.revision ?? 0)}`;
+    storageUsage.textContent = `${formatBytes(data.storage.used_bytes)} / ${formatBytes(data.storage.quota_bytes)}`;
+  }
   persistedAt.textContent = formatTime(data.persisted_at);
+}
+
+function renderTimeline(items) {
+  timeline.replaceChildren(...items.slice(0, 8).map((item) => {
+    const node = document.createElement("div");
+    node.className = `timeline-item priority-${escapeClass(item.priority)}${item.done ? " done" : ""}`;
+    node.style.setProperty("--lane", String(Number(item.lane ?? 0)));
+    node.innerHTML = `<strong>${escapeHTML(item.slot)}</strong><span>${escapeHTML(item.label)}</span><small>${escapeHTML(item.tag)}</small>`;
+    return node;
+  }));
 }
 
 function currentView() {
@@ -164,6 +186,21 @@ function formatTime(value) {
     return String(value);
   }
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatBytes(value) {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+  return `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
+function escapeClass(value) {
+  return String(value || "medium").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "medium";
 }
 
 function debounce(fn, delayMs) {

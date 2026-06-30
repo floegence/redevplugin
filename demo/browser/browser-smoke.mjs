@@ -109,12 +109,17 @@ try {
   await expectText(gameFrame.locator("#plugin-result"), "game.state.get");
   await gameFrame.getByRole("button", { name: "Boost" }).click();
   await expectText(gameFrame.locator("#speed"), "1.2x");
+  await gameFrame.getByRole("button", { name: "Power-up" }).click();
+  await expectText(gameFrame.locator("#powerups"), "1");
+  await expectText(gameFrame.locator("#energy"), "%");
   await gameFrame.getByRole("button", { name: "Reset" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "\"reset\": true");
+  await gameFrame.getByRole("button", { name: "Power-up" }).click();
   await gameFrame.getByRole("button", { name: "Save score" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "game.score.save");
   await expectText(gameFrame.locator("#plugin-result"), "host-backed kv store");
   await expectText(gameFrame.locator("#plugin-result"), "achievements");
+  await expectText(gameFrame.locator("#leaderboard"), "Latest run");
   await expectText(page.locator("#rpc-count"), "2");
 
   await page.getByRole("button", { name: "Schedule planner" }).click();
@@ -125,6 +130,9 @@ try {
   await expectText(scheduleFrame.locator("#schedule-open"), "2");
   await expectText(scheduleFrame.locator("#schedule-minutes"), "75");
   await expectText(scheduleFrame.locator("#schedule-storage-source"), "host storage broker");
+  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 1");
+  await expectText(scheduleFrame.locator("#schedule-storage-usage"), "KiB");
+  await expectText(scheduleFrame.locator("#schedule-timeline"), "Platform standup");
   await scheduleFrame.locator("#schedule-status").selectOption("open");
   await expectText(scheduleFrame.locator("#schedule-count"), "2");
   await scheduleFrame.locator("#schedule-title").fill("Browser QA review");
@@ -135,6 +143,8 @@ try {
   await expectText(scheduleFrame.locator("#schedule-list"), "Browser QA review");
   await expectText(scheduleFrame.locator("#schedule-count"), "3");
   await expectText(scheduleFrame.locator("#schedule-minutes"), "130");
+  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 2");
+  await expectText(scheduleFrame.locator("#timeline-next"), "09:30");
   await scheduleFrame.locator("#schedule-query").fill("browser");
   await expectText(scheduleFrame.locator("#schedule-count"), "1");
   await scheduleFrame.getByRole("button", { name: "Done" }).first().click();
@@ -151,6 +161,7 @@ try {
   await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
   await expectText(reloadedScheduleFrame.locator("#schedule-count"), "4");
   await expectText(reloadedScheduleFrame.locator("#schedule-storage-source"), "host storage broker");
+  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 3");
 
   await page.getByRole("button", { name: "Weather console" }).click();
   await expectText(page.locator("#handshake-count"), "1");
@@ -165,6 +176,10 @@ try {
   await expectText(weatherFrame.locator("#weather-pressure"), "1009 hPa");
   await expectText(weatherFrame.locator("#network-operation"), "http GET /v1/forecast");
   await expectText(weatherFrame.locator("#network-latency"), "ms");
+  await expectText(weatherFrame.locator("#network-response"), "200");
+  await expectText(weatherFrame.locator("#network-parser"), "json");
+  await expectText(weatherFrame.locator("#raw-weather-response"), "parsed_from_raw");
+  await expectText(weatherFrame.locator("#hourly"), "09:00");
   await expectText(weatherFrame.locator("#plugin-result"), "weather.fetch");
   await expectText(weatherFrame.locator("#plugin-result"), "api.weather.example");
   await weatherFrame.getByRole("button", { name: "London" }).click();

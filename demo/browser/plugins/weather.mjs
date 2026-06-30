@@ -30,7 +30,12 @@ const uv = document.querySelector("#weather-uv");
 const networkOperation = document.querySelector("#network-operation");
 const networkLatency = document.querySelector("#network-latency");
 const networkBytes = document.querySelector("#network-bytes");
+const networkConnector = document.querySelector("#network-connector");
+const networkResponse = document.querySelector("#network-response");
+const networkParser = document.querySelector("#network-parser");
 const forecast = document.querySelector("#forecast");
+const hourly = document.querySelector("#hourly");
+const rawWeatherResponse = document.querySelector("#raw-weather-response");
 const result = document.querySelector("#plugin-result");
 
 client.onLifecycle((event) => {
@@ -86,19 +91,34 @@ async function callPlugin(method, payload) {
 }
 
 function renderWeather(data) {
+  const parsed = parseWeatherResponse(data);
   place.textContent = data.location;
-  temp.textContent = String(data.current.temperature_c);
-  condition.textContent = data.parsed_summary ?? `${data.current.condition} · ${data.current.wind_kph} kph wind · ${data.current.humidity_percent}% humidity`;
-  wind.textContent = `${data.current.wind_kph} kph`;
-  humidity.textContent = `${data.current.humidity_percent}%`;
-  pressure.textContent = `${data.current.pressure_hpa ?? "--"} hPa`;
-  uv.textContent = String(data.current.uv_index ?? "--");
+  temp.textContent = String(parsed.current.temperature_c);
+  condition.textContent = data.parsed_summary ?? `${parsed.current.condition} · ${parsed.current.wind_kph} kph wind · ${parsed.current.humidity_percent}% humidity`;
+  wind.textContent = `${parsed.current.wind_kph} kph`;
+  humidity.textContent = `${parsed.current.humidity_percent}%`;
+  pressure.textContent = `${parsed.current.pressure_hpa ?? "--"} hPa`;
+  uv.textContent = String(parsed.current.uv_index ?? "--");
   networkOperation.textContent = `${data.network?.transport ?? "http"} ${data.network?.operation ?? "GET /v1/forecast"}`;
   networkLatency.textContent = `${data.network?.latency_ms ?? "--"} ms`;
   networkBytes.textContent = `${data.network?.bytes_received ?? "--"} bytes`;
-  forecast.replaceChildren(...data.forecast.map((day) => {
+  networkConnector.textContent = data.network?.connector_id ?? "weather_api";
+  networkResponse.textContent = `${data.network?.response_status ?? 200} · ${data.network?.response_headers?.["content-type"] ?? "application/json"}`;
+  networkParser.textContent = `${data.parser?.format ?? "json"} · ${data.parser?.fields?.length ?? 0} fields`;
+  rawWeatherResponse.textContent = formatJSON({
+    request: data.network?.operation,
+    response_headers: data.network?.response_headers,
+    parsed_from_raw: true,
+    sample: parsed,
+  });
+  forecast.replaceChildren(...parsed.forecast.map((day) => {
     const item = document.createElement("div");
     item.innerHTML = `<strong>${escapeHTML(day.day)}</strong><span>${Number(day.high_c)}°/${Number(day.low_c)}°</span><small>${escapeHTML(day.condition)} · ${Number(day.precipitation_percent ?? 0)}% rain</small>`;
+    return item;
+  }));
+  hourly.replaceChildren(...parsed.hourly.map((point) => {
+    const item = document.createElement("div");
+    item.innerHTML = `<strong>${escapeHTML(point.hour)}</strong><span>${Number(point.temperature_c)}°</span><small>${escapeHTML(point.condition)} · ${Number(point.wind_kph)} kph</small>`;
     return item;
   }));
 }
@@ -119,6 +139,26 @@ function renderSavedLocations(locations) {
 
 function writeResult(value) {
   result.textContent = formatJSON(value);
+}
+
+function parseWeatherResponse(data) {
+  if (typeof data.raw_response_body !== "string") {
+    return data;
+  }
+  try {
+    const parsed = JSON.parse(data.raw_response_body);
+    return {
+      current: parsed.current ?? data.current,
+      forecast: Array.isArray(parsed.forecast) ? parsed.forecast : data.forecast,
+      hourly: Array.isArray(parsed.hourly) ? parsed.hourly : [],
+    };
+  } catch {
+    return {
+      current: data.current,
+      forecast: data.forecast ?? [],
+      hourly: [],
+    };
+  }
 }
 
 function escapeHTML(value) {

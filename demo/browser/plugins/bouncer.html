@@ -28,12 +28,37 @@
         </div>
       </section>
 
+      <section class="arcade-telemetry" aria-label="Game runtime telemetry">
+        <div>
+          <span class="metric-label">energy</span>
+          <strong id="energy">100%</strong>
+        </div>
+        <div>
+          <span class="metric-label">lives</span>
+          <strong id="lives">3</strong>
+        </div>
+        <div>
+          <span class="metric-label">power-ups</span>
+          <strong id="powerups">0</strong>
+        </div>
+        <div>
+          <span class="metric-label">elapsed</span>
+          <strong id="elapsed">0s</strong>
+        </div>
+      </section>
+
       <div class="button-row">
         <button id="game-toggle" type="button">Pause</button>
         <button id="game-reset" type="button" class="ghost-button">Reset</button>
         <button id="game-boost" type="button" class="secondary-button">Boost</button>
+        <button id="game-powerup" type="button" class="secondary-button">Power-up</button>
         <button id="game-save" type="button" class="secondary-button">Save score</button>
       </div>
+
+      <section class="leaderboard-panel" aria-label="Saved game leaderboard">
+        <span class="metric-label">saved leaderboard</span>
+        <ol id="leaderboard"></ol>
+      </section>
 
       <section class="result-panel" aria-label="Game plugin result">
         <span class="metric-label">backend result</span>

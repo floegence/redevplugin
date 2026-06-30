@@ -125,11 +125,13 @@ capabilities.
   dangerous-confirmation, and richer plugin surfaces. The host and plugin page
   are served from separate localhost origins to exercise exact-origin sandbox
   bridge behavior. The demo picker includes a workspace tools plugin, an
-  animated canvas bouncer game that saves score through the bridge, a schedule
-  planner that lists/adds/toggles/deletes host-backed stored items and keeps
-  them through host-page reloads, and a weather plugin that saves the current
-  location, requests a host-network-backed forecast payload, parses it, and
-  renders a friendly weather card.
+  animated canvas bouncer game with particles, trails, power-ups, score saving,
+  achievements, and a host-backed leaderboard; a schedule planner that
+  lists/adds/toggles/deletes host-backed stored items, displays storage
+  revision/quota/timeline metadata, and keeps data through host-page reloads;
+  and a weather plugin that saves the current location, requests a
+  host-network-backed HTTP forecast payload, parses the raw JSON response, and
+  renders current, hourly, forecast, and network diagnostics views.
   For the Flower-generated plugin path, run `npm run demo:browser:generated`.
   That launcher scaffolds a plugin with a backend worker skeleton, packages it,
   installs it into a temporary dev state root, enables it, opens its activity

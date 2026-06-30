@@ -135,9 +135,13 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
 
   const score = await rpc(platform, "game.score.save", { score: 42 });
   assert.equal(score.data.data.best_score, 42);
+  assert.equal(score.data.data.leaderboard.length, 3);
+  assert.equal(score.data.data.achievements.includes("score-sprinter"), false);
 
   const initial = await rpc(platform, "schedule.items.list", {});
   assert.equal(initial.data.data.items.length, 3);
+  assert.equal(initial.data.data.storage.engine, "sqlite-demo");
+  assert.equal(initial.data.data.timeline.length, 3);
   const added = await rpc(platform, "schedule.item.add", {
     title: "Write browser demo",
     date: "2026-06-30",
@@ -146,12 +150,17 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   });
   assert.equal(added.data.data.persisted, true);
   assert.equal(added.data.data.items.length, 4);
+  assert.equal(added.data.data.storage.revision, 2);
 
   const saved = await rpc(platform, "weather.location.save", { location: "Shanghai" });
   assert.equal(saved.data.data.location, "Shanghai");
   const weather = await rpc(platform, "weather.fetch", { location: "Shanghai" });
   assert.equal(weather.data.data.current.condition, "Warm evening haze");
   assert.equal(weather.data.data.network.transport, "http");
+  assert.equal(weather.data.data.network.response_status, 200);
+  assert.equal(JSON.parse(weather.data.data.raw_response_body).location, "Shanghai");
+  assert.equal(weather.data.data.parser.format, "json");
+  assert.equal(weather.data.data.hourly.length, 4);
 
   for (const filename of [
     "./plugins/bouncer.html",

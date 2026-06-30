@@ -168,7 +168,7 @@ func (e *recordingHostNetworkExecutor) UDPRoundTrip(context.Context, connectivit
 }
 
 func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
-	now := time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	service := bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
 	revision := bridge.RevisionBinding{PolicyRevision: 1, ManagementRevision: 2, RevokeEpoch: 3}
 	minted, err := service.MintHandleGrant(bridge.MintHandleGrantRequest{

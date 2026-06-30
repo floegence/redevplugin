@@ -32,6 +32,7 @@ export function createDemoPlatformFetch(options = {}) {
       gameLastRun: state.gameLastRun,
       gameSaves: state.gameSaves,
       scheduleItems: state.scheduleItems,
+      scheduleRevision: state.scheduleRevision,
       weatherLocation: state.weatherLocation,
       weatherSavedLocations: state.weatherSavedLocations,
       hostSettings: state.hostSettings,
@@ -189,6 +190,7 @@ export function createDemoPlatformFetch(options = {}) {
                 last_run: state.gameLastRun,
                 saves: state.gameSaves,
                 achievements: gameAchievements(state.gameLastRun),
+                leaderboard: gameLeaderboard(state),
                 storage: "host-backed kv store",
               },
             },
@@ -201,6 +203,8 @@ export function createDemoPlatformFetch(options = {}) {
                 best_score: state.gameBestScore,
                 last_run: state.gameLastRun,
                 saves: state.gameSaves,
+                achievements: state.gameLastRun ? gameAchievements(state.gameLastRun) : [],
+                leaderboard: gameLeaderboard(state),
                 storage: "host-backed kv store",
               },
             },
@@ -212,6 +216,8 @@ export function createDemoPlatformFetch(options = {}) {
               data: {
                 items: filterScheduleItems(state.scheduleItems, body.params),
                 stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
                 source: "host storage broker",
                 persisted_at: new Date().toISOString(),
               },
@@ -220,6 +226,7 @@ export function createDemoPlatformFetch(options = {}) {
         case "schedule.item.add": {
           const item = normalizeScheduleItem(body.params);
           state.scheduleItems = [...state.scheduleItems, item].sort(compareScheduleItems);
+          state.scheduleRevision += 1;
           persistState();
           return jsonResponse({
             ok: true,
@@ -228,6 +235,8 @@ export function createDemoPlatformFetch(options = {}) {
                 item,
                 items: filterScheduleItems(state.scheduleItems, body.params?.view),
                 stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
                 source: "host storage broker",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
@@ -238,6 +247,7 @@ export function createDemoPlatformFetch(options = {}) {
         case "schedule.item.toggle": {
           const id = String(body.params?.id ?? "");
           state.scheduleItems = state.scheduleItems.map((item) => item.id === id ? { ...item, done: !item.done } : item);
+          state.scheduleRevision += 1;
           persistState();
           return jsonResponse({
             ok: true,
@@ -245,6 +255,8 @@ export function createDemoPlatformFetch(options = {}) {
               data: {
                 items: filterScheduleItems(state.scheduleItems, body.params?.view),
                 stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
                 source: "host storage broker",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
@@ -255,6 +267,7 @@ export function createDemoPlatformFetch(options = {}) {
         case "schedule.item.delete": {
           const id = String(body.params?.id ?? "");
           state.scheduleItems = state.scheduleItems.filter((item) => item.id !== id);
+          state.scheduleRevision += 1;
           persistState();
           return jsonResponse({
             ok: true,
@@ -262,6 +275,8 @@ export function createDemoPlatformFetch(options = {}) {
               data: {
                 items: filterScheduleItems(state.scheduleItems, body.params?.view),
                 stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
                 source: "host storage broker",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
@@ -324,6 +339,7 @@ function createDefaultDemoState() {
     gameBestScore: 0,
     gameLastRun: null,
     gameSaves: 0,
+    scheduleRevision: 1,
     scheduleItems: [
       {
         id: "sched-standup",
@@ -461,6 +477,9 @@ function applyPersistedState(state, persisted = {}) {
   if (Array.isArray(persisted.scheduleItems)) {
     state.scheduleItems = persisted.scheduleItems.map(normalizePersistedScheduleItem).sort(compareScheduleItems);
   }
+  if (Number.isFinite(Number(persisted.scheduleRevision))) {
+    state.scheduleRevision = Math.max(1, Math.round(Number(persisted.scheduleRevision)));
+  }
   if (typeof persisted.weatherLocation === "string") {
     state.weatherLocation = normalizeLocation(persisted.weatherLocation);
   }
@@ -575,6 +594,8 @@ function normalizeGameRun(params = {}) {
     level: Math.max(1, Math.round(Number(params.level ?? 1))),
     combo: Math.max(0, Math.round(Number(params.combo ?? 0))),
     bricks_cleared: Math.max(0, Math.round(Number(params.bricks_cleared ?? 0))),
+    powerups_collected: Math.max(0, Math.round(Number(params.powerups_collected ?? 0))),
+    peak_speed: Math.max(1, Number(params.peak_speed ?? 1)),
     duration_ms: Math.max(0, Math.round(Number(params.duration_ms ?? 0))),
     saved_at: "2026-06-30T00:00:09Z",
   };
@@ -591,7 +612,44 @@ function gameAchievements(run) {
   if (run.bricks_cleared >= 12) {
     achievements.push("brick-sweeper");
   }
+  if (run.powerups_collected >= 2) {
+    achievements.push("power-collector");
+  }
   return achievements;
+}
+
+function gameLeaderboard(state) {
+  const lastScore = Number(state.gameLastRun?.score ?? 0);
+  return [
+    { rank: 1, name: "Best sandbox run", score: state.gameBestScore },
+    { rank: 2, name: "Latest run", score: lastScore },
+    { rank: 3, name: "Demo target", score: 120 },
+  ].sort((a, b) => b.score - a.score).map((entry, index) => ({ ...entry, rank: index + 1 }));
+}
+
+function scheduleStorageMetadata(state) {
+  return {
+    engine: "sqlite-demo",
+    namespace: "plugini_demo_1/schedule",
+    revision: state.scheduleRevision,
+    records: state.scheduleItems.length,
+    quota_bytes: 1048576,
+    used_bytes: 4096 + state.scheduleItems.length * 384,
+  };
+}
+
+function scheduleTimeline(items) {
+  return items
+    .slice()
+    .sort(compareScheduleItems)
+    .map((item, index) => ({
+      slot: `${item.date} ${item.time}`,
+      label: item.title,
+      tag: item.tag,
+      priority: item.priority,
+      done: item.done,
+      lane: index % 3,
+    }));
 }
 
 function normalizeLocation(value) {
@@ -622,8 +680,23 @@ function createWeatherPayload(location, fetchCount = 1) {
     uv: 2 + (location.length % 7),
     accent: "demo network response",
   };
-  return {
+  const hourly = [0, 3, 6, 9].map((offset) => ({
+    hour: `${String((9 + offset) % 24).padStart(2, "0")}:00`,
+    temperature_c: weather.temp + (offset % 6) - 2,
+    condition: offset === 0 ? weather.condition : "Cloud pattern drift",
+    wind_kph: weather.wind + offset,
+  }));
+  const forecast = [0, 1, 2, 3, 4].map((offset) => ({
+    day: `D+${offset}`,
+    high_c: weather.temp + 2 + offset,
+    low_c: weather.temp - 4 + (offset % 2),
+    condition: offset % 2 === 0 ? weather.condition : "Light cloud shifts",
+    precipitation_percent: Math.min(95, Math.max(5, weather.humidity - 32 + offset * 4)),
+  }));
+  const rawPayload = {
     location,
+    observed_at: "2026-06-30T08:00:00Z",
+    source_station: `${location.toLowerCase().replaceAll(" ", "-")}-demo-station`,
     current: {
       temperature_c: weather.temp,
       condition: weather.condition,
@@ -633,21 +706,37 @@ function createWeatherPayload(location, fetchCount = 1) {
       uv_index: weather.uv,
       accent: weather.accent,
     },
-    forecast: [0, 1, 2, 3, 4].map((offset) => ({
-      day: `D+${offset}`,
-      high_c: weather.temp + 2 + offset,
-      low_c: weather.temp - 4 + (offset % 2),
-      condition: offset % 2 === 0 ? weather.condition : "Light cloud shifts",
-      precipitation_percent: Math.min(95, Math.max(5, weather.humidity - 32 + offset * 4)),
-    })),
+    hourly,
+    forecast,
+  };
+  const rawResponseBody = JSON.stringify(rawPayload);
+  return {
+    location,
+    current: rawPayload.current,
+    hourly,
+    forecast,
     network: {
       connector_id: "weather_api",
       transport: "http",
-      operation: "GET /v1/forecast",
+      operation: `GET /v1/forecast?location=${encodeURIComponent(location)}`,
       destination: "https://api.weather.example",
+      request_headers: {
+        accept: "application/json",
+        "x-redevplugin-connector": "weather_api",
+      },
+      response_status: 200,
+      response_headers: {
+        "content-type": "application/json",
+        "x-demo-cache": fetchCount % 2 === 0 ? "hit" : "miss",
+      },
       latency_ms: 42 + fetchCount,
-      bytes_received: 1320 + location.length * 11,
-      parsed: true,
+      bytes_received: rawResponseBody.length,
+      parsed: false,
+    },
+    raw_response_body: rawResponseBody,
+    parser: {
+      format: "json",
+      fields: ["current.temperature_c", "current.condition", "forecast[]", "hourly[]"],
     },
     parsed_summary: `${weather.condition}; ${weather.wind} kph wind; ${weather.humidity}% humidity`,
   };

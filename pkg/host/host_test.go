@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1060,6 +1061,145 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	}
 	if confirmed.Data == nil || capabilityAdapter.calls != 1 {
 		t.Fatalf("confirmed call mismatch: result=%#v calls=%d", confirmed, capabilityAdapter.calls)
+	}
+}
+
+func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantDeclaredPermissions(t, h, installed)
+
+	intents, err := h.ListIntents(context.Background(), ListIntentsRequest{IntentID: "example.echo"})
+	if err != nil {
+		t.Fatalf("ListIntents() error = %v", err)
+	}
+	if len(intents) != 1 || intents[0].IntentID != "example.echo" || intents[0].Method != "echo.ping" || intents[0].Effect != "read" {
+		t.Fatalf("intent records mismatch: %#v", intents)
+	}
+
+	result, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{
+		IntentID:             "example.echo",
+		Params:               map[string]any{"message": "from intent"},
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+	})
+	if err != nil {
+		t.Fatalf("InvokeIntent() error = %v", err)
+	}
+	if result.Data == nil || capabilityAdapter.calls != 1 || capabilityAdapter.last.Method != "echo.ping" {
+		t.Fatalf("intent dispatch mismatch: result=%#v calls=%d last=%#v", result, capabilityAdapter.calls, capabilityAdapter.last)
+	}
+	if !audits.hasEvent("plugin.intent.invoked") {
+		t.Fatalf("missing intent audit event: %#v", audits.events)
+	}
+}
+
+func TestInvokeIntentRequiresPermissions(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		IntentID:         "example.echo",
+	}); !errors.Is(err, permissions.ErrPermissionDenied) {
+		t.Fatalf("InvokeIntent() error = %v, want ErrPermissionDenied", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	first, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBytes := buildIntentFixturePackage(t, false)
+	second, err := h.InstallPackage(context.Background(), InstallRequest{
+		PackageReader:    bytes.NewReader(secondBytes),
+		PackageSize:      int64(len(secondBytes)),
+		TrustState:       registry.TrustVerified,
+		PluginInstanceID: "plugini_second_intent",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: first.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: second.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantDeclaredPermissions(t, h, first)
+	grantDeclaredPermissions(t, h, second)
+
+	if _, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{IntentID: "example.echo"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("InvokeIntent() ambiguity error = %v", err)
+	}
+}
+
+func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, true), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantDeclaredPermissions(t, h, installed)
+
+	result, err := h.InvokeIntent(context.Background(), InvokeIntentRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		IntentID:         "example.danger",
+		Params:           map[string]any{"target": "db"},
+	})
+	if !errors.Is(err, ErrConfirmationRequired) {
+		t.Fatalf("InvokeIntent() error = %v, want ErrConfirmationRequired", err)
+	}
+	if !result.ConfirmationRequired || result.RequestHash == "" {
+		t.Fatalf("confirmation result mismatch: %#v", result)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
 	}
 }
 
@@ -2211,6 +2351,22 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := rpcFixtureManifestJSON("1.0.0", "Intent RPC")
+	if dangerous {
+		manifestJSON = dangerousRPCFixtureManifestJSON()
+	}
+	writeFile(t, filepath.Join(dir, "manifest.json"), addIntentToManifestJSON(t, manifestJSON, dangerous))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Intent</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2368,6 +2524,29 @@ func writeBytes(t *testing.T, filename string, content []byte) {
 	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func addIntentToManifestJSON(t *testing.T, manifestJSON string, dangerous bool) string {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(manifestJSON), &doc); err != nil {
+		t.Fatal(err)
+	}
+	intent := map[string]any{
+		"intent_id":      "example.echo",
+		"method":         "echo.ping",
+		"payload_schema": map[string]any{"type": "object"},
+	}
+	if dangerous {
+		intent["intent_id"] = "example.danger"
+		intent["method"] = "danger.run"
+	}
+	doc["intents"] = []any{intent}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 func minimalWorkerWASMForTest(exportName string) []byte {

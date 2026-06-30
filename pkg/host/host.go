@@ -354,6 +354,35 @@ type CallMethodResult struct {
 	RequestHash          string `json:"request_hash,omitempty"`
 }
 
+type IntentRecord struct {
+	PluginID          string         `json:"plugin_id"`
+	PluginInstanceID  string         `json:"plugin_instance_id"`
+	PublisherID       string         `json:"publisher_id"`
+	DisplayName       string         `json:"display_name"`
+	Version           string         `json:"version"`
+	ActiveFingerprint string         `json:"active_fingerprint"`
+	IntentID          string         `json:"intent_id"`
+	Method            string         `json:"method"`
+	Effect            string         `json:"effect"`
+	Execution         string         `json:"execution"`
+	PayloadSchema     map[string]any `json:"payload_schema,omitempty"`
+}
+
+type ListIntentsRequest struct {
+	IntentID         string `json:"intent_id,omitempty"`
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+}
+
+type InvokeIntentRequest struct {
+	PluginInstanceID     string         `json:"plugin_instance_id,omitempty"`
+	IntentID             string         `json:"intent_id"`
+	Params               map[string]any `json:"params,omitempty"`
+	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+	Now                  time.Time      `json:"now,omitempty"`
+}
+
 type WorkerInvocationPayload struct {
 	PluginID             string         `json:"plugin_id"`
 	PluginInstanceID     string         `json:"plugin_instance_id"`
@@ -768,10 +797,127 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 	}, nil
 }
 
+func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]IntentRecord, error) {
+	records, err := h.adapters.Registry.ListPlugins(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var intents []IntentRecord
+	for _, record := range records {
+		if req.PluginInstanceID != "" && record.PluginInstanceID != req.PluginInstanceID {
+			continue
+		}
+		if record.EnableState != registry.EnableEnabled {
+			continue
+		}
+		if err := h.canRun(ctx, record); err != nil {
+			continue
+		}
+		for _, intent := range record.Manifest.Intents {
+			if req.IntentID != "" && intent.IntentID != req.IntentID {
+				continue
+			}
+			method, ok := manifestMethod(record.Manifest, intent.Method)
+			if !ok {
+				continue
+			}
+			intents = append(intents, IntentRecord{
+				PluginID:          record.PluginID,
+				PluginInstanceID:  record.PluginInstanceID,
+				PublisherID:       record.PublisherID,
+				DisplayName:       record.Manifest.Plugin.DisplayName,
+				Version:           record.Version,
+				ActiveFingerprint: record.ActiveFingerprint,
+				IntentID:          intent.IntentID,
+				Method:            intent.Method,
+				Effect:            string(method.Effect),
+				Execution:         string(method.Execution),
+				PayloadSchema:     cloneParams(intent.PayloadSchema),
+			})
+		}
+	}
+	sort.Slice(intents, func(i, j int) bool {
+		if intents[i].IntentID == intents[j].IntentID {
+			if intents[i].PluginID == intents[j].PluginID {
+				return intents[i].PluginInstanceID < intents[j].PluginInstanceID
+			}
+			return intents[i].PluginID < intents[j].PluginID
+		}
+		return intents[i].IntentID < intents[j].IntentID
+	})
+	return intents, nil
+}
+
+func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallMethodResult, error) {
+	resolved, err := h.resolveIntent(ctx, req)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	if methodRequiresConfirmation(resolved.method) {
+		requestHash, hashErr := methodRequestHash(resolved.method, req.Params)
+		if hashErr != nil {
+			return CallMethodResult{}, hashErr
+		}
+		return CallMethodResult{
+			ConfirmationRequired: true,
+			RequestHash:          requestHash,
+		}, ErrConfirmationRequired
+	}
+	callReq := CallMethodRequest{
+		PluginInstanceID:     resolved.record.PluginInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Method:               resolved.method.Method,
+		Params:               cloneParams(req.Params),
+		Now:                  req.Now,
+	}
+	result, err := h.dispatchMethod(ctx, resolved.record, resolved.method, callReq)
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	if result.StreamID != "" {
+		streamTicket, err := h.surfaceTokens.MintStreamTicket(bridge.MintStreamTicketRequest{
+			PluginInstanceID:     resolved.record.PluginInstanceID,
+			ActiveFingerprint:    resolved.record.ActiveFingerprint,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			StreamID:             result.StreamID,
+			StreamDirection:      "read",
+			Method:               resolved.method.Method,
+			Revision:             resolved.revision,
+			Now:                  req.Now,
+		})
+		if err != nil {
+			return CallMethodResult{}, err
+		}
+		result.StreamTicket = streamTicket.StreamTicket
+		result.StreamTicketID = streamTicket.StreamTicketID
+	}
+	h.audit(ctx, AuditEvent{
+		Type:             "plugin.intent.invoked",
+		PluginID:         resolved.record.PluginID,
+		PluginInstanceID: resolved.record.PluginInstanceID,
+		Details: map[string]any{
+			"intent_id": req.IntentID,
+			"method":    resolved.method.Method,
+		},
+	})
+	return result, nil
+}
+
 type resolvedMethodCall struct {
 	record   registry.PluginRecord
 	method   manifest.MethodSpec
 	audience bridge.Audience
+	revision bridge.RevisionBinding
+}
+
+type resolvedIntentCall struct {
+	record   registry.PluginRecord
+	intent   manifest.IntentSpec
+	method   manifest.MethodSpec
 	revision bridge.RevisionBinding
 }
 
@@ -833,6 +979,87 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 		return resolvedMethodCall{}, fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
 	}
 	return resolvedMethodCall{record: record, method: method, audience: audience, revision: revision}, nil
+}
+
+func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (resolvedIntentCall, error) {
+	intentID := strings.TrimSpace(req.IntentID)
+	if intentID == "" {
+		return resolvedIntentCall{}, errors.New("intent_id is required")
+	}
+	var candidates []registry.PluginRecord
+	if strings.TrimSpace(req.PluginInstanceID) != "" {
+		record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+		if err != nil {
+			return resolvedIntentCall{}, err
+		}
+		candidates = []registry.PluginRecord{record}
+	} else {
+		records, err := h.adapters.Registry.ListPlugins(ctx)
+		if err != nil {
+			return resolvedIntentCall{}, err
+		}
+		candidates = records
+	}
+
+	var matches []resolvedIntentCall
+	for _, record := range candidates {
+		if record.EnableState != registry.EnableEnabled {
+			continue
+		}
+		if err := h.canRun(ctx, record); err != nil {
+			continue
+		}
+		intent, ok := manifestIntent(record.Manifest, intentID)
+		if !ok {
+			continue
+		}
+		method, ok := manifestMethod(record.Manifest, intent.Method)
+		if !ok {
+			continue
+		}
+		revision := bridge.RevisionBinding{
+			PolicyRevision:     record.PolicyRevision,
+			ManagementRevision: record.ManagementRevision,
+			RevokeEpoch:        record.RevokeEpoch,
+		}
+		matches = append(matches, resolvedIntentCall{
+			record:   record,
+			intent:   intent,
+			method:   method,
+			revision: revision,
+		})
+	}
+	if len(matches) == 0 {
+		return resolvedIntentCall{}, fmt.Errorf("intent %q is not available", intentID)
+	}
+	if len(matches) > 1 && strings.TrimSpace(req.PluginInstanceID) == "" {
+		return resolvedIntentCall{}, fmt.Errorf("intent %q is ambiguous; plugin_instance_id is required", intentID)
+	}
+	resolved := matches[0]
+	session := sessionctx.Context{
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerUserHash:        req.OwnerUserHash,
+	}
+	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, session, pluginRefFromRecord(resolved.record), resolved.method)
+	if err != nil {
+		return resolvedIntentCall{}, err
+	}
+	if decision != PolicyAllow {
+		return resolvedIntentCall{}, errors.New("plugin intent denied by local policy")
+	}
+	requiredPermissions := requiredPermissionsForMethod(resolved.record.Manifest, resolved.method)
+	granted, missing, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
+		PluginInstanceID: resolved.record.PluginInstanceID,
+		PermissionIDs:    requiredPermissions,
+		Now:              req.Now,
+	})
+	if err != nil {
+		return resolvedIntentCall{}, err
+	}
+	if !granted {
+		return resolvedIntentCall{}, fmt.Errorf("%w: %s", permissions.ErrPermissionDenied, strings.Join(missing, ", "))
+	}
+	return resolved, nil
 }
 
 func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry.PluginRecord, error) {
@@ -2322,6 +2549,15 @@ func manifestMethod(m manifest.Manifest, methodName string) (manifest.MethodSpec
 		}
 	}
 	return manifest.MethodSpec{}, false
+}
+
+func manifestIntent(m manifest.Manifest, intentID string) (manifest.IntentSpec, bool) {
+	for _, intent := range m.Intents {
+		if intent.IntentID == intentID {
+			return intent, true
+		}
+	}
+	return manifest.IntentSpec{}, false
 }
 
 func manifestCapabilityBinding(m manifest.Manifest, bindingID string) (manifest.CapabilityBinding, bool) {

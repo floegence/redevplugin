@@ -41,6 +41,23 @@
           <small id="network-bytes">-- bytes</small>
         </div>
         <div id="forecast" class="forecast-strip"></div>
+        <div id="hourly" class="hourly-strip" aria-label="Hourly weather"></div>
+      </section>
+
+      <section class="network-debug-panel" aria-label="Network parsing details">
+        <div>
+          <span class="metric-label">connector</span>
+          <strong id="network-connector">weather_api</strong>
+        </div>
+        <div>
+          <span class="metric-label">response</span>
+          <strong id="network-response">waiting</strong>
+        </div>
+        <div>
+          <span class="metric-label">parser</span>
+          <strong id="network-parser">json</strong>
+        </div>
+        <pre id="raw-weather-response">{}</pre>
       </section>
 
       <section class="result-panel" aria-label="Weather plugin result">
