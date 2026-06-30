@@ -29,6 +29,8 @@ export type PluginBridgeCallMessage = {
   request: PluginBridgeRequest;
 };
 
+export type PluginBridgeMessage = PluginBridgeHandshake | PluginBridgeCallMessage;
+
 export type PluginBridgeLifecycleMessage = {
   type: "redeven.plugin.lifecycle";
   event: BridgeLifecycleEvent;
@@ -58,6 +60,7 @@ export type WindowLike = {
 export type MessageEventLike = {
   origin: string;
   data: unknown;
+  source?: WindowLike | null;
 };
 
 export class PluginBridgeError extends Error {
@@ -192,6 +195,219 @@ export class PluginBridgeClient {
   }
 }
 
+export type PluginSurfaceHostBootstrap = {
+  pluginId: string;
+  pluginInstanceId: string;
+  surfaceId: string;
+  surfaceInstanceId: string;
+  activeFingerprint: string;
+  bridgeNonce: string;
+  ownerSessionHash?: string;
+  ownerUserHash?: string;
+  sessionChannelIdHash?: string;
+};
+
+export type PluginSurfaceHostOptions = {
+  bootstrap: PluginSurfaceHostBootstrap;
+  iframeOrigin: string;
+  iframeWindow: WindowLike;
+  parentWindow?: WindowLike;
+  bridgeChannelId?: string;
+  fetch?: FetchLike;
+  apiBaseURL?: string;
+  ownerSessionHashHeader?: string;
+  onError?: (error: PluginBridgeError) => void;
+};
+
+export type FetchLike = (input: string, init: FetchInitLike) => Promise<FetchResponseLike>;
+
+export type FetchInitLike = {
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  credentials?: "same-origin" | "include" | "omit";
+};
+
+export type FetchResponseLike = {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+};
+
+export type PluginGatewayTokenResult = {
+  plugin_gateway_token: string;
+  plugin_gateway_token_id: string;
+  issued_at?: string;
+  expires_at?: string;
+};
+
+export type PluginMethodResult<T = unknown> = {
+  data?: T;
+  operation_id?: string;
+  stream_id?: string;
+  stream_ticket?: string;
+  stream_ticket_id?: string;
+  confirmation_required?: boolean;
+  confirmation_token_id?: string;
+  request_hash?: string;
+};
+
+type HostEnvelope<T> =
+  | { ok: true; data?: T }
+  | { ok: false; error?: string; error_code?: string };
+
+export class PluginSurfaceHost {
+  readonly bootstrap: PluginSurfaceHostBootstrap;
+  readonly iframeOrigin: string;
+  readonly bridgeChannelId: string;
+  #iframeWindow: WindowLike;
+  #parentWindow: WindowLike;
+  #fetch: FetchLike;
+  #apiBaseURL: string;
+  #ownerSessionHashHeader?: string;
+  #onError?: (error: PluginBridgeError) => void;
+  #gatewayToken?: string;
+  #disposed = false;
+  #onMessage = (event: MessageEventLike): void => {
+    void this.#handleMessage(event);
+  };
+
+  constructor(options: PluginSurfaceHostOptions) {
+    if (!options.iframeOrigin || options.iframeOrigin === "*") {
+      throw new Error("iframeOrigin must be an exact origin");
+    }
+    this.bootstrap = options.bootstrap;
+    this.iframeOrigin = options.iframeOrigin;
+    this.bridgeChannelId = options.bridgeChannelId ?? randomBridgeChannelID();
+    this.#iframeWindow = options.iframeWindow;
+    this.#parentWindow = options.parentWindow ?? window;
+    this.#fetch = options.fetch ?? defaultFetch();
+    this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
+    this.#ownerSessionHashHeader = options.ownerSessionHashHeader ?? options.bootstrap.ownerSessionHash;
+    this.#onError = options.onError;
+    this.#parentWindow.addEventListener?.("message", this.#onMessage);
+  }
+
+  sendLifecycle(event: BridgeLifecycleEvent): void {
+    this.#assertActive();
+    this.#postToIframe({ type: "redeven.plugin.lifecycle", event });
+  }
+
+  dispose(): void {
+    if (this.#disposed) {
+      return;
+    }
+    this.#disposed = true;
+    this.#gatewayToken = undefined;
+    this.#parentWindow.removeEventListener?.("message", this.#onMessage);
+    this.#postToIframe({ type: "redeven.plugin.lifecycle", event: { type: "dispose" } });
+  }
+
+  async #handleMessage(event: MessageEventLike): Promise<void> {
+    if (this.#disposed || event.origin !== this.iframeOrigin) {
+      return;
+    }
+    if (event.source != null && event.source !== this.#iframeWindow) {
+      return;
+    }
+    const data = event.data;
+    if (isBridgeHandshake(data)) {
+      await this.#handleHandshake(data);
+      return;
+    }
+    if (isBridgeCallMessage(data)) {
+      await this.#handleCall(data.request);
+    }
+  }
+
+  async #handleHandshake(handshake: PluginBridgeHandshake): Promise<void> {
+    if (!handshakeMatchesBootstrap(handshake, this.bootstrap)) {
+      this.#reportError(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Plugin bridge handshake did not match the surface bootstrap"));
+      return;
+    }
+    try {
+      const token = await this.#postJSON<PluginGatewayTokenResult>(`/_redeven_proxy/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`, {
+        bridge_channel_id: this.bridgeChannelId,
+        handshake,
+      });
+      this.#gatewayToken = token.plugin_gateway_token;
+      this.#postToIframe({ type: "redeven.plugin.lifecycle", event: { type: "ready" } });
+    } catch (error) {
+      this.#reportError(toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
+    }
+  }
+
+  async #handleCall(request: PluginBridgeRequest): Promise<void> {
+    if (!this.#gatewayToken) {
+      this.#postError(request.id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin bridge call arrived before a successful handshake");
+      return;
+    }
+    if (!validRPCParams(request.params)) {
+      this.#postError(request.id, "PLUGIN_INVALID_REQUEST", "Plugin bridge call params must be a JSON object when present");
+      return;
+    }
+    try {
+      const result = await this.#postJSON<PluginMethodResult>(`/_redeven_proxy/api/plugins/rpc`, {
+        plugin_instance_id: this.bootstrap.pluginInstanceId,
+        surface_instance_id: this.bootstrap.surfaceInstanceId,
+        session_channel_id_hash: this.bootstrap.sessionChannelIdHash,
+        owner_session_hash: this.bootstrap.ownerSessionHash,
+        owner_user_hash: this.bootstrap.ownerUserHash,
+        bridge_channel_id: this.bridgeChannelId,
+        plugin_gateway_token: this.#gatewayToken,
+        method: request.method,
+        params: request.params,
+      });
+      this.#postToIframe({ type: "redeven.plugin.response", id: request.id, ok: true, data: result });
+    } catch (error) {
+      const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
+      this.#postError(request.id, bridgeError.errorCode, bridgeError.message);
+    }
+  }
+
+  async #postJSON<T>(path: string, body: unknown): Promise<T> {
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    if (this.#ownerSessionHashHeader) {
+      headers["X-ReDevPlugin-Owner-Session-Hash"] = this.#ownerSessionHashHeader;
+    }
+    const response = await this.#fetch(this.#apiBaseURL + path, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      credentials: "same-origin",
+    });
+    const raw = await response.json();
+    if (!isHostEnvelope(raw)) {
+      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`);
+    }
+    if (!raw.ok) {
+      throw new PluginBridgeError(raw.error_code ?? "PLUGIN_PERMISSION_DENIED", raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`);
+    }
+    return raw.data as T;
+  }
+
+  #postError(id: string, errorCode: string, error: string): void {
+    this.#postToIframe({ type: "redeven.plugin.response", id, ok: false, error_code: errorCode, error });
+  }
+
+  #postToIframe(message: PluginBridgeResponse | PluginBridgeLifecycleMessage): void {
+    this.#iframeWindow.postMessage(message, this.iframeOrigin);
+  }
+
+  #reportError(error: PluginBridgeError): void {
+    this.#onError?.(error);
+  }
+
+  #assertActive(): void {
+    if (this.#disposed) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface host is disposed");
+    }
+  }
+}
+
 function normalizeTimeout(timeoutMs: number | undefined): number {
   if (timeoutMs == null) {
     return 30_000;
@@ -200,6 +416,45 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
     throw new Error("timeoutMs must be a positive finite number");
   }
   return timeoutMs;
+}
+
+function defaultFetch(): FetchLike {
+  const fetchLike = (globalThis as { fetch?: FetchLike }).fetch;
+  if (!fetchLike) {
+    throw new Error("fetch is required when globalThis.fetch is unavailable");
+  }
+  return fetchLike.bind(globalThis) as FetchLike;
+}
+
+function randomBridgeChannelID(): string {
+  const cryptoLike = globalThis as { crypto?: { randomUUID?: () => string } };
+  if (cryptoLike.crypto?.randomUUID) {
+    return `bridge_${cryptoLike.crypto.randomUUID()}`;
+  }
+  return `bridge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function isBridgeHandshake(value: unknown): value is PluginBridgeHandshake {
+  return isRecord(value) &&
+    value.type === "redeven.plugin.handshake" &&
+    typeof value.plugin_id === "string" &&
+    typeof value.surface_id === "string" &&
+    typeof value.surface_instance_id === "string" &&
+    typeof value.active_fingerprint === "string" &&
+    typeof value.bridge_nonce === "string" &&
+    value.ui_protocol_version === "plugin-ui-v1";
+}
+
+function isBridgeCallMessage(value: unknown): value is PluginBridgeCallMessage {
+  return isRecord(value) &&
+    value.type === "redeven.plugin.call" &&
+    isRecord(value.request) &&
+    typeof value.request.id === "string" &&
+    typeof value.request.method === "string";
 }
 
 function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
@@ -212,6 +467,16 @@ function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
   return value.ok === false && typeof value.error_code === "string" && typeof value.error === "string";
 }
 
+function isHostEnvelope(value: unknown): value is HostEnvelope<unknown> {
+  if (!isRecord(value) || typeof value.ok !== "boolean") {
+    return false;
+  }
+  if (value.ok) {
+    return true;
+  }
+  return value.error == null || typeof value.error === "string";
+}
+
 function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessage {
   if (!isRecord(value) || value.type !== "redeven.plugin.lifecycle" || !isRecord(value.event)) {
     return false;
@@ -221,4 +486,27 @@ function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessa
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function validRPCParams(value: unknown): value is Record<string, unknown> | undefined {
+  return value == null || (isRecord(value) && !Array.isArray(value));
+}
+
+function handshakeMatchesBootstrap(handshake: PluginBridgeHandshake, bootstrap: PluginSurfaceHostBootstrap): boolean {
+  return handshake.plugin_id === bootstrap.pluginId &&
+    handshake.surface_id === bootstrap.surfaceId &&
+    handshake.surface_instance_id === bootstrap.surfaceInstanceId &&
+    handshake.active_fingerprint === bootstrap.activeFingerprint &&
+    handshake.bridge_nonce === bootstrap.bridgeNonce &&
+    handshake.ui_protocol_version === "plugin-ui-v1";
+}
+
+function toBridgeError(error: unknown, fallbackCode: string): PluginBridgeError {
+  if (error instanceof PluginBridgeError) {
+    return error;
+  }
+  if (error instanceof Error) {
+    return new PluginBridgeError(fallbackCode, error.message);
+  }
+  return new PluginBridgeError(fallbackCode, String(error));
 }
