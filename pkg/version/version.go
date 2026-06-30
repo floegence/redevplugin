@@ -136,7 +136,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "rust-ipc-schema",
 				Path:    "spec/plugin/ipc-v1.schema.json",
 				Version: RustIPCVersion,
-				SHA256:  "00c7b230cb561468227d46836f03511eacaddb9a61a34a13be4522a456f53c27",
+				SHA256:  "648c8c146c982315ba5f546ae84fc00964287b98ca7a5e8033c410567565a4c5",
 			},
 			{
 				ID:      "wasm-worker-schema",

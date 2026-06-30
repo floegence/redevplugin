@@ -56,6 +56,10 @@ type ArtifactProvider interface {
 	ReadArtifact(ctx context.Context, req ArtifactRequest) (ArtifactResult, error)
 }
 
+type HandleGrantValidator interface {
+	ValidateHandleGrant(ctx context.Context, req HandleGrantValidationRequest) (HandleGrantValidationResult, error)
+}
+
 type ArtifactRequest struct {
 	PackageHash    string `json:"package_hash"`
 	Artifact       string `json:"artifact"`
@@ -65,6 +69,29 @@ type ArtifactRequest struct {
 type ArtifactResult struct {
 	Content []byte `json:"-"`
 	SHA256  string `json:"sha256"`
+}
+
+type HandleGrantValidationRequest struct {
+	HandleGrantToken    string `json:"handle_grant_token"`
+	PluginInstanceID    string `json:"plugin_instance_id"`
+	ActiveFingerprint   string `json:"active_fingerprint"`
+	RuntimeInstanceID   string `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string `json:"runtime_generation_id"`
+	RuntimeShardID      string `json:"runtime_shard_id,omitempty"`
+	HandleID            string `json:"handle_id"`
+	Method              string `json:"method"`
+	PolicyRevision      uint64 `json:"policy_revision"`
+	ManagementRevision  uint64 `json:"management_revision"`
+	RevokeEpoch         uint64 `json:"revoke_epoch"`
+}
+
+type HandleGrantValidationResult struct {
+	HandleGrantID       string `json:"handle_grant_id"`
+	HandleID            string `json:"handle_id"`
+	Method              string `json:"method"`
+	RuntimeGenerationID string `json:"runtime_generation_id"`
+	MaxBytesPerSecond   int64  `json:"max_bytes_per_second,omitempty"`
+	MaxTotalBytes       int64  `json:"max_total_bytes,omitempty"`
 }
 
 var (
@@ -82,6 +109,7 @@ type ProcessSupervisorOptions struct {
 	Dir              string
 	Diagnostics      observability.DiagnosticsSink
 	Artifacts        ArtifactProvider
+	HandleGrants     HandleGrantValidator
 	Now              func() time.Time
 	HandshakeTimeout time.Duration
 }
@@ -96,6 +124,7 @@ type ProcessSupervisor struct {
 	dir              string
 	diagnostics      observability.DiagnosticsSink
 	artifacts        ArtifactProvider
+	handleGrants     HandleGrantValidator
 	now              func() time.Time
 	handshakeTimeout time.Duration
 	seq              uint64
@@ -130,6 +159,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		dir:              strings.TrimSpace(options.Dir),
 		diagnostics:      options.Diagnostics,
 		artifacts:        options.Artifacts,
+		handleGrants:     options.HandleGrants,
 		now:              now,
 		handshakeTimeout: handshakeTimeout,
 	}, nil
@@ -434,13 +464,14 @@ func (s *ProcessSupervisor) emit(eventType string, severity string, message stri
 }
 
 const (
-	ipcFrameTypeHello              = "hello"
-	ipcFrameTypeHelloAck           = "hello_ack"
-	ipcFrameTypeInvokeWorker       = "invoke_worker"
-	ipcFrameTypeInvokeWorkerResult = "invoke_worker_result"
-	ipcFrameTypeOpenHandle         = "open_handle"
-	ipcFrameTypeRevokeEpoch        = "revoke_epoch"
-	ipcFrameTypeRevokeEpochAck     = "revoke_epoch_ack"
+	ipcFrameTypeHello               = "hello"
+	ipcFrameTypeHelloAck            = "hello_ack"
+	ipcFrameTypeInvokeWorker        = "invoke_worker"
+	ipcFrameTypeInvokeWorkerResult  = "invoke_worker_result"
+	ipcFrameTypeOpenHandle          = "open_handle"
+	ipcFrameTypeValidateHandleGrant = "validate_handle_grant"
+	ipcFrameTypeRevokeEpoch         = "revoke_epoch"
+	ipcFrameTypeRevokeEpochAck      = "revoke_epoch_ack"
 )
 
 type ipcFrame struct {
@@ -498,6 +529,18 @@ type artifactHandleResultPayload struct {
 	ContentBase64 string `json:"content_base64,omitempty"`
 	Code          string `json:"code,omitempty"`
 	Message       string `json:"message,omitempty"`
+}
+
+type handleGrantValidationResultPayload struct {
+	OK                  bool   `json:"ok"`
+	HandleGrantID       string `json:"handle_grant_id,omitempty"`
+	HandleID            string `json:"handle_id,omitempty"`
+	Method              string `json:"method,omitempty"`
+	RuntimeGenerationID string `json:"runtime_generation_id,omitempty"`
+	MaxBytesPerSecond   int64  `json:"max_bytes_per_second,omitempty"`
+	MaxTotalBytes       int64  `json:"max_total_bytes,omitempty"`
+	Code                string `json:"code,omitempty"`
+	Message             string `json:"message,omitempty"`
 }
 
 func (p runtimeResponsePayload) err() error {
@@ -619,6 +662,12 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 				}
 				continue
 			}
+			if got.frame.FrameType == ipcFrameTypeValidateHandleGrant {
+				if err := s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
 			if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
 				return ipcFrame{}, err
 			}
@@ -703,6 +752,90 @@ func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGene
 		Payload:             raw,
 	}); err != nil {
 		return fmt.Errorf("%w: write open_handle response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
+func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	if allowedArtifact == nil {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_REQUEST_DENIED",
+			Message: "handle grant validation is only available during worker invocation",
+		})
+	}
+	var req HandleGrantValidationRequest
+	if len(frame.Payload) == 0 {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_REQUEST_INVALID",
+			Message: "missing handle grant validation payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_REQUEST_INVALID",
+			Message: "decode handle grant validation payload: " + err.Error(),
+		})
+	}
+	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_REQUEST_DENIED",
+			Message: "runtime_generation_id is not bound to this runtime generation",
+		})
+	}
+	if strings.TrimSpace(req.HandleGrantToken) == "" ||
+		strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.HandleID) == "" ||
+		strings.TrimSpace(req.Method) == "" {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_REQUEST_INVALID",
+			Message: "handle grant token, plugin identity, handle id, and method are required",
+		})
+	}
+	if s.handleGrants == nil {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
+			Message: "runtime handle grant validator is unavailable",
+		})
+	}
+	result, err := s.handleGrants.ValidateHandleGrant(ctx, req)
+	if err != nil {
+		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: err.Error(),
+		})
+	}
+	return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
+		OK:                  true,
+		HandleGrantID:       result.HandleGrantID,
+		HandleID:            result.HandleID,
+		Method:              result.Method,
+		RuntimeGenerationID: result.RuntimeGenerationID,
+		MaxBytesPerSecond:   result.MaxBytesPerSecond,
+		MaxTotalBytes:       result.MaxTotalBytes,
+	})
+}
+
+func (s *ProcessSupervisor) writeHandleGrantValidationResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload handleGrantValidationResultPayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeValidateHandleGrant,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write validate_handle_grant response: %v", ErrRuntimeIPCUnavailable, err)
 	}
 	return nil
 }

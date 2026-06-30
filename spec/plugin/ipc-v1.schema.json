@@ -8,7 +8,7 @@
   "properties": {
     "ipc_version": { "const": "rust-ipc-v1" },
     "frame_type": {
-      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "runtime_generation_id": { "type": "string" },
@@ -114,6 +114,20 @@
       }
     },
     {
+      "if": { "properties": { "frame_type": { "const": "validate_handle_grant" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "oneOf": [
+              { "$ref": "#/$defs/validate_handle_grant_request_payload" },
+              { "$ref": "#/$defs/validate_handle_grant_response_payload" }
+            ]
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "frame_type": { "const": "revoke_epoch" } }, "required": ["frame_type"] },
       "then": {
         "required": ["runtime_generation_id", "payload"],
@@ -164,6 +178,50 @@
         "artifact": { "$ref": "#/$defs/worker_artifact_path" },
         "sha256": { "$ref": "#/$defs/sha256" },
         "content_base64": { "type": "string", "contentEncoding": "base64" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "validate_handle_grant_request_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handle_grant_token",
+        "plugin_instance_id",
+        "active_fingerprint",
+        "runtime_generation_id",
+        "handle_id",
+        "method",
+        "policy_revision",
+        "management_revision",
+        "revoke_epoch"
+      ],
+      "properties": {
+        "handle_grant_token": { "type": "string", "minLength": 1 },
+        "plugin_instance_id": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "runtime_instance_id": { "type": "string" },
+        "runtime_generation_id": { "type": "string", "minLength": 1 },
+        "runtime_shard_id": { "type": "string" },
+        "handle_id": { "type": "string", "minLength": 1 },
+        "method": { "type": "string", "minLength": 1 },
+        "policy_revision": { "type": "integer", "minimum": 0 },
+        "management_revision": { "type": "integer", "minimum": 0 },
+        "revoke_epoch": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "validate_handle_grant_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "handle_grant_id": { "type": "string" },
+        "handle_id": { "type": "string" },
+        "method": { "type": "string" },
+        "runtime_generation_id": { "type": "string" },
+        "max_bytes_per_second": { "type": "integer", "minimum": 0 },
+        "max_total_bytes": { "type": "integer", "minimum": 0 },
         "code": { "type": "string" },
         "message": { "type": "string" }
       }

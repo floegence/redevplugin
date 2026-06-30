@@ -1233,6 +1233,9 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 				RuntimePath: runtimePath,
 				Diagnostics: h.adapters.Diagnostics,
 				Artifacts:   runtimeArtifactProvider{assets: h.adapters.Assets},
+				HandleGrants: runtimeHandleGrantValidator{
+					tokens: h.surfaceTokens,
+				},
 			})
 			if err != nil {
 				return runtimeclient.Health{}, err
@@ -1892,6 +1895,44 @@ func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimecl
 		return runtimeclient.ArtifactResult{}, fmt.Errorf("artifact %q sha256 mismatch", req.Artifact)
 	}
 	return runtimeclient.ArtifactResult{Content: asset.Content, SHA256: asset.Entry.SHA256}, nil
+}
+
+type runtimeHandleGrantValidator struct {
+	tokens *bridge.SurfaceTokenService
+}
+
+func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req runtimeclient.HandleGrantValidationRequest) (runtimeclient.HandleGrantValidationResult, error) {
+	if v.tokens == nil {
+		return runtimeclient.HandleGrantValidationResult{}, errors.New("surface token service is required")
+	}
+	record, err := v.tokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
+		HandleGrantToken: req.HandleGrantToken,
+		Audience: bridge.Audience{
+			PluginInstanceID:    req.PluginInstanceID,
+			ActiveFingerprint:   req.ActiveFingerprint,
+			RuntimeInstanceID:   req.RuntimeInstanceID,
+			RuntimeGenerationID: req.RuntimeGenerationID,
+			RuntimeShardID:      req.RuntimeShardID,
+			HandleID:            req.HandleID,
+			Method:              req.Method,
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     req.PolicyRevision,
+			ManagementRevision: req.ManagementRevision,
+			RevokeEpoch:        req.RevokeEpoch,
+		},
+	})
+	if err != nil {
+		return runtimeclient.HandleGrantValidationResult{}, err
+	}
+	return runtimeclient.HandleGrantValidationResult{
+		HandleGrantID:       record.TokenID,
+		HandleID:            record.Audience.HandleID,
+		Method:              record.Audience.Method,
+		RuntimeGenerationID: record.Audience.RuntimeGenerationID,
+		MaxBytesPerSecond:   record.Limits.MaxBytesPerSecond,
+		MaxTotalBytes:       record.Limits.MaxTotalBytes,
+	}, nil
 }
 
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (CallMethodResult, error) {

@@ -32,12 +32,15 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
   grep -q '"open_handle_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"open_handle_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"validate_handle_grant_request_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"validate_handle_grant_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"wasm_abi_version": { "const": "redeven-wasm-worker-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
   grep -q '"content_base64": { "type": "string", "contentEncoding": "base64" }' spec/plugin/ipc-v1.schema.json
+  grep -q '"handle_grant_token": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
   grep -q '"package_hash": { "$ref": "#/$defs/sha256" }' spec/plugin/worker-invocation-v1.schema.json
   grep -q '"artifact_sha256": { "$ref": "#/$defs/sha256" }' spec/plugin/worker-invocation-v1.schema.json
   grep -q '"pattern": "^sha256:\[a-f0-9\]{64}$"' spec/plugin/worker-invocation-v1.schema.json

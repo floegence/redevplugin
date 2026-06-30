@@ -5,9 +5,11 @@ pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_INVOKE_WORKER: &str = "invoke_worker";
 pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
 pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
+pub const FRAME_TYPE_VALIDATE_HANDLE_GRANT: &str = "validate_handle_grant";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
 pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
+pub const ERR_HANDLE_GRANT_VALIDATION_FAILED: &str = "HANDLE_GRANT_VALIDATION_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 
@@ -183,6 +185,69 @@ pub fn validate_open_handle_response(
         extract_json_string(input, "content_base64").ok_or("missing content_base64")?;
     if content_base64.trim().is_empty() {
         return Err("empty content_base64".to_string());
+    }
+    Ok(())
+}
+
+pub fn validate_handle_grant_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    handle_grant_token: &str,
+    plugin_instance_id: &str,
+    active_fingerprint: &str,
+    handle_id: &str,
+    method: &str,
+    policy_revision: u64,
+    management_revision: u64,
+    revoke_epoch: u64,
+) -> String {
+    format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"handle_grant_token\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_generation_id\":\"{}\",\"handle_id\":\"{}\",\"method\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{}}}}}",
+        RUST_IPC_VERSION,
+        FRAME_TYPE_VALIDATE_HANDLE_GRANT,
+        escape_json_string(request_id),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(handle_grant_token),
+        escape_json_string(plugin_instance_id),
+        escape_json_string(active_fingerprint),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(handle_id),
+        escape_json_string(method),
+        policy_revision,
+        management_revision,
+        revoke_epoch
+    )
+}
+
+pub fn validate_handle_grant_response(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+    expected_handle_id: &str,
+    expected_method: &str,
+) -> Result<(), String> {
+    let (frame_type, request_id, runtime_generation_id) =
+        parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_VALIDATE_HANDLE_GRANT {
+        return Err("expected validate_handle_grant frame".to_string());
+    }
+    if request_id != expected_request_id {
+        return Err("validate_handle_grant request_id mismatch".to_string());
+    }
+    if runtime_generation_id != expected_runtime_generation_id {
+        return Err("validate_handle_grant runtime_generation_id mismatch".to_string());
+    }
+    if !extract_json_bool(input, "ok").unwrap_or(false) {
+        let code = extract_json_string(input, "code")
+            .unwrap_or_else(|| ERR_HANDLE_GRANT_VALIDATION_FAILED.to_string());
+        let message = extract_json_string(input, "message")
+            .unwrap_or_else(|| "handle grant validation failed".to_string());
+        return Err(format!("{code}: {message}"));
+    }
+    let handle_id = extract_json_string(input, "handle_id").ok_or("missing handle_id")?;
+    let method = extract_json_string(input, "method").ok_or("missing method")?;
+    if handle_id != expected_handle_id || method != expected_method {
+        return Err("validate_handle_grant audience mismatch".to_string());
     }
     Ok(())
 }
@@ -388,6 +453,32 @@ mod tests {
         };
         let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
         validate_open_handle_response(frame, "r1:artifact", "g1", &identity).expect("valid open_handle");
+    }
+
+    #[test]
+    fn renders_validate_handle_grant_frame() {
+        let frame = validate_handle_grant_frame(
+            "r1:handle",
+            "g1",
+            "handle_grant.secret",
+            "plugini_1",
+            "sha256:active",
+            "storage:db",
+            "storage.sqlite",
+            1,
+            2,
+            3,
+        );
+        assert!(frame.contains(r#""frame_type":"validate_handle_grant""#));
+        assert!(frame.contains(r#""handle_id":"storage:db""#));
+        assert!(frame.contains(r#""policy_revision":1"#));
+    }
+
+    #[test]
+    fn validates_handle_grant_response() {
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
+        validate_handle_grant_response(frame, "r1:handle", "g1", "storage:db", "storage.sqlite")
+            .expect("valid handle grant");
     }
 
     #[test]

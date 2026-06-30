@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
@@ -102,6 +105,60 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 		ArtifactSHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 	}); err == nil {
 		t.Fatal("ReadArtifact() expected sha mismatch error")
+	}
+}
+
+func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
+	now := time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC)
+	service := bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	revision := bridge.RevisionBinding{PolicyRevision: 1, ManagementRevision: 2, RevokeEpoch: 3}
+	minted, err := service.MintHandleGrant(bridge.MintHandleGrantRequest{
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_1",
+		HandleID:            "storage:db",
+		Method:              "storage.sqlite",
+		Revision:            revision,
+		Limits:              bridge.Limits{MaxTotalBytes: 4096},
+		Now:                 now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := runtimeHandleGrantValidator{tokens: service}
+	result, err := validator.ValidateHandleGrant(context.Background(), runtimeclient.HandleGrantValidationRequest{
+		HandleGrantToken:    minted.HandleGrantToken,
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_1",
+		HandleID:            "storage:db",
+		Method:              "storage.sqlite",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	})
+	if err != nil {
+		t.Fatalf("ValidateHandleGrant() error = %v", err)
+	}
+	if result.HandleGrantID != minted.HandleGrantID || result.HandleID != "storage:db" || result.Method != "storage.sqlite" || result.MaxTotalBytes != 4096 {
+		t.Fatalf("handle grant result mismatch: %#v", result)
+	}
+	if _, err := validator.ValidateHandleGrant(context.Background(), runtimeclient.HandleGrantValidationRequest{
+		HandleGrantToken:    minted.HandleGrantToken,
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeGenerationID: "runtime_gen_1",
+		HandleID:            "storage:other",
+		Method:              "storage.sqlite",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("ValidateHandleGrant(wrong handle) error = %v, want ErrTokenAudience", err)
 	}
 }
 

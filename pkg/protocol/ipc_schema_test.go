@@ -73,3 +73,30 @@ func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 		t.Fatalf("worker artifact pattern = %#v", artifact["pattern"])
 	}
 }
+
+func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "validate_handle_grant_request_payload")
+	requestProps := requireNestedObject(t, request, "properties")
+	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "handle_id", "method", "policy_revision", "management_revision", "revoke_epoch"} {
+		if _, ok := requestProps[name].(map[string]any); !ok {
+			t.Fatalf("validate_handle_grant request missing %s", name)
+		}
+	}
+	response := requireNestedObject(t, defs, "validate_handle_grant_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "handle_grant_id", "handle_id", "method", "runtime_generation_id", "max_total_bytes", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("validate_handle_grant response missing %s", name)
+		}
+	}
+}
