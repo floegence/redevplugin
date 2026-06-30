@@ -1376,6 +1376,43 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 }
 
+func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
+	ctx := context.Background()
+	broker, err := storage.NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	dataPath, err := broker.NamespacePath(ctx, installed.PluginInstanceID, "cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataFile := filepath.Join(dataPath, "preferences.json")
+	if err := os.WriteFile(dataFile, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
+	}
+	if _, err := os.Stat(dataFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted storage file stat error = %v, want not exist", err)
+	}
+	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != 0 {
+		t.Fatalf("deleted storage namespaces still listed: %#v", namespaces)
+	}
+}
+
 func TestDisableTransitionsOperations(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)

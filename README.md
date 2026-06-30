@@ -20,6 +20,11 @@ capabilities.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
+- Storage brokers include both an in-memory test broker and a filesystem-backed
+  broker that creates per-plugin-instance namespace directories under a
+  host-selected state root, enforces quota accounting, rejects symlink escape
+  attempts, supports export/import archives, and makes uninstall data deletion
+  or retention observable on disk.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
