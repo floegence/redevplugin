@@ -11,7 +11,7 @@
       <div class="plugin-header">
         <div>
           <p class="eyebrow">demo.plugin.game</p>
-          <h1>Bouncer loop</h1>
+          <h1>Neon bouncer</h1>
         </div>
         <span id="plugin-status" class="status-pill">booting</span>
       </div>
@@ -21,12 +21,16 @@
         <div class="arcade-hud">
           <span>Score <strong id="score">0</strong></span>
           <span>Best <strong id="best-score">0</strong></span>
+          <span>Level <strong id="level">1</strong></span>
+          <span>Combo <strong id="combo">0</strong></span>
+          <span>Bricks <strong id="bricks-cleared">0</strong></span>
           <span>Speed <strong id="speed">1.0x</strong></span>
         </div>
       </section>
 
       <div class="button-row">
         <button id="game-toggle" type="button">Pause</button>
+        <button id="game-reset" type="button" class="ghost-button">Reset</button>
         <button id="game-boost" type="button" class="secondary-button">Boost</button>
         <button id="game-save" type="button" class="secondary-button">Save score</button>
       </div>

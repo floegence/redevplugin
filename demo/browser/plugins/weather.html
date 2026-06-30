@@ -20,6 +20,7 @@
         <input id="weather-location" autocomplete="off" placeholder="City or region" />
         <button id="weather-fetch" type="button">Fetch</button>
       </div>
+      <div id="saved-locations" class="saved-locations" aria-label="Saved weather locations"></div>
 
       <section class="weather-card" aria-label="Parsed weather result">
         <div>
@@ -28,6 +29,17 @@
         </div>
         <div class="weather-temp"><span id="weather-temp">--</span><small>°C</small></div>
         <p id="weather-condition">Waiting for network response...</p>
+        <div class="weather-metrics" aria-label="Parsed weather metrics">
+          <span>Wind <strong id="weather-wind">--</strong></span>
+          <span>Humidity <strong id="weather-humidity">--</strong></span>
+          <span>Pressure <strong id="weather-pressure">--</strong></span>
+          <span>UV <strong id="weather-uv">--</strong></span>
+        </div>
+        <div class="network-strip" aria-label="Network broker metadata">
+          <span id="network-operation">network idle</span>
+          <strong id="network-latency">-- ms</strong>
+          <small id="network-bytes">-- bytes</small>
+        </div>
         <div id="forecast" class="forecast-strip"></div>
       </section>
 

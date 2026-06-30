@@ -18,12 +18,20 @@ const client = new PluginBridgeClient({ ...bootstrap, parentOrigin });
 
 const status = document.querySelector("#plugin-status");
 const addButton = document.querySelector("#schedule-add");
+const refreshButton = document.querySelector("#schedule-refresh");
 const titleInput = document.querySelector("#schedule-title");
 const dateInput = document.querySelector("#schedule-date");
 const timeInput = document.querySelector("#schedule-time");
 const tagInput = document.querySelector("#schedule-tag");
+const priorityInput = document.querySelector("#schedule-priority");
+const durationInput = document.querySelector("#schedule-duration");
+const queryInput = document.querySelector("#schedule-query");
+const statusInput = document.querySelector("#schedule-status");
 const list = document.querySelector("#schedule-list");
 const count = document.querySelector("#schedule-count");
+const openCount = document.querySelector("#schedule-open");
+const doneCount = document.querySelector("#schedule-done");
+const minuteCount = document.querySelector("#schedule-minutes");
 const result = document.querySelector("#plugin-result");
 
 client.onLifecycle((event) => {
@@ -41,14 +49,21 @@ addButton.addEventListener("click", async () => {
     date: dateInput.value,
     time: timeInput.value,
     tag: tagInput.value || "focus",
+    priority: priorityInput.value,
+    duration_minutes: durationInput.value,
     notes: "Created from the sandboxed schedule plugin UI.",
+    view: currentView(),
   });
   titleInput.value = "";
   tagInput.value = "";
 });
 
+refreshButton.addEventListener("click", refreshItems);
+statusInput.addEventListener("change", refreshItems);
+queryInput.addEventListener("input", debounce(refreshItems, 180));
+
 async function refreshItems() {
-  await callPlugin("schedule.items.list", {});
+  await callPlugin("schedule.items.list", currentView());
 }
 
 async function callPlugin(method, payload) {
@@ -59,15 +74,20 @@ async function callPlugin(method, payload) {
     if (Array.isArray(data?.items)) {
       renderItems(data.items);
     }
+    if (data?.stats) {
+      renderStats(data.stats, data.items ?? []);
+    }
     status.textContent = "ready";
     writeResult({ method, response });
+    return response;
   } catch (error) {
     status.textContent = "error";
     if (error instanceof PluginBridgeError) {
       writeResult({ method, error_code: error.errorCode, error: error.message });
-      return;
+      return null;
     }
     writeResult({ method, error: String(error) });
+    return null;
   }
 }
 
@@ -77,23 +97,36 @@ function renderItems(items) {
     const row = document.createElement("li");
     row.className = item.done ? "done" : "";
     const content = document.createElement("div");
-    content.innerHTML = `<strong>${escapeHTML(item.title)}</strong><span>${escapeHTML(item.date)} · ${escapeHTML(item.time)} · ${escapeHTML(item.tag)}</span><p>${escapeHTML(item.notes || "")}</p>`;
+    content.innerHTML = `<strong>${escapeHTML(item.title)}</strong><span>${escapeHTML(item.date)} · ${escapeHTML(item.time)} · ${escapeHTML(item.tag)} · ${escapeHTML(item.priority || "medium")} · ${Number(item.duration_minutes ?? 0)}m</span><p>${escapeHTML(item.notes || "")}</p>`;
     const actions = document.createElement("div");
     actions.className = "button-row";
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "secondary-button";
     toggle.textContent = item.done ? "Reopen" : "Done";
-    toggle.addEventListener("click", () => callPlugin("schedule.item.toggle", { id: item.id }));
+    toggle.addEventListener("click", () => callPlugin("schedule.item.toggle", { id: item.id, view: currentView() }));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ghost-button";
     remove.textContent = "Remove";
-    remove.addEventListener("click", () => callPlugin("schedule.item.delete", { id: item.id }));
+    remove.addEventListener("click", () => callPlugin("schedule.item.delete", { id: item.id, view: currentView() }));
     actions.append(toggle, remove);
     row.append(content, actions);
     return row;
   }));
+}
+
+function renderStats(stats) {
+  openCount.textContent = String(stats.open ?? 0);
+  doneCount.textContent = String(stats.done ?? 0);
+  minuteCount.textContent = String(stats.planned_minutes ?? 0);
+}
+
+function currentView() {
+  return {
+    status: statusInput.value,
+    query: queryInput.value,
+  };
 }
 
 function writeResult(value) {
@@ -108,4 +141,12 @@ function escapeHTML(value) {
     "\"": "&quot;",
     "'": "&#39;",
   })[char]);
+}
+
+function debounce(fn, delayMs) {
+  let timer = 0;
+  return () => {
+    clearTimeout(timer);
+    timer = setTimeout(fn, delayMs);
+  };
 }

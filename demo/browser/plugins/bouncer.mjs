@@ -22,8 +22,12 @@ const status = document.querySelector("#plugin-status");
 const result = document.querySelector("#plugin-result");
 const scoreEl = document.querySelector("#score");
 const bestEl = document.querySelector("#best-score");
+const levelEl = document.querySelector("#level");
+const comboEl = document.querySelector("#combo");
+const bricksClearedEl = document.querySelector("#bricks-cleared");
 const speedEl = document.querySelector("#speed");
 const toggleButton = document.querySelector("#game-toggle");
+const resetButton = document.querySelector("#game-reset");
 const boostButton = document.querySelector("#game-boost");
 const saveButton = document.querySelector("#game-save");
 
@@ -31,14 +35,22 @@ let running = true;
 let lastFrame = performance.now();
 let score = 0;
 let bestScore = 0;
+let level = 1;
+let combo = 0;
+let bricksCleared = 0;
 let speed = 1;
 let paddleX = 360;
+let startedAt = performance.now();
 const ball = { x: 180, y: 80, vx: 230, vy: 190, radius: 13 };
-const bricks = createBricks();
+let bricks = createBricks(level);
+const particles = [];
 
 client.onLifecycle((event) => {
   status.textContent = event.type;
   writeResult({ lifecycle: event.type, score });
+  if (event.type === "ready") {
+    void loadSavedState();
+  }
 });
 client.handshake();
 
@@ -52,13 +64,24 @@ toggleButton.addEventListener("click", () => {
   }
 });
 
+resetButton.addEventListener("click", () => {
+  resetRound();
+  writeResult({ reset: true, level, score });
+});
+
 boostButton.addEventListener("click", () => {
   speed = Math.min(2.2, speed + 0.2);
   updateHUD();
 });
 
 saveButton.addEventListener("click", async () => {
-  await callPlugin("game.score.save", { score });
+  await callPlugin("game.score.save", {
+    score,
+    level,
+    combo,
+    bricks_cleared: bricksCleared,
+    duration_ms: Math.round(performance.now() - startedAt),
+  });
 });
 
 canvas.addEventListener("pointermove", (event) => {
@@ -81,24 +104,27 @@ function tick(now) {
 function update(dt) {
   ball.x += ball.vx * dt;
   ball.y += ball.vy * dt;
+  ball.vx *= 0.9996;
   if (ball.x < ball.radius || ball.x > canvas.width - ball.radius) {
     ball.vx *= -1;
+    spawnParticles(ball.x, ball.y, "#38bdf8", 7);
   }
   if (ball.y < ball.radius) {
     ball.vy *= -1;
+    spawnParticles(ball.x, ball.y, "#fef08a", 6);
   }
   const paddleY = canvas.height - 44;
   if (ball.y + ball.radius > paddleY && ball.y < paddleY + 18 && Math.abs(ball.x - paddleX) < 72 && ball.vy > 0) {
     ball.vy = -Math.abs(ball.vy) - 10;
     ball.vx += (ball.x - paddleX) * 3;
-    score += 3;
+    combo += 1;
+    score += 3 + combo;
+    spawnParticles(ball.x, paddleY, "#fef08a", 12);
   }
   if (ball.y > canvas.height + 40) {
-    ball.x = 180;
-    ball.y = 80;
-    ball.vx = 230;
-    ball.vy = 190;
+    resetBall();
     score = Math.max(0, score - 12);
+    combo = 0;
   }
   for (const brick of bricks) {
     if (brick.hit) {
@@ -107,15 +133,20 @@ function update(dt) {
     if (ball.x > brick.x && ball.x < brick.x + brick.w && ball.y > brick.y && ball.y < brick.y + brick.h) {
       brick.hit = true;
       ball.vy *= -1;
-      score += 11;
+      combo += 1;
+      bricksCleared += 1;
+      score += 11 + combo * 2 + level;
+      spawnParticles(ball.x, ball.y, brick.color, 18);
     }
   }
   if (bricks.every((brick) => brick.hit)) {
-    for (const brick of bricks) {
-      brick.hit = false;
-    }
+    level += 1;
+    bricks = createBricks(level);
+    resetBall();
     speed = Math.min(2.2, speed + 0.1);
+    spawnParticles(canvas.width / 2, canvas.height / 2, "#a7f3d0", 28);
   }
+  updateParticles(dt);
   bestScore = Math.max(bestScore, score);
   updateHUD();
 }
@@ -127,9 +158,9 @@ function draw() {
   gradient.addColorStop(1, "#172554");
   context.fillStyle = gradient;
   context.fillRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "rgba(255,255,255,0.07)";
-  for (let x = 0; x < canvas.width; x += 42) {
-    context.fillRect(x, 0, 1, canvas.height);
+  context.fillStyle = "rgba(125,211,252,0.08)";
+  for (let x = -40; x < canvas.width; x += 42) {
+    context.fillRect(x + Math.sin(performance.now() / 600 + x) * 3, 0, 1, canvas.height);
   }
   for (const brick of bricks) {
     if (brick.hit) {
@@ -139,6 +170,14 @@ function draw() {
     roundRect(context, brick.x, brick.y, brick.w, brick.h, 7);
     context.fill();
   }
+  for (const particle of particles) {
+    context.globalAlpha = Math.max(0, particle.life);
+    context.fillStyle = particle.color;
+    context.beginPath();
+    context.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.globalAlpha = 1;
   context.fillStyle = "#f8fafc";
   roundRect(context, paddleX - 76, canvas.height - 34, 152, 15, 10);
   context.fill();
@@ -156,23 +195,80 @@ function draw() {
   context.fill();
 }
 
-function createBricks() {
+function createBricks(nextLevel) {
   const colors = ["#f97316", "#14b8a6", "#38bdf8", "#eab308", "#f43f5e"];
-  return Array.from({ length: 30 }, (_, index) => ({
-    x: 46 + (index % 10) * 78,
-    y: 44 + Math.floor(index / 10) * 34,
+  const columns = 10;
+  const rows = Math.min(5, 3 + Math.floor(nextLevel / 2));
+  return Array.from({ length: columns * rows }, (_, index) => ({
+    x: 46 + (index % columns) * 78,
+    y: 44 + Math.floor(index / columns) * 34,
     w: 62,
     h: 18,
-    color: colors[index % colors.length],
+    color: colors[(index + nextLevel) % colors.length],
     hit: false,
   }));
+}
+
+function resetRound() {
+  score = 0;
+  combo = 0;
+  bricksCleared = 0;
+  level = 1;
+  speed = 1;
+  startedAt = performance.now();
+  particles.length = 0;
+  bricks = createBricks(level);
+  resetBall();
+  updateHUD();
+}
+
+function resetBall() {
+  ball.x = 180 + level * 12;
+  ball.y = 80;
+  ball.vx = 220 + level * 12;
+  ball.vy = 185 + level * 8;
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let index = 0; index < count; index += 1) {
+    const angle = Math.random() * Math.PI * 2;
+    const velocity = 70 + Math.random() * 140;
+    particles.push({
+      x,
+      y,
+      vx: Math.cos(angle) * velocity,
+      vy: Math.sin(angle) * velocity,
+      size: 2 + Math.random() * 4,
+      color,
+      life: 0.75 + Math.random() * 0.35,
+    });
+  }
+}
+
+function updateParticles(dt) {
+  for (const particle of particles) {
+    particle.x += particle.vx * dt;
+    particle.y += particle.vy * dt;
+    particle.vy += 90 * dt;
+    particle.life -= dt * 1.4;
+  }
+  for (let index = particles.length - 1; index >= 0; index -= 1) {
+    if (particles[index].life <= 0) {
+      particles.splice(index, 1);
+    }
+  }
+}
+
+async function loadSavedState() {
+  await callPlugin("game.state.get", {});
 }
 
 async function callPlugin(method, payload) {
   status.textContent = "saving";
   try {
     const response = await client.call(method, payload);
-    bestScore = Math.max(bestScore, Number(response?.data?.best_score ?? response?.best_score ?? bestScore));
+    const data = response?.data ?? response;
+    bestScore = Math.max(bestScore, Number(data?.best_score ?? bestScore));
     status.textContent = "ready";
     writeResult({ method, response });
     updateHUD();
@@ -189,6 +285,9 @@ async function callPlugin(method, payload) {
 function updateHUD() {
   scoreEl.textContent = String(score);
   bestEl.textContent = String(bestScore);
+  levelEl.textContent = String(level);
+  comboEl.textContent = String(combo);
+  bricksClearedEl.textContent = String(bricksCleared);
   speedEl.textContent = `${speed.toFixed(1)}x`;
 }
 

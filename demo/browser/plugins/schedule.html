@@ -16,11 +16,42 @@
         <span id="plugin-status" class="status-pill">booting</span>
       </div>
 
+      <section class="schedule-stats" aria-label="Schedule storage summary">
+        <div>
+          <span class="metric-label">open</span>
+          <strong id="schedule-open">0</strong>
+        </div>
+        <div>
+          <span class="metric-label">done</span>
+          <strong id="schedule-done">0</strong>
+        </div>
+        <div>
+          <span class="metric-label">planned</span>
+          <strong><span id="schedule-minutes">0</span>m</strong>
+        </div>
+      </section>
+
+      <div class="schedule-filter" aria-label="Schedule filters">
+        <input id="schedule-query" autocomplete="off" placeholder="Search schedule" />
+        <select id="schedule-status" aria-label="Status filter">
+          <option value="all">All items</option>
+          <option value="open">Open only</option>
+          <option value="done">Done only</option>
+        </select>
+        <button id="schedule-refresh" type="button" class="secondary-button">Refresh</button>
+      </div>
+
       <div id="schedule-form" class="schedule-form">
         <input id="schedule-title" name="title" autocomplete="off" placeholder="Event title" required />
         <input id="schedule-date" name="date" type="date" value="2026-06-30" required />
         <input id="schedule-time" name="time" type="time" value="11:00" required />
         <input id="schedule-tag" name="tag" autocomplete="off" placeholder="Tag" />
+        <select id="schedule-priority" name="priority" aria-label="Priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+        <input id="schedule-duration" name="duration" type="number" min="5" max="240" step="5" value="30" aria-label="Duration minutes" />
         <button id="schedule-add" type="button">Add</button>
       </div>
 
