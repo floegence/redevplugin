@@ -124,7 +124,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 7 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 9 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
@@ -134,6 +134,21 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	manifestRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"workers"`,
+		`"backend"`,
+		`"broker_backend"`,
+		`"worker.echo"`,
+		`"worker.brokerDemo"`,
+		`"storage"`,
+		`"workspace"`,
+		`"network_access"`,
+		`"api"`,
+	} {
+		if !bytes.Contains(manifestRaw, []byte(want)) {
+			t.Fatalf("scaffold manifest missing %q: %s", want, manifestRaw)
+		}
 	}
 	if !bytes.Contains(manifestRaw, []byte(`"workers"`)) || !bytes.Contains(manifestRaw, []byte(`"worker.echo"`)) {
 		t.Fatalf("scaffold manifest missing worker contract: %s", manifestRaw)
@@ -145,11 +160,14 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if !bytes.Contains(indexRaw, []byte(`data-plugin-id="com.example.generated"`)) || !bytes.Contains(indexRaw, []byte(`data-surface-id="com.example.generated.activity"`)) {
 		t.Fatalf("scaffold index missing plugin bootstrap data: %s", indexRaw)
 	}
+	if !bytes.Contains(indexRaw, []byte(`Storage + network`)) {
+		t.Fatalf("scaffold index missing brokered backend control: %s", indexRaw)
+	}
 	appRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "ui", "assets", "app.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"redevplugin.bridge.handshake", "redevplugin.bridge.call", "parent_origin", "worker.echo"} {
+	for _, want := range []string{"redevplugin.bridge.handshake", "redevplugin.bridge.call", "parent_origin", "worker.echo", "worker.brokerDemo", "invoke-broker", "tokenLeakCheck"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
 		}
@@ -160,6 +178,13 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	}
 	if len(wasmRaw) < 8 || !bytes.Equal(wasmRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
 		t.Fatalf("scaffold wasm artifact is invalid: %x", wasmRaw[:prefixLen(len(wasmRaw), 8)])
+	}
+	brokerWASMRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "broker.wasm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(brokerWASMRaw) < 8 || !bytes.Equal(brokerWASMRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
+		t.Fatalf("scaffold broker wasm artifact is invalid: %x", brokerWASMRaw[:prefixLen(len(brokerWASMRaw), 8)])
 	}
 	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
@@ -645,6 +670,9 @@ func addLifecycleStorageToManifest(t *testing.T, filename string) {
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := doc["storage"]; ok {
+		return
 	}
 	doc["storage"] = map[string]any{
 		"stores": []map[string]any{{

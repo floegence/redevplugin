@@ -137,6 +137,38 @@ export function createDemoPlatformFetch(options = {}) {
               },
             },
           });
+        case "worker.brokerDemo":
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                method: "worker.brokerDemo",
+                backend: "generated wasm worker scaffold",
+                transport: "MessageChannel bridge",
+                storage_file: {
+                  ok: true,
+                  handle_id: "storage:workspace",
+                  method: "storage.files",
+                  operation: "write",
+                  store_id: "workspace",
+                  path: "notes/generated-broker-demo.txt",
+                  bytes_written: 51,
+                  executor: "host storage broker",
+                },
+                network_execute: {
+                  ok: true,
+                  connector_id: "api",
+                  transport: "http",
+                  destination: "https://api.example.com",
+                  method: "POST",
+                  path: "/v1/worker",
+                  response_status: 200,
+                  executor: "host-network-executor",
+                  body_base64: "Z2VuZXJhdGVkIGJyb2tlcmVkIGh0dHAgcmVzcG9uc2U=",
+                },
+              },
+            },
+          });
         case "demo.storage.list":
           return jsonResponse({
             ok: true,

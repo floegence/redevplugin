@@ -400,7 +400,7 @@ func addRealDemoMethods(manifestFile string) error {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return err
 	}
-	doc.Workers = append(doc.Workers, manifest.WorkerSpec{
+	doc.Workers = appendWorkerIfMissing(doc.Workers, manifest.WorkerSpec{
 		WorkerID:         "broker_backend",
 		Artifact:         "workers/broker.wasm",
 		ABI:              "redevplugin-wasm-worker-v1",
@@ -409,7 +409,7 @@ func addRealDemoMethods(manifestFile string) error {
 		MemoryLimitBytes: 16 << 20,
 	})
 	for _, networkCase := range realDemoNetworkMatrix {
-		doc.Workers = append(doc.Workers, manifest.WorkerSpec{
+		doc.Workers = appendWorkerIfMissing(doc.Workers, manifest.WorkerSpec{
 			WorkerID:         networkCase.WorkerID,
 			Artifact:         networkCase.Artifact,
 			ABI:              "redevplugin-wasm-worker-v1",
@@ -440,13 +440,13 @@ func addRealDemoMethods(manifestFile string) error {
 	doc.NetworkAccess = &manifest.NetworkAccessSpec{
 		Connectors: realDemoNetworkConnectors(),
 	}
-	doc.CapabilityBindings = append(doc.CapabilityBindings, manifest.CapabilityBinding{
+	doc.CapabilityBindings = appendCapabilityBindingIfMissing(doc.CapabilityBindings, manifest.CapabilityBinding{
 		BindingID:            "real_demo",
 		CapabilityID:         realDemoCapability,
 		MinCapabilityVersion: "1.0.0",
 		RequiredPermissions:  []string{"execute"},
 	})
-	doc.Methods = append(doc.Methods, manifest.MethodSpec{
+	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
 		Method:    "danger.run",
 		Effect:    manifest.MethodEffectExecute,
 		Execution: manifest.MethodExecutionSync,
@@ -462,7 +462,8 @@ func addRealDemoMethods(manifestFile string) error {
 		},
 		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
 		ResponseSchema: map[string]any{"type": "object"},
-	}, manifest.MethodSpec{
+	})
+	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
 		Method:         "worker.brokerDemo",
 		Effect:         manifest.MethodEffectWrite,
 		Execution:      manifest.MethodExecutionSync,
@@ -471,7 +472,7 @@ func addRealDemoMethods(manifestFile string) error {
 		ResponseSchema: map[string]any{"type": "object"},
 	})
 	for _, networkCase := range realDemoNetworkMatrix {
-		doc.Methods = append(doc.Methods, manifest.MethodSpec{
+		doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
 			Method:         networkCase.Method,
 			Effect:         manifest.MethodEffectRead,
 			Execution:      manifest.MethodExecutionSync,
@@ -485,6 +486,33 @@ func addRealDemoMethods(manifestFile string) error {
 		return err
 	}
 	return writeBytesFile(manifestFile, append(updated, '\n'), 0o644)
+}
+
+func appendWorkerIfMissing(workers []manifest.WorkerSpec, worker manifest.WorkerSpec) []manifest.WorkerSpec {
+	for _, existing := range workers {
+		if existing.WorkerID == worker.WorkerID {
+			return workers
+		}
+	}
+	return append(workers, worker)
+}
+
+func appendMethodIfMissing(methods []manifest.MethodSpec, method manifest.MethodSpec) []manifest.MethodSpec {
+	for _, existing := range methods {
+		if existing.Method == method.Method {
+			return methods
+		}
+	}
+	return append(methods, method)
+}
+
+func appendCapabilityBindingIfMissing(bindings []manifest.CapabilityBinding, binding manifest.CapabilityBinding) []manifest.CapabilityBinding {
+	for _, existing := range bindings {
+		if existing.BindingID == binding.BindingID {
+			return bindings
+		}
+	}
+	return append(bindings, binding)
 }
 
 func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {

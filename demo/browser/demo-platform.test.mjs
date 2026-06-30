@@ -138,6 +138,13 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(score.data.data.leaderboard.length, 3);
   assert.equal(score.data.data.achievements.includes("score-sprinter"), false);
 
+  const brokeredWorker = await rpc(platform, "worker.brokerDemo", { note: "generated plugin broker smoke" });
+  assert.equal(brokeredWorker.data.data.method, "worker.brokerDemo");
+  assert.equal(brokeredWorker.data.data.storage_file.executor, "host storage broker");
+  assert.equal(brokeredWorker.data.data.storage_file.path, "notes/generated-broker-demo.txt");
+  assert.equal(brokeredWorker.data.data.network_execute.executor, "host-network-executor");
+  assert.equal(brokeredWorker.data.data.network_execute.transport, "http");
+
   const initial = await rpc(platform, "schedule.items.list", {});
   assert.equal(initial.data.data.items.length, 3);
   assert.equal(initial.data.data.storage.engine, "sqlite-demo");

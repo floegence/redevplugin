@@ -107,6 +107,11 @@ try {
   await expectText(gameFrame.locator("#plugin-status"), "ready");
   await expectText(gameFrame.locator("#level"), "1");
   await expectText(gameFrame.locator("#plugin-result"), "game.state.get");
+  const firstCanvasChecksum = await canvasChecksum(gameFrame.locator("#game-canvas"));
+  assert.notEqual(firstCanvasChecksum, 0, "bouncer canvas should render non-empty animation pixels");
+  await delay(260);
+  const secondCanvasChecksum = await canvasChecksum(gameFrame.locator("#game-canvas"));
+  assert.notEqual(secondCanvasChecksum, firstCanvasChecksum, "bouncer canvas should animate across frames");
   await gameFrame.getByRole("button", { name: "Boost" }).click();
   await expectText(gameFrame.locator("#speed"), "1.2x");
   await gameFrame.getByRole("button", { name: "Power-up" }).click();
@@ -207,6 +212,17 @@ try {
   await expectText(generatedFrame.locator("#result"), "generated wasm worker scaffold");
   await expectText(generatedFrame.locator("#result"), "worker.echo");
   await expectText(page.locator("#rpc-count"), "1");
+  await generatedFrame.getByRole("button", { name: "Storage + network" }).click();
+  await expectText(generatedFrame.locator("#status"), "Brokered backend responded");
+  await expectText(generatedFrame.locator("#result"), "worker.brokerDemo");
+  await expectText(generatedFrame.locator("#result"), "storage_file");
+  await expectText(generatedFrame.locator("#result"), "notes/generated-broker-demo.txt");
+  await expectText(generatedFrame.locator("#result"), "network_execute");
+  await expectText(generatedFrame.locator("#result"), "host-network-executor");
+  await expectText(generatedFrame.locator("#result"), "\"gateway_token_visible\": false");
+  await expectText(generatedFrame.locator("#result"), "\"storage_grant_visible\": false");
+  await expectText(generatedFrame.locator("#result"), "\"network_grant_visible\": false");
+  await expectText(page.locator("#rpc-count"), "2");
 
   const generatedDisable = JSON.parse(await runCLI(["dev-disable", generatedStateRoot]));
   assert.equal(generatedDisable.enable_state, "disabled");
@@ -238,6 +254,18 @@ async function expectText(locator, expected, timeoutMs = 5_000) {
     await delay(50);
   }
   throw new Error(`expected text ${JSON.stringify(expected)} but last saw ${JSON.stringify(last)}`);
+}
+
+async function canvasChecksum(locator) {
+  return locator.evaluate((canvas) => {
+    const context = canvas.getContext("2d");
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let checksum = 0;
+    for (let index = 0; index < data.length; index += 97) {
+      checksum = (checksum + data[index] * (index + 1)) % 1000000007;
+    }
+    return checksum;
+  });
 }
 
 async function waitForHTTP(url, timeoutMs = 5_000) {

@@ -412,6 +412,13 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Mode:             manifest.WorkerModeJob,
 			Scope:            "user",
 			MemoryLimitBytes: 16 << 20,
+		}, {
+			WorkerID:         "broker_backend",
+			Artifact:         "workers/broker.wasm",
+			ABI:              "redevplugin-wasm-worker-v1",
+			Mode:             manifest.WorkerModeJob,
+			Scope:            "user",
+			MemoryLimitBytes: 16 << 20,
 		}},
 		Methods: []manifest.MethodSpec{{
 			Method:         "worker.echo",
@@ -420,7 +427,41 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redevplugin_worker_invoke"},
 			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
 			ResponseSchema: map[string]any{"type": "object"},
+		}, {
+			Method:         "worker.brokerDemo",
+			Effect:         manifest.MethodEffectWrite,
+			Execution:      manifest.MethodExecutionSync,
+			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
+			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
+			ResponseSchema: map[string]any{"type": "object"},
 		}},
+		Storage: &manifest.StorageSpec{
+			Stores: []manifest.StoreSpec{{
+				StoreID:       "workspace",
+				Kind:          string(storage.StoreFiles),
+				Scope:         "user",
+				QuotaBytes:    1 << 20,
+				SchemaVersion: 1,
+				Migration: manifest.MigrationSpec{
+					FromVersion:    0,
+					ToVersion:      1,
+					Reversible:     true,
+					RequiresWorker: false,
+					EstimatedBytes: 0,
+					MaxDurationMS:  1000,
+					DataLossRisk:   false,
+					StepsHash:      "sha256:generated-workspace-v1",
+				},
+			}},
+		},
+		NetworkAccess: &manifest.NetworkAccessSpec{
+			Connectors: []manifest.NetworkConnectorSpec{{
+				ConnectorID:  "api",
+				Transport:    "http",
+				Scope:        "user",
+				Destinations: []string{"https://api.example.com"},
+			}},
+		},
 	}
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
@@ -433,6 +474,8 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		"ui/assets/styles.css": []byte(scaffoldStylesCSS()),
 		"workers/backend.wat":  []byte(scaffoldWorkerWAT()),
 		"workers/backend.wasm": minimalWorkerWASM(),
+		"workers/broker.wat":   []byte(scaffoldBrokerWorkerWAT()),
+		"workers/broker.wasm":  scaffoldBrokerWorkerWASM(),
 		"workers/abi.json":     []byte(scaffoldWorkerABIJSON()),
 	}
 	if _, err := os.Stat(outDir); err == nil {
@@ -633,6 +676,7 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
+		Storage:         storage.NewMemoryBroker(),
 	})
 	if err != nil {
 		return err
@@ -757,6 +801,7 @@ func scaffoldIndexHTML(pluginID string, displayName string) string {
 		"        <div class=\"toolbar\">\n" +
 		"          <p class=\"status\" id=\"status\">Ready</p>\n" +
 		"          <button id=\"invoke-worker\" type=\"button\">Invoke backend</button>\n" +
+		"          <button id=\"invoke-broker\" type=\"button\">Storage + network</button>\n" +
 		"        </div>\n" +
 		"        <pre id=\"result\" aria-label=\"Latest result\">Waiting for bridge handshake...</pre>\n" +
 		"      </section>\n" +
@@ -769,6 +814,7 @@ func scaffoldAppJS(displayName string) string {
 	message, _ := json.Marshal("Hello from " + displayName)
 	return "const status = document.getElementById('status');\n" +
 		"const invokeButton = document.getElementById('invoke-worker');\n" +
+		"const brokerButton = document.getElementById('invoke-broker');\n" +
 		"const result = document.getElementById('result');\n" +
 		"const params = new URLSearchParams(window.location.search);\n" +
 		"const parentOrigin = params.get('parent_origin');\n" +
@@ -806,6 +852,19 @@ func scaffoldAppJS(displayName string) string {
 		"    } catch (error) {\n" +
 		"      setStatus('Backend call failed');\n" +
 		"      writeResult({ error: String(error?.message || error), error_code: error?.errorCode });\n" +
+		"    }\n" +
+		"  });\n" +
+		"}\n" +
+		"if (brokerButton) {\n" +
+		"  brokerButton.addEventListener('click', async () => {\n" +
+		"    try {\n" +
+		"      setStatus('Calling worker.brokerDemo...');\n" +
+		"      const response = await callHost('worker.brokerDemo', { note: 'Generated plugin storage and network sample' });\n" +
+		"      setStatus('Brokered backend responded');\n" +
+		"      writeResult({ method: 'worker.brokerDemo', response, token_leak_check: tokenLeakCheck(response) });\n" +
+		"    } catch (error) {\n" +
+		"      setStatus('Brokered backend failed');\n" +
+		"      writeResult({ method: 'worker.brokerDemo', error: String(error?.message || error), error_code: error?.errorCode });\n" +
 		"    }\n" +
 		"  });\n" +
 		"}\n" +
@@ -859,6 +918,14 @@ func scaffoldAppJS(displayName string) string {
 		"  if (result) {\n" +
 		"    result.textContent = JSON.stringify(value, null, 2);\n" +
 		"  }\n" +
+		"}\n" +
+		"function tokenLeakCheck(value) {\n" +
+		"  const raw = JSON.stringify(value || {});\n" +
+		"  return {\n" +
+		"    gateway_token_visible: raw.includes('gateway_token'),\n" +
+		"    storage_grant_visible: raw.includes('storage_handle_grant_token'),\n" +
+		"    network_grant_visible: raw.includes('connection_grant_token'),\n" +
+		"  };\n" +
 		"}\n"
 }
 
@@ -927,6 +994,19 @@ func scaffoldWorkerWAT() string {
 		")\n"
 }
 
+func scaffoldBrokerWorkerWAT() string {
+	return "(module\n" +
+		"  ;; Broker demo worker scaffold. It imports the host-owned storage and\n" +
+		"  ;; network brokers so generated plugins expose the backend capability\n" +
+		"  ;; shape without shipping a native process.\n" +
+		"  (import \"redevplugin.storage\" \"files_write_demo\" (func $storage))\n" +
+		"  (import \"redevplugin.network\" \"http_request_demo\" (func $network))\n" +
+		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
+		"    call $storage\n" +
+		"    call $network)\n" +
+		")\n"
+}
+
 func scaffoldWorkerABIJSON() string {
 	return "{\n" +
 		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
@@ -949,6 +1029,55 @@ func minimalWorkerWASM() []byte {
 		0x00, 0x00,
 		0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
 	}
+}
+
+func scaffoldBrokerWorkerWASM() []byte {
+	return importedNoArgHostcallWorkerWASM("redevplugin_worker_invoke", [][2]string{
+		{"redevplugin.storage", "files_write_demo"},
+		{"redevplugin.network", "http_request_demo"},
+	})
+}
+
+func importedNoArgHostcallWorkerWASM(exportName string, imports [][2]string) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x07, 0x02,
+		0x60, 0x00, 0x00,
+		0x60, 0x00, 0x00,
+		0x02,
+	}
+	importPayload := []byte{byte(len(imports))}
+	for _, item := range imports {
+		importModule := []byte(item[0])
+		importName := []byte(item[1])
+		importPayload = append(importPayload, byte(len(importModule)))
+		importPayload = append(importPayload, importModule...)
+		importPayload = append(importPayload, byte(len(importName)))
+		importPayload = append(importPayload, importName...)
+		importPayload = append(importPayload, 0x00, 0x00)
+	}
+	module = appendLEBUint32(module, uint32(len(importPayload)))
+	module = append(module, importPayload...)
+	module = append(module, 0x03, 0x02, 0x01, 0x01, 0x07)
+	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, byte(len(imports)))
+	module = appendLEBUint32(module, uint32(len(exportPayload)))
+	module = append(module, exportPayload...)
+	codePayload := []byte{0x01}
+	body := []byte{0x00}
+	for index := range imports {
+		body = append(body, 0x10, byte(index))
+	}
+	body = append(body, 0x0b)
+	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
+	codePayload = append(codePayload, body...)
+	module = append(module, 0x0a)
+	module = appendLEBUint32(module, uint32(len(codePayload)))
+	module = append(module, codePayload...)
+	return module
 }
 
 func htmlEscape(value string) string {
