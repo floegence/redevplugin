@@ -132,7 +132,12 @@ capabilities.
   browser smoke now also starts `redevplugin demo-real-server`, which wires a
   scaffolded plugin through the real Go Host library, the HTTP adapter, a
   fresh asset-ticket/bootstrap exchange, a sandboxed iframe, and the built Rust
-  runtime process. The generated plugin UI is clicked in the browser and must
+  runtime process. In that real-server path the host page and plugin sandbox use
+  separate `*.redevplugin.localhost` origins, the parent exchanges the asset
+  ticket through the sandbox `/_redevplugin/bootstrap` endpoint, the iframe loads
+  packaged UI through `/_redevplugin/assets/ui/index.html`, and the smoke asserts
+  the HttpOnly asset-session cookie plus absence of legacy `/ui/index.html`
+  static loading. The generated plugin UI is clicked in the browser and must
   receive a `worker.echo` result whose transport is `rust runtime ipc`.
 
 This skeleton intentionally does not import Redeven internals and does not

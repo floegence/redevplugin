@@ -15,6 +15,8 @@ const stateRoot = await mkdtemp(join(tmpdir(), "redevplugin-real-runtime-demo-")
 const binRoot = await mkdtemp(join(tmpdir(), "redevplugin-real-runtime-bin-"));
 const runtimePath = await buildRuntime();
 const cliPath = await buildCLI(binRoot);
+const hostName = "app.redevplugin.localhost";
+const sandboxHost = "plg-real.redevplugin.localhost";
 const server = spawn(cliPath, ["demo-real-server", stateRoot, runtimePath], {
   cwd: new URL("../..", import.meta.url),
   env: {
@@ -22,6 +24,8 @@ const server = spawn(cliPath, ["demo-real-server", stateRoot, runtimePath], {
     GOWORK: "off",
     REAL_DEMO_HOST_PORT: String(hostPort),
     REAL_DEMO_PLUGIN_PORT: String(pluginPort),
+    REAL_DEMO_HOST_NAME: hostName,
+    REAL_DEMO_SANDBOX_HOST: sandboxHost,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -36,11 +40,34 @@ server.stderr.on("data", (chunk) => {
 });
 
 try {
-  const hostURL = `http://127.0.0.1:${hostPort}/demo/real/index.html`;
+  const hostURL = `http://${hostName}:${hostPort}/demo/real/index.html`;
+  const sandboxOrigin = `http://${sandboxHost}:${pluginPort}`;
   await waitForHTTP(hostURL);
+  const assetBeforeBootstrap = await fetch(`${sandboxOrigin}/_redevplugin/assets/ui/index.html`);
+  assert.equal(assetBeforeBootstrap.status, 403);
+  const sandboxManagementProbe = await fetch(`${sandboxOrigin}/_redevplugin/api/plugins/install`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(sandboxManagementProbe.status, 404);
   browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const consoleErrors = [];
+  const requestedURLs = [];
+  const responseHeaders = new Map();
+  const responseHeaderReads = [];
+  page.on("request", (request) => {
+    requestedURLs.push(request.url());
+  });
+  page.on("response", (response) => {
+    const url = response.url();
+    if (url.includes("/_redevplugin/bootstrap") || url.includes("/_redevplugin/assets/ui/index.html")) {
+      responseHeaderReads.push(response.allHeaders().then((headers) => {
+        responseHeaders.set(url, headers);
+      }));
+    }
+  });
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(`${message.type()}: ${message.text()}`);
@@ -54,6 +81,23 @@ try {
   await expectText(page.locator("#host-status"), "listening");
   await expectText(page.locator("#handshake-count"), "1");
   await expectText(page.locator("#runtime-ready"), "1");
+  await Promise.all(responseHeaderReads);
+  const iframeSrc = await page.locator("#plugin-frame").getAttribute("src");
+  assert.ok(iframeSrc?.startsWith(`${sandboxOrigin}/_redevplugin/assets/ui/index.html?`), iframeSrc ?? "");
+  assert.equal(new URL(iframeSrc).searchParams.has("asset_ticket"), false);
+  assert.ok(requestedURLs.some((url) => url === `${sandboxOrigin}/_redevplugin/bootstrap`));
+  assert.ok(requestedURLs.some((url) => url.startsWith(`${sandboxOrigin}/_redevplugin/assets/ui/index.html?`)));
+  assert.equal(requestedURLs.some((url) => url.startsWith(`${sandboxOrigin}/ui/index.html`)), false);
+  const bootstrapHeaders = headerEntry(responseHeaders, `${sandboxOrigin}/_redevplugin/bootstrap`);
+  const setCookie = bootstrapHeaders["set-cookie"] ?? "";
+  assert.match(setCookie, /__Host-redevplugin-asset-session=/);
+  assert.match(setCookie, /HttpOnly/i);
+  assert.match(setCookie, /Secure/i);
+  assert.match(setCookie, /SameSite=Strict/i);
+  assert.match(setCookie, /Path=\//i);
+  assert.equal(/Domain=/i.test(setCookie), false);
+  const assetHeaders = headerEntry(responseHeaders, `${sandboxOrigin}/_redevplugin/assets/ui/index.html`);
+  assert.equal(assetHeaders["x-content-type-options"], "nosniff");
 
   const frame = page.frameLocator("#plugin-frame");
   await expectText(frame.locator("#status"), "Ready");
@@ -181,6 +225,15 @@ async function waitForHTTP(url, timeoutMs = 10_000) {
     await delay(50);
   }
   throw new Error(`real demo server was not ready: ${lastError?.message ?? "unknown error"}\n${serverOutput}`);
+}
+
+function headerEntry(headersByURL, urlPrefix) {
+  for (const [url, headers] of headersByURL.entries()) {
+    if (url.startsWith(urlPrefix)) {
+      return headers;
+    }
+  }
+  throw new Error(`missing response headers for ${urlPrefix}`);
 }
 
 async function getFreePort(excluding) {

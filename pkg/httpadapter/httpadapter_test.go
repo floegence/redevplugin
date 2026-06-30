@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -510,6 +511,9 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != assetSessionCookieName || cookies[0].Value == "" || cookies[0].Path != "/" || !cookies[0].HttpOnly || !cookies[0].Secure {
 		t.Fatalf("asset session cookie mismatch: %#v", cookies)
+	}
+	if strings.Contains(rec.Body.String(), cookies[0].Value) || strings.Contains(rec.Body.String(), `"asset_session"`) {
+		t.Fatalf("sandbox bootstrap body leaked asset session token: %s", rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/ui/index.html", nil)

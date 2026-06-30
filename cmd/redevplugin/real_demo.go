@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -26,15 +25,18 @@ import (
 )
 
 const (
-	realDemoPluginID   = "com.example.real.demo"
-	realDemoPluginName = "Real Runtime Demo Plugin"
-	realDemoSurfaceID  = realDemoPluginID + ".activity"
-	realDemoHostPort   = "4175"
-	realDemoPluginPort = "4176"
-	realDemoOwner      = "real_demo_owner_session"
-	realDemoUser       = "real_demo_owner_user"
-	realDemoChannel    = "real_demo_session_channel"
-	realDemoCapability = "example.capability.real_demo"
+	realDemoPluginID        = "com.example.real.demo"
+	realDemoPluginName      = "Real Runtime Demo Plugin"
+	realDemoSurfaceID       = realDemoPluginID + ".activity"
+	realDemoHostName        = "app.redevplugin.localhost"
+	realDemoSandboxHost     = "plg-real.redevplugin.localhost"
+	realDemoHostPort        = "4175"
+	realDemoPluginPort      = "4176"
+	realDemoOwner           = "real_demo_owner_session"
+	realDemoUser            = "real_demo_owner_user"
+	realDemoChannel         = "real_demo_session_channel"
+	realDemoCapability      = "example.capability.real_demo"
+	realDemoAssetCookieName = "__Host-redevplugin-asset-session"
 )
 
 type realDemoRuntimeResolver struct {
@@ -129,8 +131,10 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	}
 	hostPort := demoEnv("REAL_DEMO_HOST_PORT", realDemoHostPort)
 	pluginPort := demoEnv("REAL_DEMO_PLUGIN_PORT", realDemoPluginPort)
-	sandboxOrigin := "http://127.0.0.1:" + pluginPort
-	hostOrigin := "http://127.0.0.1:" + hostPort
+	hostName := demoEnv("REAL_DEMO_HOST_NAME", realDemoHostName)
+	sandboxHost := demoEnv("REAL_DEMO_SANDBOX_HOST", realDemoSandboxHost)
+	sandboxOrigin := "http://" + sandboxHost + ":" + pluginPort
+	hostOrigin := "http://" + hostName + ":" + hostPort
 	platformHandler := httpadapter.Handler{Host: pluginHost}
 	hostMux := http.NewServeMux()
 	hostMux.HandleFunc("/favicon.ico", noContentHandler)
@@ -154,7 +158,8 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	})
 	pluginMux := http.NewServeMux()
 	pluginMux.HandleFunc("/favicon.ico", noContentHandler)
-	pluginMux.HandleFunc("/", realDemoPluginAssetHandler(pluginDir))
+	pluginMux.Handle("/_redevplugin/", realDemoSandboxHandler(hostOrigin, platformHandler))
+	pluginMux.HandleFunc("/", http.NotFound)
 	hostServer := &http.Server{Addr: "127.0.0.1:" + hostPort, Handler: hostMux}
 	pluginServer := &http.Server{Addr: "127.0.0.1:" + pluginPort, Handler: pluginMux}
 	errCh := make(chan error, 2)
@@ -165,7 +170,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		errCh <- pluginServer.ListenAndServe()
 	}()
 	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo host: %s/demo/real/index.html\n", hostOrigin)
-	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo plugin sandbox: %s/ui/index.html\n", sandboxOrigin)
+	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo plugin sandbox assets: %s/_redevplugin/assets/ui/index.html\n", sandboxOrigin)
 	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo runtime_generation_id: %s\n", health.RuntimeGenerationID)
 	select {
 	case <-ctx.Done():
@@ -291,25 +296,46 @@ func grantRealDemoDeclaredPermissions(ctx context.Context, pluginHost *host.Host
 	return nil
 }
 
-func realDemoPluginAssetHandler(pluginDir string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		clean := path.Clean("/" + r.URL.Path)
-		if clean == "/" {
-			clean = "/ui/index.html"
-		}
-		filename := filepath.Join(pluginDir, filepath.FromSlash(strings.TrimPrefix(clean, "/")))
-		rel, err := filepath.Rel(pluginDir, filename)
-		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		http.ServeFile(w, r, filename)
-	}
-}
-
 func noContentHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func realDemoSandboxHandler(hostOrigin string, platformHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodOptions && r.URL.Path == "/_redevplugin/bootstrap":
+			if !writeRealDemoBootstrapCORS(w, r, hostOrigin) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/bootstrap":
+			if !writeRealDemoBootstrapCORS(w, r, hostOrigin) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			platformHandler.ServeHTTP(w, r)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/assets/"):
+			platformHandler.ServeHTTP(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/csp-report":
+			platformHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func writeRealDemoBootstrapCORS(w http.ResponseWriter, r *http.Request, hostOrigin string) bool {
+	w.Header().Add("Vary", "Origin")
+	if strings.TrimSpace(r.Header.Get("Origin")) != hostOrigin {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", hostOrigin)
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type")
+	w.Header().Set("Access-Control-Max-Age", "600")
+	return true
 }
 
 func writeNoStoreHTML(w http.ResponseWriter, html string) {
@@ -485,7 +511,7 @@ function callHost(method, callParams) {
 function tokenLeakCheck(value) {
   const serialized = JSON.stringify(value);
   return {
-    asset_ticket_visible: location.href.includes('asset_ticket') || document.cookie.includes('redevplugin'),
+    asset_ticket_visible: location.href.includes('asset_ticket') || document.cookie.includes('` + realDemoAssetCookieName + `'),
     gateway_token_visible: serialized.includes('plugin_gateway_token') || serialized.includes('gateway_token'),
     confirmation_token_visible: serialized.includes('confirmation_token'),
   };
@@ -591,7 +617,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
       import { PluginSurfaceHost } from "/packages/redevplugin-ui/dist/index.js";
       const bootstrap = ` + bootstrap + `;
       const pluginOrigin = "` + pluginOrigin + `";
-      const pluginURL = new URL("/ui/index.html", pluginOrigin);
+      const pluginURL = new URL("/_redevplugin/assets/ui/index.html", pluginOrigin);
       pluginURL.searchParams.set("parent_origin", location.origin);
       pluginURL.searchParams.set("plugin_id", bootstrap.plugin_id);
       pluginURL.searchParams.set("surface_id", bootstrap.surface_id);
@@ -685,11 +711,15 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
         log("confirmation-decision", { confirmed });
       }
       try {
-        const assetResponse = await hostFetch("/_redevplugin/api/plugins/surfaces/" + encodeURIComponent(bootstrap.surface_instance_id) + "/bootstrap", {
+        const assetBootstrapURL = new URL("/_redevplugin/bootstrap", pluginOrigin);
+        const assetResponse = await fetch(assetBootstrapURL.href, {
           method: "POST",
           headers: { "Accept": "application/json", "Content-Type": "application/json" },
-          body: JSON.stringify({ asset_ticket: bootstrap.asset_ticket }),
-          credentials: "same-origin",
+          body: JSON.stringify({
+            surface_instance_id: bootstrap.surface_instance_id,
+            asset_ticket: bootstrap.asset_ticket,
+          }),
+          credentials: "include",
         });
         if (!assetResponse.ok) {
           throw new Error("asset bootstrap failed with HTTP " + assetResponse.status);
