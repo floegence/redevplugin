@@ -44,6 +44,15 @@ button:hover {
   background: var(--accent-strong);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button:disabled:hover {
+  background: var(--accent);
+}
+
 button:focus-visible {
   outline: 3px solid rgb(15 118 110 / 28%);
   outline-offset: 2px;
@@ -202,12 +211,21 @@ code {
   background: #dfe6f0;
 }
 
+.ghost-button:disabled:hover,
+.secondary-button:disabled:hover {
+  background: #eef2f7;
+}
+
 .danger-button {
   background: var(--danger);
 }
 
 .danger-button:hover {
   background: #8f1d14;
+}
+
+.danger-button:disabled:hover {
+  background: var(--danger);
 }
 
 .event-log {

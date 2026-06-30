@@ -6,6 +6,7 @@ const result = document.querySelector("#plugin-result");
 const echoButton = document.querySelector("#call-echo");
 const listButton = document.querySelector("#call-list");
 const dangerousButton = document.querySelector("#call-dangerous");
+const actionButtons = [echoButton, listButton, dangerousButton];
 
 const parentOrigin = new URLSearchParams(window.location.search).get("parent_origin");
 if (!parentOrigin || parentOrigin === "*") {
@@ -42,6 +43,7 @@ client.handshake();
 
 async function callPlugin(method, params) {
   status.textContent = "calling";
+  setActionBusy(true);
   try {
     const response = await client.call(method, params);
     status.textContent = "ready";
@@ -53,9 +55,17 @@ async function callPlugin(method, params) {
       return;
     }
     appendResult({ method, error: String(error) });
+  } finally {
+    setActionBusy(false);
   }
 }
 
 function appendResult(value) {
   result.textContent = formatJSON(value);
+}
+
+function setActionBusy(busy) {
+  for (const button of actionButtons) {
+    button.disabled = busy;
+  }
 }

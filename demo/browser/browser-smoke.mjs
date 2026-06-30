@@ -75,14 +75,18 @@ try {
 
   await frame.getByRole("button", { name: "Delete cache" }).click();
   await expectText(page.locator("#confirmation-method"), "demo.cache.delete");
+  assert.equal(await frame.locator("#call-dangerous").getAttribute("disabled"), "");
   await page.getByRole("button", { name: "Deny" }).click();
   await expectText(frame.locator("#plugin-result"), "PLUGIN_CONFIRMATION_REJECTED");
+  assert.equal(await frame.locator("#call-dangerous").getAttribute("disabled"), null);
   await expectText(page.locator("#confirmation-count"), "1");
 
   await frame.getByRole("button", { name: "Delete cache" }).click();
   await expectText(page.locator("#confirmation-method"), "demo.cache.delete");
+  assert.equal(await frame.locator("#call-dangerous").getAttribute("disabled"), "");
   await page.getByRole("button", { name: "Approve" }).click();
   await expectText(frame.locator("#plugin-result"), "\"deleted\": true");
+  assert.equal(await frame.locator("#call-dangerous").getAttribute("disabled"), null);
   await expectText(page.locator("#rpc-count"), "5");
   await expectText(page.locator("#confirmation-count"), "2");
 

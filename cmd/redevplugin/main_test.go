@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -168,6 +171,133 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir); err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("scaffold non-empty dir error = %v, want not empty", err)
+	}
+}
+
+func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not found; skipping scaffold Rust runtime integration")
+	}
+	repoRoot := cliRepoRoot(t)
+	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	if goruntime.GOOS == "windows" {
+		runtimePath += ".exe"
+	}
+
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated-runtime")
+	packageFile := filepath.Join(dir, "generated-runtime.redeven-plugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.runtime", "Generated Runtime Plugin", scaffoldDir); err != nil {
+		t.Fatalf("scaffold command error = %v", err)
+	}
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatalf("package command error = %v", err)
+	}
+	packageBytes, err := os.ReadFile(packageFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	h, err := host.New(host.Adapters{
+		SessionResolver:         staticSessionResolver{},
+		Policy:                  staticPolicyAdapter{},
+		RuntimeArtifactResolver: cliRuntimeResolver{path: runtimePath},
+		Storage:                 storage.NewMemoryBroker(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	health, err := h.StartRuntime(ctx, host.StartRuntimeRequest{
+		Target: host.RuntimeTarget{OS: goruntime.GOOS, Arch: goruntime.GOARCH},
+	})
+	if err != nil {
+		t.Fatalf("StartRuntime() error = %v", err)
+	}
+	if !health.Ready || health.RuntimeGenerationID == "" {
+		t.Fatalf("runtime health mismatch: %#v", health)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := h.StopRuntime(stopCtx); err != nil {
+			t.Errorf("StopRuntime() error = %v", err)
+		}
+	})
+
+	installed, err := host.InstallPackageBytes(ctx, h, packageBytes, registry.TrustUnsignedLocal)
+	if err != nil {
+		t.Fatalf("InstallPackageBytes() error = %v", err)
+	}
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	if _, err := h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	bootstrap, err := h.OpenSurface(ctx, host.OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "com.example.generated.runtime.activity",
+		SurfaceInstanceID:    "surface_generated_runtime",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		SessionChannelIDHash: "session_channel_hash",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("OpenSurface() error = %v", err)
+	}
+	if _, err := h.ExchangeAssetTicket(ctx, host.ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	}
+	gateway, err := h.MintBridgeToken(ctx, host.MintBridgeTokenRequest{
+		Handshake: bridge.Handshake{
+			PluginID:          bootstrap.PluginID,
+			SurfaceID:         bootstrap.SurfaceID,
+			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+			ActiveFingerprint: bootstrap.ActiveFingerprint,
+			BridgeNonce:       bootstrap.BridgeNonce,
+			UIProtocolVersion: "plugin-ui-v1",
+		},
+		BridgeChannelID: "bridge_generated_runtime",
+		Now:             now.Add(3 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("MintBridgeToken() error = %v", err)
+	}
+
+	result, err := h.CallPluginMethod(ctx, host.CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		SessionChannelIDHash: "session_channel_hash",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		BridgeChannelID:      "bridge_generated_runtime",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{"message": "hello from scaffold"},
+		Now:                  now.Add(4 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with generated scaffold error = %v", err)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("worker result data = %#v, want map", result.Data)
+	}
+	if data["backend"] != "executed wasm worker scaffold" ||
+		data["transport"] != "rust runtime ipc" ||
+		data["method"] != "worker.echo" ||
+		data["worker_id"] != "backend" {
+		t.Fatalf("generated scaffold runtime result mismatch: %#v", data)
 	}
 }
 
@@ -486,6 +616,14 @@ func readCLITestPublicKey(t *testing.T, filename string) ed25519.PublicKey {
 		t.Fatal(err)
 	}
 	return publicKey
+}
+
+type cliRuntimeResolver struct {
+	path string
+}
+
+func (r cliRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (string, error) {
+	return r.path, nil
 }
 
 func writeCLITestFile(t *testing.T, filename string, content string) {
