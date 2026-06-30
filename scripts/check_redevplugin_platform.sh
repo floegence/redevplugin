@@ -14,7 +14,8 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   tmp_private_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-private.XXXXXX.json")
   tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
   tmp_storage_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-storage.XXXXXX")
-  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_private_key" "$tmp_public_key"' EXIT
+  tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-state.XXXXXX")
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_private_key" "$tmp_public_key"' EXIT
   go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
   go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
   go run ./cmd/redevplugin scaffold com.example.smoke "Smoke Plugin" "$tmp_scaffold_dir" >/dev/null
@@ -30,6 +31,11 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   go run ./cmd/redevplugin enable "$tmp_package" >/dev/null
   go run ./cmd/redevplugin disable "$tmp_package" >/dev/null
   go run ./cmd/redevplugin uninstall "$tmp_package" >/dev/null
+  go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_package" | grep -q '"enable_state": "disabled"'
+  go run ./cmd/redevplugin dev-enable "$tmp_dev_state_root" | grep -q '"enable_state": "enabled"'
+  go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "com.example.smoke.activity" "http://127.0.0.1:4174" | grep -q '"browser_origin_count": 1'
+  go run ./cmd/redevplugin dev-disable "$tmp_dev_state_root" | grep -q '"enable_state": "disabled"'
+  go run ./cmd/redevplugin dev-uninstall "$tmp_dev_state_root" --delete-data | grep -q '"retained_data_state": "deleted"'
   ./scripts/check_redevplugin_ui_bridge.sh
 )
 
@@ -38,6 +44,7 @@ if command -v npm >/dev/null 2>&1; then
     cd "$ROOT_DIR"
     npm run typecheck
     npm run test:demo
+    npm run test:demo:browser
   )
 else
   echo "npm not found; skipping TypeScript check" >&2

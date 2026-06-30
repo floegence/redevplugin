@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,7 +12,18 @@ const hostPort = await getFreePort();
 const pluginPort = await getFreePort(hostPort);
 const generatedRoot = await mkdtemp(join(tmpdir(), "redevplugin-generated-browser-"));
 const generatedPluginDir = join(generatedRoot, "plugin");
-await runScaffold(generatedPluginDir);
+const generatedPackage = join(generatedRoot, "generated.redeven-plugin");
+const generatedStateRoot = join(generatedRoot, "state");
+await runCLI(["scaffold", "com.example.generated.browser", "Generated Browser Plugin", generatedPluginDir]);
+await runCLI(["package", generatedPluginDir, generatedPackage]);
+const generatedInstall = JSON.parse(await runCLI(["dev-install", generatedStateRoot, generatedPackage]));
+assert.equal(generatedInstall.enable_state, "disabled");
+const generatedEnable = JSON.parse(await runCLI(["dev-enable", generatedStateRoot]));
+assert.equal(generatedEnable.enable_state, "enabled");
+const generatedOpen = JSON.parse(
+  await runCLI(["dev-open", generatedStateRoot, "com.example.generated.browser.activity", `http://127.0.0.1:${pluginPort}`]),
+);
+assert.equal(generatedOpen.browser_origin_count, 1);
 const hostURL = `http://127.0.0.1:${hostPort}/demo/browser/index.html?plugin_origin=http://127.0.0.1:${pluginPort}`;
 const server = spawn(process.execPath, ["demo/browser/server.mjs"], {
   cwd: new URL("../..", import.meta.url),
@@ -79,8 +90,15 @@ try {
   await expectText(frame.locator("#plugin-status"), "visible");
   await expectText(frame.locator("#plugin-result"), "\"lifecycle\": \"visible\"");
 
-  const generatedURL = `http://127.0.0.1:${hostPort}/demo/browser/index.html?plugin_origin=http://127.0.0.1:${pluginPort}&plugin_path=/generated-plugin/ui/index.html&plugin_id=com.example.generated.browser&surface_id=com.example.generated.browser.activity&surface_instance_id=surface_generated_browser&active_fingerprint=sha256:generated-browser&bridge_nonce=bridge_nonce_generated_browser`;
-  await page.goto(generatedURL, { waitUntil: "load" });
+  const generatedURL = new URL(`http://127.0.0.1:${hostPort}/demo/browser/index.html`);
+  generatedURL.searchParams.set("plugin_origin", `http://127.0.0.1:${pluginPort}`);
+  generatedURL.searchParams.set("plugin_path", "/generated-plugin/ui/index.html");
+  generatedURL.searchParams.set("plugin_id", generatedOpen.plugin_id);
+  generatedURL.searchParams.set("surface_id", generatedOpen.surface_id);
+  generatedURL.searchParams.set("surface_instance_id", generatedOpen.surface_instance_id);
+  generatedURL.searchParams.set("active_fingerprint", generatedOpen.active_fingerprint);
+  generatedURL.searchParams.set("bridge_nonce", generatedOpen.bridge_nonce);
+  await page.goto(generatedURL.href, { waitUntil: "load" });
   await expectText(page.locator("#host-status"), "listening");
   await expectText(page.locator("#handshake-count"), "1");
 
@@ -92,12 +110,19 @@ try {
   await expectText(generatedFrame.locator("#result"), "worker.echo");
   await expectText(page.locator("#rpc-count"), "1");
 
+  const generatedDisable = JSON.parse(await runCLI(["dev-disable", generatedStateRoot]));
+  assert.equal(generatedDisable.enable_state, "disabled");
+  const generatedUninstall = JSON.parse(await runCLI(["dev-uninstall", generatedStateRoot, "--delete-data"]));
+  assert.equal(generatedUninstall.retained_data_state, "deleted");
+  assert.equal(generatedUninstall.package_retained, false);
+
   assert.deepEqual(consoleErrors, []);
   await browser.close();
   console.log("browser demo smoke passed");
 } finally {
   server.kill("SIGTERM");
   await Promise.race([once(server, "exit"), delay(1_000)]);
+  await rm(generatedRoot, { recursive: true, force: true });
 }
 
 async function expectText(locator, expected, timeoutMs = 5_000) {
@@ -138,8 +163,8 @@ async function waitForHTTP(url, timeoutMs = 5_000) {
   throw new Error(`demo server was not ready: ${lastError?.message ?? "unknown error"}\n${serverOutput}`);
 }
 
-async function runScaffold(outDir) {
-  const command = spawn("go", ["run", "./cmd/redevplugin", "scaffold", "com.example.generated.browser", "Generated Browser Plugin", outDir], {
+async function runCLI(args) {
+  const command = spawn("go", ["run", "./cmd/redevplugin", ...args], {
     cwd: new URL("../..", import.meta.url),
     env: { ...process.env, GOWORK: "off" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -153,8 +178,9 @@ async function runScaffold(outDir) {
   });
   const [code] = await once(command, "exit");
   if (code !== 0) {
-    throw new Error(`failed to scaffold browser demo plugin with code ${code}\n${output}`);
+    throw new Error(`redevplugin ${args.join(" ")} failed with code ${code}\n${output}`);
   }
+  return output;
 }
 
 function getFreePort(except) {

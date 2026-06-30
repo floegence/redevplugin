@@ -171,6 +171,153 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	}
 }
 
+func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	stateRoot := filepath.Join(dir, "state")
+	packageFile := filepath.Join(dir, "generated.redeven-plugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
+		t.Fatalf("scaffold command error = %v", err)
+	}
+	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatalf("package command error = %v", err)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); !errors.Is(err, errDevStateNotInstalled) {
+		t.Fatalf("dev-enable before install error = %v, want %v", err, errDevStateNotInstalled)
+	}
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity"); !errors.Is(err, errDevStateNotInstalled) {
+		t.Fatalf("dev-open before install error = %v, want %v", err, errDevStateNotInstalled)
+	}
+
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
+	if err != nil {
+		t.Fatalf("dev-install error = %v", err)
+	}
+	var installSummary devLifecycleSummary
+	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
+		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
+	}
+	if installSummary.EnableState != registry.EnableDisabled || !installSummary.PackageRetained || installSummary.StateRoot != stateRoot {
+		t.Fatalf("dev-install summary mismatch: %#v", installSummary)
+	}
+	if _, err := os.Stat(filepath.Join(stateRoot, devPackageFile)); err != nil {
+		t.Fatalf("dev package copy missing: %v", err)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
+		t.Fatalf("dev-open disabled error = %v, want must be enabled", err)
+	}
+
+	enableOutput, err := captureCLIOutput(t, "dev-enable", stateRoot)
+	if err != nil {
+		t.Fatalf("dev-enable error = %v", err)
+	}
+	var enableSummary devLifecycleSummary
+	if err := json.Unmarshal(enableOutput, &enableSummary); err != nil {
+		t.Fatalf("dev-enable output decode error = %v: %s", err, enableOutput)
+	}
+	if enableSummary.PluginInstanceID != installSummary.PluginInstanceID || enableSummary.EnableState != registry.EnableEnabled {
+		t.Fatalf("dev-enable summary mismatch: %#v install=%#v", enableSummary, installSummary)
+	}
+
+	inspectOutput, err := captureCLIOutput(t, "inspect-storage", filepath.Join(stateRoot, devStorageDir), installSummary.PluginInstanceID)
+	if err != nil {
+		t.Fatalf("inspect-storage after enable error = %v", err)
+	}
+	var inspectSummary storageInspectSummary
+	if err := json.Unmarshal(inspectOutput, &inspectSummary); err != nil {
+		t.Fatalf("inspect-storage output decode error = %v: %s", err, inspectOutput)
+	}
+	if inspectSummary.NamespaceCount != 1 || inspectSummary.Namespaces[0].StoreID != "workspace" || inspectSummary.Namespaces[0].State != storage.NamespaceActive {
+		t.Fatalf("storage namespace mismatch after enable: %#v", inspectSummary)
+	}
+	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	if _, err := storageBroker.WriteFile(context.Background(), storage.FileWriteRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		StoreID:          "workspace",
+		Path:             "notes/generated.txt",
+		Data:             []byte("generated plugin data"),
+	}); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity", "http://127.0.0.1:4999")
+	if err != nil {
+		t.Fatalf("dev-open error = %v", err)
+	}
+	var openSummary devOpenSurfaceSummary
+	if err := json.Unmarshal(openOutput, &openSummary); err != nil {
+		t.Fatalf("dev-open output decode error = %v: %s", err, openOutput)
+	}
+	if !openSummary.OK ||
+		openSummary.PluginInstanceID != installSummary.PluginInstanceID ||
+		openSummary.SurfaceID != "com.example.generated.lifecycle.activity" ||
+		openSummary.BridgeNonce == "" ||
+		openSummary.AssetTicketID == "" ||
+		openSummary.BrowserOriginCount != 1 {
+		t.Fatalf("dev-open summary mismatch: %#v", openSummary)
+	}
+
+	disableOutput, err := captureCLIOutput(t, "dev-disable", stateRoot)
+	if err != nil {
+		t.Fatalf("dev-disable error = %v", err)
+	}
+	var disableSummary devLifecycleSummary
+	if err := json.Unmarshal(disableOutput, &disableSummary); err != nil {
+		t.Fatalf("dev-disable output decode error = %v: %s", err, disableOutput)
+	}
+	if disableSummary.EnableState != registry.EnableDisabled || disableSummary.BrowserOriginCount != 1 {
+		t.Fatalf("dev-disable summary mismatch: %#v", disableSummary)
+	}
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
+		t.Fatalf("dev-open after disable error = %v, want must be enabled", err)
+	}
+
+	uninstallOutput, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--delete-data")
+	if err != nil {
+		t.Fatalf("dev-uninstall error = %v", err)
+	}
+	var uninstallSummary devLifecycleSummary
+	if err := json.Unmarshal(uninstallOutput, &uninstallSummary); err != nil {
+		t.Fatalf("dev-uninstall output decode error = %v: %s", err, uninstallOutput)
+	}
+	if uninstallSummary.RetainedDataState != registry.RetainedDataDeleted ||
+		uninstallSummary.PackageRetained ||
+		uninstallSummary.BrowserOriginCount != 1 {
+		t.Fatalf("dev-uninstall summary mismatch: %#v", uninstallSummary)
+	}
+	if _, err := os.Stat(filepath.Join(stateRoot, devPackageFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dev package copy still exists after uninstall: %v", err)
+	}
+	afterDelete, err := storageBroker.ListNamespaces(context.Background(), installSummary.PluginInstanceID)
+	if err != nil {
+		t.Fatalf("ListNamespaces() after delete error = %v", err)
+	}
+	if len(afterDelete) != 0 {
+		t.Fatalf("storage namespaces remained after delete: %#v", afterDelete)
+	}
+
+	statusOutput, err := captureCLIOutput(t, "dev-status", stateRoot)
+	if err != nil {
+		t.Fatalf("dev-status error = %v", err)
+	}
+	var statusSummary devLifecycleSummary
+	if err := json.Unmarshal(statusOutput, &statusSummary); err != nil {
+		t.Fatalf("dev-status output decode error = %v: %s", err, statusOutput)
+	}
+	if statusSummary.RetainedDataState != registry.RetainedDataDeleted || statusSummary.PackageRetained {
+		t.Fatalf("dev-status summary mismatch: %#v", statusSummary)
+	}
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); !errors.Is(err, errDevStateNotInstalled) {
+		t.Fatalf("dev-enable after uninstall error = %v, want %v", err, errDevStateNotInstalled)
+	}
+}
+
 func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 	output, err := captureCLIOutput(t, "version")
 	if err != nil {
@@ -347,6 +494,44 @@ func writeCLITestFile(t *testing.T, filename string, content string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func addLifecycleStorageToManifest(t *testing.T, filename string) {
+	t.Helper()
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["storage"] = map[string]any{
+		"stores": []map[string]any{{
+			"store_id":       "workspace",
+			"kind":           string(storage.StoreFiles),
+			"scope":          "user",
+			"quota_bytes":    4096,
+			"schema_version": 1,
+			"migration": map[string]any{
+				"from_version":    0,
+				"to_version":      1,
+				"reversible":      true,
+				"requires_worker": false,
+				"estimated_bytes": 0,
+				"max_duration_ms": 1000,
+				"data_loss_risk":  false,
+				"steps_hash":      "sha256:dev-lifecycle",
+			},
+		}},
+	}
+	updated, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, append(updated, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

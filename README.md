@@ -71,6 +71,17 @@ capabilities.
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the
   storage root selection in their own adapter layer.
+- `redevplugin dev-install <state-root> <package>` creates a persistent local
+  development state root for Flower-generated plugins. The matching
+  `dev-enable`, `dev-open <surface-id> [sandbox-origin]`, `dev-disable`,
+  `dev-uninstall [--delete-data|--keep-data]`, and `dev-status` commands replay
+  the saved package through the real Host lifecycle APIs while keeping the
+  copied package, filesystem storage root, and sandbox browser-origin records
+  under the same state root. This gives generated plugins a local, auditable
+  install -> enable -> open -> disable -> uninstall flow without importing any
+  host-product internals. Uninstall removes the copied package; `--delete-data`
+  also removes plugin storage namespaces and marks browser-origin data cleanup
+  complete, while `--keep-data` marks declared plugin data retained.
 - The browser demo under `demo/browser/` runs a real host page plus sandboxed
   iframe plugin page using the built `@floegence/redevplugin-ui` bridge package.
   Start it with `npm run demo:browser`, open the printed host URL, then exercise
@@ -79,9 +90,10 @@ capabilities.
   separate localhost origins to exercise exact-origin sandbox bridge behavior.
   `npm run test:demo` covers the fake platform API and static sandbox contract;
   `npm run test:demo:browser` launches a real browser, clicks through the iframe
-  demo flow, generates a fresh plugin with `redevplugin scaffold`, serves that
-  generated plugin from the sandbox origin, and verifies its backend call UI end
-  to end.
+  demo flow, generates a fresh plugin with `redevplugin scaffold`, packages it,
+  installs, enables, and opens it through the persistent dev lifecycle harness,
+  serves that generated plugin from the sandbox origin, verifies its backend call
+  UI end to end, then disables and uninstalls it with data deletion.
 
 This skeleton intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
@@ -92,8 +104,8 @@ provide a local sibling integration path for host products.
 go test ./...
 npm install
 npm run check
-npm run demo:browser
 npx playwright install chromium
+npm run demo:browser
 npm run test:demo:browser
 ./scripts/check_redevplugin_runtime_contract.sh
 ./scripts/check_redevplugin_platform.sh

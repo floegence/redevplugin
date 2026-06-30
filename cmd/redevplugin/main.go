@@ -171,6 +171,51 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return installVerifiedHarness(ctx, args[1], args[2])
+	case "dev-install":
+		if len(args) != 3 {
+			return usage()
+		}
+		return devInstall(ctx, args[1], args[2])
+	case "dev-enable":
+		if len(args) != 2 {
+			return usage()
+		}
+		return devEnable(ctx, args[1])
+	case "dev-open":
+		if len(args) != 3 && len(args) != 4 {
+			return usage()
+		}
+		sandboxOrigin := ""
+		if len(args) == 4 {
+			sandboxOrigin = args[3]
+		}
+		return devOpen(ctx, args[1], args[2], sandboxOrigin)
+	case "dev-disable":
+		if len(args) != 2 {
+			return usage()
+		}
+		return devDisable(ctx, args[1])
+	case "dev-uninstall":
+		if len(args) != 2 && len(args) != 3 {
+			return usage()
+		}
+		deleteData := true
+		if len(args) == 3 {
+			switch args[2] {
+			case "--delete-data":
+				deleteData = true
+			case "--keep-data":
+				deleteData = false
+			default:
+				return usage()
+			}
+		}
+		return devUninstall(ctx, args[1], deleteData)
+	case "dev-status":
+		if len(args) != 2 {
+			return usage()
+		}
+		return devStatus(args[1])
 	case "enable":
 		if len(args) != 2 {
 			return usage()
@@ -564,7 +609,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redeven-plugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redeven-plugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redeven-plugin> <private.json> <out.redeven-plugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
