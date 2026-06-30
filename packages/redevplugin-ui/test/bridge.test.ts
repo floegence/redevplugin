@@ -718,15 +718,17 @@ test("platform client covers operation and data lifecycle routes", async () => {
   const fetch = new FakeFetch();
   fetch.push({
     ok: true,
-    data: [{
-      operation_id: "op 1",
-      plugin_instance_id: "plugin_instance_1",
-      method: "worker.long",
-      execution: "operation",
-      status: "running",
-      created_at: "2026-06-30T00:00:00Z",
-      updated_at: "2026-06-30T00:00:00Z",
-    }],
+    data: {
+      operations: [{
+        operation_id: "op 1",
+        plugin_instance_id: "plugin_instance_1",
+        method: "worker.long",
+        execution: "operation",
+        status: "running",
+        created_at: "2026-06-30T00:00:00Z",
+        updated_at: "2026-06-30T00:00:00Z",
+      }],
+    },
   });
   fetch.push({
     ok: true,
@@ -749,7 +751,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
   const exported = await client.exportData({ plugin_instance_id: "plugin_instance_1" });
   const imported = await client.importData({ plugin_instance_id: "plugin_instance_1", archive_ref: exported.archive_ref, delete_existing: true });
 
-  assert.equal(operations[0]?.status, "running");
+  assert.equal(operations.operations?.[0]?.status, "running");
   assert.equal(canceled.status, "cancel_requested");
   assert.equal(exported.archive_ref, "archive/plugin_instance_1.zip");
   assert.equal(imported.imported, true);
@@ -829,7 +831,7 @@ test("platform client maps dangerous intent confirmation requirement", async () 
 
 test("platform client manages permissions and secret refs without exposing local contracts", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { grants: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http" }] } });
+  fetch.push({ ok: true, data: { permissions: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http" }] } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", granted_by: "admin" } });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", revoked_by: "admin" } });
   fetch.push({ ok: true, data: { bound: true } });
@@ -844,7 +846,7 @@ test("platform client manages permissions and secret refs without exposing local
   const tested = await client.testSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
   const deleted = await client.deleteSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
 
-  assert.equal(grants.grants?.[0]?.permission_id, "network.http");
+  assert.equal(grants.permissions?.[0]?.permission_id, "network.http");
   assert.equal(grant.granted_by, "admin");
   assert.equal(revoke.revoked_by, "admin");
   assert.equal(bound.bound, true);
@@ -856,6 +858,45 @@ test("platform client manages permissions and secret refs without exposing local
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/secrets/bind");
   assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/secrets/test");
   assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/secrets/delete");
+});
+
+test("platform client reads host audit and diagnostic events", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: true,
+    data: {
+      audit_events: [{
+        type: "plugin.intent.invoked",
+        plugin_id: "com.example.intent",
+        plugin_instance_id: "plugin_instance_1",
+        occurred_at: "2026-06-30T00:00:00Z",
+        details: { intent_id: "example.echo" },
+      }],
+    },
+  });
+  fetch.push({
+    ok: true,
+    data: {
+      diagnostic_events: [{
+        type: "plugin.csp.violation",
+        severity: "warning",
+        plugin_id: "com.example.intent",
+        plugin_instance_id: "plugin_instance_1",
+        surface_instance_id: "surface_1",
+        occurred_at: "2026-06-30T00:00:01Z",
+        details: { effective_directive: "script-src" },
+      }],
+    },
+  });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  const audit = await client.listAuditEvents({ plugin_instance_id: "plugin_instance_1", type: "plugin.intent.invoked", limit: 5 });
+  const diagnostics = await client.listDiagnosticEvents({ plugin_id: "com.example.intent", severity: "warning", limit: 10 });
+
+  assert.equal(audit.audit_events?.[0]?.details?.intent_id, "example.echo");
+  assert.equal(diagnostics.diagnostic_events?.[0]?.details?.effective_directive, "script-src");
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/audit?plugin_instance_id=plugin_instance_1&type=plugin.intent.invoked&limit=5");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/diagnostics?plugin_id=com.example.intent&severity=warning&limit=10");
 });
 
 test("platform client maps management envelope errors", async () => {

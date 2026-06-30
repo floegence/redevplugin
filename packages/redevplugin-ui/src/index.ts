@@ -366,6 +366,11 @@ export type PluginOperationRecord = {
   orphaned_at?: string;
 };
 
+export type PluginOperationList = {
+  operations?: PluginOperationRecord[];
+  [key: string]: unknown;
+};
+
 export type PluginIntentRecord = {
   plugin_id: string;
   plugin_instance_id: string;
@@ -412,7 +417,7 @@ export type PluginPermissionGrant = {
 };
 
 export type PluginPermissionList = {
-  grants?: PluginPermissionGrant[];
+  permissions?: PluginPermissionGrant[];
   [key: string]: unknown;
 };
 
@@ -451,6 +456,52 @@ export type PluginSecretRefRequest = {
   scope: string;
 };
 
+export type PluginAuditEvent = {
+  type: string;
+  plugin_id?: string;
+  plugin_instance_id?: string;
+  occurred_at?: string;
+  details?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type PluginAuditEventList = {
+  audit_events?: PluginAuditEvent[];
+  [key: string]: unknown;
+};
+
+export type PluginAuditListOptions = {
+  plugin_id?: string;
+  plugin_instance_id?: string;
+  type?: string;
+  limit?: number;
+};
+
+export type PluginDiagnosticEvent = {
+  type: string;
+  severity?: string;
+  plugin_id?: string;
+  plugin_instance_id?: string;
+  surface_instance_id?: string;
+  occurred_at?: string;
+  details?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type PluginDiagnosticEventList = {
+  diagnostic_events?: PluginDiagnosticEvent[];
+  [key: string]: unknown;
+};
+
+export type PluginDiagnosticListOptions = {
+  plugin_id?: string;
+  plugin_instance_id?: string;
+  surface_instance_id?: string;
+  type?: string;
+  severity?: string;
+  limit?: number;
+};
+
 export class PluginPlatformClient {
   #fetch: FetchLike;
   #apiBaseURL: string;
@@ -478,7 +529,7 @@ export class PluginPlatformClient {
     return this.#patchJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, { values });
   }
 
-  listOperations(pluginInstanceId?: string): Promise<PluginOperationRecord[]> {
+  listOperations(pluginInstanceId?: string): Promise<PluginOperationList> {
     const query = pluginInstanceId ? `?plugin_instance_id=${encodeURIComponent(pluginInstanceId)}` : "";
     return this.#getJSON(`/_redevplugin/api/plugins/operations${query}`);
   }
@@ -546,6 +597,14 @@ export class PluginPlatformClient {
 
   deleteSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> {
     return this.#postJSON("/_redevplugin/api/plugins/secrets/delete", request);
+  }
+
+  listAuditEvents(options: PluginAuditListOptions = {}): Promise<PluginAuditEventList> {
+    return this.#getJSON(`/_redevplugin/api/plugins/audit${queryString(options)}`);
+  }
+
+  listDiagnosticEvents(options: PluginDiagnosticListOptions = {}): Promise<PluginDiagnosticEventList> {
+    return this.#getJSON(`/_redevplugin/api/plugins/diagnostics${queryString(options)}`);
   }
 
   #getJSON<T>(path: string): Promise<T> {
@@ -851,6 +910,17 @@ function randomBridgeChannelID(): string {
 
 function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function queryString(values: Record<string, string | number | boolean | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value != null && value !== "") {
+      params.set(key, String(value));
+    }
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 function isBridgeHandshake(value: unknown): value is PluginBridgeHandshake {
