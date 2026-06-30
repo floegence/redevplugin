@@ -190,6 +190,104 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodWorkerNetworkHostcallThroughBuiltRustRuntime(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not found; skipping built Rust runtime integration")
+	}
+	repoRoot := findRepoRootForHostTest(t)
+	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	if runtime.GOOS == "windows" {
+		runtimePath += ".exe"
+	}
+
+	ctx := context.Background()
+	broker := connectivity.NewMemoryBroker()
+	executor := &recordingHostNetworkExecutor{
+		httpStatus: http.StatusAccepted,
+		httpBody:   []byte(`{"ok":true,"source":"rust-runtime"}`),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		storageBroker:      storage.NewMemoryBroker(),
+		connectivityBroker: broker,
+		networkExecutor:    executor,
+	})
+	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+		RuntimePath:      runtimePath,
+		Diagnostics:      h.adapters.Diagnostics,
+		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:     storageFilesBroker(h.adapters.Storage),
+		Connectivity:     broker,
+		NetworkExecutor:  executor,
+		HandshakeTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.adapters.RuntimeSupervisor = supervisor
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := supervisor.Stop(stopCtx); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	})
+	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkHostcallFixturePackage(t), "worker.activity")
+	body := []byte("hello from wasm network hostcall")
+
+	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params: map[string]any{
+			"network_body_base64": base64.StdEncoding.EncodeToString(body),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with network hostcall error = %v", err)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("worker result data = %#v, want map", result.Data)
+	}
+	networkExecute, ok := data["network_execute"].(map[string]any)
+	if !ok {
+		t.Fatalf("network_execute result missing: %#v", data)
+	}
+	if networkExecute["ok"] != true ||
+		networkExecute["status_code"] != float64(http.StatusAccepted) ||
+		networkExecute["connector_id"] != "api" ||
+		networkExecute["transport"] != "http" {
+		t.Fatalf("network_execute result mismatch: %#v", networkExecute)
+	}
+	if executor.httpCalls != 1 ||
+		executor.lastHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
+		executor.lastHTTP.Grant.ConnectorID != "api" ||
+		executor.lastHTTP.Grant.Destination.Host != "api.example.com" ||
+		executor.lastHTTP.Grant.RuntimeGenerationID == "" ||
+		executor.lastHTTP.Method != http.MethodPost ||
+		executor.lastHTTP.Path != "/v1/worker" ||
+		string(executor.lastHTTP.Body) != string(body) {
+		t.Fatalf("network executor call mismatch: calls=%d req=%#v", executor.httpCalls, executor.lastHTTP)
+	}
+}
+
 func TestCallPluginMethodWorkerStorageHostcallThroughBuiltRustRuntime(t *testing.T) {
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not found; skipping built Rust runtime integration")

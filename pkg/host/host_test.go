@@ -2275,6 +2275,20 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerNetworkHostcallFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Hostcall</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedHostcallWorkerWASMForTest("redeven.network", "http_request_demo", "redeven_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2347,9 +2361,13 @@ func minimalWorkerWASMForTest(exportName string) []byte {
 }
 
 func storageHostcallWorkerWASMForTest(exportName string) []byte {
+	return importedHostcallWorkerWASMForTest("redeven.storage", "files_write_demo", exportName)
+}
+
+func importedHostcallWorkerWASMForTest(importModule string, importName string, exportName string) []byte {
 	exportNameBytes := []byte(exportName)
-	importModule := []byte("redeven.storage")
-	importName := []byte("files_write_demo")
+	importModuleBytes := []byte(importModule)
+	importNameBytes := []byte(importName)
 	module := []byte{
 		0x00, 0x61, 0x73, 0x6d,
 		0x01, 0x00, 0x00, 0x00,
@@ -2358,10 +2376,10 @@ func storageHostcallWorkerWASMForTest(exportName string) []byte {
 		0x60, 0x00, 0x00,
 		0x02,
 	}
-	importPayload := []byte{0x01, byte(len(importModule))}
-	importPayload = append(importPayload, importModule...)
-	importPayload = append(importPayload, byte(len(importName)))
-	importPayload = append(importPayload, importName...)
+	importPayload := []byte{0x01, byte(len(importModuleBytes))}
+	importPayload = append(importPayload, importModuleBytes...)
+	importPayload = append(importPayload, byte(len(importNameBytes)))
+	importPayload = append(importPayload, importNameBytes...)
 	importPayload = append(importPayload, 0x00, 0x00)
 	module = append(module, byte(len(importPayload)))
 	module = append(module, importPayload...)

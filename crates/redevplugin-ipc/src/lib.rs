@@ -219,17 +219,22 @@ pub fn worker_success_result_json(
     identity: &WorkerInvocationIdentity,
     wasm_byte_len: usize,
     storage_file_result_json: Option<&str>,
+    network_execute_result_json: Option<&str>,
 ) -> String {
     let storage_file = storage_file_result_json
         .map(|result| format!(",\"storage_file\":{result}"))
         .unwrap_or_default();
+    let network_execute = network_execute_result_json
+        .map(|result| format!(",\"network_execute\":{result}"))
+        .unwrap_or_default();
     format!(
-        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}}}}}",
+        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}{}}}}}",
         escape_json_string(&identity.method),
         escape_json_string(&identity.worker_id),
         WASM_ABI_VERSION,
         wasm_byte_len,
-        storage_file
+        storage_file,
+        network_execute
     )
 }
 
@@ -254,6 +259,18 @@ pub fn storage_file_payload_json(input: &str) -> Result<String, String> {
     if frame_type != FRAME_TYPE_STORAGE_FILE {
         return Err("expected storage_file frame".to_string());
     }
+    frame_payload_json(input)
+}
+
+pub fn network_execute_payload_json(input: &str) -> Result<String, String> {
+    let (frame_type, _, _) = parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_NETWORK_EXECUTE {
+        return Err("expected network_execute frame".to_string());
+    }
+    frame_payload_json(input)
+}
+
+fn frame_payload_json(input: &str) -> Result<String, String> {
     let payload_key = "\"payload\"";
     let Some(payload_start) = input.find(payload_key) else {
         return Err("missing payload".to_string());
@@ -912,8 +929,10 @@ mod tests {
             &identity,
             42,
             Some(r#"{"ok":true,"path":"notes/from-wasm.txt","size_bytes":5}"#),
+            Some(r#"{"ok":true,"transport":"http","status_code":201}"#),
         );
         assert!(result.contains(r#""storage_file":{"ok":true"#));
+        assert!(result.contains(r#""network_execute":{"ok":true"#));
         assert!(result.contains(r#""wasm_byte_len":42"#));
     }
 

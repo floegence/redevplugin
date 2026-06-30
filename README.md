@@ -85,12 +85,13 @@ capabilities.
   header and required function export through `redevplugin-wasm-abi`, executes
   the exported no-argument worker entrypoint with the embedded Wasmi engine, and
   returns a successful scaffold worker result over `invoke_worker_result`. It
-  also exposes the first storage hostcall slice: a WASM worker can import
-  `redeven.storage/files_write_demo`, and the runtime turns that request into a
-  `storage_file` IPC call that is still authorized and executed by the Host
-  storage broker through a short-lived handle grant. Host integration tests
-  build and exercise the real Rust runtime whenever a local Cargo toolchain is
-  available, including a FileBroker write path.
+  also exposes the first brokered hostcall slices: a WASM worker can import
+  `redeven.storage/files_write_demo` to request a Host-authorized
+  `storage_file` write, or `redeven.network/http_request_demo` to request a
+  Host-authorized `network_execute` HTTP round trip through the connectivity
+  broker and network executor. Host integration tests build and exercise the
+  real Rust runtime whenever a local Cargo toolchain is available, including
+  FileBroker and HTTP executor paths.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the
