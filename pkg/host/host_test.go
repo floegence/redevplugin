@@ -2289,6 +2289,20 @@ func buildWorkerNetworkHostcallFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Memory Hostcall</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redeven_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redeven_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2391,6 +2405,78 @@ func importedHostcallWorkerWASMForTest(importModule string, importName string, e
 	module = append(module, exportPayload...)
 	module = append(module, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b)
 	return module
+}
+
+func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
+	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
+	exportNameBytes := []byte(exportName)
+	importModule := []byte("redeven.network")
+	importName := []byte("http_request")
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x0c, 0x02,
+		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
+		0x60, 0x00, 0x00,
+		0x02,
+	}
+	importPayload := []byte{0x01, byte(len(importModule))}
+	importPayload = append(importPayload, importModule...)
+	importPayload = append(importPayload, byte(len(importName)))
+	importPayload = append(importPayload, importName...)
+	importPayload = append(importPayload, 0x00, 0x00)
+	module = appendLEBUint32(module, uint32(len(importPayload)))
+	module = append(module, importPayload...)
+	module = append(module,
+		0x03, 0x02, 0x01, 0x01,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07,
+	)
+	exportPayload := []byte{0x02, 0x06}
+	exportPayload = append(exportPayload, []byte("memory")...)
+	exportPayload = append(exportPayload, 0x02, 0x00, byte(len(exportNameBytes)))
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, 0x01)
+	module = appendLEBUint32(module, uint32(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a)
+	codePayload := []byte{0x01}
+	body := []byte{
+		0x00,
+		0x41, 0x00,
+		0x41,
+	}
+	body = appendLEBUint32(body, uint32(len(request)))
+	body = append(body, 0x41)
+	body = appendLEBUint32(body, 512)
+	body = append(body, 0x41)
+	body = appendLEBUint32(body, 512)
+	body = append(body, 0x10, 0x00, 0x1a, 0x0b)
+	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
+	codePayload = append(codePayload, body...)
+	module = appendLEBUint32(module, uint32(len(codePayload)))
+	module = append(module, codePayload...)
+	module = append(module, 0x0b)
+	dataPayload := []byte{0x01, 0x00, 0x41, 0x00, 0x0b}
+	dataPayload = appendLEBUint32(dataPayload, uint32(len(request)))
+	dataPayload = append(dataPayload, request...)
+	module = appendLEBUint32(module, uint32(len(dataPayload)))
+	module = append(module, dataPayload...)
+	return module
+}
+
+func appendLEBUint32(out []byte, value uint32) []byte {
+	for {
+		b := byte(value & 0x7f)
+		value >>= 7
+		if value != 0 {
+			b |= 0x80
+		}
+		out = append(out, b)
+		if value == 0 {
+			return out
+		}
+	}
 }
 
 func workerFixtureABIJSON(exports ...string) string {

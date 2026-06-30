@@ -254,6 +254,15 @@ pub fn extract_json_number_u64(input: &str, key: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+pub fn extract_json_object(input: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\"");
+    let key_start = input.find(&pattern)?;
+    let after_key = &input[key_start + pattern.len()..];
+    let colon = after_key.find(':')?;
+    let value = after_key[colon + 1..].trim_start();
+    json_object_prefix(value)
+}
+
 pub fn storage_file_payload_json(input: &str) -> Result<String, String> {
     let (frame_type, _, _) = parse_frame_identity(input).map_err(|err| err.to_string())?;
     if frame_type != FRAME_TYPE_STORAGE_FILE {
@@ -283,10 +292,17 @@ fn frame_payload_json(input: &str) -> Result<String, String> {
     if !payload.starts_with('{') {
         return Err("payload is not an object".to_string());
     }
+    json_object_prefix(payload).ok_or_else(|| "unterminated payload object".to_string())
+}
+
+fn json_object_prefix(input: &str) -> Option<String> {
+    if !input.starts_with('{') {
+        return None;
+    }
     let mut depth = 0usize;
     let mut in_string = false;
     let mut escaped = false;
-    for (idx, ch) in payload.char_indices() {
+    for (idx, ch) in input.char_indices() {
         if escaped {
             escaped = false;
             continue;
@@ -305,13 +321,13 @@ fn frame_payload_json(input: &str) -> Result<String, String> {
             '}' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    return Ok(payload[..=idx].to_string());
+                    return Some(input[..=idx].to_string());
                 }
             }
             _ => {}
         }
     }
-    Err("unterminated payload object".to_string())
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -934,6 +950,17 @@ mod tests {
         assert!(result.contains(r#""storage_file":{"ok":true"#));
         assert!(result.contains(r#""network_execute":{"ok":true"#));
         assert!(result.contains(r#""wasm_byte_len":42"#));
+    }
+
+    #[test]
+    fn extracts_nested_json_object_values() {
+        let input = r#"{"headers":{"Content-Type":["text/plain"],"X-Test":["value with } brace"]},"after":true}"#;
+        let headers = extract_json_object(input, "headers").expect("headers object");
+        assert_eq!(
+            headers,
+            r#"{"Content-Type":["text/plain"],"X-Test":["value with } brace"]}"#
+        );
+        assert_eq!(extract_json_object(input, "missing"), None);
     }
 
     #[test]

@@ -69,7 +69,10 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
   grep -q 'files_write_demo' crates/redevplugin-runtime/src/main.rs
   grep -q 'storage_file_frame' crates/redevplugin-runtime/src/main.rs
   grep -q 'http_request_demo' crates/redevplugin-runtime/src/main.rs
+  grep -q '"http_request"' crates/redevplugin-runtime/src/main.rs
+  grep -q 'perform_network_http_request_hostcall' crates/redevplugin-runtime/src/main.rs
   grep -q 'network_execute_frame' crates/redevplugin-runtime/src/main.rs
+  grep -q 'networkMemoryHostcallWorkerWASMForTest' pkg/host/host_test.go
   grep -q 'runtime_instance_id' spec/plugin/worker-invocation-v1.schema.json
   grep -q 'runtime_generation_id' spec/plugin/worker-invocation-v1.schema.json
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json

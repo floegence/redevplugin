@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, Write};
+use wasmi::{AsContext, AsContextMut};
 
 fn main() {
     if let Err(err) = run() {
@@ -156,7 +157,16 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    let execution = match execute_worker_module(&wasm_bytes, &identity.export) {
+    let execution = match execute_worker_module(&wasm_bytes, &identity.export, |request_json| {
+        perform_network_http_request(
+            reader,
+            stdout,
+            request_id,
+            runtime_generation_id,
+            line,
+            request_json,
+        )
+    }) {
         Ok(execution) => execution,
         Err(err) => {
             return Ok(redevplugin_ipc::response_frame(
@@ -170,6 +180,36 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
+    let mut memory_network_result = None;
+    if execution.network_http_request_requested {
+        match execution.network_http_request_result {
+            Some(Ok(result)) => {
+                memory_network_result = Some(result);
+            }
+            Some(Err(err)) => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(err.as_str()),
+                ));
+            }
+            None => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some("network hostcall did not produce a response"),
+                ));
+            }
+        }
+    }
     let storage_file_result = if execution.storage_file_write_demo_requested {
         match perform_storage_file_write_demo(
             reader,
@@ -222,7 +262,9 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         &identity,
         execution.validated.byte_len,
         storage_file_result.as_deref(),
-        network_execute_result.as_deref(),
+        memory_network_result
+            .as_deref()
+            .or(network_execute_result.as_deref()),
     );
     Ok(redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -240,20 +282,42 @@ struct WorkerExecution {
     validated: redevplugin_wasm_abi::ValidatedWorkerModule,
     storage_file_write_demo_requested: bool,
     network_http_request_demo_requested: bool,
+    network_http_request_requested: bool,
+    network_http_request_result: Option<Result<String, String>>,
 }
 
-#[derive(Default)]
-struct WorkerHostState {
+type NetworkHTTPHostcall<'a> = dyn FnMut(&str) -> Result<String, String> + 'a;
+
+struct WorkerHostState<'a> {
     storage_file_write_demo_requested: bool,
     network_http_request_demo_requested: bool,
+    network_http_request_requested: bool,
+    network_http_request_result: Option<Result<String, String>>,
+    network_http_request: Box<NetworkHTTPHostcall<'a>>,
 }
 
-fn execute_worker_module(wasm_bytes: &[u8], export_name: &str) -> Result<WorkerExecution, String> {
+impl<'a> WorkerHostState<'a> {
+    fn new(network_http_request: impl FnMut(&str) -> Result<String, String> + 'a) -> Self {
+        Self {
+            storage_file_write_demo_requested: false,
+            network_http_request_demo_requested: false,
+            network_http_request_requested: false,
+            network_http_request_result: None,
+            network_http_request: Box::new(network_http_request),
+        }
+    }
+}
+
+fn execute_worker_module<'a>(
+    wasm_bytes: &[u8],
+    export_name: &str,
+    network_http_request: impl FnMut(&str) -> Result<String, String> + 'a,
+) -> Result<WorkerExecution, String> {
     let validated = redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
     let engine = wasmi::Engine::default();
     let module = wasmi::Module::new(&engine, wasm_bytes)
         .map_err(|err| format!("compile wasm worker module: {err}"))?;
-    let mut linker = <wasmi::Linker<WorkerHostState>>::new(&engine);
+    let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&engine);
     linker
         .func_wrap(
             "redeven.storage",
@@ -272,7 +336,27 @@ fn execute_worker_module(wasm_bytes: &[u8], export_name: &str) -> Result<WorkerE
             },
         )
         .map_err(|err| format!("define network hostcall import: {err}"))?;
-    let mut store = wasmi::Store::new(&engine, WorkerHostState::default());
+    linker
+        .func_wrap(
+            "redeven.network",
+            "http_request",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             request_ptr: i32,
+             request_len: i32,
+             response_ptr: i32,
+             response_len: i32|
+             -> i32 {
+                perform_network_http_request_hostcall(
+                    &mut caller,
+                    request_ptr,
+                    request_len,
+                    response_ptr,
+                    response_len,
+                )
+            },
+        )
+        .map_err(|err| format!("define network memory hostcall import: {err}"))?;
+    let mut store = wasmi::Store::new(&engine, WorkerHostState::new(network_http_request));
     let instance = linker
         .instantiate_and_start(&mut store, &module)
         .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
@@ -284,11 +368,102 @@ fn execute_worker_module(wasm_bytes: &[u8], export_name: &str) -> Result<WorkerE
         .map_err(|err| format!("execute wasm worker export {export_name:?}: {err}"))?;
     let storage_file_write_demo_requested = store.data().storage_file_write_demo_requested;
     let network_http_request_demo_requested = store.data().network_http_request_demo_requested;
+    let network_http_request_requested = store.data().network_http_request_requested;
+    let network_http_request_result = store.data().network_http_request_result.clone();
     Ok(WorkerExecution {
         validated,
         storage_file_write_demo_requested,
         network_http_request_demo_requested,
+        network_http_request_requested,
+        network_http_request_result,
     })
+}
+
+fn perform_network_http_request_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    request_ptr: i32,
+    request_len: i32,
+    response_ptr: i32,
+    response_len: i32,
+) -> i32 {
+    caller.data_mut().network_http_request_requested = true;
+    let request_ptr = match usize::try_from(request_ptr) {
+        Ok(value) => value,
+        Err(_) => return record_network_hostcall_error(caller, -1),
+    };
+    let request_len = match usize::try_from(request_len) {
+        Ok(value) => value,
+        Err(_) => return record_network_hostcall_error(caller, -1),
+    };
+    let response_ptr = match usize::try_from(response_ptr) {
+        Ok(value) => value,
+        Err(_) => return record_network_hostcall_error(caller, -1),
+    };
+    let response_len = match usize::try_from(response_len) {
+        Ok(value) => value,
+        Err(_) => return record_network_hostcall_error(caller, -1),
+    };
+    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    {
+        return record_network_hostcall_error(caller, -2);
+    }
+    let Some(memory) = caller
+        .get_export("memory")
+        .and_then(wasmi::Extern::into_memory)
+    else {
+        return record_network_hostcall_error(caller, -3);
+    };
+    let mut request = vec![0_u8; request_len];
+    if memory
+        .read(caller.as_context(), request_ptr, &mut request)
+        .is_err()
+    {
+        return record_network_hostcall_error(caller, -4);
+    }
+    let request_json = match std::str::from_utf8(&request) {
+        Ok(value) => value,
+        Err(_) => return record_network_hostcall_error(caller, -5),
+    };
+    let response_json = {
+        let state = caller.data_mut();
+        (state.network_http_request)(request_json)
+    };
+    let response_json = match response_json {
+        Ok(value) => value,
+        Err(err) => {
+            caller.data_mut().network_http_request_result = Some(Err(err));
+            return -6;
+        }
+    };
+    let response = response_json.as_bytes();
+    if response.len() > response_len {
+        caller.data_mut().network_http_request_result = Some(Err(
+            "network http_request response does not fit in the output buffer".to_string(),
+        ));
+        return -7;
+    }
+    if memory
+        .write(caller.as_context_mut(), response_ptr, response)
+        .is_err()
+    {
+        return record_network_hostcall_error(caller, -8);
+    }
+    let written = match i32::try_from(response.len()) {
+        Ok(value) => value,
+        Err(_) => return record_network_hostcall_error(caller, -9),
+    };
+    caller.data_mut().network_http_request_result = Some(Ok(response_json));
+    written
+}
+
+fn record_network_hostcall_error(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    code: i32,
+) -> i32 {
+    caller.data_mut().network_http_request_result = Some(Err(format!(
+        "network http_request hostcall failed with ABI code {code}"
+    )));
+    code
 }
 
 fn perform_storage_file_write_demo<R: BufRead, W: Write>(
@@ -391,6 +566,88 @@ fn perform_network_http_request_demo<R: BufRead, W: Write>(
     redevplugin_ipc::network_execute_payload_json(&response)
 }
 
+fn perform_network_http_request<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    invocation_frame: &str,
+    request_json: &str,
+) -> Result<String, String> {
+    let req = network_http_request(invocation_frame, runtime_generation_id, request_json)?;
+    let network_request_id = format!("{request_id}:network_http_request");
+    let frame =
+        redevplugin_ipc::network_execute_frame(&network_request_id, runtime_generation_id, &req);
+    stdout
+        .write_all(frame.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush())
+        .map_err(|err| format!("write network_execute request: {err}"))?;
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|err| format!("read network_execute response: {err}"))?;
+    if response.is_empty() {
+        return Err("network_execute response is empty".to_string());
+    }
+    let connector_id =
+        request_json_string(request_json, "connector_id").unwrap_or_else(|| "api".to_string());
+    let transport =
+        request_json_string(request_json, "transport").unwrap_or_else(|| "http".to_string());
+    redevplugin_ipc::validate_network_execute_response(
+        &response,
+        &network_request_id,
+        runtime_generation_id,
+        &connector_id,
+        &transport,
+    )?;
+    redevplugin_ipc::network_execute_payload_json(&response)
+}
+
+fn network_http_request(
+    invocation_frame: &str,
+    runtime_generation_id: &str,
+    request_json: &str,
+) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
+    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
+    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
+    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
+    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
+    let management_revision = required_json_number(invocation_frame, "management_revision")?;
+    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    Ok(redevplugin_ipc::NetworkExecuteRequest {
+        plugin_instance_id,
+        active_fingerprint,
+        runtime_instance_id,
+        runtime_generation_id: runtime_generation_id.to_string(),
+        runtime_shard_id: String::new(),
+        policy_revision,
+        management_revision,
+        revoke_epoch,
+        connector_id: request_json_string(request_json, "connector_id")
+            .unwrap_or_else(|| "api".to_string()),
+        transport: request_json_string(request_json, "transport")
+            .unwrap_or_else(|| "http".to_string()),
+        destination: request_json_string(request_json, "destination")
+            .unwrap_or_else(|| "https://api.example.com".to_string()),
+        ttl_ms: request_json_number(request_json, "ttl_ms").unwrap_or(30_000),
+        operation: request_json_string(request_json, "operation")
+            .unwrap_or_else(|| "http".to_string()),
+        method: request_json_string(request_json, "method").unwrap_or_else(|| "GET".to_string()),
+        path: request_json_string(request_json, "path").unwrap_or_else(|| "/".to_string()),
+        headers_json: request_json_object(request_json, "headers")
+            .unwrap_or_else(|| "{}".to_string()),
+        message_type: request_json_string(request_json, "message_type").unwrap_or_default(),
+        body_base64: request_json_string(request_json, "body_base64").unwrap_or_default(),
+        payload_base64: request_json_string(request_json, "payload_base64").unwrap_or_default(),
+        max_request_bytes: request_json_number(request_json, "max_request_bytes")
+            .unwrap_or(64 * 1024),
+        max_response_bytes: request_json_number(request_json, "max_response_bytes")
+            .unwrap_or(256 * 1024),
+        timeout_ms: request_json_number(request_json, "timeout_ms").unwrap_or(5_000),
+    })
+}
+
 fn network_http_request_demo(
     invocation_frame: &str,
     runtime_generation_id: &str,
@@ -440,6 +697,18 @@ fn required_json_string(input: &str, key: &str) -> Result<String, String> {
 
 fn required_json_number(input: &str, key: &str) -> Result<u64, String> {
     redevplugin_ipc::extract_json_number_u64(input, key).ok_or_else(|| format!("missing {key}"))
+}
+
+fn request_json_string(input: &str, key: &str) -> Option<String> {
+    redevplugin_ipc::extract_json_string(input, key).filter(|value| !value.trim().is_empty())
+}
+
+fn request_json_number(input: &str, key: &str) -> Option<u64> {
+    redevplugin_ipc::extract_json_number_u64(input, key)
+}
+
+fn request_json_object(input: &str, key: &str) -> Option<String> {
+    redevplugin_ipc::extract_json_object(input, key)
 }
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
@@ -498,21 +767,27 @@ mod tests {
     #[test]
     fn executes_minimal_wasm_worker_export() {
         let module = minimal_worker_wasm("redeven_worker_invoke");
-        let execution = execute_worker_module(&module, "redeven_worker_invoke")
-            .expect("minimal worker executes");
+        let execution = execute_worker_module(&module, "redeven_worker_invoke", |_| {
+            Err("unexpected network call".to_string())
+        })
+        .expect("minimal worker executes");
         assert_eq!(execution.validated.byte_len, module.len());
         assert!(!execution.storage_file_write_demo_requested);
         assert!(!execution.network_http_request_demo_requested);
+        assert!(!execution.network_http_request_requested);
     }
 
     #[test]
     fn executes_storage_hostcall_wasm_worker_export() {
         let module = storage_hostcall_worker_wasm("redeven_worker_invoke");
-        let execution = execute_worker_module(&module, "redeven_worker_invoke")
-            .expect("storage hostcall worker executes");
+        let execution = execute_worker_module(&module, "redeven_worker_invoke", |_| {
+            Err("unexpected network call".to_string())
+        })
+        .expect("storage hostcall worker executes");
         assert_eq!(execution.validated.byte_len, module.len());
         assert!(execution.storage_file_write_demo_requested);
         assert!(!execution.network_http_request_demo_requested);
+        assert!(!execution.network_http_request_requested);
     }
 
     #[test]
@@ -522,18 +797,44 @@ mod tests {
             "http_request_demo",
             "redeven_worker_invoke",
         );
-        let execution = execute_worker_module(&module, "redeven_worker_invoke")
-            .expect("network hostcall worker executes");
+        let execution = execute_worker_module(&module, "redeven_worker_invoke", |_| {
+            Err("unexpected network call".to_string())
+        })
+        .expect("network hostcall worker executes");
         assert_eq!(execution.validated.byte_len, module.len());
         assert!(!execution.storage_file_write_demo_requested);
         assert!(execution.network_http_request_demo_requested);
+        assert!(!execution.network_http_request_requested);
+    }
+
+    #[test]
+    fn executes_network_memory_hostcall_wasm_worker_export() {
+        let module = network_memory_hostcall_worker_wasm("redeven_worker_invoke");
+        let execution = execute_worker_module(&module, "redeven_worker_invoke", |request| {
+            assert!(request.contains(r#""connector_id":"api""#), "{request}");
+            assert!(request.contains(r#""method":"POST""#), "{request}");
+            Ok(r#"{"ok":true,"transport":"http","status_code":202}"#.to_string())
+        })
+        .expect("network memory hostcall worker executes");
+        assert_eq!(execution.validated.byte_len, module.len());
+        assert!(!execution.storage_file_write_demo_requested);
+        assert!(!execution.network_http_request_demo_requested);
+        assert!(execution.network_http_request_requested);
+        assert_eq!(
+            execution.network_http_request_result,
+            Some(Ok(
+                r#"{"ok":true,"transport":"http","status_code":202}"#.to_string()
+            ))
+        );
     }
 
     #[test]
     fn rejects_wasm_worker_with_missing_export() {
         let module = minimal_worker_wasm("other_export");
-        let err = execute_worker_module(&module, "redeven_worker_invoke")
-            .expect_err("missing worker export");
+        let err = execute_worker_module(&module, "redeven_worker_invoke", |_| {
+            Err("unexpected network call".to_string())
+        })
+        .expect_err("missing worker export");
         assert!(err.contains("required function export"));
     }
 
@@ -554,6 +855,52 @@ mod tests {
 
     fn storage_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
         imported_hostcall_worker_wasm("redeven.storage", "files_write_demo", export_name)
+    }
+
+    fn network_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
+        let request = br#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}"#;
+        let export_name_bytes = export_name.as_bytes();
+        let import_module = b"redeven.network";
+        let import_name = b"http_request";
+        let mut module = vec![
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x02, 0x60, 0x04, 0x7f,
+            0x7f, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x00, 0x02,
+        ];
+        let mut import_payload = vec![0x01, import_module.len() as u8];
+        import_payload.extend_from_slice(import_module);
+        import_payload.push(import_name.len() as u8);
+        import_payload.extend_from_slice(import_name);
+        import_payload.extend_from_slice(&[0x00, 0x00]);
+        push_leb_u32(&mut module, import_payload.len() as u32);
+        module.extend_from_slice(&import_payload);
+        module.extend_from_slice(&[0x03, 0x02, 0x01, 0x01, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07]);
+        let mut export_payload = vec![0x02, 0x06];
+        export_payload.extend_from_slice(b"memory");
+        export_payload.extend_from_slice(&[0x02, 0x00, export_name_bytes.len() as u8]);
+        export_payload.extend_from_slice(export_name_bytes);
+        export_payload.extend_from_slice(&[0x00, 0x01]);
+        push_leb_u32(&mut module, export_payload.len() as u32);
+        module.extend_from_slice(&export_payload);
+        module.extend_from_slice(&[0x0a]);
+        let mut code_payload = vec![0x01];
+        let mut body = vec![0x00, 0x41, 0x00, 0x41];
+        push_leb_u32(&mut body, request.len() as u32);
+        body.extend_from_slice(&[0x41]);
+        push_leb_u32(&mut body, 512);
+        body.extend_from_slice(&[0x41]);
+        push_leb_u32(&mut body, 512);
+        body.extend_from_slice(&[0x10, 0x00, 0x1a, 0x0b]);
+        push_leb_u32(&mut code_payload, body.len() as u32);
+        code_payload.extend_from_slice(&body);
+        push_leb_u32(&mut module, code_payload.len() as u32);
+        module.extend_from_slice(&code_payload);
+        module.extend_from_slice(&[0x0b]);
+        let mut data_payload = vec![0x01, 0x00, 0x41, 0x00, 0x0b];
+        push_leb_u32(&mut data_payload, request.len() as u32);
+        data_payload.extend_from_slice(request);
+        push_leb_u32(&mut module, data_payload.len() as u32);
+        module.extend_from_slice(&data_payload);
+        module
     }
 
     fn imported_hostcall_worker_wasm(
@@ -583,5 +930,19 @@ mod tests {
         module.extend_from_slice(&export_payload);
         module.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b]);
         module
+    }
+
+    fn push_leb_u32(out: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
     }
 }
