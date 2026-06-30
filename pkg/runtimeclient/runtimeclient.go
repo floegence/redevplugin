@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -114,6 +115,7 @@ type ProcessSupervisorOptions struct {
 	HandleGrants     HandleGrantValidator
 	StorageFiles     storage.FilesBroker
 	Connectivity     connectivity.Broker
+	NetworkExecutor  connectivity.NetworkExecutor
 	Now              func() time.Time
 	HandshakeTimeout time.Duration
 }
@@ -131,6 +133,7 @@ type ProcessSupervisor struct {
 	handleGrants     HandleGrantValidator
 	storageFiles     storage.FilesBroker
 	connectivity     connectivity.Broker
+	networkExecutor  connectivity.NetworkExecutor
 	now              func() time.Time
 	handshakeTimeout time.Duration
 	seq              uint64
@@ -168,6 +171,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		handleGrants:     options.HandleGrants,
 		storageFiles:     options.StorageFiles,
 		connectivity:     options.Connectivity,
+		networkExecutor:  options.NetworkExecutor,
 		now:              now,
 		handshakeTimeout: handshakeTimeout,
 	}, nil
@@ -480,6 +484,7 @@ const (
 	ipcFrameTypeValidateHandleGrant = "validate_handle_grant"
 	ipcFrameTypeStorageFile         = "storage_file"
 	ipcFrameTypeNetworkGrant        = "network_grant"
+	ipcFrameTypeNetworkExecute      = "network_execute"
 	ipcFrameTypeRevokeEpoch         = "revoke_epoch"
 	ipcFrameTypeRevokeEpochAck      = "revoke_epoch_ack"
 )
@@ -618,6 +623,47 @@ type networkGrantResponsePayload struct {
 	Message                 string                   `json:"message,omitempty"`
 }
 
+type networkExecuteRequestPayload struct {
+	PluginInstanceID    string                 `json:"plugin_instance_id"`
+	ActiveFingerprint   string                 `json:"active_fingerprint"`
+	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                 `json:"runtime_generation_id"`
+	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
+	PolicyRevision      uint64                 `json:"policy_revision"`
+	ManagementRevision  uint64                 `json:"management_revision"`
+	RevokeEpoch         uint64                 `json:"revoke_epoch"`
+	ConnectorID         string                 `json:"connector_id"`
+	Transport           connectivity.Transport `json:"transport"`
+	Destination         string                 `json:"destination"`
+	TTLMillis           int64                  `json:"ttl_ms,omitempty"`
+	Operation           string                 `json:"operation,omitempty"`
+	Method              string                 `json:"method,omitempty"`
+	Path                string                 `json:"path,omitempty"`
+	Headers             http.Header            `json:"headers,omitempty"`
+	MessageType         string                 `json:"message_type,omitempty"`
+	BodyBase64          string                 `json:"body_base64,omitempty"`
+	PayloadBase64       string                 `json:"payload_base64,omitempty"`
+	MaxRequestBytes     int64                  `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes    int64                  `json:"max_response_bytes,omitempty"`
+	TimeoutMillis       int64                  `json:"timeout_ms,omitempty"`
+}
+
+type networkExecuteResponsePayload struct {
+	OK                bool                     `json:"ok"`
+	Transport         connectivity.Transport   `json:"transport,omitempty"`
+	Destination       connectivity.Destination `json:"destination,omitempty"`
+	StatusCode        int                      `json:"status_code,omitempty"`
+	Headers           http.Header              `json:"headers,omitempty"`
+	MessageType       string                   `json:"message_type,omitempty"`
+	BodyBase64        string                   `json:"body_base64,omitempty"`
+	PayloadBase64     string                   `json:"payload_base64,omitempty"`
+	GrantID           string                   `json:"grant_id,omitempty"`
+	ConnectorID       string                   `json:"connector_id,omitempty"`
+	RuntimeGeneration string                   `json:"runtime_generation_id,omitempty"`
+	Code              string                   `json:"code,omitempty"`
+	Message           string                   `json:"message,omitempty"`
+}
+
 func (p runtimeResponsePayload) err() error {
 	message := strings.TrimSpace(p.Message)
 	if message == "" {
@@ -751,6 +797,12 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 			}
 			if got.frame.FrameType == ipcFrameTypeNetworkGrant {
 				if err := s.respondToNetworkGrant(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
+			if got.frame.FrameType == ipcFrameTypeNetworkExecute {
+				if err := s.respondToNetworkExecute(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
 					return ipcFrame{}, err
 				}
 				continue
@@ -1219,6 +1271,117 @@ func (s *ProcessSupervisor) writeNetworkGrantResponse(stdin io.Writer, runtimeGe
 	return nil
 }
 
+func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	if allowedArtifact == nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_EXECUTE_REQUEST_DENIED",
+			Message: "network execution is only available during worker invocation",
+		})
+	}
+	var req networkExecuteRequestPayload
+	if len(frame.Payload) == 0 {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
+			Message: "missing network execute payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
+			Message: "decode network execute payload: " + err.Error(),
+		})
+	}
+	if err := validateNetworkExecuteRequest(req, health.RuntimeGenerationID); err != nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
+			Message: err.Error(),
+		})
+	}
+	if s.connectivity == nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_BROKER_UNAVAILABLE",
+			Message: "runtime connectivity broker is unavailable",
+		})
+	}
+	if s.networkExecutor == nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_EXECUTOR_UNAVAILABLE",
+			Message: "runtime network executor is unavailable",
+		})
+	}
+	grant, err := s.mintGrantForNetworkExecute(ctx, req)
+	if err != nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteErrorResponse(err))
+	}
+	if err := validateNetworkGrantResult(networkGrantRequestPayload{
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+		ConnectorID:         req.ConnectorID,
+		Transport:           req.Transport,
+		Destination:         req.Destination,
+		TTLMillis:           req.TTLMillis,
+	}, grant, health.RuntimeGenerationID); err != nil {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK:      false,
+			Code:    "NETWORK_GRANT_VALIDATION_FAILED",
+			Message: err.Error(),
+		})
+	}
+	payload := dispatchNetworkExecute(ctx, s.networkExecutor, grant, req, s.now())
+	if payload.OK {
+		payload.GrantID = grant.GrantID
+		payload.ConnectorID = grant.ConnectorID
+		payload.RuntimeGeneration = grant.RuntimeGenerationID
+		payload.Transport = grant.Transport
+		payload.Destination = grant.Destination
+	}
+	return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
+}
+
+func (s *ProcessSupervisor) mintGrantForNetworkExecute(ctx context.Context, req networkExecuteRequestPayload) (connectivity.ConnectionGrant, error) {
+	ttl := time.Duration(req.TTLMillis) * time.Millisecond
+	return s.connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+		ConnectorID:         req.ConnectorID,
+		Transport:           req.Transport,
+		Destination:         req.Destination,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		Now:                 s.now(),
+		TTL:                 ttl,
+	})
+}
+
+func (s *ProcessSupervisor) writeNetworkExecuteResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload networkExecuteResponsePayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeNetworkExecute,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write network_execute response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
 func validateNetworkGrantResult(req networkGrantRequestPayload, grant connectivity.ConnectionGrant, runtimeGenerationID string) error {
 	if strings.TrimSpace(grant.GrantID) == "" ||
 		strings.TrimSpace(grant.PluginInstanceID) != strings.TrimSpace(req.PluginInstanceID) ||
@@ -1264,6 +1427,142 @@ func validateNetworkGrantRequest(req networkGrantRequestPayload, runtimeGenerati
 	return nil
 }
 
+func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGenerationID string) error {
+	grantReq := networkGrantRequestPayload{
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		RuntimeInstanceID:   req.RuntimeInstanceID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		RuntimeShardID:      req.RuntimeShardID,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+		ConnectorID:         req.ConnectorID,
+		Transport:           req.Transport,
+		Destination:         req.Destination,
+		TTLMillis:           req.TTLMillis,
+	}
+	if err := validateNetworkGrantRequest(grantReq, runtimeGenerationID); err != nil {
+		return err
+	}
+	if req.TimeoutMillis < 0 {
+		return errors.New("timeout_ms must not be negative")
+	}
+	if req.MaxRequestBytes < 0 || req.MaxResponseBytes < 0 {
+		return errors.New("max request and response bytes must not be negative")
+	}
+	switch req.Transport {
+	case connectivity.TransportHTTP:
+		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "http" {
+			return errors.New("http network execution operation must be http")
+		}
+	case connectivity.TransportWebSocket:
+		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "websocket_round_trip" {
+			return errors.New("websocket network execution operation must be websocket_round_trip")
+		}
+	case connectivity.TransportTCP:
+		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "tcp_round_trip" {
+			return errors.New("tcp network execution operation must be tcp_round_trip")
+		}
+	case connectivity.TransportUDP:
+		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "udp_round_trip" {
+			return errors.New("udp network execution operation must be udp_round_trip")
+		}
+	}
+	return nil
+}
+
+func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkExecutor, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, now time.Time) networkExecuteResponsePayload {
+	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
+	switch req.Transport {
+	case connectivity.TransportHTTP:
+		body, err := decodeOptionalBase64(req.BodyBase64)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
+		result, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
+			Grant:            grant,
+			Method:           req.Method,
+			Path:             req.Path,
+			Headers:          req.Headers,
+			Body:             body,
+			MaxRequestBytes:  req.MaxRequestBytes,
+			MaxResponseBytes: req.MaxResponseBytes,
+			Timeout:          timeout,
+			Now:              now,
+		})
+		if err != nil {
+			return networkExecuteErrorResponse(err)
+		}
+		return networkExecuteResponsePayload{OK: true, StatusCode: result.StatusCode, Headers: result.Headers, BodyBase64: base64.StdEncoding.EncodeToString(result.Body)}
+	case connectivity.TransportWebSocket:
+		payload, err := decodeOptionalBase64(req.PayloadBase64)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
+		result, err := executor.WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
+			Grant:            grant,
+			Path:             req.Path,
+			Headers:          req.Headers,
+			MessageType:      connectivity.WebSocketMessageType(strings.TrimSpace(req.MessageType)),
+			Payload:          payload,
+			MaxRequestBytes:  req.MaxRequestBytes,
+			MaxResponseBytes: req.MaxResponseBytes,
+			Timeout:          timeout,
+			Now:              now,
+		})
+		if err != nil {
+			return networkExecuteErrorResponse(err)
+		}
+		return networkExecuteResponsePayload{OK: true, MessageType: string(result.MessageType), PayloadBase64: base64.StdEncoding.EncodeToString(result.Payload)}
+	case connectivity.TransportTCP:
+		payload, err := decodeOptionalBase64(req.PayloadBase64)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
+		result, err := executor.TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
+			Grant:        grant,
+			Payload:      payload,
+			MaxReadBytes: req.MaxResponseBytes,
+			Timeout:      timeout,
+			Now:          now,
+		})
+		if err != nil {
+			return networkExecuteErrorResponse(err)
+		}
+		return networkExecuteResponsePayload{OK: true, PayloadBase64: base64.StdEncoding.EncodeToString(result.Payload)}
+	case connectivity.TransportUDP:
+		payload, err := decodeOptionalBase64(req.PayloadBase64)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
+		result, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
+			Grant:        grant,
+			Payload:      payload,
+			MaxReadBytes: req.MaxResponseBytes,
+			Timeout:      timeout,
+			Now:          now,
+		})
+		if err != nil {
+			return networkExecuteErrorResponse(err)
+		}
+		return networkExecuteResponsePayload{OK: true, PayloadBase64: base64.StdEncoding.EncodeToString(result.Payload)}
+	default:
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network transport is not supported"}
+	}
+}
+
+func decodeOptionalBase64(value string) ([]byte, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	data, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64 payload: %v", err)
+	}
+	return data, nil
+}
+
 func networkGrantErrorResponse(err error) networkGrantResponsePayload {
 	switch {
 	case errors.Is(err, connectivity.ErrInvalidConnector):
@@ -1274,6 +1573,29 @@ func networkGrantErrorResponse(err error) networkGrantResponsePayload {
 		return networkGrantResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: err.Error()}
 	default:
 		return networkGrantResponsePayload{OK: false, Code: "NETWORK_GRANT_FAILED", Message: err.Error()}
+	}
+}
+
+func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
+	switch {
+	case errors.Is(err, connectivity.ErrInvalidConnector):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrTargetDenied):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_TARGET_DENIED", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrConnectorDenied):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTOR_DENIED", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrGrantExpired):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_GRANT_EXPIRED", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrRequestTooLarge):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_REQUEST_TOO_LARGE", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrResponseTooLarge):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrConnectionClosed):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrWebSocketFailed):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_WEBSOCKET_FAILED", Message: err.Error()}
+	default:
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: err.Error()}
 	}
 }
 

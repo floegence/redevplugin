@@ -170,3 +170,48 @@ func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 		}
 	}
 }
+
+func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	frameType := requireNestedObject(t, schema, "properties", "frame_type")
+	frameEnum, ok := frameType["enum"].([]any)
+	if !ok || !containsString(frameEnum, "network_execute") {
+		t.Fatalf("frame_type enum missing network_execute: %#v", frameType["enum"])
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "network_execute_request_payload")
+	requestProps := requireNestedObject(t, request, "properties")
+	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "runtime_generation_id", "policy_revision", "management_revision", "revoke_epoch", "connector_id", "transport", "destination", "operation", "method", "path", "headers", "body_base64", "payload_base64", "max_response_bytes", "timeout_ms"} {
+		if _, ok := requestProps[name].(map[string]any); !ok {
+			t.Fatalf("network_execute request missing %s", name)
+		}
+	}
+	operation := requireNestedObject(t, requestProps, "operation")
+	if enum, ok := operation["enum"].([]any); !ok || !containsString(enum, "websocket_round_trip") || !containsString(enum, "udp_round_trip") {
+		t.Fatalf("network_execute operation enum = %#v", operation["enum"])
+	}
+	response := requireNestedObject(t, defs, "network_execute_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "transport", "destination", "status_code", "headers", "message_type", "body_base64", "payload_base64", "grant_id", "connector_id", "runtime_generation_id", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("network_execute response missing %s", name)
+		}
+	}
+}
+
+func containsString(values []any, want string) bool {
+	for _, value := range values {
+		if got, ok := value.(string); ok && got == want {
+			return true
+		}
+	}
+	return false
+}

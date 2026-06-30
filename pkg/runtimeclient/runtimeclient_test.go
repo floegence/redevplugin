@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -335,6 +336,275 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	broker := &recordingConnectivityBroker{
+		grant: connectivity.ConnectionGrant{
+			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
+			PluginInstanceID:        "plugini_1",
+			ActiveFingerprint:       "sha256:active",
+			PolicyRevision:          1,
+			ManagementRevision:      2,
+			RevokeEpoch:             3,
+			ConnectorID:             "api",
+			Transport:               connectivity.TransportHTTP,
+			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
+			RuntimeGenerationID:     "runtime_gen_test",
+			TargetClassifierVersion: version.TargetClassifierVersion,
+			ExpiresAt:               now.Add(30 * time.Second),
+		},
+	}
+	executor := &recordingNetworkExecutor{
+		httpResponse: connectivity.HTTPResponse{
+			StatusCode: 201,
+			Headers:    http.Header{"X-Worker": []string{"ok"}},
+			Body:       []byte(`{"ok":true}`),
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:     os.Args[0],
+		Args:            []string{"-test.run=TestMain"},
+		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+		Connectivity:    broker,
+		NetworkExecutor: executor,
+		Now:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	networkExecute, ok := decoded["network_execute"].(map[string]any)
+	if !ok {
+		t.Fatalf("network execute result missing: %#v", decoded)
+	}
+	if networkExecute["ok"] != true || networkExecute["status_code"] != float64(201) || networkExecute["body_base64"] != base64.StdEncoding.EncodeToString([]byte(`{"ok":true}`)) {
+		t.Fatalf("network execute result mismatch: %#v", networkExecute)
+	}
+	if broker.calls != 1 || broker.last.ConnectorID != "api" || broker.last.Destination != "https://api.example.com" {
+		t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
+	}
+	if executor.httpCalls != 1 ||
+		executor.lastHTTP.Grant.GrantID != broker.grant.GrantID ||
+		executor.lastHTTP.Method != http.MethodPost ||
+		executor.lastHTTP.Path != "/v1/worker" ||
+		string(executor.lastHTTP.Body) != `{"hello":"network"}` ||
+		executor.lastHTTP.Headers.Get("X-Test") != "ok" ||
+		executor.lastHTTP.MaxResponseBytes != 1024 ||
+		executor.lastHTTP.Timeout != 2*time.Second {
+		t.Fatalf("network executor mismatch: calls=%d last=%#v", executor.httpCalls, executor.lastHTTP)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocation(t *testing.T) {
+	cases := []struct {
+		name          string
+		operation     string
+		transport     connectivity.Transport
+		destination   connectivity.Destination
+		response      func(*recordingNetworkExecutor)
+		assertRequest func(*testing.T, *recordingNetworkExecutor)
+		assertResult  func(*testing.T, map[string]any)
+	}{
+		{
+			name:        "websocket",
+			operation:   "websocket_round_trip",
+			transport:   connectivity.TransportWebSocket,
+			destination: connectivity.Destination{Transport: connectivity.TransportWebSocket, Scheme: "wss", Host: "stream.example.com", Port: 443},
+			response: func(executor *recordingNetworkExecutor) {
+				executor.wsResponse = connectivity.WebSocketRoundTripResponse{MessageType: connectivity.WebSocketMessageText, Payload: []byte("ws:hello")}
+			},
+			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
+				t.Helper()
+				if executor.websocketCalls != 1 || executor.lastWebSocket.MessageType != connectivity.WebSocketMessageText || string(executor.lastWebSocket.Payload) != "hello" || executor.lastWebSocket.MaxResponseBytes != 1024 || executor.lastWebSocket.Timeout != 2*time.Second {
+					t.Fatalf("websocket executor mismatch: calls=%d last=%#v", executor.websocketCalls, executor.lastWebSocket)
+				}
+			},
+			assertResult: func(t *testing.T, result map[string]any) {
+				t.Helper()
+				if result["message_type"] != string(connectivity.WebSocketMessageText) || result["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("ws:hello")) {
+					t.Fatalf("websocket result mismatch: %#v", result)
+				}
+			},
+		},
+		{
+			name:        "tcp",
+			operation:   "tcp_round_trip",
+			transport:   connectivity.TransportTCP,
+			destination: connectivity.Destination{Transport: connectivity.TransportTCP, Host: "db.example.com", Port: 5432},
+			response: func(executor *recordingNetworkExecutor) {
+				executor.tcpResponse = connectivity.TCPRoundTripResponse{Payload: []byte("tcp:hello")}
+			},
+			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
+				t.Helper()
+				if executor.tcpCalls != 1 || string(executor.lastTCP.Payload) != "hello" || executor.lastTCP.MaxReadBytes != 1024 || executor.lastTCP.Timeout != 2*time.Second {
+					t.Fatalf("tcp executor mismatch: calls=%d last=%#v", executor.tcpCalls, executor.lastTCP)
+				}
+			},
+			assertResult: func(t *testing.T, result map[string]any) {
+				t.Helper()
+				if result["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("tcp:hello")) {
+					t.Fatalf("tcp result mismatch: %#v", result)
+				}
+			},
+		},
+		{
+			name:        "udp",
+			operation:   "udp_round_trip",
+			transport:   connectivity.TransportUDP,
+			destination: connectivity.Destination{Transport: connectivity.TransportUDP, Host: "metrics.example.com", Port: 8125},
+			response: func(executor *recordingNetworkExecutor) {
+				executor.udpResponse = connectivity.UDPRoundTripResponse{Payload: []byte("udp:hello")}
+			},
+			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
+				t.Helper()
+				if executor.udpCalls != 1 || string(executor.lastUDP.Payload) != "hello" || executor.lastUDP.MaxReadBytes != 1024 || executor.lastUDP.Timeout != 2*time.Second {
+					t.Fatalf("udp executor mismatch: calls=%d last=%#v", executor.udpCalls, executor.lastUDP)
+				}
+			},
+			assertResult: func(t *testing.T, result map[string]any) {
+				t.Helper()
+				if result["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("udp:hello")) {
+					t.Fatalf("udp result mismatch: %#v", result)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+			broker := &recordingConnectivityBroker{
+				grant: connectivity.ConnectionGrant{
+					GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
+					PluginInstanceID:        "plugini_1",
+					ActiveFingerprint:       "sha256:active",
+					PolicyRevision:          1,
+					ManagementRevision:      2,
+					RevokeEpoch:             3,
+					ConnectorID:             "api",
+					Transport:               tc.transport,
+					Destination:             tc.destination,
+					RuntimeGenerationID:     "runtime_gen_test",
+					TargetClassifierVersion: version.TargetClassifierVersion,
+					ExpiresAt:               now.Add(30 * time.Second),
+				},
+			}
+			executor := &recordingNetworkExecutor{}
+			tc.response(executor)
+			supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+				RuntimePath:     os.Args[0],
+				Args:            []string{"-test.run=TestMain"},
+				Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE="+tc.operation),
+				Connectivity:    broker,
+				NetworkExecutor: executor,
+				Now:             func() time.Time { return now },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			health, err := supervisor.Health(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
+			rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+				LeaseID:             "lease_1",
+				LeaseToken:          "token_1",
+				RuntimeGenerationID: health.RuntimeGenerationID,
+				PluginInstanceID:    "plugini_1",
+				PolicyRevision:      1,
+				ManagementRevision:  2,
+				RevokeEpoch:         3,
+			}, "worker.echo", workerInvocationFixture())
+			if err != nil {
+				t.Fatalf("InvokeWorker() error = %v", err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(rawResult, &decoded); err != nil {
+				t.Fatalf("decode worker result: %v", err)
+			}
+			networkExecute, ok := decoded["network_execute"].(map[string]any)
+			if !ok {
+				t.Fatalf("network execute result missing: %#v", decoded)
+			}
+			if broker.calls != 1 || broker.last.Transport != tc.transport {
+				t.Fatalf("connectivity broker mismatch: calls=%d last=%#v", broker.calls, broker.last)
+			}
+			tc.assertRequest(t, executor)
+			tc.assertResult(t, networkExecute)
+			stopRuntimeSupervisor(t, supervisor)
+		})
+	}
+}
+
+func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	broker := &recordingConnectivityBroker{
+		grant: connectivity.ConnectionGrant{
+			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
+			PluginInstanceID:        "plugini_1",
+			ActiveFingerprint:       "sha256:active",
+			PolicyRevision:          1,
+			ManagementRevision:      2,
+			RevokeEpoch:             3,
+			ConnectorID:             "api",
+			Transport:               connectivity.TransportHTTP,
+			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
+			RuntimeGenerationID:     "runtime_gen_test",
+			TargetClassifierVersion: version.TargetClassifierVersion,
+			ExpiresAt:               now.Add(30 * time.Second),
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+		Connectivity: broker,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],
@@ -638,6 +908,11 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE") != "" {
+				if !requestNetworkExecuteFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE") != "" {
 				if !requestStorageFileFromHelper(reader, encoder, request) {
 					continue
@@ -921,6 +1196,54 @@ func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 	return false
 }
 
+func requestNetworkExecuteFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
+	rawNetworkReq, _ := json.Marshal(networkExecuteRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE")))
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeNetworkExecute,
+		RequestID:           request.RequestID + ":network_execute",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             rawNetworkReq,
+	})
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(25)
+	}
+	var response ipcFrame
+	if err := json.Unmarshal(line, &response); err != nil {
+		os.Exit(26)
+	}
+	if response.FrameType != ipcFrameTypeNetworkExecute || response.RequestID != request.RequestID+":network_execute" {
+		os.Exit(27)
+	}
+	var networkExecute networkExecuteResponsePayload
+	if err := json.Unmarshal(response.Payload, &networkExecute); err != nil {
+		os.Exit(28)
+	}
+	if !networkExecute.OK {
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkExecute.Code, Message: networkExecute.Message})
+		_ = encoder.Encode(ipcFrame{
+			IPCVersion:          version.RustIPCVersion,
+			FrameType:           ipcFrameTypeInvokeWorkerResult,
+			RequestID:           request.RequestID,
+			RuntimeGenerationID: request.RuntimeGenerationID,
+			Payload:             raw,
+		})
+		return false
+	}
+	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+		"network_execute": networkExecute,
+	})})
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeInvokeWorkerResult,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             raw,
+	})
+	return false
+}
+
 func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFileRequestPayload {
 	req := storageFileRequestPayload{
 		HandleGrantToken:    "handle_grant_token_1",
@@ -949,6 +1272,47 @@ func storageFileRequestFromInvoke(request ipcFrame, operation string) storageFil
 			req.ManagementRevision = payload.Lease.ManagementRevision
 			req.RevokeEpoch = payload.Lease.RevokeEpoch
 		}
+	}
+	return req
+}
+
+func networkExecuteRequestFromInvoke(request ipcFrame, operation string) networkExecuteRequestPayload {
+	grantReq := networkGrantRequestFromInvoke(request)
+	req := networkExecuteRequestPayload{
+		PluginInstanceID:    grantReq.PluginInstanceID,
+		ActiveFingerprint:   grantReq.ActiveFingerprint,
+		RuntimeInstanceID:   grantReq.RuntimeInstanceID,
+		RuntimeGenerationID: grantReq.RuntimeGenerationID,
+		RuntimeShardID:      grantReq.RuntimeShardID,
+		PolicyRevision:      grantReq.PolicyRevision,
+		ManagementRevision:  grantReq.ManagementRevision,
+		RevokeEpoch:         grantReq.RevokeEpoch,
+		ConnectorID:         grantReq.ConnectorID,
+		Transport:           grantReq.Transport,
+		Destination:         grantReq.Destination,
+		TTLMillis:           grantReq.TTLMillis,
+		Operation:           operation,
+		Method:              http.MethodPost,
+		Path:                "/v1/worker",
+		Headers:             http.Header{"X-Test": []string{"ok"}},
+		BodyBase64:          base64.StdEncoding.EncodeToString([]byte(`{"hello":"network"}`)),
+		MaxResponseBytes:    1024,
+		TimeoutMillis:       2000,
+	}
+	switch operation {
+	case "websocket_round_trip":
+		req.Transport = connectivity.TransportWebSocket
+		req.Destination = "wss://stream.example.com"
+		req.PayloadBase64 = base64.StdEncoding.EncodeToString([]byte("hello"))
+		req.MessageType = string(connectivity.WebSocketMessageText)
+	case "tcp_round_trip":
+		req.Transport = connectivity.TransportTCP
+		req.Destination = "tcp://db.example.com:5432"
+		req.PayloadBase64 = base64.StdEncoding.EncodeToString([]byte("hello"))
+	case "udp_round_trip":
+		req.Transport = connectivity.TransportUDP
+		req.Destination = "udp://metrics.example.com:8125"
+		req.PayloadBase64 = base64.StdEncoding.EncodeToString([]byte("hello"))
 	}
 	return req
 }
@@ -1079,6 +1443,22 @@ type recordingConnectivityBroker struct {
 	err         error
 }
 
+type recordingNetworkExecutor struct {
+	httpCalls      int
+	websocketCalls int
+	tcpCalls       int
+	udpCalls       int
+	lastHTTP       connectivity.HTTPRequest
+	lastWebSocket  connectivity.WebSocketRoundTripRequest
+	lastTCP        connectivity.TCPRoundTripRequest
+	lastUDP        connectivity.UDPRoundTripRequest
+	httpResponse   connectivity.HTTPResponse
+	wsResponse     connectivity.WebSocketRoundTripResponse
+	tcpResponse    connectivity.TCPRoundTripResponse
+	udpResponse    connectivity.UDPRoundTripResponse
+	err            error
+}
+
 func (b *recordingConnectivityBroker) InstallPolicy(context.Context, connectivity.PolicySet) error {
 	b.installCall++
 	return nil
@@ -1096,6 +1476,42 @@ func (b *recordingConnectivityBroker) MintConnectionGrant(_ context.Context, req
 		return connectivity.ConnectionGrant{}, b.err
 	}
 	return b.grant, nil
+}
+
+func (e *recordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+	e.httpCalls++
+	e.lastHTTP = req
+	if e.err != nil {
+		return connectivity.HTTPResponse{}, e.err
+	}
+	return e.httpResponse, nil
+}
+
+func (e *recordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
+	e.websocketCalls++
+	e.lastWebSocket = req
+	if e.err != nil {
+		return connectivity.WebSocketRoundTripResponse{}, e.err
+	}
+	return e.wsResponse, nil
+}
+
+func (e *recordingNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
+	e.tcpCalls++
+	e.lastTCP = req
+	if e.err != nil {
+		return connectivity.TCPRoundTripResponse{}, e.err
+	}
+	return e.tcpResponse, nil
+}
+
+func (e *recordingNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
+	e.udpCalls++
+	e.lastUDP = req
+	if e.err != nil {
+		return connectivity.UDPRoundTripResponse{}, e.err
+	}
+	return e.udpResponse, nil
 }
 
 func (v *recordingHandleGrantValidator) ValidateHandleGrant(_ context.Context, req HandleGrantValidationRequest) (HandleGrantValidationResult, error) {

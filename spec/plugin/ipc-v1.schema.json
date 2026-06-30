@@ -8,7 +8,7 @@
   "properties": {
     "ipc_version": { "const": "rust-ipc-v1" },
     "frame_type": {
-      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "storage_file", "network_grant", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "storage_file", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "runtime_generation_id": { "type": "string" },
@@ -150,6 +150,20 @@
             "oneOf": [
               { "$ref": "#/$defs/network_grant_request_payload" },
               { "$ref": "#/$defs/network_grant_response_payload" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "network_execute" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "oneOf": [
+              { "$ref": "#/$defs/network_execute_request_payload" },
+              { "$ref": "#/$defs/network_execute_response_payload" }
             ]
           }
         }
@@ -378,6 +392,77 @@
         "runtime_generation_id": { "type": "string" },
         "target_classifier_version": { "const": "target-classifier-v1" },
         "expires_at": { "type": "string", "format": "date-time" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "network_execute_request_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plugin_instance_id",
+        "active_fingerprint",
+        "runtime_generation_id",
+        "policy_revision",
+        "management_revision",
+        "revoke_epoch",
+        "connector_id",
+        "transport",
+        "destination"
+      ],
+      "properties": {
+        "plugin_instance_id": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "runtime_instance_id": { "type": "string" },
+        "runtime_generation_id": { "type": "string", "minLength": 1 },
+        "runtime_shard_id": { "type": "string" },
+        "policy_revision": { "type": "integer", "minimum": 0 },
+        "management_revision": { "type": "integer", "minimum": 0 },
+        "revoke_epoch": { "type": "integer", "minimum": 0 },
+        "connector_id": { "type": "string", "minLength": 1 },
+        "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+        "destination": { "type": "string", "minLength": 1 },
+        "ttl_ms": { "type": "integer", "minimum": 0 },
+        "operation": { "enum": ["http", "websocket_round_trip", "tcp_round_trip", "udp_round_trip"] },
+        "method": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "message_type": { "enum": ["text", "binary"] },
+        "body_base64": { "type": "string", "contentEncoding": "base64" },
+        "payload_base64": { "type": "string", "contentEncoding": "base64" },
+        "max_request_bytes": { "type": "integer", "minimum": 0 },
+        "max_response_bytes": { "type": "integer", "minimum": 0 },
+        "timeout_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "network_execute_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+        "destination": { "$ref": "#/$defs/network_destination" },
+        "status_code": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "message_type": { "enum": ["text", "binary"] },
+        "body_base64": { "type": "string", "contentEncoding": "base64" },
+        "payload_base64": { "type": "string", "contentEncoding": "base64" },
+        "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
+        "connector_id": { "type": "string", "minLength": 1 },
+        "runtime_generation_id": { "type": "string" },
         "code": { "type": "string" },
         "message": { "type": "string" }
       }
