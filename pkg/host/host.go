@@ -354,10 +354,12 @@ type WorkerInvocationPayload struct {
 	PluginID             string         `json:"plugin_id"`
 	PluginInstanceID     string         `json:"plugin_instance_id"`
 	ActiveFingerprint    string         `json:"active_fingerprint"`
+	PackageHash          string         `json:"package_hash"`
 	WorkerID             string         `json:"worker_id"`
 	WorkerMode           string         `json:"worker_mode"`
 	WorkerScope          string         `json:"worker_scope"`
 	Artifact             string         `json:"artifact"`
+	ArtifactSHA256       string         `json:"artifact_sha256"`
 	ABI                  string         `json:"abi"`
 	Method               string         `json:"method"`
 	Export               string         `json:"export"`
@@ -2004,14 +2006,26 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if params == nil {
 		params = map[string]any{}
 	}
+	if h.adapters.Assets == nil {
+		return capability.Result{}, errors.New("package asset store is required for worker methods")
+	}
+	workerAsset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, worker.Artifact)
+	if err != nil {
+		return capability.Result{}, fmt.Errorf("read worker artifact %q: %w", worker.Artifact, err)
+	}
+	if strings.TrimSpace(workerAsset.Entry.SHA256) == "" {
+		return capability.Result{}, fmt.Errorf("worker artifact %q is missing sha256", worker.Artifact)
+	}
 	payload := WorkerInvocationPayload{
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
+		PackageHash:          record.PackageHash,
 		WorkerID:             worker.WorkerID,
 		WorkerMode:           string(worker.Mode),
 		WorkerScope:          worker.Scope,
 		Artifact:             worker.Artifact,
+		ArtifactSHA256:       workerAsset.Entry.SHA256,
 		ABI:                  worker.ABI,
 		Method:               method.Method,
 		Export:               method.Route.Export,

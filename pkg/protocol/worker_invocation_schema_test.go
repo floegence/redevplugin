@@ -38,10 +38,20 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	for _, item := range requireStringSlice(t, schema["required"], "worker invocation required") {
 		required[item] = true
 	}
-	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "worker_id", "method", "params"} {
+	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "package_hash", "worker_id", "artifact_sha256", "method", "params"} {
 		if !required[name] {
 			t.Fatalf("worker invocation schema missing required field %q", name)
 		}
+	}
+	for _, name := range []string{"package_hash", "artifact_sha256"} {
+		property := requireNestedObject(t, properties, name)
+		if property["$ref"] != "#/$defs/sha256" {
+			t.Fatalf("%s ref = %#v, want #/$defs/sha256", name, property["$ref"])
+		}
+	}
+	sha256Def := requireNestedObject(t, schema, "$defs", "sha256")
+	if sha256Def["pattern"] != "^sha256:[a-f0-9]{64}$" {
+		t.Fatalf("sha256 pattern = %#v", sha256Def["pattern"])
 	}
 	params := requireNestedObject(t, properties, "params")
 	if params["type"] != "object" {

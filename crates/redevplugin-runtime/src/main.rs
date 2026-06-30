@@ -36,15 +36,32 @@ fn run() -> Result<(), String> {
             return Err("runtime_generation_id mismatch".to_string());
         }
         let response = match frame_type.as_str() {
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => redevplugin_ipc::response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                &request_id,
-                &runtime_generation_id,
-                false,
-                None,
-                Some("WASM_NOT_IMPLEMENTED"),
-                Some("runtime worker execution is not implemented"),
-            ),
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => {
+                match redevplugin_ipc::parse_worker_invocation_identity(&line) {
+                    Ok(identity) => {
+                        let message =
+                            redevplugin_ipc::worker_invocation_not_implemented_message(&identity);
+                        redevplugin_ipc::response_frame(
+                            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                            &request_id,
+                            &runtime_generation_id,
+                            false,
+                            None,
+                            Some(redevplugin_ipc::ERR_WASM_NOT_IMPLEMENTED),
+                            Some(message.as_str()),
+                        )
+                    }
+                    Err(err) => redevplugin_ipc::response_frame(
+                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        &request_id,
+                        &runtime_generation_id,
+                        false,
+                        None,
+                        Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
+                        Some(err),
+                    ),
+                }
+            }
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => redevplugin_ipc::response_frame(
                 redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
                 &request_id,

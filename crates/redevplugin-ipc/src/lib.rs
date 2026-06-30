@@ -6,6 +6,8 @@ pub const FRAME_TYPE_INVOKE_WORKER: &str = "invoke_worker";
 pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
+pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
+pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
@@ -163,6 +165,83 @@ pub fn parse_frame_identity(input: &str) -> Result<(String, String, String), &'s
     Ok((frame_type, request_id, runtime_generation_id))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerInvocationIdentity {
+    pub package_hash: String,
+    pub artifact: String,
+    pub artifact_sha256: String,
+    pub worker_id: String,
+    pub method: String,
+    pub export: String,
+}
+
+pub fn parse_worker_invocation_identity(
+    input: &str,
+) -> Result<WorkerInvocationIdentity, &'static str> {
+    let package_hash = extract_json_string(input, "package_hash").ok_or("missing package_hash")?;
+    if !is_sha256_ref(&package_hash) {
+        return Err("invalid package_hash");
+    }
+    let artifact = extract_json_string(input, "artifact").ok_or("missing artifact")?;
+    if !is_worker_artifact_path(&artifact) {
+        return Err("invalid artifact");
+    }
+    let artifact_sha256 =
+        extract_json_string(input, "artifact_sha256").ok_or("missing artifact_sha256")?;
+    if !is_sha256_ref(&artifact_sha256) {
+        return Err("invalid artifact_sha256");
+    }
+    let worker_id = extract_json_string(input, "worker_id").ok_or("missing worker_id")?;
+    if worker_id.trim().is_empty() {
+        return Err("empty worker_id");
+    }
+    let method = extract_json_string(input, "method").ok_or("missing method")?;
+    if method.trim().is_empty() {
+        return Err("empty method");
+    }
+    let export = extract_json_string(input, "export").ok_or("missing export")?;
+    if !matches!(
+        export.as_str(),
+        "redeven_worker_invoke" | "redeven_actor_start" | "redeven_actor_stop"
+    ) {
+        return Err("invalid export");
+    }
+    Ok(WorkerInvocationIdentity {
+        package_hash,
+        artifact,
+        artifact_sha256,
+        worker_id,
+        method,
+        export,
+    })
+}
+
+pub fn worker_invocation_not_implemented_message(identity: &WorkerInvocationIdentity) -> String {
+    format!(
+        "runtime worker execution is not implemented for {}:{}",
+        identity.worker_id, identity.method
+    )
+}
+
+fn is_sha256_ref(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+}
+
+fn is_worker_artifact_path(value: &str) -> bool {
+    if !value.starts_with("workers/") || !value.ends_with(".wasm") {
+        return false;
+    }
+    if value.contains('\\') || value.contains("//") {
+        return false;
+    }
+    value
+        .split('/')
+        .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,11 +271,30 @@ mod tests {
             "g1",
             false,
             None,
-            Some("WASM_NOT_IMPLEMENTED"),
+            Some(ERR_WASM_NOT_IMPLEMENTED),
             Some("runtime worker execution is not implemented"),
         );
         assert!(frame.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(frame.contains(r#""ok":false"#));
         assert!(frame.contains(r#""code":"WASM_NOT_IMPLEMENTED""#));
+    }
+
+    #[test]
+    fn parses_worker_invocation_identity() {
+        let frame = r#"{"payload":{"invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redeven_worker_invoke"}}}"#;
+        let identity = parse_worker_invocation_identity(frame).expect("valid invocation");
+        assert_eq!(identity.package_hash, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(identity.artifact, "workers/backend.wasm");
+        assert_eq!(identity.worker_id, "backend");
+    }
+
+    #[test]
+    fn rejects_worker_invocation_without_artifact_identity() {
+        let err = parse_worker_invocation_identity(r#"{"payload":{"invocation":{"artifact":"../backend.wasm"}}}"#)
+            .expect_err("invalid invocation");
+        assert_eq!(err, "missing package_hash");
+        let err = parse_worker_invocation_identity(r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redeven_worker_invoke"}"#)
+            .expect_err("invalid artifact");
+        assert_eq!(err, "invalid artifact");
     }
 }

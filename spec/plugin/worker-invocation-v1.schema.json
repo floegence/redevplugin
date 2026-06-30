@@ -8,10 +8,12 @@
     "plugin_id",
     "plugin_instance_id",
     "active_fingerprint",
+    "package_hash",
     "worker_id",
     "worker_mode",
     "worker_scope",
     "artifact",
+    "artifact_sha256",
     "abi",
     "method",
     "export",
@@ -23,6 +25,7 @@
     "plugin_id": { "type": "string", "minLength": 1 },
     "plugin_instance_id": { "type": "string", "minLength": 1 },
     "active_fingerprint": { "type": "string", "minLength": 1 },
+    "package_hash": { "$ref": "#/$defs/sha256" },
     "worker_id": { "type": "string", "minLength": 1 },
     "worker_mode": { "enum": ["job", "actor"] },
     "worker_scope": { "type": "string", "minLength": 1 },
@@ -31,6 +34,7 @@
       "minLength": 1,
       "pattern": "^workers/[A-Za-z0-9._/-]+\\.wasm$"
     },
+    "artifact_sha256": { "$ref": "#/$defs/sha256" },
     "abi": { "const": "redeven-wasm-worker-v1" },
     "method": { "type": "string", "minLength": 1 },
     "export": {
@@ -44,6 +48,12 @@
     "params": {
       "type": "object",
       "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
     }
   }
 }

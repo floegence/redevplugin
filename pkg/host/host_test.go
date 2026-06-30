@@ -688,9 +688,18 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	if payload.WorkerID != "echo_worker" ||
 		payload.Export != "redeven_worker_invoke" ||
 		payload.Artifact != "workers/echo.wasm" ||
+		payload.PackageHash != installed.PackageHash ||
+		payload.ArtifactSHA256 == "" ||
 		payload.Params["message"] != "hello" ||
 		payload.PluginInstanceID != installed.PluginInstanceID {
 		t.Fatalf("worker payload mismatch: %#v", payload)
+	}
+	asset, err := h.adapters.Assets.ReadAsset(context.Background(), installed.PackageHash, "workers/echo.wasm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.ArtifactSHA256 != asset.Entry.SHA256 {
+		t.Fatalf("artifact sha256 = %s, want %s", payload.ArtifactSHA256, asset.Entry.SHA256)
 	}
 	if !audits.hasEvent("plugin.method.called") {
 		t.Fatalf("missing method audit event: %#v", audits.events)
