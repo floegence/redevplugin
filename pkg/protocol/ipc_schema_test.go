@@ -42,3 +42,34 @@ func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 	}
 	t.Fatal("ipc schema missing invoke_worker invocation reference")
 }
+
+func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "open_handle_request_payload")
+	requestProps := requireNestedObject(t, request, "properties")
+	for _, name := range []string{"package_hash", "artifact", "artifact_sha256"} {
+		if _, ok := requestProps[name].(map[string]any); !ok {
+			t.Fatalf("open_handle request missing %s", name)
+		}
+	}
+	response := requireNestedObject(t, defs, "open_handle_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "sha256", "content_base64", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("open_handle response missing %s", name)
+		}
+	}
+	artifact := requireNestedObject(t, defs, "worker_artifact_path")
+	if artifact["pattern"] != "^workers/(?!.*(?:^|/)\\.)(?!.*//)(?!.*\\\\).+\\.wasm$" {
+		t.Fatalf("worker artifact pattern = %#v", artifact["pattern"])
+	}
+}

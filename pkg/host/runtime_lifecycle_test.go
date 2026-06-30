@@ -1,10 +1,14 @@
 package host
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
 
@@ -64,4 +68,43 @@ func TestStartRuntimeUsesArtifactResolver(t *testing.T) {
 	if resolver.calls != 1 || resolver.target.OS == "" || resolver.target.Arch == "" {
 		t.Fatalf("resolver call mismatch: %#v", resolver)
 	}
+}
+
+func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	pkg, err := pluginPackageFromBytesForRuntimeTest(buildWorkerFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.adapters.Assets.PutPackage(context.Background(), pkg); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := h.adapters.Assets.ReadAsset(context.Background(), pkg.PackageHash, "workers/echo.wasm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := runtimeArtifactProvider{assets: h.adapters.Assets}
+	result, err := provider.ReadArtifact(context.Background(), runtimeclient.ArtifactRequest{
+		PackageHash:    pkg.PackageHash,
+		Artifact:       "workers/echo.wasm",
+		ArtifactSHA256: asset.Entry.SHA256,
+	})
+	if err != nil {
+		t.Fatalf("ReadArtifact() error = %v", err)
+	}
+	sum := sha256.Sum256(result.Content)
+	if result.SHA256 != "sha256:"+hex.EncodeToString(sum[:]) {
+		t.Fatalf("artifact sha mismatch: %#v", result)
+	}
+	if _, err := provider.ReadArtifact(context.Background(), runtimeclient.ArtifactRequest{
+		PackageHash:    pkg.PackageHash,
+		Artifact:       "workers/echo.wasm",
+		ArtifactSHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+	}); err == nil {
+		t.Fatal("ReadArtifact() expected sha mismatch error")
+	}
+}
+
+func pluginPackageFromBytesForRuntimeTest(raw []byte) (pluginpkg.Package, error) {
+	return pluginpkg.Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), pluginpkg.DefaultReadOptions())
 }

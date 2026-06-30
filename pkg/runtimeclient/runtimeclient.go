@@ -3,6 +3,8 @@ package runtimeclient
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +52,21 @@ type Supervisor interface {
 	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) error
 }
 
+type ArtifactProvider interface {
+	ReadArtifact(ctx context.Context, req ArtifactRequest) (ArtifactResult, error)
+}
+
+type ArtifactRequest struct {
+	PackageHash    string `json:"package_hash"`
+	Artifact       string `json:"artifact"`
+	ArtifactSHA256 string `json:"artifact_sha256"`
+}
+
+type ArtifactResult struct {
+	Content []byte `json:"-"`
+	SHA256  string `json:"sha256"`
+}
+
 var (
 	ErrRuntimePathRequired   = errors.New("runtime path is required")
 	ErrRuntimeNotReady       = errors.New("runtime is not ready")
@@ -64,6 +81,7 @@ type ProcessSupervisorOptions struct {
 	Env              []string
 	Dir              string
 	Diagnostics      observability.DiagnosticsSink
+	Artifacts        ArtifactProvider
 	Now              func() time.Time
 	HandshakeTimeout time.Duration
 }
@@ -77,6 +95,7 @@ type ProcessSupervisor struct {
 	env              []string
 	dir              string
 	diagnostics      observability.DiagnosticsSink
+	artifacts        ArtifactProvider
 	now              func() time.Time
 	handshakeTimeout time.Duration
 	seq              uint64
@@ -110,6 +129,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		env:              append([]string(nil), options.Env...),
 		dir:              strings.TrimSpace(options.Dir),
 		diagnostics:      options.Diagnostics,
+		artifacts:        options.Artifacts,
 		now:              now,
 		handshakeTimeout: handshakeTimeout,
 	}, nil
@@ -285,6 +305,10 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if len(invocation) == 0 {
 		invocation = json.RawMessage("null")
 	}
+	allowedArtifact, err := artifactRequestFromInvocation(invocation)
+	if err != nil {
+		return nil, err
+	}
 	rawPayload, err := json.Marshal(invokeWorkerRequestPayload{
 		Lease:      lease,
 		Method:     method,
@@ -293,7 +317,7 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if err != nil {
 		return nil, err
 	}
-	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload)
+	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload, &allowedArtifact)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +348,7 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string,
 	if err != nil {
 		return err
 	}
-	frame, err := s.callIPC(ctx, ipcFrameTypeRevokeEpoch, ipcFrameTypeRevokeEpochAck, rawPayload)
+	frame, err := s.callIPC(ctx, ipcFrameTypeRevokeEpoch, ipcFrameTypeRevokeEpochAck, rawPayload, nil)
 	if err != nil {
 		return err
 	}
@@ -414,6 +438,7 @@ const (
 	ipcFrameTypeHelloAck           = "hello_ack"
 	ipcFrameTypeInvokeWorker       = "invoke_worker"
 	ipcFrameTypeInvokeWorkerResult = "invoke_worker_result"
+	ipcFrameTypeOpenHandle         = "open_handle"
 	ipcFrameTypeRevokeEpoch        = "revoke_epoch"
 	ipcFrameTypeRevokeEpochAck     = "revoke_epoch_ack"
 )
@@ -457,6 +482,22 @@ type runtimeResponsePayload struct {
 	Error   string          `json:"error,omitempty"`
 	Code    string          `json:"code,omitempty"`
 	Message string          `json:"message,omitempty"`
+}
+
+type artifactHandleRequestPayload struct {
+	PackageHash    string `json:"package_hash"`
+	Artifact       string `json:"artifact"`
+	ArtifactSHA256 string `json:"artifact_sha256"`
+}
+
+type artifactHandleResultPayload struct {
+	OK            bool   `json:"ok"`
+	PackageHash   string `json:"package_hash,omitempty"`
+	Artifact      string `json:"artifact,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	ContentBase64 string `json:"content_base64,omitempty"`
+	Code          string `json:"code,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 func (p runtimeResponsePayload) err() error {
@@ -521,7 +562,7 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 	}
 }
 
-func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage) (ipcFrame, error) {
+func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedArtifact *ArtifactRequest) (ipcFrame, error) {
 	if err := ctx.Err(); err != nil {
 		return ipcFrame{}, err
 	}
@@ -552,30 +593,181 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 		return ipcFrame{}, fmt.Errorf("%w: write %s: %v", ErrRuntimeIPCUnavailable, frameType, err)
 	}
 
-	result := make(chan struct {
-		frame ipcFrame
-		err   error
-	}, 1)
-	go func() {
-		frame, err := readIPCFrame(stdout)
-		result <- struct {
+	for {
+		result := make(chan struct {
 			frame ipcFrame
 			err   error
-		}{frame: frame, err: err}
-	}()
+		}, 1)
+		go func() {
+			frame, err := readIPCFrame(stdout)
+			result <- struct {
+				frame ipcFrame
+				err   error
+			}{frame: frame, err: err}
+		}()
 
-	select {
-	case <-ctx.Done():
-		return ipcFrame{}, ctx.Err()
-	case got := <-result:
-		if got.err != nil {
-			return ipcFrame{}, fmt.Errorf("%w: read %s: %v", ErrRuntimeIPCUnavailable, responseFrameType, got.err)
+		select {
+		case <-ctx.Done():
+			return ipcFrame{}, ctx.Err()
+		case got := <-result:
+			if got.err != nil {
+				return ipcFrame{}, fmt.Errorf("%w: read %s: %v", ErrRuntimeIPCUnavailable, responseFrameType, got.err)
+			}
+			if got.frame.FrameType == ipcFrameTypeOpenHandle {
+				if err := s.respondToOpenHandle(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
+			if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
+				return ipcFrame{}, err
+			}
+			return got.frame, nil
 		}
-		if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
-			return ipcFrame{}, err
-		}
-		return got.frame, nil
 	}
+}
+
+func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	var req artifactHandleRequestPayload
+	if len(frame.Payload) == 0 {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_REQUEST_INVALID",
+			Message: "missing artifact request payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_REQUEST_INVALID",
+			Message: "decode artifact request payload: " + err.Error(),
+		})
+	}
+	if allowedArtifact == nil || !artifactRequestMatches(ArtifactRequest(req), *allowedArtifact) {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_REQUEST_DENIED",
+			Message: "artifact request is not bound to the active worker invocation",
+		})
+	}
+	if s.artifacts == nil {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_PROVIDER_UNAVAILABLE",
+			Message: "runtime artifact provider is unavailable",
+		})
+	}
+	artifact, err := s.artifacts.ReadArtifact(ctx, ArtifactRequest(req))
+	if err != nil {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_READ_FAILED",
+			Message: err.Error(),
+		})
+	}
+	sum := sha256.Sum256(artifact.Content)
+	actual := "sha256:" + fmt.Sprintf("%x", sum[:])
+	if artifact.SHA256 != "" && artifact.SHA256 != actual {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_HASH_MISMATCH",
+			Message: "artifact provider returned content that does not match sha256",
+		})
+	}
+	if req.ArtifactSHA256 != "" && req.ArtifactSHA256 != actual {
+		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+			OK:      false,
+			Code:    "ARTIFACT_HASH_MISMATCH",
+			Message: "artifact content does not match requested sha256",
+		})
+	}
+	return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
+		OK:            true,
+		PackageHash:   req.PackageHash,
+		Artifact:      req.Artifact,
+		SHA256:        actual,
+		ContentBase64: base64.StdEncoding.EncodeToString(artifact.Content),
+	})
+}
+
+func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload artifactHandleResultPayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeOpenHandle,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write open_handle response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
+func artifactRequestFromInvocation(invocation json.RawMessage) (ArtifactRequest, error) {
+	var payload struct {
+		PackageHash    string `json:"package_hash"`
+		Artifact       string `json:"artifact"`
+		ArtifactSHA256 string `json:"artifact_sha256"`
+	}
+	if len(invocation) == 0 {
+		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation payload is required", ErrRuntimeRequestFailed)
+	}
+	if err := json.Unmarshal(invocation, &payload); err != nil {
+		return ArtifactRequest{}, fmt.Errorf("%w: decode worker invocation identity: %v", ErrRuntimeRequestFailed, err)
+	}
+	req := ArtifactRequest{
+		PackageHash:    strings.TrimSpace(payload.PackageHash),
+		Artifact:       strings.TrimSpace(payload.Artifact),
+		ArtifactSHA256: strings.TrimSpace(payload.ArtifactSHA256),
+	}
+	if req.PackageHash == "" || req.Artifact == "" || req.ArtifactSHA256 == "" {
+		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation must include package_hash, artifact, and artifact_sha256", ErrRuntimeRequestFailed)
+	}
+	if !isSHA256Ref(req.PackageHash) || !isSHA256Ref(req.ArtifactSHA256) {
+		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation artifact hashes must use sha256:<hex>", ErrRuntimeRequestFailed)
+	}
+	if !isWorkerArtifactPath(req.Artifact) {
+		return ArtifactRequest{}, fmt.Errorf("%w: worker invocation artifact path is invalid", ErrRuntimeRequestFailed)
+	}
+	return req, nil
+}
+
+func artifactRequestMatches(got ArtifactRequest, want ArtifactRequest) bool {
+	return strings.TrimSpace(got.PackageHash) == strings.TrimSpace(want.PackageHash) &&
+		strings.TrimSpace(got.Artifact) == strings.TrimSpace(want.Artifact) &&
+		strings.TrimSpace(got.ArtifactSHA256) == strings.TrimSpace(want.ArtifactSHA256)
+}
+
+func isSHA256Ref(value string) bool {
+	hexValue, ok := strings.CutPrefix(value, "sha256:")
+	if !ok || len(hexValue) != 64 {
+		return false
+	}
+	for _, ch := range hexValue {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isWorkerArtifactPath(value string) bool {
+	if !strings.HasPrefix(value, "workers/") || !strings.HasSuffix(value, ".wasm") {
+		return false
+	}
+	if strings.Contains(value, "\\") || strings.Contains(value, "//") {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {

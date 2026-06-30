@@ -1232,6 +1232,7 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 			supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 				RuntimePath: runtimePath,
 				Diagnostics: h.adapters.Diagnostics,
+				Artifacts:   runtimeArtifactProvider{assets: h.adapters.Assets},
 			})
 			if err != nil {
 				return runtimeclient.Health{}, err
@@ -1870,6 +1871,27 @@ func (h *Host) ReportCSPViolation(ctx context.Context, report CSPViolationReport
 		ActiveFingerprint: report.ActiveFingerprint,
 		Details:           details,
 	})
+}
+
+type runtimeArtifactProvider struct {
+	assets pluginpkg.AssetStore
+}
+
+func (p runtimeArtifactProvider) ReadArtifact(ctx context.Context, req runtimeclient.ArtifactRequest) (runtimeclient.ArtifactResult, error) {
+	if p.assets == nil {
+		return runtimeclient.ArtifactResult{}, errors.New("package asset store is required")
+	}
+	asset, err := p.assets.ReadAsset(ctx, req.PackageHash, req.Artifact)
+	if err != nil {
+		return runtimeclient.ArtifactResult{}, err
+	}
+	if strings.TrimSpace(asset.Entry.SHA256) == "" {
+		return runtimeclient.ArtifactResult{}, fmt.Errorf("artifact %q is missing sha256", req.Artifact)
+	}
+	if asset.Entry.SHA256 != req.ArtifactSHA256 {
+		return runtimeclient.ArtifactResult{}, fmt.Errorf("artifact %q sha256 mismatch", req.Artifact)
+	}
+	return runtimeclient.ArtifactResult{Content: asset.Content, SHA256: asset.Entry.SHA256}, nil
 }
 
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (CallMethodResult, error) {

@@ -4,8 +4,10 @@ pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_INVOKE_WORKER: &str = "invoke_worker";
 pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
+pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
+pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 
@@ -126,6 +128,65 @@ pub fn response_frame(
     )
 }
 
+pub fn open_handle_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    identity: &WorkerInvocationIdentity,
+) -> String {
+    format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"package_hash\":\"{}\",\"artifact\":\"{}\",\"artifact_sha256\":\"{}\"}}}}",
+        RUST_IPC_VERSION,
+        FRAME_TYPE_OPEN_HANDLE,
+        escape_json_string(request_id),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(&identity.package_hash),
+        escape_json_string(&identity.artifact),
+        escape_json_string(&identity.artifact_sha256)
+    )
+}
+
+pub fn validate_open_handle_response(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+    expected_identity: &WorkerInvocationIdentity,
+) -> Result<(), String> {
+    let (frame_type, request_id, runtime_generation_id) =
+        parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_OPEN_HANDLE {
+        return Err("expected open_handle frame".to_string());
+    }
+    if request_id != expected_request_id {
+        return Err("open_handle request_id mismatch".to_string());
+    }
+    if runtime_generation_id != expected_runtime_generation_id {
+        return Err("open_handle runtime_generation_id mismatch".to_string());
+    }
+    if !extract_json_bool(input, "ok").unwrap_or(false) {
+        let code = extract_json_string(input, "code")
+            .unwrap_or_else(|| ERR_ARTIFACT_HANDLE_FAILED.to_string());
+        let message = extract_json_string(input, "message")
+            .unwrap_or_else(|| "artifact handle request failed".to_string());
+        return Err(format!("{code}: {message}"));
+    }
+    let package_hash =
+        extract_json_string(input, "package_hash").ok_or("missing package_hash")?;
+    let artifact = extract_json_string(input, "artifact").ok_or("missing artifact")?;
+    let sha256 = extract_json_string(input, "sha256").ok_or("missing sha256")?;
+    if package_hash != expected_identity.package_hash
+        || artifact != expected_identity.artifact
+        || sha256 != expected_identity.artifact_sha256
+    {
+        return Err("open_handle artifact identity mismatch".to_string());
+    }
+    let content_base64 =
+        extract_json_string(input, "content_base64").ok_or("missing content_base64")?;
+    if content_base64.trim().is_empty() {
+        return Err("empty content_base64".to_string());
+    }
+    Ok(())
+}
+
 pub fn validate_hello_frame(input: &str) -> Result<(String, String), &'static str> {
     let ipc_version = extract_json_string(input, "ipc_version").ok_or("missing ipc_version")?;
     if ipc_version != RUST_IPC_VERSION {
@@ -163,6 +224,21 @@ pub fn parse_frame_identity(input: &str) -> Result<(String, String, String), &'s
         return Err("empty runtime_generation_id");
     }
     Ok((frame_type, request_id, runtime_generation_id))
+}
+
+pub fn extract_json_bool(input: &str, key: &str) -> Option<bool> {
+    let pattern = format!("\"{}\"", key);
+    let key_start = input.find(&pattern)?;
+    let after_key = &input[key_start + pattern.len()..];
+    let colon = after_key.find(':')?;
+    let after_colon = after_key[colon + 1..].trim_start();
+    if after_colon.starts_with("true") {
+        return Some(true);
+    }
+    if after_colon.starts_with("false") {
+        return Some(false);
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +353,41 @@ mod tests {
         assert!(frame.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(frame.contains(r#""ok":false"#));
         assert!(frame.contains(r#""code":"WASM_NOT_IMPLEMENTED""#));
+    }
+
+    #[test]
+    fn renders_open_handle_frame() {
+        let identity = WorkerInvocationIdentity {
+            package_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            artifact: "workers/backend.wasm".to_string(),
+            artifact_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            worker_id: "backend".to_string(),
+            method: "worker.echo".to_string(),
+            export: "redeven_worker_invoke".to_string(),
+        };
+        let frame = open_handle_frame("r1", "g1", &identity);
+        assert!(frame.contains(r#""frame_type":"open_handle""#));
+        assert!(frame.contains(r#""artifact":"workers/backend.wasm""#));
+    }
+
+    #[test]
+    fn validates_open_handle_response() {
+        let identity = WorkerInvocationIdentity {
+            package_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            artifact: "workers/backend.wasm".to_string(),
+            artifact_sha256:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            worker_id: "backend".to_string(),
+            method: "worker.echo".to_string(),
+            export: "redeven_worker_invoke".to_string(),
+        };
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
+        validate_open_handle_response(frame, "r1:artifact", "g1", &identity).expect("valid open_handle");
     }
 
     #[test]

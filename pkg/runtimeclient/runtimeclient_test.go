@@ -3,8 +3,10 @@ package runtimeclient
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -54,7 +56,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 		health.WASMABIVersion != version.WASMABIVersion {
 		t.Fatalf("health mismatch: %#v", health)
 	}
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", []byte(`{"message":"hello"}`))
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
 	if err != nil {
 		t.Fatalf("InvokeWorker() error = %v", err)
 	}
@@ -72,11 +74,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	waitForDiagnostic(t, store, "plugin.runtime.process.started")
 	waitForDiagnostic(t, store, "plugin.runtime.ipc.handshake")
 
-	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := supervisor.Stop(stopCtx); err != nil {
-		t.Fatalf("Stop() error = %v", err)
-	}
+	stopRuntimeSupervisor(t, supervisor)
 	health, err = supervisor.Health(context.Background())
 	if err != nil {
 		t.Fatalf("Health(after stop) error = %v", err)
@@ -101,14 +99,119 @@ func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", []byte("{}")); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
-	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := supervisor.Stop(stopCtx); err != nil {
-		t.Fatalf("Stop() error = %v", err)
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
+	provider := &recordingArtifactProvider{
+		content: []byte("wasm bytes"),
+		sha256:  fixtureArtifactSHA,
 	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1"),
+		Artifacts:   provider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	artifact, ok := decoded["artifact"].(map[string]any)
+	if !ok {
+		t.Fatalf("artifact result missing: %#v", decoded)
+	}
+	if artifact["ok"] != true || artifact["sha256"] != fixtureArtifactSHA || artifact["content_base64"] != base64.StdEncoding.EncodeToString([]byte("wasm bytes")) {
+		t.Fatalf("artifact result mismatch: %#v", artifact)
+	}
+	if provider.calls != 1 || provider.last.PackageHash != fixturePackageHash || provider.last.Artifact != fixtureArtifact || provider.last.ArtifactSHA256 != fixtureArtifactSHA {
+		t.Fatalf("artifact provider mismatch: calls=%d last=%#v", provider.calls, provider.last)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
+	provider := &recordingArtifactProvider{
+		content: []byte("wasm bytes"),
+		sha256:  fixtureArtifactSHA,
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_WRONG_ARTIFACT=1"),
+		Artifacts:   provider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("artifact provider was called for denied request: %d", provider.calls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", []byte(`{"message":"hello"}`)); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	payload := []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":"ui/index.html","artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redeven_worker_invoke"}`, fixturePackageHash, fixtureArtifactSHA))
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", payload); !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
 }
 
 func TestProcessSupervisorRejectsMissingPath(t *testing.T) {
@@ -177,6 +280,11 @@ func runRuntimeClientHelper() {
 		}
 		switch request.FrameType {
 		case ipcFrameTypeInvokeWorker:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT") == "1" {
+				if !requestArtifactFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			resultPayload := runtimeResponsePayload{OK: true, Result: json.RawMessage(`{"data":{"from_runtime":true}}`)}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE") == "1" {
 				resultPayload = runtimeResponsePayload{OK: false, Code: "WASM_NOT_IMPLEMENTED", Message: "runtime worker execution is not implemented"}
@@ -204,6 +312,82 @@ func runRuntimeClientHelper() {
 	}
 }
 
+func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
+	artifactReq := artifactRequestPayloadFromInvoke(request)
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUEST_WRONG_ARTIFACT") == "1" {
+		artifactReq.Artifact = "workers/other.wasm"
+	}
+	rawArtifactReq, _ := json.Marshal(artifactReq)
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeOpenHandle,
+		RequestID:           request.RequestID + ":artifact",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             rawArtifactReq,
+	})
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(7)
+	}
+	var response ipcFrame
+	if err := json.Unmarshal(line, &response); err != nil {
+		os.Exit(8)
+	}
+	if response.FrameType != ipcFrameTypeOpenHandle || response.RequestID != request.RequestID+":artifact" {
+		os.Exit(9)
+	}
+	var artifact artifactHandleResultPayload
+	if err := json.Unmarshal(response.Payload, &artifact); err != nil {
+		os.Exit(10)
+	}
+	if !artifact.OK {
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: artifact.Code, Message: artifact.Message})
+		_ = encoder.Encode(ipcFrame{
+			IPCVersion:          version.RustIPCVersion,
+			FrameType:           ipcFrameTypeInvokeWorkerResult,
+			RequestID:           request.RequestID,
+			RuntimeGenerationID: request.RuntimeGenerationID,
+			Payload:             raw,
+		})
+		return false
+	}
+	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+		"artifact": map[string]any{
+			"ok":             artifact.OK,
+			"sha256":         artifact.SHA256,
+			"content_base64": artifact.ContentBase64,
+		},
+	})})
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeInvokeWorkerResult,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             raw,
+	})
+	return false
+}
+
+func artifactRequestPayloadFromInvoke(request ipcFrame) artifactHandleRequestPayload {
+	var payload invokeWorkerRequestPayload
+	if err := json.Unmarshal(request.Payload, &payload); err != nil {
+		os.Exit(11)
+	}
+	var invocation ArtifactRequest
+	if err := json.Unmarshal(payload.Invocation, &invocation); err != nil {
+		os.Exit(12)
+	}
+	return artifactHandleRequestPayload(invocation)
+}
+
+func mustMarshalRaw(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
 func waitForDiagnostic(t *testing.T, store *observability.MemoryStore, eventType string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -219,4 +403,40 @@ func waitForDiagnostic(t *testing.T, store *observability.MemoryStore, eventType
 	}
 	events, _ := store.ListPluginDiagnostics(context.Background(), observability.ListDiagnosticRequest{Limit: 20})
 	t.Fatalf("timed out waiting for diagnostic %q; events=%#v", eventType, events)
+}
+
+const (
+	fixturePackageHash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	fixtureArtifact    = "workers/echo.wasm"
+	fixtureArtifactSHA = "sha256:a81d16f296ff2ebdb2dfe2ee0fbb532ba602da1ef9f797f8b1edb3e987fcf5db"
+)
+
+type recordingArtifactProvider struct {
+	calls   int
+	last    ArtifactRequest
+	content []byte
+	sha256  string
+	err     error
+}
+
+func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req ArtifactRequest) (ArtifactResult, error) {
+	p.calls++
+	p.last = req
+	if p.err != nil {
+		return ArtifactResult{}, p.err
+	}
+	return ArtifactResult{Content: append([]byte(nil), p.content...), SHA256: p.sha256}, nil
+}
+
+func workerInvocationFixture() []byte {
+	return []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":%q,"artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redeven_worker_invoke","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
+}
+
+func stopRuntimeSupervisor(t *testing.T, supervisor *ProcessSupervisor) {
+	t.Helper()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := supervisor.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
 }
