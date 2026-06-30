@@ -82,8 +82,10 @@ test("demo host embeds a sandboxed iframe", async () => {
   assert.match(html, /sandbox="allow-scripts allow-same-origin"/);
   assert.match(html, /src="about:blank"/);
   assert.match(html, /demo-picker/);
+  assert.match(html, /platform-client-status/);
 
   const hostScript = await readFile(new URL("./host.mjs", import.meta.url), "utf8");
+  assert.match(hostScript, /PluginPlatformClient/);
   assert.match(hostScript, /plugin_origin/);
   assert.match(hostScript, /iframeOrigin: pluginURL\.origin/);
   assert.match(hostScript, /Bouncer game/);
@@ -93,6 +95,34 @@ test("demo host embeds a sandboxed iframe", async () => {
   const pluginScript = await readFile(new URL("./plugin.mjs", import.meta.url), "utf8");
   assert.match(pluginScript, /parent_origin/);
   assert.match(pluginScript, /parentOrigin/);
+});
+
+test("demo platform exposes host management settings endpoints", async () => {
+  const platform = createDemoPlatformFetch();
+  const schemaResponse = await platform.fetch("/_redevplugin/api/plugins/plugini_demo_1/settings/schema", {
+    method: "GET",
+    headers: {},
+  });
+  const schema = await schemaResponse.json();
+  assert.equal(schema.data.plugin_instance_id, "plugini_demo_1");
+  assert.equal(schema.data.fields[0].key, "accent_mode");
+
+  const patchedResponse = await platform.fetch("/_redevplugin/api/plugins/plugini_demo_1/settings", {
+    method: "PATCH",
+    headers: {},
+    body: JSON.stringify({ values: { accent_mode: "indigo", telemetry_enabled: true } }),
+  });
+  const patched = await patchedResponse.json();
+  assert.equal(patched.data.values.accent_mode, "indigo");
+  assert.equal(patched.data.values.telemetry_enabled, true);
+
+  const currentResponse = await platform.fetch("/_redevplugin/api/plugins/plugini_demo_1/settings", {
+    method: "GET",
+    headers: {},
+  });
+  const current = await currentResponse.json();
+  assert.equal(current.data.settings_revision, 2);
+  assert.equal(current.data.values.accent_mode, "indigo");
 });
 
 test("rich demo plugins exercise game, storage, and network methods", async () => {

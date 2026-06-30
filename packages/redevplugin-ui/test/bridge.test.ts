@@ -4,6 +4,7 @@ import {
   decodePluginStreamText,
   PluginBridgeClient,
   PluginBridgeError,
+  PluginPlatformClient,
   PluginSurfaceHost,
   readPluginStream,
   type FetchInitLike,
@@ -667,6 +668,143 @@ test("readPluginStream maps missing ticket and endpoint errors", async () => {
   await assert.rejects(
     readPluginStream({ streamId: "stream_denied", streamTicket: "bad", fetch: fetch.fetch }),
     (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_PERMISSION_DENIED" && err.message === "stream ticket is required",
+  );
+});
+
+test("platform client reads and patches plugin settings through host API", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: true,
+    data: {
+      plugin_instance_id: "plugin_instance_1",
+      schema_version: 1,
+      fields: [{ key: "default_engine", type: "select", label: "Default engine", scope: "user", options: ["docker", "podman"] }],
+      settings_revision: 7,
+    },
+  });
+  fetch.push({
+    ok: true,
+    data: {
+      plugin_instance_id: "plugin_instance_1",
+      schema_version: 1,
+      settings_revision: 8,
+      values: { default_engine: "podman" },
+      updated_at: "2026-06-30T00:00:00Z",
+    },
+  });
+  const client = new PluginPlatformClient({
+    apiBaseURL: "https://host.example/",
+    fetch: fetch.fetch,
+    ownerSessionHashHeader: "owner_session_hash",
+  });
+
+  const schema = await client.getSettingsSchema("plugin instance/1");
+  const patched = await client.patchSettings("plugin instance/1", { default_engine: "podman" });
+
+  assert.equal(schema.fields[0]?.key, "default_engine");
+  assert.equal(patched.values.default_engine, "podman");
+  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings/schema");
+  assert.equal(fetch.calls[0]?.init.method, "GET");
+  assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
+  assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings");
+  assert.equal(fetch.calls[1]?.init.method, "PATCH");
+  assert.equal(fetch.calls[1]?.init.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { values: { default_engine: "podman" } });
+});
+
+test("platform client covers operation and data lifecycle routes", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: true,
+    data: [{
+      operation_id: "op 1",
+      plugin_instance_id: "plugin_instance_1",
+      method: "worker.long",
+      execution: "operation",
+      status: "running",
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z",
+    }],
+  });
+  fetch.push({
+    ok: true,
+    data: {
+      operation_id: "op 1",
+      plugin_instance_id: "plugin_instance_1",
+      method: "worker.long",
+      execution: "operation",
+      status: "cancel_requested",
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:02Z",
+    },
+  });
+  fetch.push({ ok: true, data: { archive_ref: "archive/plugin_instance_1.zip" } });
+  fetch.push({ ok: true, data: { imported: true } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  const operations = await client.listOperations("plugin_instance_1");
+  const canceled = await client.cancelOperation("op 1", "user canceled");
+  const exported = await client.exportData({ plugin_instance_id: "plugin_instance_1" });
+  const imported = await client.importData({ plugin_instance_id: "plugin_instance_1", archive_ref: exported.archive_ref, delete_existing: true });
+
+  assert.equal(operations[0]?.status, "running");
+  assert.equal(canceled.status, "cancel_requested");
+  assert.equal(exported.archive_ref, "archive/plugin_instance_1.zip");
+  assert.equal(imported.imported, true);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations?plugin_instance_id=plugin_instance_1");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/operations/op%201/cancel");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { reason: "user canceled" });
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/data/export");
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/data/import");
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {
+    plugin_instance_id: "plugin_instance_1",
+    archive_ref: "archive/plugin_instance_1.zip",
+    delete_existing: true,
+  });
+});
+
+test("platform client manages permissions and secret refs without exposing local contracts", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { grants: [{ plugin_instance_id: "plugin_instance_1", permission_id: "network.http" }] } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", granted_by: "admin" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", permission_id: "network.http", revoked_by: "admin" } });
+  fetch.push({ ok: true, data: { bound: true } });
+  fetch.push({ ok: true, data: { passed: true } });
+  fetch.push({ ok: true, data: { deleted: true } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  const grants = await client.listPermissions("plugin_instance_1", true);
+  const grant = await client.grantPermission({ plugin_instance_id: "plugin_instance_1", permission_id: "network.http", granted_by: "admin" });
+  const revoke = await client.revokePermission({ plugin_instance_id: "plugin_instance_1", permission_id: "network.http", revoked_by: "admin", reason: "rotation" });
+  const bound = await client.bindSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
+  const tested = await client.testSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
+  const deleted = await client.deleteSecret({ plugin_instance_id: "plugin_instance_1", secret_ref: "api_token", scope: "user" });
+
+  assert.equal(grants.grants?.[0]?.permission_id, "network.http");
+  assert.equal(grant.granted_by, "admin");
+  assert.equal(revoke.revoked_by, "admin");
+  assert.equal(bound.bound, true);
+  assert.equal(tested.passed, true);
+  assert.equal(deleted.deleted, true);
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/permissions?plugin_instance_id=plugin_instance_1&active_only=true");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/permissions/grant");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/permissions/revoke");
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/secrets/bind");
+  assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/secrets/test");
+  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/secrets/delete");
+});
+
+test("platform client maps management envelope errors", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: false, error_code: "PLUGIN_INVALID_REQUEST", error: "plugin settings are not declared" });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.getSettings("plugin_instance_missing"),
+    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_INVALID_REQUEST" && err.message === "plugin settings are not declared",
   );
 });
 

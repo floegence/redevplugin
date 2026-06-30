@@ -306,6 +306,233 @@ export type PluginConfirmationResult = {
   expires_at?: string;
 };
 
+export type PluginPlatformClientOptions = {
+  fetch?: FetchLike;
+  apiBaseURL?: string;
+  ownerSessionHashHeader?: string;
+};
+
+export type PluginCatalogRecord = Record<string, unknown>;
+
+export type PluginCatalogResult = {
+  plugins?: PluginCatalogRecord[];
+  [key: string]: unknown;
+};
+
+export type PluginSettingsField = {
+  key: string;
+  type: string;
+  label: string;
+  scope: string;
+  default?: unknown;
+  secret_ref?: string;
+  options?: string[];
+  validation?: Record<string, unknown>;
+};
+
+export type PluginSettingsSchema = {
+  plugin_instance_id: string;
+  schema_version: number;
+  migration?: Record<string, unknown>;
+  fields: PluginSettingsField[];
+  settings_revision: number;
+};
+
+export type PluginSettingsSnapshot = {
+  plugin_instance_id: string;
+  schema_version: number;
+  settings_revision: number;
+  values: Record<string, unknown>;
+  updated_at: string;
+};
+
+export type PluginOperationRecord = {
+  operation_id: string;
+  plugin_id?: string;
+  plugin_instance_id: string;
+  method: string;
+  effect?: string;
+  execution: string;
+  surface_instance_id?: string;
+  session_channel_id_hash?: string;
+  bridge_channel_id?: string;
+  status: string;
+  disable_behavior?: string;
+  uninstall_behavior?: string;
+  reason?: string;
+  created_at: string;
+  updated_at: string;
+  cancel_requested_at?: string;
+  orphaned_at?: string;
+};
+
+export type PluginPermissionGrant = {
+  plugin_instance_id: string;
+  permission_id: string;
+  granted_by?: string;
+  granted_at?: string;
+  revoked_by?: string;
+  revoked_at?: string;
+  reason?: string;
+  expires_at?: string;
+  [key: string]: unknown;
+};
+
+export type PluginPermissionList = {
+  grants?: PluginPermissionGrant[];
+  [key: string]: unknown;
+};
+
+export type PluginPermissionGrantRequest = {
+  plugin_instance_id: string;
+  permission_id: string;
+  granted_by?: string;
+  expires_at?: string;
+};
+
+export type PluginPermissionRevokeRequest = {
+  plugin_instance_id: string;
+  permission_id: string;
+  revoked_by?: string;
+  reason?: string;
+};
+
+export type PluginDataExportRequest = {
+  plugin_instance_id: string;
+  include_secrets?: boolean;
+};
+
+export type PluginDataExportResult = {
+  archive_ref: string;
+};
+
+export type PluginDataImportRequest = {
+  plugin_instance_id: string;
+  archive_ref: string;
+  delete_existing?: boolean;
+};
+
+export type PluginSecretRefRequest = {
+  plugin_instance_id: string;
+  secret_ref: string;
+  scope: string;
+};
+
+export class PluginPlatformClient {
+  #fetch: FetchLike;
+  #apiBaseURL: string;
+  #ownerSessionHashHeader?: string;
+
+  constructor(options: PluginPlatformClientOptions = {}) {
+    this.#fetch = options.fetch ?? defaultFetch();
+    this.#apiBaseURL = trimTrailingSlash(options.apiBaseURL ?? "");
+    this.#ownerSessionHashHeader = options.ownerSessionHashHeader;
+  }
+
+  catalog(): Promise<PluginCatalogResult> {
+    return this.#getJSON("/_redevplugin/api/plugins/catalog");
+  }
+
+  getSettingsSchema(pluginInstanceId: string): Promise<PluginSettingsSchema> {
+    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema`);
+  }
+
+  getSettings(pluginInstanceId: string): Promise<PluginSettingsSnapshot> {
+    return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`);
+  }
+
+  patchSettings(pluginInstanceId: string, values: Record<string, unknown>): Promise<PluginSettingsSnapshot> {
+    return this.#patchJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`, { values });
+  }
+
+  listOperations(pluginInstanceId?: string): Promise<PluginOperationRecord[]> {
+    const query = pluginInstanceId ? `?plugin_instance_id=${encodeURIComponent(pluginInstanceId)}` : "";
+    return this.#getJSON(`/_redevplugin/api/plugins/operations${query}`);
+  }
+
+  getOperation(operationId: string): Promise<PluginOperationRecord> {
+    return this.#getJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}`);
+  }
+
+  cancelOperation(operationId: string, reason?: string): Promise<PluginOperationRecord> {
+    const body = reason ? { reason } : {};
+    return this.#postJSON(`/_redevplugin/api/plugins/operations/${encodeURIComponent(operationId)}/cancel`, body);
+  }
+
+  exportData(request: PluginDataExportRequest): Promise<PluginDataExportResult> {
+    return this.#postJSON("/_redevplugin/api/plugins/data/export", request);
+  }
+
+  importData(request: PluginDataImportRequest): Promise<Record<string, unknown>> {
+    return this.#postJSON("/_redevplugin/api/plugins/data/import", request);
+  }
+
+  listPermissions(pluginInstanceId?: string, activeOnly?: boolean): Promise<PluginPermissionList> {
+    const params = new URLSearchParams();
+    if (pluginInstanceId) {
+      params.set("plugin_instance_id", pluginInstanceId);
+    }
+    if (activeOnly != null) {
+      params.set("active_only", activeOnly ? "true" : "false");
+    }
+    const query = params.toString();
+    return this.#getJSON(`/_redevplugin/api/plugins/permissions${query ? `?${query}` : ""}`);
+  }
+
+  grantPermission(request: PluginPermissionGrantRequest): Promise<PluginPermissionGrant> {
+    return this.#postJSON("/_redevplugin/api/plugins/permissions/grant", request);
+  }
+
+  revokePermission(request: PluginPermissionRevokeRequest): Promise<PluginPermissionGrant> {
+    return this.#postJSON("/_redevplugin/api/plugins/permissions/revoke", request);
+  }
+
+  bindSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> {
+    return this.#postJSON("/_redevplugin/api/plugins/secrets/bind", request);
+  }
+
+  testSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> {
+    return this.#postJSON("/_redevplugin/api/plugins/secrets/test", request);
+  }
+
+  deleteSecret(request: PluginSecretRefRequest): Promise<Record<string, unknown>> {
+    return this.#postJSON("/_redevplugin/api/plugins/secrets/delete", request);
+  }
+
+  #getJSON<T>(path: string): Promise<T> {
+    return this.#requestJSON<T>("GET", path);
+  }
+
+  #postJSON<T>(path: string, body: unknown): Promise<T> {
+    return this.#requestJSON<T>("POST", path, body);
+  }
+
+  #patchJSON<T>(path: string, body: unknown): Promise<T> {
+    return this.#requestJSON<T>("PATCH", path, body);
+  }
+
+  async #requestJSON<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const response = await this.#fetch(this.#apiBaseURL + path, {
+      method,
+      headers: this.#headers(body !== undefined),
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "same-origin",
+    });
+    return readHostEnvelope<T>(response, "PLUGIN_PLATFORM_REQUEST_FAILED");
+  }
+
+  #headers(hasBody: boolean): Record<string, string> {
+    const headers: Record<string, string> = { "Accept": "application/json" };
+    if (hasBody) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (this.#ownerSessionHashHeader) {
+      headers["X-ReDevPlugin-Owner-Session-Hash"] = this.#ownerSessionHashHeader;
+    }
+    return headers;
+  }
+}
+
 type HostEnvelope<T> =
   | { ok: true; data?: T }
   | { ok: false; error?: string; error_code?: string };
@@ -481,19 +708,7 @@ export class PluginSurfaceHost {
       body: JSON.stringify(body),
       credentials: "same-origin",
     });
-    const raw = await response.json();
-    if (!isHostEnvelope(raw)) {
-      throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`);
-    }
-    if (!raw.ok) {
-      const errorCode = raw.error_code ?? "PLUGIN_PERMISSION_DENIED";
-      const message = raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`;
-      if (errorCode === "PLUGIN_CONFIRMATION_REQUIRED") {
-        throw new PluginConfirmationRequiredError(errorCode, message);
-      }
-      throw new PluginBridgeError(errorCode, message);
-    }
-    return raw.data as T;
+    return readHostEnvelope<T>(response, "PLUGIN_PERMISSION_DENIED");
   }
 
   #postError(id: string, errorCode: string, error: string): void {
@@ -626,6 +841,22 @@ function isHostEnvelope(value: unknown): value is HostEnvelope<unknown> {
     return true;
   }
   return value.error == null || typeof value.error === "string";
+}
+
+async function readHostEnvelope<T>(response: FetchResponseLike, fallbackCode: string): Promise<T> {
+  const raw = await response.json();
+  if (!isHostEnvelope(raw)) {
+    throw new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin platform endpoint returned an invalid envelope with HTTP ${response.status}`);
+  }
+  if (!raw.ok) {
+    const errorCode = raw.error_code ?? fallbackCode;
+    const message = raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`;
+    if (errorCode === "PLUGIN_CONFIRMATION_REQUIRED") {
+      throw new PluginConfirmationRequiredError(errorCode, message);
+    }
+    throw new PluginBridgeError(errorCode, message);
+  }
+  return raw.data as T;
 }
 
 function parseNDJSONEvents(raw: string): PluginStreamEvent[] {

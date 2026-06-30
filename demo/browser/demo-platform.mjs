@@ -34,6 +34,9 @@ export function createDemoPlatformFetch(options = {}) {
       scheduleItems: state.scheduleItems,
       weatherLocation: state.weatherLocation,
       weatherSavedLocations: state.weatherSavedLocations,
+      hostSettings: state.hostSettings,
+      settingsRevision: state.settingsRevision,
+      settingsUpdatedAt: state.settingsUpdatedAt,
     });
   }
 
@@ -46,9 +49,36 @@ export function createDemoPlatformFetch(options = {}) {
 
   async function fetch(input, init) {
     const url = new URL(String(input), "http://demo.local");
+    const method = String(init?.method ?? "GET").toUpperCase();
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     calls.push({ path: url.pathname, body });
     options.onCall?.(url.pathname, body);
+
+    if (url.pathname.endsWith("/settings/schema") && method === "GET") {
+      return jsonResponse({
+        ok: true,
+        data: demoSettingsSchema(bootstrap.pluginInstanceId, state.settingsRevision),
+      });
+    }
+
+    if (url.pathname.endsWith("/settings") && method === "GET") {
+      return jsonResponse({
+        ok: true,
+        data: demoSettingsSnapshot(bootstrap.pluginInstanceId, state),
+      });
+    }
+
+    if (url.pathname.endsWith("/settings") && method === "PATCH") {
+      const values = isRecord(body.values) ? body.values : {};
+      state.hostSettings = normalizeDemoSettings({ ...state.hostSettings, ...values });
+      state.settingsRevision += 1;
+      state.settingsUpdatedAt = new Date().toISOString();
+      persistState();
+      return jsonResponse({
+        ok: true,
+        data: demoSettingsSnapshot(bootstrap.pluginInstanceId, state),
+      });
+    }
 
     if (url.pathname.endsWith(`/surfaces/${bootstrap.surfaceInstanceId}/bridge-token`)) {
       state.bridgeTokenIssued = true;
@@ -332,6 +362,41 @@ function createDefaultDemoState() {
     weatherLocation: "San Francisco",
     weatherSavedLocations: ["San Francisco", "Shanghai", "London"],
     weatherFetches: 0,
+    hostSettings: { accent_mode: "teal", telemetry_enabled: false },
+    settingsRevision: 1,
+    settingsUpdatedAt: "2026-06-30T00:00:00Z",
+  };
+}
+
+function demoSettingsSchema(pluginInstanceID, settingsRevision) {
+  return {
+    plugin_instance_id: pluginInstanceID,
+    schema_version: 1,
+    migration: {
+      from_version: 1,
+      to_version: 1,
+      reversible: true,
+      requires_worker: false,
+      estimated_bytes: 0,
+      max_duration_ms: 0,
+      data_loss_risk: false,
+      steps_hash: "sha256:demo-settings",
+    },
+    fields: [
+      { key: "accent_mode", type: "select", label: "Accent mode", scope: "user", default: "teal", options: ["teal", "indigo", "amber"] },
+      { key: "telemetry_enabled", type: "boolean", label: "Telemetry enabled", scope: "user", default: false },
+    ],
+    settings_revision: settingsRevision,
+  };
+}
+
+function demoSettingsSnapshot(pluginInstanceID, state) {
+  return {
+    plugin_instance_id: pluginInstanceID,
+    schema_version: 1,
+    settings_revision: state.settingsRevision,
+    values: { ...state.hostSettings },
+    updated_at: state.settingsUpdatedAt,
   };
 }
 
@@ -402,6 +467,23 @@ function applyPersistedState(state, persisted = {}) {
   if (Array.isArray(persisted.weatherSavedLocations)) {
     state.weatherSavedLocations = persisted.weatherSavedLocations.map(normalizeLocation).slice(0, 6);
   }
+  if (isRecord(persisted.hostSettings)) {
+    state.hostSettings = normalizeDemoSettings(persisted.hostSettings);
+  }
+  if (Number.isFinite(Number(persisted.settingsRevision))) {
+    state.settingsRevision = Math.max(1, Math.round(Number(persisted.settingsRevision)));
+  }
+  if (typeof persisted.settingsUpdatedAt === "string") {
+    state.settingsUpdatedAt = persisted.settingsUpdatedAt;
+  }
+}
+
+function normalizeDemoSettings(values = {}) {
+  const accent = String(values.accent_mode ?? "teal");
+  return {
+    accent_mode: ["teal", "indigo", "amber"].includes(accent) ? accent : "teal",
+    telemetry_enabled: Boolean(values.telemetry_enabled),
+  };
 }
 
 function normalizePersistedScheduleItem(item = {}) {
@@ -420,6 +502,10 @@ function normalizePersistedScheduleItem(item = {}) {
 
 function structuredCloneSafe(value) {
   return JSON.parse(JSON.stringify(value ?? {}));
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeScheduleItem(params = {}) {

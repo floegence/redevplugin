@@ -1,4 +1,4 @@
-import { PluginSurfaceHost } from "../../packages/redevplugin-ui/dist/index.js";
+import { PluginPlatformClient, PluginSurfaceHost } from "../../packages/redevplugin-ui/dist/index.js";
 import { createDemoBootstrap, createDemoPlatformFetch } from "./demo-platform.mjs";
 
 const iframe = document.querySelector("#plugin-frame");
@@ -14,6 +14,8 @@ const approveConfirmation = document.querySelector("#approve-confirmation");
 const denyConfirmation = document.querySelector("#deny-confirmation");
 const sendVisible = document.querySelector("#send-visible");
 const picker = document.querySelector("#demo-picker");
+const platformClientStatus = document.querySelector("#platform-client-status");
+const platformClientDetail = document.querySelector("#platform-client-detail");
 
 const builtinPlugins = [
   {
@@ -166,6 +168,9 @@ function openPlugin(plugin) {
   platform = createDemoPlatformFetch({
     bootstrap: demoBootstrap,
     onCall(path, body) {
+      if (path.endsWith("/settings/schema") || path.endsWith("/settings")) {
+        addLog("platform-client", { path, keys: Object.keys(body ?? {}) });
+      }
       if (path.endsWith("/bridge-token")) {
         handshakes += 1;
         handshakeCount.textContent = String(handshakes);
@@ -203,6 +208,33 @@ function openPlugin(plugin) {
     host_origin: window.location.origin,
     plugin_origin: pluginURL.origin,
   });
+  void refreshPlatformClientState(demoBootstrap);
+}
+
+async function refreshPlatformClientState(bootstrap) {
+  platformClientStatus.textContent = "loading";
+  platformClientDetail.textContent = "reading schema";
+  const client = new PluginPlatformClient({
+    fetch: platform.fetch,
+    ownerSessionHashHeader: bootstrap.ownerSessionHash,
+  });
+  try {
+    const schema = await client.getSettingsSchema(bootstrap.pluginInstanceId);
+    const current = await client.getSettings(bootstrap.pluginInstanceId);
+    const nextAccent = current.values?.accent_mode === "teal" ? "indigo" : "teal";
+    const patched = await client.patchSettings(bootstrap.pluginInstanceId, { accent_mode: nextAccent });
+    platformClientStatus.textContent = "settings ok";
+    platformClientDetail.textContent = `${schema.fields.length} fields, revision ${patched.settings_revision}, accent ${patched.values.accent_mode}`;
+    addLog("settings-client", {
+      plugin_instance_id: patched.plugin_instance_id,
+      settings_revision: patched.settings_revision,
+      accent_mode: patched.values.accent_mode,
+    });
+  } catch (error) {
+    platformClientStatus.textContent = "settings error";
+    platformClientDetail.textContent = error instanceof Error ? error.message : String(error);
+    addLog("settings-client-error", { error: platformClientDetail.textContent });
+  }
 }
 
 function confirmDangerousCall(intent) {

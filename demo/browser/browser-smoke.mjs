@@ -61,6 +61,8 @@ try {
   await page.goto(hostURL, { waitUntil: "load" });
   await expectText(page.locator("#host-status"), "listening");
   await expectText(page.locator("#handshake-count"), "1");
+  await expectText(page.locator("#platform-client-status"), "settings ok");
+  await expectText(page.locator("#platform-client-detail"), "revision");
 
   const frame = page.frameLocator("#plugin-frame");
   await expectText(frame.locator("#plugin-status"), "ready");

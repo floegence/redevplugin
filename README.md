@@ -55,6 +55,12 @@ capabilities.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.
+- The TypeScript package includes both sandbox iframe bridge helpers and a
+  host-side `PluginPlatformClient` for existing platform management routes:
+  settings schema/read/patch, operation list/get/cancel, data export/import,
+  permission grant/revoke/list, and secret bind/test/delete. The browser demo
+  uses this client from the host page to exercise settings management without
+  exposing management credentials to the sandboxed iframe.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
