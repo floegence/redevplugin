@@ -8,12 +8,14 @@ pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
 pub const FRAME_TYPE_VALIDATE_HANDLE_GRANT: &str = "validate_handle_grant";
 pub const FRAME_TYPE_STORAGE_FILE: &str = "storage_file";
 pub const FRAME_TYPE_NETWORK_GRANT: &str = "network_grant";
+pub const FRAME_TYPE_NETWORK_EXECUTE: &str = "network_execute";
 pub const FRAME_TYPE_REVOKE_EPOCH: &str = "revoke_epoch";
 pub const FRAME_TYPE_REVOKE_EPOCH_ACK: &str = "revoke_epoch_ack";
 pub const ERR_ARTIFACT_HANDLE_FAILED: &str = "ARTIFACT_HANDLE_FAILED";
 pub const ERR_HANDLE_GRANT_VALIDATION_FAILED: &str = "HANDLE_GRANT_VALIDATION_FAILED";
 pub const ERR_STORAGE_FILE_FAILED: &str = "STORAGE_FILE_FAILED";
 pub const ERR_NETWORK_GRANT_FAILED: &str = "NETWORK_GRANT_FAILED";
+pub const ERR_NETWORK_EXECUTE_FAILED: &str = "NETWORK_EXECUTE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 
@@ -29,6 +31,7 @@ pub enum FrameType {
     ValidateHandleGrant,
     StorageFile,
     NetworkGrant,
+    NetworkExecute,
     CloseHandle,
     RevokeEpoch,
     RevokeEpochAck,
@@ -419,6 +422,107 @@ pub fn validate_network_grant_response(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkExecuteRequest {
+    pub plugin_instance_id: String,
+    pub active_fingerprint: String,
+    pub runtime_instance_id: String,
+    pub runtime_generation_id: String,
+    pub runtime_shard_id: String,
+    pub policy_revision: u64,
+    pub management_revision: u64,
+    pub revoke_epoch: u64,
+    pub connector_id: String,
+    pub transport: String,
+    pub destination: String,
+    pub ttl_ms: u64,
+    pub operation: String,
+    pub method: String,
+    pub path: String,
+    pub headers_json: String,
+    pub message_type: String,
+    pub body_base64: String,
+    pub payload_base64: String,
+    pub max_request_bytes: u64,
+    pub max_response_bytes: u64,
+    pub timeout_ms: u64,
+}
+
+pub fn network_execute_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    req: &NetworkExecuteRequest,
+) -> String {
+    let headers_json = if req.headers_json.trim().is_empty() {
+        "{}"
+    } else {
+        req.headers_json.trim()
+    };
+    format!(
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"timeout_ms\":{}}}}}",
+        RUST_IPC_VERSION,
+        FRAME_TYPE_NETWORK_EXECUTE,
+        escape_json_string(request_id),
+        escape_json_string(runtime_generation_id),
+        escape_json_string(&req.plugin_instance_id),
+        escape_json_string(&req.active_fingerprint),
+        escape_json_string(&req.runtime_instance_id),
+        escape_json_string(&req.runtime_generation_id),
+        escape_json_string(&req.runtime_shard_id),
+        req.policy_revision,
+        req.management_revision,
+        req.revoke_epoch,
+        escape_json_string(&req.connector_id),
+        escape_json_string(&req.transport),
+        escape_json_string(&req.destination),
+        req.ttl_ms,
+        escape_json_string(&req.operation),
+        escape_json_string(&req.method),
+        escape_json_string(&req.path),
+        headers_json,
+        escape_json_string(&req.message_type),
+        escape_json_string(&req.body_base64),
+        escape_json_string(&req.payload_base64),
+        req.max_request_bytes,
+        req.max_response_bytes,
+        req.timeout_ms
+    )
+}
+
+pub fn validate_network_execute_response(
+    input: &str,
+    expected_request_id: &str,
+    expected_runtime_generation_id: &str,
+    expected_connector_id: &str,
+    expected_transport: &str,
+) -> Result<(), String> {
+    let (frame_type, request_id, runtime_generation_id) =
+        parse_frame_identity(input).map_err(|err| err.to_string())?;
+    if frame_type != FRAME_TYPE_NETWORK_EXECUTE {
+        return Err("expected network_execute frame".to_string());
+    }
+    if request_id != expected_request_id {
+        return Err("network_execute request_id mismatch".to_string());
+    }
+    if runtime_generation_id != expected_runtime_generation_id {
+        return Err("network_execute runtime_generation_id mismatch".to_string());
+    }
+    if !extract_json_bool(input, "ok").unwrap_or(false) {
+        let code = extract_json_string(input, "code")
+            .unwrap_or_else(|| ERR_NETWORK_EXECUTE_FAILED.to_string());
+        let message = extract_json_string(input, "message")
+            .unwrap_or_else(|| "network execute request failed".to_string());
+        return Err(format!("{code}: {message}"));
+    }
+    let connector_id =
+        extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
+    let transport = extract_json_string(input, "transport").ok_or("missing transport")?;
+    if connector_id != expected_connector_id || transport != expected_transport {
+        return Err("network_execute audience mismatch".to_string());
+    }
+    Ok(())
+}
+
 pub fn validate_hello_frame(input: &str) -> Result<(String, String), &'static str> {
     let ipc_version = extract_json_string(input, "ipc_version").ok_or("missing ipc_version")?;
     if ipc_version != RUST_IPC_VERSION {
@@ -720,6 +824,57 @@ mod tests {
         let err = validate_network_grant_response(failed, "r1:network_grant", "g1", "api", "http")
             .expect_err("failed network grant response");
         assert!(err.contains("NETWORK_TARGET_DENIED"));
+    }
+
+    #[test]
+    fn renders_network_execute_frame() {
+        let req = NetworkExecuteRequest {
+            plugin_instance_id: "plugini_1".to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: "runtime_shard_1".to_string(),
+            policy_revision: 1,
+            management_revision: 2,
+            revoke_epoch: 3,
+            connector_id: "api".to_string(),
+            transport: "http".to_string(),
+            destination: "https://api.example.com".to_string(),
+            ttl_ms: 30000,
+            operation: "http".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/worker".to_string(),
+            headers_json: r#"{"X-Test":["ok"]}"#.to_string(),
+            message_type: "".to_string(),
+            body_base64: "e30=".to_string(),
+            payload_base64: "".to_string(),
+            max_request_bytes: 1024,
+            max_response_bytes: 2048,
+            timeout_ms: 2000,
+        };
+        let frame = network_execute_frame("r1:network_execute", "g1", &req);
+        assert!(frame.contains(r#""frame_type":"network_execute""#));
+        assert!(frame.contains(r#""operation":"http""#));
+        assert!(frame.contains(r#""headers":{"X-Test":["ok"]}"#));
+        assert!(frame.contains(r#""body_base64":"e30=""#));
+        assert!(frame.contains(r#""timeout_ms":2000"#));
+    }
+
+    #[test]
+    fn validates_network_execute_response() {
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
+        validate_network_execute_response(frame, "r1:network_execute", "g1", "api", "http")
+            .expect("valid network execute response");
+        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large"}}"#;
+        let err = validate_network_execute_response(
+            failed,
+            "r1:network_execute",
+            "g1",
+            "api",
+            "http",
+        )
+        .expect_err("failed network execute response");
+        assert!(err.contains("NETWORK_RESPONSE_TOO_LARGE"));
     }
 
     #[test]
