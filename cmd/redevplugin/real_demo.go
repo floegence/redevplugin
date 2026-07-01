@@ -27,22 +27,23 @@ import (
 )
 
 const (
-	realDemoPluginID        = "com.example.real.demo"
-	realDemoPluginName      = "Real Runtime Demo Plugin"
-	realDemoSurfaceID       = realDemoPluginID + ".activity"
-	realDemoHostName        = "app.redevplugin.localhost"
-	realDemoSandboxHost     = "plg-real.redevplugin.localhost"
-	realDemoHostPort        = "4175"
-	realDemoPluginPort      = "4176"
-	realDemoOwner           = "real_demo_owner_session"
-	realDemoUser            = "real_demo_owner_user"
-	realDemoChannel         = "real_demo_session_channel"
-	realDemoCapability      = "example.capability.real_demo"
-	realDemoAssetCookieName = "__Host-redevplugin-asset-session"
-	realDemoBrokerStoreID   = "workspace"
-	realDemoBrokerKVStoreID = "settings"
-	realDemoBrokerFilePath  = "notes/from-real-demo.txt"
-	realDemoBrokerKVKey     = "demo/last_broker_run"
+	realDemoPluginID            = "com.example.real.demo"
+	realDemoPluginName          = "Real Runtime Demo Plugin"
+	realDemoSurfaceID           = realDemoPluginID + ".activity"
+	realDemoHostName            = "app.redevplugin.localhost"
+	realDemoSandboxHost         = "plg-real.redevplugin.localhost"
+	realDemoHostPort            = "4175"
+	realDemoPluginPort          = "4176"
+	realDemoOwner               = "real_demo_owner_session"
+	realDemoUser                = "real_demo_owner_user"
+	realDemoChannel             = "real_demo_session_channel"
+	realDemoCapability          = "example.capability.real_demo"
+	realDemoAssetCookieName     = "__Host-redevplugin-asset-session"
+	realDemoBrokerStoreID       = "workspace"
+	realDemoBrokerKVStoreID     = "settings"
+	realDemoBrokerSQLiteStoreID = "db"
+	realDemoBrokerFilePath      = "notes/from-real-demo.txt"
+	realDemoBrokerKVKey         = "demo/last_broker_run"
 )
 
 var realDemoNetworkMatrix = []realDemoNetworkCase{
@@ -309,16 +310,30 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		storageSQLiteGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+			PluginInstanceID:    record.PluginInstanceID,
+			StoreID:             realDemoBrokerSQLiteStoreID,
+			RuntimeInstanceID:   health.RuntimeInstanceID,
+			RuntimeGenerationID: health.RuntimeGenerationID,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		broker := realDemoBrokerPayload{
-			StorageHandleGrantToken:   storageGrant.HandleGrant.HandleGrantToken,
-			StorageStoreID:            realDemoBrokerStoreID,
-			StoragePath:               realDemoBrokerFilePath,
-			StorageDataBase64:         base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker storage")),
-			StorageKVHandleGrantToken: storageKVGrant.HandleGrant.HandleGrantToken,
-			StorageKVStoreID:          realDemoBrokerKVStoreID,
-			StorageKVKey:              realDemoBrokerKVKey,
-			StorageKVValueBase64:      base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker kv")),
-			NetworkBodyBase64:         base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker network")),
+			StorageHandleGrantToken:       storageGrant.HandleGrant.HandleGrantToken,
+			StorageStoreID:                realDemoBrokerStoreID,
+			StoragePath:                   realDemoBrokerFilePath,
+			StorageDataBase64:             base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker storage")),
+			StorageKVHandleGrantToken:     storageKVGrant.HandleGrant.HandleGrantToken,
+			StorageKVStoreID:              realDemoBrokerKVStoreID,
+			StorageKVKey:                  realDemoBrokerKVKey,
+			StorageKVValueBase64:          base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker kv")),
+			StorageSQLiteHandleGrantToken: storageSQLiteGrant.HandleGrant.HandleGrantToken,
+			StorageSQLiteStoreID:          realDemoBrokerSQLiteStoreID,
+			StorageSQLiteDatabase:         "plugin.sqlite",
+			StorageSQLiteSQL:              "CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)",
+			NetworkBodyBase64:             base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker network")),
 		}
 		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), bootstrapJSON(broker), health.RuntimeGenerationID))
 	})
@@ -366,15 +381,19 @@ type realDemoBootstrapPayload struct {
 }
 
 type realDemoBrokerPayload struct {
-	StorageHandleGrantToken   string `json:"storage_handle_grant_token"`
-	StorageStoreID            string `json:"storage_store_id"`
-	StoragePath               string `json:"storage_path"`
-	StorageDataBase64         string `json:"storage_data_base64"`
-	StorageKVHandleGrantToken string `json:"storage_kv_handle_grant_token"`
-	StorageKVStoreID          string `json:"storage_kv_store_id"`
-	StorageKVKey              string `json:"storage_kv_key"`
-	StorageKVValueBase64      string `json:"storage_kv_value_base64"`
-	NetworkBodyBase64         string `json:"network_body_base64"`
+	StorageHandleGrantToken       string `json:"storage_handle_grant_token"`
+	StorageStoreID                string `json:"storage_store_id"`
+	StoragePath                   string `json:"storage_path"`
+	StorageDataBase64             string `json:"storage_data_base64"`
+	StorageKVHandleGrantToken     string `json:"storage_kv_handle_grant_token"`
+	StorageKVStoreID              string `json:"storage_kv_store_id"`
+	StorageKVKey                  string `json:"storage_kv_key"`
+	StorageKVValueBase64          string `json:"storage_kv_value_base64"`
+	StorageSQLiteHandleGrantToken string `json:"storage_sqlite_handle_grant_token"`
+	StorageSQLiteStoreID          string `json:"storage_sqlite_store_id"`
+	StorageSQLiteDatabase         string `json:"storage_sqlite_database"`
+	StorageSQLiteSQL              string `json:"storage_sqlite_sql"`
+	NetworkBodyBase64             string `json:"network_body_base64"`
 }
 
 func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPayload {
@@ -470,6 +489,22 @@ func addRealDemoMethods(manifestFile string) error {
 				MaxDurationMS:  1000,
 				DataLossRisk:   false,
 				StepsHash:      "sha256:real-demo-kv",
+			},
+		}, {
+			StoreID:       realDemoBrokerSQLiteStoreID,
+			Kind:          string(storage.StoreSQLite),
+			Scope:         "user",
+			QuotaBytes:    1 << 20,
+			SchemaVersion: 1,
+			Migration: manifest.MigrationSpec{
+				FromVersion:    0,
+				ToVersion:      1,
+				Reversible:     true,
+				RequiresWorker: false,
+				EstimatedBytes: 0,
+				MaxDurationMS:  1000,
+				DataLossRisk:   false,
+				StepsHash:      "sha256:real-demo-sqlite",
 			},
 		}},
 	}
@@ -568,6 +603,7 @@ func realDemoBrokerWorkerWASM() []byte {
 	return importedNoArgHostcallWorkerWASM("redevplugin_worker_invoke", [][2]string{
 		{"redevplugin.storage", "files_write_demo"},
 		{"redevplugin.storage", "kv_put_demo"},
+		{"redevplugin.storage", "sqlite_exec_demo"},
 		{"redevplugin.network", "http_request_demo"},
 	})
 }
@@ -1160,6 +1196,10 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
             storage_kv_store_id: brokerConfig.storage_kv_store_id,
             storage_kv_key: brokerConfig.storage_kv_key,
             storage_kv_value_base64: brokerConfig.storage_kv_value_base64,
+            storage_sqlite_handle_grant_token: brokerConfig.storage_sqlite_handle_grant_token,
+            storage_sqlite_store_id: brokerConfig.storage_sqlite_store_id,
+            storage_sqlite_database: brokerConfig.storage_sqlite_database,
+            storage_sqlite_sql: brokerConfig.storage_sqlite_sql,
             network_body_base64: brokerConfig.network_body_base64,
           };
           nextInit = { ...init, body: JSON.stringify(body) };

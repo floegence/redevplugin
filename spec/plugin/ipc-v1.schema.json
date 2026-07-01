@@ -8,7 +8,7 @@
   "properties": {
     "ipc_version": { "const": "rust-ipc-v1" },
     "frame_type": {
-      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "storage_file", "storage_kv", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
+      "enum": ["hello", "hello_ack", "heartbeat", "lease_grant", "invoke_worker", "invoke_worker_result", "open_handle", "close_handle", "validate_handle_grant", "storage_file", "storage_kv", "storage_sqlite", "network_grant", "network_execute", "revoke_epoch", "revoke_epoch_ack", "diagnostic"]
     },
     "request_id": { "type": "string", "minLength": 1 },
     "runtime_generation_id": { "type": "string" },
@@ -150,6 +150,20 @@
             "oneOf": [
               { "$ref": "#/$defs/storage_kv_request_payload" },
               { "$ref": "#/$defs/storage_kv_response_payload" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "frame_type": { "const": "storage_sqlite" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "oneOf": [
+              { "$ref": "#/$defs/storage_sqlite_request_payload" },
+              { "$ref": "#/$defs/storage_sqlite_response_payload" }
             ]
           }
         }
@@ -412,6 +426,84 @@
         "key": { "type": "string", "minLength": 1 },
         "size_bytes": { "type": "integer", "minimum": 0 },
         "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "storage_sqlite_request_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handle_grant_token",
+        "plugin_instance_id",
+        "active_fingerprint",
+        "runtime_generation_id",
+        "handle_id",
+        "method",
+        "policy_revision",
+        "management_revision",
+        "revoke_epoch",
+        "operation",
+        "store_id",
+        "sql"
+      ],
+      "properties": {
+        "handle_grant_token": { "type": "string", "minLength": 1 },
+        "plugin_instance_id": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "runtime_instance_id": { "type": "string" },
+        "runtime_generation_id": { "type": "string", "minLength": 1 },
+        "runtime_shard_id": { "type": "string" },
+        "handle_id": { "type": "string", "pattern": "^storage:[A-Za-z0-9_.-]+$" },
+        "method": { "const": "storage.sqlite" },
+        "policy_revision": { "type": "integer", "minimum": 0 },
+        "management_revision": { "type": "integer", "minimum": 0 },
+        "revoke_epoch": { "type": "integer", "minimum": 0 },
+        "operation": { "enum": ["exec", "query"] },
+        "store_id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+        "database": { "type": "string" },
+        "sql": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/storage_sqlite_value" }
+        },
+        "max_rows": { "type": "integer", "minimum": 0 },
+        "max_response_bytes": { "type": "integer", "minimum": 0 },
+        "timeout_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "storage_sqlite_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "database": { "type": "string" },
+        "rows_affected": { "type": "integer", "minimum": 0 },
+        "last_insert_id": { "type": "integer", "minimum": 0 },
+        "columns": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/storage_sqlite_value" }
+          }
+        },
+        "usage": { "$ref": "#/$defs/storage_usage" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "storage_sqlite_value": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "null": { "type": "boolean" },
+        "int": { "type": "integer" },
+        "float": { "type": "number" },
+        "text": { "type": "string" },
+        "blob_base64": { "type": "string", "contentEncoding": "base64" }
       }
     },
     "storage_usage": {

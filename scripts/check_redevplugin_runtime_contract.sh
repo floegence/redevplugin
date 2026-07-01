@@ -44,6 +44,9 @@ fi
   grep -q '"storage_kv_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"storage_kv_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"method": { "const": "storage.kv" }' spec/plugin/ipc-v1.schema.json
+  grep -q '"storage_sqlite_request_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"storage_sqlite_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"method": { "const": "storage.sqlite" }' spec/plugin/ipc-v1.schema.json
   grep -q '"network_grant_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"network_grant_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"network_execute_request_payload"' spec/plugin/ipc-v1.schema.json
@@ -60,6 +63,11 @@ fi
   grep -q 'struct StorageKVRequest' crates/redevplugin-ipc/src/lib.rs
   grep -q 'storage_kv_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_storage_kv_response' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'FRAME_TYPE_STORAGE_SQLITE' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_STORAGE_SQLITE_FAILED' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'struct StorageSQLiteRequest' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'storage_sqlite_frame' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'validate_storage_sqlite_response' crates/redevplugin-ipc/src/lib.rs
   grep -q 'FRAME_TYPE_NETWORK_GRANT' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_NETWORK_GRANT_FAILED' crates/redevplugin-ipc/src/lib.rs
   grep -q 'struct NetworkGrantRequest' crates/redevplugin-ipc/src/lib.rs
@@ -86,6 +94,10 @@ fi
   grep -q '"storage.kv"' crates/redevplugin-runtime/src/main.rs
   grep -q 'perform_storage_kv_request_hostcall' crates/redevplugin-runtime/src/main.rs
   grep -q 'storage_kv_frame' crates/redevplugin-runtime/src/main.rs
+  grep -q 'sqlite_exec_demo' crates/redevplugin-runtime/src/main.rs
+  grep -q '"storage.sqlite"' crates/redevplugin-runtime/src/main.rs
+  grep -q 'perform_storage_sqlite_request_hostcall' crates/redevplugin-runtime/src/main.rs
+  grep -q 'storage_sqlite_frame' crates/redevplugin-runtime/src/main.rs
   grep -q 'http_request_demo' crates/redevplugin-runtime/src/main.rs
   grep -q '"http_request"' crates/redevplugin-runtime/src/main.rs
   grep -q 'perform_network_http_request_hostcall' crates/redevplugin-runtime/src/main.rs

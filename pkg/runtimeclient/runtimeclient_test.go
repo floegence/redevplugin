@@ -333,6 +333,86 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *testing.T) {
+	validator := &recordingHandleGrantValidator{
+		result: HandleGrantValidationResult{
+			HandleGrantID:       "handle_grant_1",
+			HandleID:            "storage:db",
+			Method:              "storage.sqlite",
+			RuntimeGenerationID: "runtime_gen_test",
+			MaxTotalBytes:       4096,
+		},
+	}
+	title := "stored from wasm"
+	score := int64(7)
+	sqlite := &recordingStorageSQLiteBroker{
+		queryResult: storage.SQLiteQueryResult{
+			Database: "plugin.sqlite",
+			Columns:  []string{"title", "score"},
+			Rows: [][]storage.SQLiteValue{{
+				{Text: &title},
+				{Int: &score},
+			}},
+			Usage: storage.Usage{PluginInstanceID: "plugini_1", StoreID: "db", UsageBytes: 4096, QuotaBytes: 8192},
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:   os.Args[0],
+		Args:          []string{"-test.run=TestMain"},
+		Env:           append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
+		HandleGrants:  validator,
+		StorageSQLite: sqlite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	storageSQLite, ok := decoded["storage_sqlite"].(map[string]any)
+	if !ok {
+		t.Fatalf("storage sqlite result missing: %#v", decoded)
+	}
+	if storageSQLite["ok"] != true || storageSQLite["database"] != "plugin.sqlite" {
+		t.Fatalf("storage sqlite result mismatch: %#v", storageSQLite)
+	}
+	rows, ok := storageSQLite["rows"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("storage sqlite rows mismatch: %#v", storageSQLite["rows"])
+	}
+	if validator.calls != 1 || validator.last.HandleID != "storage:db" || validator.last.Method != "storage.sqlite" {
+		t.Fatalf("validator mismatch: calls=%d last=%#v", validator.calls, validator.last)
+	}
+	if sqlite.queryCalls != 1 || sqlite.lastQuery.PluginInstanceID != "plugini_1" || sqlite.lastQuery.StoreID != "db" || sqlite.lastQuery.SQL != "SELECT title, score FROM events WHERE score = ?" {
+		t.Fatalf("storage sqlite query mismatch: calls=%d last=%#v", sqlite.queryCalls, sqlite.lastQuery)
+	}
+	if len(sqlite.lastQuery.Args) != 1 || sqlite.lastQuery.Args[0].Int == nil || *sqlite.lastQuery.Args[0].Int != score {
+		t.Fatalf("storage sqlite args mismatch: %#v", sqlite.lastQuery.Args)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) {
 	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
 	broker := &recordingConnectivityBroker{
@@ -1059,6 +1139,11 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE") != "" {
+				if !requestStorageSQLiteFromHelper(reader, encoder, request) {
+					continue
+				}
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE") == "1" {
 				if !validateHandleGrantFromHelper(reader, encoder, request) {
 					continue
@@ -1342,6 +1427,58 @@ func requestStorageKVFromHelper(reader *bufio.Reader, encoder *json.Encoder, req
 	return false
 }
 
+func requestStorageSQLiteFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
+	rawStorageReq, _ := json.Marshal(storageSQLiteRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE")))
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeStorageSQLite,
+		RequestID:           request.RequestID + ":storage_sqlite",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             rawStorageReq,
+	})
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(51)
+	}
+	var response ipcFrame
+	if err := json.Unmarshal(line, &response); err != nil {
+		os.Exit(52)
+	}
+	if response.FrameType != ipcFrameTypeStorageSQLite || response.RequestID != request.RequestID+":storage_sqlite" {
+		os.Exit(53)
+	}
+	var storageSQLite storageSQLiteResponsePayload
+	if err := json.Unmarshal(response.Payload, &storageSQLite); err != nil {
+		os.Exit(54)
+	}
+	if !storageSQLite.OK {
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageSQLite.Code, Message: storageSQLite.Message})
+		resultFrameType := ipcFrameTypeInvokeWorkerResult
+		if request.FrameType == ipcFrameTypeRevokeEpoch {
+			resultFrameType = ipcFrameTypeRevokeEpochAck
+		}
+		_ = encoder.Encode(ipcFrame{
+			IPCVersion:          version.RustIPCVersion,
+			FrameType:           resultFrameType,
+			RequestID:           request.RequestID,
+			RuntimeGenerationID: request.RuntimeGenerationID,
+			Payload:             raw,
+		})
+		return false
+	}
+	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+		"storage_sqlite": storageSQLite,
+	})})
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeInvokeWorkerResult,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             raw,
+	})
+	return false
+}
+
 func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
 	rawNetworkReq, _ := json.Marshal(networkGrantRequestFromInvoke(request))
 	_ = encoder.Encode(ipcFrame{
@@ -1494,6 +1631,45 @@ func storageKVRequestFromInvoke(request ipcFrame, operation string) storageKVReq
 		Prefix:              "demo/",
 		MaxBytes:            1024,
 		MaxEntries:          10,
+	}
+	if request.FrameType == ipcFrameTypeInvokeWorker {
+		var payload invokeWorkerRequestPayload
+		if err := json.Unmarshal(request.Payload, &payload); err == nil {
+			req.PluginInstanceID = payload.Lease.PluginInstanceID
+			req.PolicyRevision = payload.Lease.PolicyRevision
+			req.ManagementRevision = payload.Lease.ManagementRevision
+			req.RevokeEpoch = payload.Lease.RevokeEpoch
+		}
+	}
+	return req
+}
+
+func storageSQLiteRequestFromInvoke(request ipcFrame, operation string) storageSQLiteRequestPayload {
+	score := int64(7)
+	req := storageSQLiteRequestPayload{
+		HandleGrantToken:    "handle_grant_token_1",
+		PluginInstanceID:    "plugini_1",
+		ActiveFingerprint:   "sha256:active",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		RuntimeShardID:      "runtime_shard_1",
+		HandleID:            "storage:db",
+		Method:              "storage.sqlite",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+		Operation:           operation,
+		StoreID:             "db",
+		Database:            "plugin.sqlite",
+		SQL:                 "SELECT title, score FROM events WHERE score = ?",
+		Args:                []storageSQLiteValueIPC{{Int: &score}},
+		MaxRows:             10,
+		MaxResponseBytes:    4096,
+		TimeoutMillis:       1000,
+	}
+	if operation == "exec" {
+		req.SQL = "INSERT INTO events (title, score) VALUES ('stored from wasm', 7)"
+		req.Args = nil
 	}
 	if request.FrameType == ipcFrameTypeInvokeWorker {
 		var payload invokeWorkerRequestPayload
@@ -1680,6 +1856,16 @@ type recordingStorageKVBroker struct {
 	err         error
 }
 
+type recordingStorageSQLiteBroker struct {
+	execCalls   int
+	queryCalls  int
+	lastExec    storage.SQLiteExecRequest
+	lastQuery   storage.SQLiteQueryRequest
+	execResult  storage.SQLiteExecResult
+	queryResult storage.SQLiteQueryResult
+	err         error
+}
+
 type recordingConnectivityBroker struct {
 	calls       int
 	installCall int
@@ -1833,6 +2019,24 @@ func (b *recordingStorageKVBroker) ListKV(_ context.Context, req storage.KVListR
 		return storage.KVListResult{}, b.err
 	}
 	return b.listResult, nil
+}
+
+func (b *recordingStorageSQLiteBroker) ExecSQLite(_ context.Context, req storage.SQLiteExecRequest) (storage.SQLiteExecResult, error) {
+	b.execCalls++
+	b.lastExec = req
+	if b.err != nil {
+		return storage.SQLiteExecResult{}, b.err
+	}
+	return b.execResult, nil
+}
+
+func (b *recordingStorageSQLiteBroker) QuerySQLite(_ context.Context, req storage.SQLiteQueryRequest) (storage.SQLiteQueryResult, error) {
+	b.queryCalls++
+	b.lastQuery = req
+	if b.err != nil {
+		return storage.SQLiteQueryResult{}, b.err
+	}
+	return b.queryResult, nil
 }
 
 func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req ArtifactRequest) (ArtifactResult, error) {

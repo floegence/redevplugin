@@ -262,6 +262,8 @@ try {
   await expectText(generatedFrame.locator("#result"), "notes/generated-broker-demo.txt");
   await expectText(generatedFrame.locator("#result"), "storage_kv");
   await expectText(generatedFrame.locator("#result"), "demo/last_broker_run");
+  await expectText(generatedFrame.locator("#result"), "storage_sqlite");
+  await expectText(generatedFrame.locator("#result"), "plugin.sqlite");
   await expectText(generatedFrame.locator("#result"), "network_execute");
   await expectText(generatedFrame.locator("#result"), "host-network-executor");
   await expectText(generatedFrame.locator("#result"), "\"gateway_token_visible\": false");

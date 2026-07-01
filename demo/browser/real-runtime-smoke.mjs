@@ -112,6 +112,8 @@ try {
   await expectText(frame.locator("#result"), "storage_file");
   await expectText(frame.locator("#result"), "storage_kv");
   await expectText(frame.locator("#result"), "demo/last_broker_run");
+  await expectText(frame.locator("#result"), "storage_sqlite");
+  await expectText(frame.locator("#result"), "plugin.sqlite");
   await expectText(frame.locator("#result"), "network_execute");
   await expectText(frame.locator("#result"), "host-network-executor");
   await expectText(frame.locator("#result"), "notes/from-real-demo.txt");

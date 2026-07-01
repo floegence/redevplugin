@@ -145,6 +145,8 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 		`"workspace"`,
 		`"settings"`,
 		`"kv"`,
+		`"db"`,
+		`"sqlite"`,
 		`"network_access"`,
 		`"api"`,
 	} {
@@ -169,7 +171,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"redevplugin.bridge.handshake", "redevplugin.bridge.call", "parent_origin", "worker.echo", "worker.brokerDemo", "invoke-broker", "tokenLeakCheck"} {
+	for _, want := range []string{"redevplugin.bridge.handshake", "redevplugin.bridge.call", "parent_origin", "worker.echo", "worker.brokerDemo", "invoke-broker", "storage_sqlite_handle_grant_token", "tokenLeakCheck"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
 		}
@@ -187,6 +189,13 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	}
 	if len(brokerWASMRaw) < 8 || !bytes.Equal(brokerWASMRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
 		t.Fatalf("scaffold broker wasm artifact is invalid: %x", brokerWASMRaw[:prefixLen(len(brokerWASMRaw), 8)])
+	}
+	brokerWATRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "broker.wat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(brokerWATRaw, []byte(`"sqlite_exec_demo"`)) {
+		t.Fatalf("scaffold broker wat missing sqlite hostcall: %s", brokerWATRaw)
 	}
 	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
@@ -387,7 +396,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(inspectOutput, &inspectSummary); err != nil {
 		t.Fatalf("inspect-storage output decode error = %v: %s", err, inspectOutput)
 	}
-	if inspectSummary.NamespaceCount != 2 {
+	if inspectSummary.NamespaceCount != 3 {
 		t.Fatalf("storage namespace mismatch after enable: %#v", inspectSummary)
 	}
 	namespacesByStoreID := map[string]storage.NamespaceRecord{}
@@ -399,6 +408,9 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	}
 	if namespacesByStoreID["settings"].State != storage.NamespaceActive || namespacesByStoreID["settings"].Kind != storage.StoreKV {
 		t.Fatalf("settings storage namespace mismatch after enable: %#v", inspectSummary)
+	}
+	if namespacesByStoreID["db"].State != storage.NamespaceActive || namespacesByStoreID["db"].Kind != storage.StoreSQLite {
+		t.Fatalf("db storage namespace mismatch after enable: %#v", inspectSummary)
 	}
 	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
 	if err != nil {

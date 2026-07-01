@@ -490,6 +490,7 @@ const (
 	ipcFrameTypeValidateHandleGrant = "validate_handle_grant"
 	ipcFrameTypeStorageFile         = "storage_file"
 	ipcFrameTypeStorageKV           = "storage_kv"
+	ipcFrameTypeStorageSQLite       = "storage_sqlite"
 	ipcFrameTypeNetworkGrant        = "network_grant"
 	ipcFrameTypeNetworkExecute      = "network_execute"
 	ipcFrameTypeRevokeEpoch         = "revoke_epoch"
@@ -628,6 +629,48 @@ type storageKVResponsePayload struct {
 	Usage       *storage.Usage    `json:"usage,omitempty"`
 	Code        string            `json:"code,omitempty"`
 	Message     string            `json:"message,omitempty"`
+}
+
+type storageSQLiteRequestPayload struct {
+	HandleGrantToken    string                  `json:"handle_grant_token"`
+	PluginInstanceID    string                  `json:"plugin_instance_id"`
+	ActiveFingerprint   string                  `json:"active_fingerprint"`
+	RuntimeInstanceID   string                  `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID string                  `json:"runtime_generation_id"`
+	RuntimeShardID      string                  `json:"runtime_shard_id,omitempty"`
+	HandleID            string                  `json:"handle_id"`
+	Method              string                  `json:"method"`
+	PolicyRevision      uint64                  `json:"policy_revision"`
+	ManagementRevision  uint64                  `json:"management_revision"`
+	RevokeEpoch         uint64                  `json:"revoke_epoch"`
+	Operation           string                  `json:"operation"`
+	StoreID             string                  `json:"store_id"`
+	Database            string                  `json:"database,omitempty"`
+	SQL                 string                  `json:"sql"`
+	Args                []storageSQLiteValueIPC `json:"args,omitempty"`
+	MaxRows             int                     `json:"max_rows,omitempty"`
+	MaxResponseBytes    int64                   `json:"max_response_bytes,omitempty"`
+	TimeoutMillis       int64                   `json:"timeout_ms,omitempty"`
+}
+
+type storageSQLiteResponsePayload struct {
+	OK           bool                      `json:"ok"`
+	Database     string                    `json:"database,omitempty"`
+	RowsAffected int64                     `json:"rows_affected,omitempty"`
+	LastInsertID int64                     `json:"last_insert_id,omitempty"`
+	Columns      []string                  `json:"columns,omitempty"`
+	Rows         [][]storageSQLiteValueIPC `json:"rows,omitempty"`
+	Usage        *storage.Usage            `json:"usage,omitempty"`
+	Code         string                    `json:"code,omitempty"`
+	Message      string                    `json:"message,omitempty"`
+}
+
+type storageSQLiteValueIPC struct {
+	Null       bool     `json:"null,omitempty"`
+	Int        *int64   `json:"int,omitempty"`
+	Float      *float64 `json:"float,omitempty"`
+	Text       *string  `json:"text,omitempty"`
+	BlobBase64 string   `json:"blob_base64,omitempty"`
 }
 
 type networkGrantRequestPayload struct {
@@ -837,6 +880,12 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 			}
 			if got.frame.FrameType == ipcFrameTypeStorageKV {
 				if err := s.respondToStorageKV(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
+					return ipcFrame{}, err
+				}
+				continue
+			}
+			if got.frame.FrameType == ipcFrameTypeStorageSQLite {
+				if err := s.respondToStorageSQLite(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
 					return ipcFrame{}, err
 				}
 				continue
@@ -1420,6 +1469,256 @@ func storageKVErrorResponse(err error) storageKVResponsePayload {
 		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: err.Error()}
 	default:
 		return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_FAILED", Message: err.Error()}
+	}
+}
+
+func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
+	if allowedArtifact == nil {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_SQLITE_REQUEST_DENIED",
+			Message: "storage sqlite access is only available during worker invocation",
+		})
+	}
+	var req storageSQLiteRequestPayload
+	if len(frame.Payload) == 0 {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
+			Message: "missing storage sqlite payload",
+		})
+	}
+	if err := json.Unmarshal(frame.Payload, &req); err != nil {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
+			Message: "decode storage sqlite payload: " + err.Error(),
+		})
+	}
+	if err := validateStorageSQLiteRequest(req, health.RuntimeGenerationID); err != nil {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
+			Message: err.Error(),
+		})
+	}
+	if s.storageSQLite == nil {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "STORAGE_SQLITE_BROKER_UNAVAILABLE",
+			Message: "runtime storage sqlite broker is unavailable",
+		})
+	}
+	if s.handleGrants == nil {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATOR_UNAVAILABLE",
+			Message: "runtime handle grant validator is unavailable",
+		})
+	}
+	grant, err := s.handleGrants.ValidateHandleGrant(ctx, HandleGrantValidationRequest{
+		HandleGrantToken:    req.HandleGrantToken,
+		PluginInstanceID:    req.PluginInstanceID,
+		ActiveFingerprint:   req.ActiveFingerprint,
+		RuntimeInstanceID:   req.RuntimeInstanceID,
+		RuntimeGenerationID: req.RuntimeGenerationID,
+		RuntimeShardID:      req.RuntimeShardID,
+		HandleID:            req.HandleID,
+		Method:              req.Method,
+		PolicyRevision:      req.PolicyRevision,
+		ManagementRevision:  req.ManagementRevision,
+		RevokeEpoch:         req.RevokeEpoch,
+	})
+	if err != nil {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: err.Error(),
+		})
+	}
+	if grant.HandleID != req.HandleID || grant.Method != req.Method || grant.RuntimeGenerationID != health.RuntimeGenerationID {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK:      false,
+			Code:    "HANDLE_GRANT_VALIDATION_FAILED",
+			Message: "handle grant validation result did not match storage sqlite request",
+		})
+	}
+	payload := dispatchStorageSQLiteRequest(ctx, s.storageSQLite, req)
+	return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
+}
+
+func (s *ProcessSupervisor) writeStorageSQLiteResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageSQLiteResponsePayload) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           ipcFrameTypeStorageSQLite,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             raw,
+	}); err != nil {
+		return fmt.Errorf("%w: write storage_sqlite response: %v", ErrRuntimeIPCUnavailable, err)
+	}
+	return nil
+}
+
+func validateStorageSQLiteRequest(req storageSQLiteRequestPayload, runtimeGenerationID string) error {
+	if strings.TrimSpace(req.RuntimeGenerationID) != runtimeGenerationID {
+		return errors.New("runtime_generation_id is not bound to this runtime generation")
+	}
+	if strings.TrimSpace(req.HandleGrantToken) == "" ||
+		strings.TrimSpace(req.PluginInstanceID) == "" ||
+		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.StoreID) == "" ||
+		strings.TrimSpace(req.HandleID) == "" ||
+		strings.TrimSpace(req.Method) == "" ||
+		strings.TrimSpace(req.Operation) == "" ||
+		strings.TrimSpace(req.SQL) == "" {
+		return errors.New("handle grant token, plugin identity, store id, handle id, method, operation, and sql are required")
+	}
+	if req.Method != "storage.sqlite" {
+		return errors.New("storage sqlite access requires method storage.sqlite")
+	}
+	if req.HandleID != "storage:"+req.StoreID {
+		return errors.New("storage handle id must match store id")
+	}
+	if req.TimeoutMillis < 0 {
+		return errors.New("timeout_ms must not be negative")
+	}
+	switch req.Operation {
+	case "exec", "query":
+		return nil
+	default:
+		return errors.New("storage sqlite operation is not supported")
+	}
+}
+
+func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBroker, req storageSQLiteRequestPayload) storageSQLiteResponsePayload {
+	args, err := storageSQLiteArgsFromIPC(req.Args)
+	if err != nil {
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: err.Error()}
+	}
+	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
+	switch req.Operation {
+	case "exec":
+		result, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Database:         req.Database,
+			SQL:              req.SQL,
+			Args:             args,
+			Timeout:          timeout,
+		})
+		if err != nil {
+			return storageSQLiteErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageSQLiteResponsePayload{
+			OK:           true,
+			Database:     result.Database,
+			RowsAffected: result.RowsAffected,
+			LastInsertID: result.LastInsertID,
+			Usage:        &usage,
+		}
+	case "query":
+		result, err := broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
+			PluginInstanceID: req.PluginInstanceID,
+			StoreID:          req.StoreID,
+			Database:         req.Database,
+			SQL:              req.SQL,
+			Args:             args,
+			MaxRows:          req.MaxRows,
+			MaxResponseBytes: req.MaxResponseBytes,
+			Timeout:          timeout,
+		})
+		if err != nil {
+			return storageSQLiteErrorResponse(err)
+		}
+		usage := result.Usage
+		return storageSQLiteResponsePayload{
+			OK:       true,
+			Database: result.Database,
+			Columns:  append([]string(nil), result.Columns...),
+			Rows:     storageSQLiteRowsToIPC(result.Rows),
+			Usage:    &usage,
+		}
+	default:
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: "storage sqlite operation is not supported"}
+	}
+}
+
+func storageSQLiteArgsFromIPC(values []storageSQLiteValueIPC) ([]storage.SQLiteValue, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make([]storage.SQLiteValue, 0, len(values))
+	for _, value := range values {
+		converted, err := storageSQLiteValueFromIPC(value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, converted)
+	}
+	return out, nil
+}
+
+func storageSQLiteRowsToIPC(rows [][]storage.SQLiteValue) [][]storageSQLiteValueIPC {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([][]storageSQLiteValueIPC, 0, len(rows))
+	for _, row := range rows {
+		converted := make([]storageSQLiteValueIPC, 0, len(row))
+		for _, value := range row {
+			converted = append(converted, storageSQLiteValueToIPC(value))
+		}
+		out = append(out, converted)
+	}
+	return out
+}
+
+func storageSQLiteValueFromIPC(value storageSQLiteValueIPC) (storage.SQLiteValue, error) {
+	if value.BlobBase64 != "" {
+		data, err := base64.StdEncoding.DecodeString(value.BlobBase64)
+		if err != nil {
+			return storage.SQLiteValue{}, fmt.Errorf("decode sqlite blob_base64: %v", err)
+		}
+		return storage.SQLiteValue{Blob: data}, nil
+	}
+	return storage.SQLiteValue{
+		Null:  value.Null,
+		Int:   value.Int,
+		Float: value.Float,
+		Text:  value.Text,
+	}, nil
+}
+
+func storageSQLiteValueToIPC(value storage.SQLiteValue) storageSQLiteValueIPC {
+	if len(value.Blob) > 0 {
+		return storageSQLiteValueIPC{BlobBase64: base64.StdEncoding.EncodeToString(value.Blob)}
+	}
+	return storageSQLiteValueIPC{
+		Null:  value.Null,
+		Int:   value.Int,
+		Float: value.Float,
+		Text:  value.Text,
+	}
+}
+
+func storageSQLiteErrorResponse(err error) storageSQLiteResponsePayload {
+	switch {
+	case errors.Is(err, storage.ErrNamespaceNotFound):
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_NOT_FOUND", Message: err.Error()}
+	case errors.Is(err, storage.ErrInvalidSQLite), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrInvalidFilePath):
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_INVALID_REQUEST", Message: err.Error()}
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_QUOTA_EXCEEDED", Message: err.Error()}
+	case errors.Is(err, storage.ErrSQLiteResultTooLarge):
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_RESULT_TOO_LARGE", Message: err.Error()}
+	default:
+		return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_FAILED", Message: err.Error()}
 	}
 }
 

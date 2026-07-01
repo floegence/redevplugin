@@ -468,6 +468,22 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 					DataLossRisk:   false,
 					StepsHash:      "sha256:generated-settings-v1",
 				},
+			}, {
+				StoreID:       "db",
+				Kind:          string(storage.StoreSQLite),
+				Scope:         "user",
+				QuotaBytes:    1 << 20,
+				SchemaVersion: 1,
+				Migration: manifest.MigrationSpec{
+					FromVersion:    0,
+					ToVersion:      1,
+					Reversible:     true,
+					RequiresWorker: false,
+					EstimatedBytes: 0,
+					MaxDurationMS:  1000,
+					DataLossRisk:   false,
+					StepsHash:      "sha256:generated-sqlite-v1",
+				},
 			}},
 		},
 		NetworkAccess: &manifest.NetworkAccessSpec{
@@ -939,7 +955,7 @@ func scaffoldAppJS(displayName string) string {
 		"  const raw = JSON.stringify(value || {});\n" +
 		"  return {\n" +
 		"    gateway_token_visible: raw.includes('gateway_token'),\n" +
-		"    storage_grant_visible: raw.includes('storage_handle_grant_token') || raw.includes('storage_kv_handle_grant_token'),\n" +
+		"    storage_grant_visible: raw.includes('storage_handle_grant_token') || raw.includes('storage_kv_handle_grant_token') || raw.includes('storage_sqlite_handle_grant_token'),\n" +
 		"    network_grant_visible: raw.includes('connection_grant_token'),\n" +
 		"  };\n" +
 		"}\n"
@@ -1017,10 +1033,12 @@ func scaffoldBrokerWorkerWAT() string {
 		"  ;; shape without shipping a native process.\n" +
 		"  (import \"redevplugin.storage\" \"files_write_demo\" (func $storage))\n" +
 		"  (import \"redevplugin.storage\" \"kv_put_demo\" (func $kv))\n" +
+		"  (import \"redevplugin.storage\" \"sqlite_exec_demo\" (func $sqlite))\n" +
 		"  (import \"redevplugin.network\" \"http_request_demo\" (func $network))\n" +
 		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
 		"    call $storage\n" +
 		"    call $kv\n" +
+		"    call $sqlite\n" +
 		"    call $network)\n" +
 		")\n"
 }
@@ -1053,6 +1071,7 @@ func scaffoldBrokerWorkerWASM() []byte {
 	return importedNoArgHostcallWorkerWASM("redevplugin_worker_invoke", [][2]string{
 		{"redevplugin.storage", "files_write_demo"},
 		{"redevplugin.storage", "kv_put_demo"},
+		{"redevplugin.storage", "sqlite_exec_demo"},
 		{"redevplugin.network", "http_request_demo"},
 	})
 }

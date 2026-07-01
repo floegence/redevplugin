@@ -169,6 +169,16 @@ export function createDemoPlatformFetch(options = {}) {
                   size_bytes: 35,
                   executor: "host storage broker",
                 },
+                storage_sqlite: {
+                  ok: true,
+                  handle_id: "storage:db",
+                  method: "storage.sqlite",
+                  operation: "exec",
+                  store_id: "db",
+                  database: "plugin.sqlite",
+                  rows_affected: 0,
+                  executor: "host sqlite storage broker",
+                },
                 network_execute: {
                   ok: true,
                   connector_id: "api",

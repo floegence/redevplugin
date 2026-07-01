@@ -175,6 +175,14 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 line,
                 &request_json,
             ),
+            WorkerHostcallRequest::StorageSQLite(request_json) => perform_storage_sqlite_request(
+                reader,
+                stdout,
+                request_id,
+                runtime_generation_id,
+                line,
+                &request_json,
+            ),
             WorkerHostcallRequest::NetworkHTTP(request_json) => perform_network_http_request(
                 reader,
                 stdout,
@@ -287,6 +295,36 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             }
         }
     }
+    let mut memory_storage_sqlite_result = None;
+    if execution.storage_sqlite_requested {
+        match execution.storage_sqlite_result {
+            Some(Ok(result)) => {
+                memory_storage_sqlite_result = Some(result);
+            }
+            Some(Err(err)) => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(err.as_str()),
+                ));
+            }
+            None => {
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some("storage sqlite hostcall did not produce a response"),
+                ));
+            }
+        }
+    }
     let storage_file_result = match memory_storage_file_result {
         Some(result) => Some(result),
         None if execution.storage_file_write_demo_requested => {
@@ -339,6 +377,32 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         }
         None => None,
     };
+    let storage_sqlite_result = match memory_storage_sqlite_result {
+        Some(result) => Some(result),
+        None if execution.storage_sqlite_exec_demo_requested => {
+            match perform_storage_sqlite_exec_demo(
+                reader,
+                stdout,
+                request_id,
+                runtime_generation_id,
+                line,
+            ) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    return Ok(redevplugin_ipc::response_frame(
+                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        request_id,
+                        runtime_generation_id,
+                        false,
+                        None,
+                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                        Some(err.as_str()),
+                    ));
+                }
+            }
+        }
+        None => None,
+    };
     let network_execute_result = if execution.network_http_request_demo_requested {
         match perform_network_http_request_demo(
             reader,
@@ -368,6 +432,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         execution.validated.byte_len,
         storage_file_result.as_deref(),
         storage_kv_result.as_deref(),
+        storage_sqlite_result.as_deref(),
         memory_network_result
             .as_deref()
             .or(network_execute_result.as_deref()),
@@ -392,6 +457,9 @@ struct WorkerExecution {
     storage_kv_put_demo_requested: bool,
     storage_kv_requested: bool,
     storage_kv_result: Option<Result<String, String>>,
+    storage_sqlite_exec_demo_requested: bool,
+    storage_sqlite_requested: bool,
+    storage_sqlite_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
     network_http_request_requested: bool,
     network_http_request_result: Option<Result<String, String>>,
@@ -400,6 +468,7 @@ struct WorkerExecution {
 enum WorkerHostcallRequest {
     StorageFile(String),
     StorageKV(String),
+    StorageSQLite(String),
     NetworkHTTP(String),
 }
 
@@ -412,6 +481,9 @@ struct WorkerHostState<'a> {
     storage_kv_put_demo_requested: bool,
     storage_kv_requested: bool,
     storage_kv_result: Option<Result<String, String>>,
+    storage_sqlite_exec_demo_requested: bool,
+    storage_sqlite_requested: bool,
+    storage_sqlite_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
     network_http_request_requested: bool,
     network_http_request_result: Option<Result<String, String>>,
@@ -429,6 +501,9 @@ impl<'a> WorkerHostState<'a> {
             storage_kv_put_demo_requested: false,
             storage_kv_requested: false,
             storage_kv_result: None,
+            storage_sqlite_exec_demo_requested: false,
+            storage_sqlite_requested: false,
+            storage_sqlite_result: None,
             network_http_request_demo_requested: false,
             network_http_request_requested: false,
             network_http_request_result: None,
@@ -507,6 +582,35 @@ fn execute_worker_module<'a>(
         .map_err(|err| format!("define storage kv memory hostcall import: {err}"))?;
     linker
         .func_wrap(
+            "redevplugin.storage",
+            "sqlite_exec_demo",
+            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
+                caller.data_mut().storage_sqlite_exec_demo_requested = true;
+            },
+        )
+        .map_err(|err| format!("define storage sqlite demo hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.storage",
+            "sqlite",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             request_ptr: i32,
+             request_len: i32,
+             response_ptr: i32,
+             response_len: i32|
+             -> i32 {
+                perform_storage_sqlite_request_hostcall(
+                    &mut caller,
+                    request_ptr,
+                    request_len,
+                    response_ptr,
+                    response_len,
+                )
+            },
+        )
+        .map_err(|err| format!("define storage sqlite memory hostcall import: {err}"))?;
+    linker
+        .func_wrap(
             "redevplugin.network",
             "http_request_demo",
             |mut caller: wasmi::Caller<'_, WorkerHostState>| {
@@ -550,6 +654,9 @@ fn execute_worker_module<'a>(
     let storage_kv_put_demo_requested = store.data().storage_kv_put_demo_requested;
     let storage_kv_requested = store.data().storage_kv_requested;
     let storage_kv_result = store.data().storage_kv_result.clone();
+    let storage_sqlite_exec_demo_requested = store.data().storage_sqlite_exec_demo_requested;
+    let storage_sqlite_requested = store.data().storage_sqlite_requested;
+    let storage_sqlite_result = store.data().storage_sqlite_result.clone();
     let network_http_request_demo_requested = store.data().network_http_request_demo_requested;
     let network_http_request_requested = store.data().network_http_request_requested;
     let network_http_request_result = store.data().network_http_request_result.clone();
@@ -561,6 +668,9 @@ fn execute_worker_module<'a>(
         storage_kv_put_demo_requested,
         storage_kv_requested,
         storage_kv_result,
+        storage_sqlite_exec_demo_requested,
+        storage_sqlite_requested,
+        storage_sqlite_result,
         network_http_request_demo_requested,
         network_http_request_requested,
         network_http_request_result,
@@ -741,6 +851,95 @@ fn record_storage_kv_hostcall_error(
     code
 }
 
+fn perform_storage_sqlite_request_hostcall(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    request_ptr: i32,
+    request_len: i32,
+    response_ptr: i32,
+    response_len: i32,
+) -> i32 {
+    caller.data_mut().storage_sqlite_requested = true;
+    let request_ptr = match usize::try_from(request_ptr) {
+        Ok(value) => value,
+        Err(_) => return record_storage_sqlite_hostcall_error(caller, -1),
+    };
+    let request_len = match usize::try_from(request_len) {
+        Ok(value) => value,
+        Err(_) => return record_storage_sqlite_hostcall_error(caller, -1),
+    };
+    let response_ptr = match usize::try_from(response_ptr) {
+        Ok(value) => value,
+        Err(_) => return record_storage_sqlite_hostcall_error(caller, -1),
+    };
+    let response_len = match usize::try_from(response_len) {
+        Ok(value) => value,
+        Err(_) => return record_storage_sqlite_hostcall_error(caller, -1),
+    };
+    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    {
+        return record_storage_sqlite_hostcall_error(caller, -2);
+    }
+    let Some(memory) = caller
+        .get_export("memory")
+        .and_then(wasmi::Extern::into_memory)
+    else {
+        return record_storage_sqlite_hostcall_error(caller, -3);
+    };
+    let mut request = vec![0_u8; request_len];
+    if memory
+        .read(caller.as_context(), request_ptr, &mut request)
+        .is_err()
+    {
+        return record_storage_sqlite_hostcall_error(caller, -4);
+    }
+    let request_json = match std::str::from_utf8(&request) {
+        Ok(value) => value,
+        Err(_) => return record_storage_sqlite_hostcall_error(caller, -5),
+    };
+    let response_json = {
+        let state = caller.data_mut();
+        (state.broker_hostcall)(WorkerHostcallRequest::StorageSQLite(
+            request_json.to_string(),
+        ))
+    };
+    let response_json = match response_json {
+        Ok(value) => value,
+        Err(err) => {
+            caller.data_mut().storage_sqlite_result = Some(Err(err));
+            return -6;
+        }
+    };
+    let response = response_json.as_bytes();
+    if response.len() > response_len {
+        caller.data_mut().storage_sqlite_result = Some(Err(
+            "storage sqlite response does not fit in the output buffer".to_string(),
+        ));
+        return -7;
+    }
+    if memory
+        .write(caller.as_context_mut(), response_ptr, response)
+        .is_err()
+    {
+        return record_storage_sqlite_hostcall_error(caller, -8);
+    }
+    let written = match i32::try_from(response.len()) {
+        Ok(value) => value,
+        Err(_) => return record_storage_sqlite_hostcall_error(caller, -9),
+    };
+    caller.data_mut().storage_sqlite_result = Some(Ok(response_json));
+    written
+}
+
+fn record_storage_sqlite_hostcall_error(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    code: i32,
+) -> i32 {
+    caller.data_mut().storage_sqlite_result.replace(Err(format!(
+        "storage sqlite hostcall failed with ABI code {code}"
+    )));
+    code
+}
+
 fn perform_network_http_request_hostcall(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     request_ptr: i32,
@@ -874,6 +1073,29 @@ fn perform_storage_kv_request<R: BufRead, W: Write>(
     dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, req)
 }
 
+fn perform_storage_sqlite_exec_demo<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    invocation_frame: &str,
+) -> Result<String, String> {
+    let req = storage_sqlite_exec_demo_request(invocation_frame, runtime_generation_id)?;
+    dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, req)
+}
+
+fn perform_storage_sqlite_request<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    invocation_frame: &str,
+    request_json: &str,
+) -> Result<String, String> {
+    let req = storage_sqlite_request(invocation_frame, runtime_generation_id, request_json)?;
+    dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, req)
+}
+
 fn dispatch_storage_file_request<R: BufRead, W: Write>(
     reader: &mut R,
     stdout: &mut W,
@@ -931,6 +1153,36 @@ fn dispatch_storage_kv_request<R: BufRead, W: Write>(
         runtime_generation_id,
     )?;
     redevplugin_ipc::storage_kv_payload_json(&response)
+}
+
+fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
+    reader: &mut R,
+    stdout: &mut W,
+    request_id: &str,
+    runtime_generation_id: &str,
+    req: redevplugin_ipc::StorageSQLiteRequest,
+) -> Result<String, String> {
+    let storage_request_id = format!("{request_id}:storage_sqlite");
+    let frame =
+        redevplugin_ipc::storage_sqlite_frame(&storage_request_id, runtime_generation_id, &req);
+    stdout
+        .write_all(frame.as_bytes())
+        .and_then(|_| stdout.write_all(b"\n"))
+        .and_then(|_| stdout.flush())
+        .map_err(|err| format!("write storage_sqlite request: {err}"))?;
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|err| format!("read storage_sqlite response: {err}"))?;
+    if response.is_empty() {
+        return Err("storage_sqlite response is empty".to_string());
+    }
+    redevplugin_ipc::validate_storage_sqlite_response(
+        &response,
+        &storage_request_id,
+        runtime_generation_id,
+    )?;
+    redevplugin_ipc::storage_sqlite_payload_json(&response)
 }
 
 fn storage_file_request(
@@ -1038,6 +1290,66 @@ fn storage_kv_request(
     })
 }
 
+fn storage_sqlite_request(
+    invocation_frame: &str,
+    runtime_generation_id: &str,
+    request_json: &str,
+) -> Result<redevplugin_ipc::StorageSQLiteRequest, String> {
+    let store_id = request_or_invocation_string(
+        request_json,
+        "store_id",
+        invocation_frame,
+        "storage_sqlite_store_id",
+    )
+    .or_else(|_| {
+        request_or_invocation_string(
+            request_json,
+            "store_id",
+            invocation_frame,
+            "storage_store_id",
+        )
+    })?;
+    let handle_grant_token =
+        redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_handle_grant_token")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
+            })
+            .ok_or_else(|| "missing storage_sqlite_handle_grant_token".to_string())?;
+    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
+    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
+    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
+    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
+    let management_revision = required_json_number(invocation_frame, "management_revision")?;
+    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    Ok(redevplugin_ipc::StorageSQLiteRequest {
+        handle_grant_token,
+        plugin_instance_id,
+        active_fingerprint,
+        runtime_instance_id,
+        runtime_generation_id: runtime_generation_id.to_string(),
+        runtime_shard_id: String::new(),
+        handle_id: format!("storage:{store_id}"),
+        method: "storage.sqlite".to_string(),
+        policy_revision,
+        management_revision,
+        revoke_epoch,
+        operation: request_json_string(request_json, "operation")
+            .unwrap_or_else(|| "query".to_string()),
+        store_id,
+        database: request_json_string(request_json, "database")
+            .or_else(|| request_json_string(invocation_frame, "storage_sqlite_database"))
+            .unwrap_or_default(),
+        sql: request_json_string(request_json, "sql")
+            .or_else(|| request_json_string(invocation_frame, "storage_sqlite_sql"))
+            .ok_or_else(|| "missing storage sqlite sql".to_string())?,
+        args_json: request_json_array(request_json, "args").unwrap_or_else(|| "[]".to_string()),
+        max_rows: request_json_number(request_json, "max_rows").unwrap_or(0),
+        max_response_bytes: request_json_number(request_json, "max_response_bytes").unwrap_or(0),
+        timeout_ms: request_json_number(request_json, "timeout_ms").unwrap_or(0),
+    })
+}
+
 fn storage_file_write_demo_request(
     invocation_frame: &str,
     runtime_generation_id: &str,
@@ -1071,6 +1383,57 @@ fn storage_file_write_demo_request(
         max_bytes: 0,
         max_entries: 0,
         recursive: false,
+    })
+}
+
+fn storage_sqlite_exec_demo_request(
+    invocation_frame: &str,
+    runtime_generation_id: &str,
+) -> Result<redevplugin_ipc::StorageSQLiteRequest, String> {
+    let handle_grant_token =
+        redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_handle_grant_token")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
+            })
+            .ok_or_else(|| "missing storage_sqlite_handle_grant_token".to_string())?;
+    let store_id =
+        redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_store_id")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "storage_store_id"))
+            .ok_or_else(|| "missing storage_sqlite_store_id".to_string())?;
+    let sql = redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_sql")
+        .unwrap_or_else(|| {
+            "CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)"
+                .to_string()
+        });
+    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
+    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
+    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
+    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
+    let management_revision = required_json_number(invocation_frame, "management_revision")?;
+    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    Ok(redevplugin_ipc::StorageSQLiteRequest {
+        handle_grant_token,
+        plugin_instance_id,
+        active_fingerprint,
+        runtime_instance_id,
+        runtime_generation_id: runtime_generation_id.to_string(),
+        runtime_shard_id: String::new(),
+        handle_id: format!("storage:{store_id}"),
+        method: "storage.sqlite".to_string(),
+        policy_revision,
+        management_revision,
+        revoke_epoch,
+        operation: "exec".to_string(),
+        store_id,
+        database: redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_database")
+            .unwrap_or_default(),
+        sql,
+        args_json: "[]".to_string(),
+        max_rows: 0,
+        max_response_bytes: 0,
+        timeout_ms: 1000,
     })
 }
 
@@ -1304,6 +1667,50 @@ fn request_json_object(input: &str, key: &str) -> Option<String> {
     redevplugin_ipc::extract_json_object(input, key)
 }
 
+fn request_json_array(input: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\"");
+    let key_start = input.find(&pattern)?;
+    let after_key = &input[key_start + pattern.len()..];
+    let colon = after_key.find(':')?;
+    let value = after_key[colon + 1..].trim_start();
+    json_array_prefix(value)
+}
+
+fn json_array_prefix(input: &str) -> Option<String> {
+    if !input.starts_with('[') {
+        return None;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, ch) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(input[..=idx].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn request_or_invocation_string(
     request_json: &str,
     request_key: &str,
@@ -1465,6 +1872,32 @@ mod tests {
     }
 
     #[test]
+    fn executes_storage_sqlite_memory_hostcall_wasm_worker_export() {
+        let module = storage_sqlite_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
+            let WorkerHostcallRequest::StorageSQLite(request) = request else {
+                panic!("expected storage sqlite hostcall request");
+            };
+            assert!(request.contains(r#""store_id":"db""#), "{request}");
+            assert!(request.contains(r#""operation":"query""#), "{request}");
+            assert!(request.contains(r#""sql":"SELECT title FROM events WHERE score = ?""#), "{request}");
+            Ok(r#"{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]]}"#.to_string())
+        })
+        .expect("storage sqlite memory hostcall worker executes");
+        assert_eq!(execution.validated.byte_len, module.len());
+        assert!(!execution.storage_sqlite_exec_demo_requested);
+        assert!(execution.storage_sqlite_requested);
+        assert_eq!(
+            execution.storage_sqlite_result,
+            Some(Ok(
+                r#"{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]]}"#.to_string()
+            ))
+        );
+        assert!(!execution.network_http_request_demo_requested);
+        assert!(!execution.network_http_request_requested);
+    }
+
+    #[test]
     fn rejects_wasm_worker_with_missing_export() {
         let module = minimal_worker_wasm("other_export");
         let err = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
@@ -1478,6 +1911,9 @@ mod tests {
         match request {
             WorkerHostcallRequest::StorageFile(_) => Err("unexpected storage call".to_string()),
             WorkerHostcallRequest::StorageKV(_) => Err("unexpected storage kv call".to_string()),
+            WorkerHostcallRequest::StorageSQLite(_) => {
+                Err("unexpected storage sqlite call".to_string())
+            }
             WorkerHostcallRequest::NetworkHTTP(_) => Err("unexpected network call".to_string()),
         }
     }
@@ -1514,6 +1950,11 @@ mod tests {
             export_name,
             request,
         )
+    }
+
+    fn storage_sqlite_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
+        let request = br#"{"store_id":"db","operation":"query","database":"plugin.sqlite","sql":"SELECT title FROM events WHERE score = ?","args":[{"int":7}],"max_rows":10,"max_response_bytes":4096,"timeout_ms":1000}"#;
+        imported_memory_hostcall_worker_wasm("redevplugin.storage", "sqlite", export_name, request)
     }
 
     fn imported_memory_hostcall_worker_wasm(

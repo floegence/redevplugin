@@ -168,6 +168,49 @@ func TestIPCSchemaDefinesStorageKVPayloads(t *testing.T) {
 	}
 }
 
+func TestIPCSchemaDefinesStorageSQLitePayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	frameType := requireNestedObject(t, schema, "properties", "frame_type")
+	frameEnum, ok := frameType["enum"].([]any)
+	if !ok || !containsString(frameEnum, "storage_sqlite") {
+		t.Fatalf("frame_type enum missing storage_sqlite: %#v", frameType["enum"])
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "storage_sqlite_request_payload")
+	requestProps := requireNestedObject(t, request, "properties")
+	for _, name := range []string{"handle_grant_token", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "handle_id", "method", "operation", "store_id", "database", "sql", "args", "max_rows", "max_response_bytes", "timeout_ms"} {
+		if _, ok := requestProps[name].(map[string]any); !ok {
+			t.Fatalf("storage_sqlite request missing %s", name)
+		}
+	}
+	method := requireNestedObject(t, requestProps, "method")
+	if method["const"] != "storage.sqlite" {
+		t.Fatalf("storage_sqlite method = %#v", method["const"])
+	}
+	response := requireNestedObject(t, defs, "storage_sqlite_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "database", "rows_affected", "last_insert_id", "columns", "rows", "usage", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("storage_sqlite response missing %s", name)
+		}
+	}
+	value := requireNestedObject(t, defs, "storage_sqlite_value")
+	valueProps := requireNestedObject(t, value, "properties")
+	for _, name := range []string{"null", "int", "float", "text", "blob_base64"} {
+		if _, ok := valueProps[name].(map[string]any); !ok {
+			t.Fatalf("storage_sqlite value missing %s", name)
+		}
+	}
+}
+
 func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))

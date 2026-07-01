@@ -154,6 +154,8 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(brokeredWorker.data.data.method, "worker.brokerDemo");
   assert.equal(brokeredWorker.data.data.storage_file.executor, "host storage broker");
   assert.equal(brokeredWorker.data.data.storage_file.path, "notes/generated-broker-demo.txt");
+  assert.equal(brokeredWorker.data.data.storage_sqlite.executor, "host sqlite storage broker");
+  assert.equal(brokeredWorker.data.data.storage_sqlite.database, "plugin.sqlite");
   assert.equal(brokeredWorker.data.data.network_execute.executor, "host-network-executor");
   assert.equal(brokeredWorker.data.data.network_execute.transport, "http");
 
