@@ -115,6 +115,7 @@ type ProcessSupervisorOptions struct {
 	HandleGrants     HandleGrantValidator
 	StorageFiles     storage.FilesBroker
 	StorageKV        storage.KVBroker
+	StorageSQLite    storage.SQLiteBroker
 	Connectivity     connectivity.Broker
 	NetworkExecutor  connectivity.NetworkExecutor
 	Now              func() time.Time
@@ -134,6 +135,7 @@ type ProcessSupervisor struct {
 	handleGrants     HandleGrantValidator
 	storageFiles     storage.FilesBroker
 	storageKV        storage.KVBroker
+	storageSQLite    storage.SQLiteBroker
 	connectivity     connectivity.Broker
 	networkExecutor  connectivity.NetworkExecutor
 	now              func() time.Time
@@ -173,6 +175,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		handleGrants:     options.HandleGrants,
 		storageFiles:     options.StorageFiles,
 		storageKV:        options.StorageKV,
+		storageSQLite:    options.StorageSQLite,
 		connectivity:     options.Connectivity,
 		networkExecutor:  options.NetworkExecutor,
 		now:              now,

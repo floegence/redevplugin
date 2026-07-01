@@ -693,6 +693,325 @@ func TestFileBrokerKVStoreExportImportCopiesValues(t *testing.T) {
 	}
 }
 
+func TestFileBrokerImplementsSQLiteBroker(t *testing.T) {
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	var _ SQLiteBroker = broker
+}
+
+func TestFileBrokerSQLiteExecQueryAndArguments(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       1 << 20,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE events (id INTEGER PRIMARY KEY, title TEXT NOT NULL, score INTEGER NOT NULL, ratio REAL, payload BLOB, nullable TEXT)",
+	}); err != nil {
+		t.Fatalf("ExecSQLite(create) error = %v", err)
+	}
+
+	title := "Launch demo"
+	score := int64(42)
+	ratio := 1.25
+	written, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "INSERT INTO events (title, score, ratio, payload, nullable) VALUES (?, ?, ?, ?, ?)",
+		Args: []SQLiteValue{
+			{Text: &title},
+			{Int: &score},
+			{Float: &ratio},
+			{Blob: []byte("blob-value")},
+			{Null: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecSQLite(insert) error = %v", err)
+	}
+	if written.Database != "plugin.sqlite" || written.RowsAffected != 1 || written.LastInsertID != 1 || written.Usage.UsageBytes == 0 {
+		t.Fatalf("ExecSQLite(insert) result mismatch: %#v", written)
+	}
+
+	query, err := broker.QuerySQLite(ctx, SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "SELECT title, score, ratio, payload, nullable FROM events WHERE score = ?",
+		Args:             []SQLiteValue{{Int: &score}},
+	})
+	if err != nil {
+		t.Fatalf("QuerySQLite() error = %v", err)
+	}
+	if query.Database != "plugin.sqlite" || len(query.Columns) != 5 || len(query.Rows) != 1 {
+		t.Fatalf("QuerySQLite() result shape mismatch: %#v", query)
+	}
+	row := query.Rows[0]
+	if row[0].Text == nil || *row[0].Text != title {
+		t.Fatalf("title value mismatch: %#v", row[0])
+	}
+	if row[1].Int == nil || *row[1].Int != score {
+		t.Fatalf("score value mismatch: %#v", row[1])
+	}
+	if row[2].Float == nil || *row[2].Float != ratio {
+		t.Fatalf("ratio value mismatch: %#v", row[2])
+	}
+	if string(row[3].Blob) != "blob-value" {
+		t.Fatalf("blob value mismatch: %#v", row[3])
+	}
+	if !row[4].Null {
+		t.Fatalf("null value mismatch: %#v", row[4])
+	}
+	if query.Usage.UsageBytes == 0 || query.Usage.QuotaBytes != ns.QuotaBytes {
+		t.Fatalf("QuerySQLite() usage mismatch: %#v", query.Usage)
+	}
+}
+
+func TestFileBrokerSQLiteRejectsSymlinkDatabase(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       1 << 20,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.sqlite")
+	if err := os.WriteFile(outside, []byte("not sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dataPath, "plugin.sqlite")); err != nil {
+		t.Skipf("symlink unavailable on this platform: %v", err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE x (id INTEGER)",
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("ExecSQLite(symlink database) error = %v, want ErrInvalidFilePath", err)
+	}
+	if _, err := broker.QuerySQLite(ctx, SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "SELECT 1",
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("QuerySQLite(symlink database) error = %v, want ErrInvalidFilePath", err)
+	}
+}
+
+func TestFileBrokerSQLiteRejectsInvalidBoundary(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	if err := broker.EnsureNamespace(ctx, Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Database:         "../escape.sqlite",
+		SQL:              "CREATE TABLE x (id INTEGER)",
+	}); !errors.Is(err, ErrInvalidFilePath) {
+		t.Fatalf("ExecSQLite(traversal database) error = %v, want ErrInvalidFilePath", err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Database:         "plugin.txt",
+		SQL:              "CREATE TABLE x (id INTEGER)",
+	}); !errors.Is(err, ErrInvalidSQLite) {
+		t.Fatalf("ExecSQLite(extension) error = %v, want ErrInvalidSQLite", err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		SQL:              "ATTACH DATABASE 'other.db' AS other",
+	}); !errors.Is(err, ErrInvalidSQLite) {
+		t.Fatalf("ExecSQLite(attach) error = %v, want ErrInvalidSQLite", err)
+	}
+}
+
+func TestFileBrokerSQLiteRejectsWrongNamespaceKindAndQueryWrites(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	if err := broker.EnsureNamespace(ctx, Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "prefs",
+		SQL:              "CREATE TABLE x (id INTEGER)",
+	}); !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("ExecSQLite(wrong namespace) error = %v, want ErrInvalidNamespace", err)
+	}
+
+	if err := broker.EnsureNamespace(ctx, Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       1 << 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		SQL:              "CREATE TABLE x (id INTEGER)",
+	}); err != nil {
+		t.Fatalf("ExecSQLite(create) error = %v", err)
+	}
+	if _, err := broker.QuerySQLite(ctx, SQLiteQueryRequest{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		SQL:              "INSERT INTO x (id) VALUES (1)",
+	}); err == nil {
+		t.Fatal("QuerySQLite(insert) succeeded, want query-only error")
+	}
+}
+
+func TestFileBrokerSQLiteLimitsRowsAndResponseBytes(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       1 << 20,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE items (name TEXT)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		n := name
+		if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+			PluginInstanceID: ns.PluginInstanceID,
+			StoreID:          ns.StoreID,
+			SQL:              "INSERT INTO items (name) VALUES (?)",
+			Args:             []SQLiteValue{{Text: &n}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := broker.QuerySQLite(ctx, SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "SELECT name FROM items ORDER BY name",
+		MaxRows:          1,
+	}); !errors.Is(err, ErrSQLiteResultTooLarge) {
+		t.Fatalf("QuerySQLite(max rows) error = %v, want ErrSQLiteResultTooLarge", err)
+	}
+	if _, err := broker.QuerySQLite(ctx, SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "SELECT name FROM items ORDER BY name LIMIT 1",
+		MaxResponseBytes: 3,
+	}); !errors.Is(err, ErrSQLiteResultTooLarge) {
+		t.Fatalf("QuerySQLite(max response) error = %v, want ErrSQLiteResultTooLarge", err)
+	}
+}
+
+func TestFileBrokerSQLiteQuotaRollback(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_sqlite",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       16 * 1024,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE items (body TEXT)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("x", 128*1024)
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "INSERT INTO items (body) VALUES (?)",
+		Args:             []SQLiteValue{{Text: &body}},
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("ExecSQLite(quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	after, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.UsageBytes != before.UsageBytes {
+		t.Fatalf("usage after failed sqlite write = %d, want rollback to %d", after.UsageBytes, before.UsageBytes)
+	}
+	query, err := broker.QuerySQLite(ctx, SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "SELECT COUNT(*) FROM items",
+	})
+	if err != nil {
+		t.Fatalf("QuerySQLite(count) error = %v", err)
+	}
+	if query.Rows[0][0].Int == nil || *query.Rows[0][0].Int != 0 {
+		t.Fatalf("row count after rollback mismatch: %#v", query.Rows)
+	}
+}
+
 func TestFileBrokerFilesStoreEnforcesQuotaAndSafePaths(t *testing.T) {
 	ctx := context.Background()
 	broker, err := NewFileBroker(t.TempDir())

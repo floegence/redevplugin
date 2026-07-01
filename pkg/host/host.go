@@ -1530,6 +1530,7 @@ func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.Proces
 		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
 		StorageFiles:    storageFilesBroker(h.adapters.Storage),
 		StorageKV:       storageKVBroker(h.adapters.Storage),
+		StorageSQLite:   storageSQLiteBroker(h.adapters.Storage),
 		Connectivity:    h.adapters.Connectivity,
 		NetworkExecutor: h.adapters.NetworkExecutor,
 	}
@@ -2198,6 +2199,14 @@ func storageKVBroker(broker storage.Broker) storage.KVBroker {
 		return nil
 	}
 	return kv
+}
+
+func storageSQLiteBroker(broker storage.Broker) storage.SQLiteBroker {
+	sqlite, ok := broker.(storage.SQLiteBroker)
+	if !ok {
+		return nil
+	}
+	return sqlite
 }
 
 func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req runtimeclient.HandleGrantValidationRequest) (runtimeclient.HandleGrantValidationResult, error) {
