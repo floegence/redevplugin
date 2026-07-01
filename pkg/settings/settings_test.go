@@ -198,6 +198,66 @@ func TestMemoryStoreExportOmitsSecretMetadataByDefault(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreStateRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	spec := settingsSpec()
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(ctx, PatchRequest{
+		PluginInstanceID: "plugini_source",
+		Values:           map[string]any{"engine": "podman", "retry_count": 2},
+		Now:              now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkSecret(ctx, MarkSecretRequest{
+		PluginInstanceID: "plugini_source",
+		SecretRef:        "api_key",
+		Set:              true,
+		LastTestStatus:   "passed",
+		Now:              now.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := store.Export(ctx, ExportRequest{
+		PluginInstanceID: "plugini_source",
+		IncludeSecrets:   true,
+		Now:              now.Add(3 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored := NewMemoryStoreFromState(store.State())
+	snapshot, err := restored.Get(ctx, GetRequest{PluginInstanceID: "plugini_source"})
+	if err != nil {
+		t.Fatalf("Get(restored) error = %v", err)
+	}
+	if snapshot.SettingsRevision != 3 || snapshot.Values["engine"] != "podman" || snapshot.Values["retry_count"] != int64(2) {
+		t.Fatalf("restored snapshot mismatch: %#v", snapshot)
+	}
+	secret, ok := snapshot.Values["api_key"].(SecretValue)
+	if !ok || !secret.Set || secret.LastTestStatus != "passed" {
+		t.Fatalf("restored secret metadata mismatch: %#v", snapshot.Values["api_key"])
+	}
+	imported, err := restored.Import(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		Spec:             &spec,
+		Now:              now.Add(4 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Import(restored archive) error = %v", err)
+	}
+	if imported.Values["engine"] != "podman" {
+		t.Fatalf("restored archive import mismatch: %#v", imported.Values)
+	}
+}
+
 func TestMemoryStoreImportRejectsInvalidArchiveSetting(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

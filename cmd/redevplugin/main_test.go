@@ -20,6 +20,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -680,6 +681,117 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	}
 }
 
+func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	stateRoot := filepath.Join(dir, "state")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.settings", "Generated Settings Plugin", scaffoldDir); err != nil {
+		t.Fatalf("scaffold command error = %v", err)
+	}
+	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatalf("package command error = %v", err)
+	}
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
+	if err != nil {
+		t.Fatalf("dev-install error = %v", err)
+	}
+	var installSummary devLifecycleSummary
+	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
+		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
+	}
+	if len(loadDevStateForTest(t, stateRoot).Settings.Records) != 0 {
+		t.Fatal("dev-install should not create settings before enable")
+	}
+
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
+		t.Fatalf("dev-enable error = %v", err)
+	}
+	state := loadDevStateForTest(t, stateRoot)
+	record, ok := state.Settings.Records[installSummary.PluginInstanceID]
+	if !ok || record.State != settings.StateActive {
+		t.Fatalf("settings record missing after enable: %#v", state.Settings.Records)
+	}
+	if record.SettingsRevision != 1 || record.Values["accent_mode"] != "teal" || record.Values["sync_enabled"] != true {
+		t.Fatalf("settings defaults mismatch after enable: %#v", record)
+	}
+
+	restoredSettings := settings.NewMemoryStoreFromState(state.Settings)
+	patched, err := restoredSettings.Patch(context.Background(), settings.PatchRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		Values:           map[string]any{"accent_mode": "amber", "sync_enabled": false},
+	})
+	if err != nil {
+		t.Fatalf("Patch() restored settings error = %v", err)
+	}
+	state.Settings = restoredSettings.State()
+	saveDevStateForTest(t, stateRoot, state)
+
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.settings.activity", "http://127.0.0.1:4999"); err != nil {
+		t.Fatalf("dev-open error = %v", err)
+	}
+	openedState := loadDevStateForTest(t, stateRoot)
+	openedSnapshot, err := settings.NewMemoryStoreFromState(openedState.Settings).Get(context.Background(), settings.GetRequest{PluginInstanceID: installSummary.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("Get() after dev-open error = %v", err)
+	}
+	if openedSnapshot.SettingsRevision != patched.SettingsRevision ||
+		openedSnapshot.Values["accent_mode"] != "amber" ||
+		openedSnapshot.Values["sync_enabled"] != false {
+		t.Fatalf("settings did not persist across dev-open: %#v patched=%#v", openedSnapshot, patched)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-disable", stateRoot); err != nil {
+		t.Fatalf("dev-disable error = %v", err)
+	}
+	disabledSnapshot, err := settings.NewMemoryStoreFromState(loadDevStateForTest(t, stateRoot).Settings).Get(context.Background(), settings.GetRequest{PluginInstanceID: installSummary.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("Get() after dev-disable error = %v", err)
+	}
+	if disabledSnapshot.Values["accent_mode"] != "amber" {
+		t.Fatalf("settings were not retained across disable: %#v", disabledSnapshot)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
+		t.Fatalf("dev-enable after disable error = %v", err)
+	}
+	reenabledRecord := loadDevStateForTest(t, stateRoot).Settings.Records[installSummary.PluginInstanceID]
+	if reenabledRecord.State != settings.StateActive || reenabledRecord.Values["accent_mode"] != "amber" {
+		t.Fatalf("settings were not reactivated with existing values: %#v", reenabledRecord)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--keep-data"); err != nil {
+		t.Fatalf("dev-uninstall keep data error = %v", err)
+	}
+	retainedRecord := loadDevStateForTest(t, stateRoot).Settings.Records[installSummary.PluginInstanceID]
+	if retainedRecord.State != settings.StateRetained || retainedRecord.Values["accent_mode"] != "amber" {
+		t.Fatalf("settings should be retained after keep-data uninstall: %#v", retainedRecord)
+	}
+
+	secondStateRoot := filepath.Join(dir, "state-delete")
+	secondInstallOutput, err := captureCLIOutput(t, "dev-install", secondStateRoot, packageFile)
+	if err != nil {
+		t.Fatalf("second dev-install error = %v", err)
+	}
+	var secondInstallSummary devLifecycleSummary
+	if err := json.Unmarshal(secondInstallOutput, &secondInstallSummary); err != nil {
+		t.Fatalf("second dev-install output decode error = %v: %s", err, secondInstallOutput)
+	}
+	if _, err := captureCLIOutput(t, "dev-enable", secondStateRoot); err != nil {
+		t.Fatalf("second dev-enable error = %v", err)
+	}
+	if len(loadDevStateForTest(t, secondStateRoot).Settings.Records) != 1 {
+		t.Fatal("second dev-enable should create settings")
+	}
+	if _, err := captureCLIOutput(t, "dev-uninstall", secondStateRoot, "--delete-data"); err != nil {
+		t.Fatalf("second dev-uninstall delete data error = %v", err)
+	}
+	if _, ok := loadDevStateForTest(t, secondStateRoot).Settings.Records[secondInstallSummary.PluginInstanceID]; ok {
+		t.Fatalf("settings remained after delete-data uninstall: %#v", loadDevStateForTest(t, secondStateRoot).Settings.Records)
+	}
+}
+
 func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 	output, err := captureCLIOutput(t, "version")
 	if err != nil {
@@ -953,6 +1065,74 @@ func addLifecycleStorageToManifest(t *testing.T, filename string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filename, append(updated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func addLifecycleSettingsToManifest(t *testing.T, filename string) {
+	t.Helper()
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["settings"] = map[string]any{
+		"schema_version": 1,
+		"migration": map[string]any{
+			"from_version":    0,
+			"to_version":      1,
+			"reversible":      true,
+			"requires_worker": false,
+			"estimated_bytes": 0,
+			"max_duration_ms": 1000,
+			"data_loss_risk":  false,
+			"steps_hash":      "sha256:dev-settings",
+		},
+		"fields": []map[string]any{{
+			"key":     "accent_mode",
+			"type":    settings.FieldSelect,
+			"scope":   "user",
+			"label":   "Accent mode",
+			"default": "teal",
+			"options": []string{"teal", "amber", "indigo"},
+		}, {
+			"key":     "sync_enabled",
+			"type":    settings.FieldBoolean,
+			"scope":   "user",
+			"label":   "Sync enabled",
+			"default": true,
+		}, {
+			"key":        "api_token",
+			"type":       settings.FieldSecret,
+			"scope":      "user",
+			"label":      "API token",
+			"secret_ref": "api_token",
+		}},
+	}
+	updated, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, append(updated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func loadDevStateForTest(t *testing.T, stateRoot string) devLifecycleState {
+	t.Helper()
+	state, err := loadDevState(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func saveDevStateForTest(t *testing.T, stateRoot string, state devLifecycleState) {
+	t.Helper()
+	if err := saveDevState(stateRoot, state); err != nil {
 		t.Fatal(err)
 	}
 }

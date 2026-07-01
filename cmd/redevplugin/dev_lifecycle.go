@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
 
@@ -36,6 +37,7 @@ type devLifecycleState struct {
 	PackageFile    string                     `json:"package_file,omitempty"`
 	Record         registry.PluginRecord      `json:"record"`
 	BrowserOrigins []browsersite.OriginRecord `json:"browser_origins,omitempty"`
+	Settings       settings.MemoryState       `json:"settings,omitempty"`
 	UpdatedAt      time.Time                  `json:"updated_at"`
 }
 
@@ -124,6 +126,7 @@ func devEnable(ctx context.Context, stateRoot string) error {
 	state.Record = record
 	state.UpdatedAt = time.Now().UTC()
 	state.BrowserOrigins = harness.browserSite.recordsList()
+	state.Settings = harness.settingsStore.State()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
@@ -161,6 +164,7 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string, sandboxOri
 		return err
 	}
 	state.BrowserOrigins = harness.browserSite.recordsList()
+	state.Settings = harness.settingsStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
@@ -198,6 +202,7 @@ func devDisable(ctx context.Context, stateRoot string) error {
 	}
 	state.Record = record
 	state.BrowserOrigins = harness.browserSite.recordsList()
+	state.Settings = harness.settingsStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
@@ -219,6 +224,7 @@ func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error 
 	}
 	state.Record = record
 	state.BrowserOrigins = harness.browserSite.recordsList()
+	state.Settings = harness.settingsStore.State()
 	state.PackageFile = ""
 	state.UpdatedAt = time.Now().UTC()
 	if err := os.Remove(filepath.Join(harness.stateRoot, devPackageFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -266,9 +272,10 @@ func writeDevLifecycle(action string, stateRoot string, state devLifecycleState)
 }
 
 type devHarness struct {
-	stateRoot   string
-	host        *host.Host
-	browserSite *devBrowserSiteStore
+	stateRoot     string
+	host          *host.Host
+	browserSite   *devBrowserSiteStore
+	settingsStore *settings.MemoryStore
 }
 
 func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifecycleState, error) {
@@ -300,6 +307,7 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 		return devHarness{}, devLifecycleState{}, err
 	}
 	browserSite := newDevBrowserSiteStore(state.BrowserOrigins)
+	settingsStore := settings.NewMemoryStoreFromState(state.Settings)
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
@@ -307,11 +315,12 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 		Assets:          assets,
 		Storage:         storageBroker,
 		BrowserSite:     browserSite,
+		Settings:        settingsStore,
 	})
 	if err != nil {
 		return devHarness{}, devLifecycleState{}, err
 	}
-	return devHarness{stateRoot: stateRoot, host: h, browserSite: browserSite}, state, nil
+	return devHarness{stateRoot: stateRoot, host: h, browserSite: browserSite, settingsStore: settingsStore}, state, nil
 }
 
 func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, error) {
@@ -325,6 +334,7 @@ func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, erro
 		Policy:          staticPolicyAdapter{},
 		Storage:         storageBroker,
 		BrowserSite:     browserSite,
+		Settings:        settings.NewMemoryStore(),
 	})
 	if err != nil {
 		return nil, nil, err

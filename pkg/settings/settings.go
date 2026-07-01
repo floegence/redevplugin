@@ -127,6 +127,12 @@ type ArchiveRecord struct {
 	CreatedAt              time.Time                   `json:"created_at"`
 }
 
+type MemoryState struct {
+	NextExport int                      `json:"next_export,omitempty"`
+	Records    map[string]Record        `json:"records,omitempty"`
+	Archives   map[string]ArchiveRecord `json:"archives,omitempty"`
+}
+
 type Store interface {
 	Ensure(ctx context.Context, req EnsureRequest) (Snapshot, error)
 	Get(ctx context.Context, req GetRequest) (Snapshot, error)
@@ -150,6 +156,27 @@ func NewMemoryStore() *MemoryStore {
 		now:      func() time.Time { return time.Now().UTC() },
 		records:  map[string]Record{},
 		archives: map[string]ArchiveRecord{},
+	}
+}
+
+func NewMemoryStoreFromState(state MemoryState) *MemoryStore {
+	store := NewMemoryStore()
+	store.nextExport = state.NextExport
+	store.records = cloneRecords(state.Records)
+	store.archives = cloneArchives(state.Archives)
+	return store
+}
+
+func (s *MemoryStore) State() MemoryState {
+	if s == nil {
+		return MemoryState{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return MemoryState{
+		NextExport: s.nextExport,
+		Records:    cloneRecords(s.records),
+		Archives:   cloneArchives(s.archives),
 	}
 }
 
@@ -707,6 +734,29 @@ func cloneSecrets(values map[string]SecretState) map[string]SecretState {
 	cloned := make(map[string]SecretState, len(values))
 	for key, value := range values {
 		value.UpdatedAt = cloneTimePtr(value.UpdatedAt)
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneRecords(values map[string]Record) map[string]Record {
+	cloned := make(map[string]Record, len(values))
+	for key, value := range values {
+		value.Fields = cloneFields(value.Fields)
+		value.Values = cloneMap(value.Values)
+		value.Secrets = cloneSecrets(value.Secrets)
+		value.RetainedAt = cloneTimePtr(value.RetainedAt)
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneArchives(values map[string]ArchiveRecord) map[string]ArchiveRecord {
+	cloned := make(map[string]ArchiveRecord, len(values))
+	for key, value := range values {
+		value.Fields = cloneFields(value.Fields)
+		value.Values = cloneMap(value.Values)
+		value.Secrets = cloneSecrets(value.Secrets)
 		cloned[key] = value
 	}
 	return cloned
