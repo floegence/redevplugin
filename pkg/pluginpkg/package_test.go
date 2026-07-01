@@ -441,38 +441,129 @@ func TestBuildAcceptsActorWorkerLifecycleExports(t *testing.T) {
 	}
 }
 
-func TestMemoryAssetStoreReadsPackageAssets(t *testing.T) {
+func TestAssetStoreReadsPackageAssets(t *testing.T) {
+	for _, tc := range assetStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			var buf bytes.Buffer
+			pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := tc.open(t)
+			if err := store.PutPackage(context.Background(), pkg); err != nil {
+				t.Fatalf("PutPackage() error = %v", err)
+			}
+			asset, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+			if err != nil {
+				t.Fatalf("ReadAsset() error = %v", err)
+			}
+			if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Entry.ContentType != "text/html; charset=utf-8" {
+				t.Fatalf("asset mismatch: %#v content=%q", asset.Entry, string(asset.Content))
+			}
+			asset.Content[0] = 'x'
+			again, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(again.Content) != "<!doctype html><title>Plugin</title>" {
+				t.Fatalf("asset content was not cloned: %q", string(again.Content))
+			}
+		})
+	}
+}
+
+func TestAssetStoreRejectsUnsafeAssetPath(t *testing.T) {
+	for _, tc := range assetStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			if _, err := store.ReadAsset(context.Background(), "sha256:test", "../manifest.json"); err == nil {
+				t.Fatal("ReadAsset() expected unsafe path error")
+			}
+			if _, err := store.ReadAsset(context.Background(), "sha256:test", PackageSignaturePath); err == nil {
+				t.Fatal("ReadAsset() expected signature path error")
+			}
+		})
+	}
+}
+
+func TestAssetStoreDeletePackage(t *testing.T) {
+	for _, tc := range assetStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			var buf bytes.Buffer
+			pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := tc.open(t)
+			if err := store.PutPackage(context.Background(), pkg); err != nil {
+				t.Fatalf("PutPackage() error = %v", err)
+			}
+			if err := store.DeletePackage(context.Background(), pkg.PackageHash); err != nil {
+				t.Fatalf("DeletePackage() error = %v", err)
+			}
+			if _, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html"); err == nil {
+				t.Fatal("ReadAsset() after DeletePackage expected error")
+			}
+		})
+	}
+}
+
+func TestFileAssetStorePersistsAssetsAcrossOpen(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var buf bytes.Buffer
 	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewMemoryAssetStore()
-	if err := store.PutPackage(context.Background(), pkg); err != nil {
-		t.Fatalf("PutPackage() error = %v", err)
-	}
-	asset, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
-	if err != nil {
-		t.Fatalf("ReadAsset() error = %v", err)
-	}
-	if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Entry.ContentType != "text/html; charset=utf-8" {
-		t.Fatalf("asset mismatch: %#v content=%q", asset.Entry, string(asset.Content))
-	}
-	asset.Content[0] = 'x'
-	again, err := store.ReadAsset(context.Background(), pkg.PackageHash, "ui/index.html")
+	root := t.TempDir()
+	store, err := NewFileAssetStore(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(again.Content) != "<!doctype html><title>Plugin</title>" {
-		t.Fatalf("asset content was not cloned: %q", string(again.Content))
+	if err := store.PutPackage(context.Background(), pkg); err != nil {
+		t.Fatalf("PutPackage() error = %v", err)
+	}
+
+	reopened, err := NewFileAssetStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, err := reopened.ReadAsset(context.Background(), pkg.PackageHash, "ui/assets/app.js")
+	if err != nil {
+		t.Fatalf("ReadAsset() after reopen error = %v", err)
+	}
+	if string(asset.Content) != "console.log('plugin');" {
+		t.Fatalf("persisted asset content = %q", string(asset.Content))
 	}
 }
 
-func TestMemoryAssetStoreRejectsUnsafeAssetPath(t *testing.T) {
-	store := NewMemoryAssetStore()
-	if _, err := store.ReadAsset(context.Background(), "sha256:test", "../manifest.json"); err == nil {
-		t.Fatal("ReadAsset() expected unsafe path error")
+type assetStoreCase struct {
+	name string
+	open func(t *testing.T) AssetStore
+}
+
+func assetStoreCases() []assetStoreCase {
+	return []assetStoreCase{
+		{
+			name: "memory",
+			open: func(t *testing.T) AssetStore {
+				t.Helper()
+				return NewMemoryAssetStore()
+			},
+		},
+		{
+			name: "file",
+			open: func(t *testing.T) AssetStore {
+				t.Helper()
+				store, err := NewFileAssetStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				return store
+			},
+		},
 	}
 }
 

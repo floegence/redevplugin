@@ -156,11 +156,11 @@ func writePackageZip(ctx context.Context, w io.Writer, pkg Package) error {
 		default:
 		}
 		header := &zip.FileHeader{
-			Name:   entry.Path,
-			Method: zip.Deflate,
+			Name:     entry.Path,
+			Method:   zip.Deflate,
+			Modified: deterministicModTime,
 		}
 		header.SetMode(0o644)
-		header.SetModTime(deterministicModTime)
 		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			_ = zipWriter.Close()
@@ -180,11 +180,11 @@ func writePackageZip(ctx context.Context, w io.Writer, pkg Package) error {
 		default:
 		}
 		header := &zip.FileHeader{
-			Name:   entryPath,
-			Method: zip.Deflate,
+			Name:     entryPath,
+			Method:   zip.Deflate,
+			Modified: deterministicModTime,
 		}
 		header.SetMode(0o644)
-		header.SetModTime(deterministicModTime)
 		writer, err := zipWriter.CreateHeader(header)
 		if err != nil {
 			_ = zipWriter.Close()
