@@ -565,16 +565,66 @@ func appendCapabilityBindingIfMissing(bindings []manifest.CapabilityBinding, bin
 }
 
 func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {
-	connectors := make([]manifest.NetworkConnectorSpec, 0, len(realDemoNetworkMatrix))
+	connectors := make([]manifest.NetworkConnectorSpec, 0, len(realDemoNetworkMatrix)+len(scaffoldBrokerHostcalls()))
 	for _, networkCase := range realDemoNetworkMatrix {
-		connectors = append(connectors, manifest.NetworkConnectorSpec{
+		connector := manifest.NetworkConnectorSpec{
 			ConnectorID:  networkCase.ConnectorID,
 			Transport:    string(networkCase.Transport),
 			Scope:        string(connectivity.ScopeUser),
 			Destinations: []string{networkCase.Destination},
+		}
+		connectors = mergeNetworkConnector(connectors, connector)
+	}
+	for _, call := range scaffoldBrokerHostcalls() {
+		if call.Module != "redevplugin.network" || call.Name != "http_request" {
+			continue
+		}
+		var request struct {
+			ConnectorID string `json:"connector_id"`
+			Transport   string `json:"transport"`
+			Destination string `json:"destination"`
+		}
+		if err := json.Unmarshal(call.Request, &request); err != nil {
+			continue
+		}
+		connectors = mergeNetworkConnector(connectors, manifest.NetworkConnectorSpec{
+			ConnectorID:  request.ConnectorID,
+			Transport:    request.Transport,
+			Scope:        string(connectivity.ScopeUser),
+			Destinations: []string{request.Destination},
 		})
 	}
 	return connectors
+}
+
+func mergeNetworkConnector(connectors []manifest.NetworkConnectorSpec, connector manifest.NetworkConnectorSpec) []manifest.NetworkConnectorSpec {
+	if strings.TrimSpace(connector.ConnectorID) == "" || strings.TrimSpace(connector.Transport) == "" || len(connector.Destinations) == 0 {
+		return connectors
+	}
+	for i := range connectors {
+		if connectors[i].ConnectorID != connector.ConnectorID {
+			continue
+		}
+		if connectors[i].Transport != connector.Transport || connectors[i].Scope != connector.Scope {
+			return connectors
+		}
+		for _, destination := range connector.Destinations {
+			if !stringSliceContains(connectors[i].Destinations, destination) {
+				connectors[i].Destinations = append(connectors[i].Destinations, destination)
+			}
+		}
+		return connectors
+	}
+	return append(connectors, connector)
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func realDemoBrokerWorkerWASM() []byte {

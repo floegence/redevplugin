@@ -205,34 +205,36 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 ));
             }
         };
-    let mut memory_network_result = None;
+    let mut memory_network_results = Vec::new();
     if execution.network_http_request_requested {
-        match execution.network_http_request_result {
-            Some(Ok(result)) => {
-                memory_network_result = Some(result);
+        for result in execution.network_http_request_results {
+            match result {
+                Ok(result) => {
+                    memory_network_results.push(result);
+                }
+                Err(err) => {
+                    return Ok(redevplugin_ipc::response_frame(
+                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        request_id,
+                        runtime_generation_id,
+                        false,
+                        None,
+                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                        Some(err.as_str()),
+                    ));
+                }
             }
-            Some(Err(err)) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                    Some(err.as_str()),
-                ));
-            }
-            None => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                    Some("network hostcall did not produce a response"),
-                ));
-            }
+        }
+        if memory_network_results.is_empty() {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                Some("network hostcall did not produce a response"),
+            ));
         }
     }
     let mut memory_storage_file_result = None;
@@ -403,39 +405,45 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         }
         None => None,
     };
-    let network_execute_result = if execution.network_http_request_demo_requested {
-        match perform_network_http_request_demo(
-            reader,
-            stdout,
-            request_id,
-            runtime_generation_id,
-            line,
-        ) {
-            Ok(result) => Some(result),
-            Err(err) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                    Some(err.as_str()),
-                ));
+    let network_execute_result =
+        if memory_network_results.is_empty() && execution.network_http_request_demo_requested {
+            match perform_network_http_request_demo(
+                reader,
+                stdout,
+                request_id,
+                runtime_generation_id,
+                line,
+            ) {
+                Ok(result) => Some(result),
+                Err(err) => {
+                    return Ok(redevplugin_ipc::response_frame(
+                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        request_id,
+                        runtime_generation_id,
+                        false,
+                        None,
+                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                        Some(err.as_str()),
+                    ));
+                }
             }
-        }
-    } else {
-        None
-    };
-    let result = redevplugin_ipc::worker_success_result_json(
+        } else {
+            None
+        };
+    if let Some(result) = network_execute_result {
+        memory_network_results.push(result);
+    }
+    let network_result_refs: Vec<&str> = memory_network_results
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
+    let result = redevplugin_ipc::worker_success_result_json_with_network_results(
         &identity,
         execution.validated.byte_len,
         storage_file_result.as_deref(),
         storage_kv_result.as_deref(),
         storage_sqlite_result.as_deref(),
-        memory_network_result
-            .as_deref()
-            .or(network_execute_result.as_deref()),
+        network_result_refs,
     );
     Ok(redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -462,7 +470,7 @@ struct WorkerExecution {
     storage_sqlite_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
     network_http_request_requested: bool,
-    network_http_request_result: Option<Result<String, String>>,
+    network_http_request_results: Vec<Result<String, String>>,
 }
 
 enum WorkerHostcallRequest {
@@ -486,7 +494,7 @@ struct WorkerHostState<'a> {
     storage_sqlite_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
     network_http_request_requested: bool,
-    network_http_request_result: Option<Result<String, String>>,
+    network_http_request_results: Vec<Result<String, String>>,
     broker_hostcall: Box<WorkerBrokerHostcall<'a>>,
 }
 
@@ -506,7 +514,7 @@ impl<'a> WorkerHostState<'a> {
             storage_sqlite_result: None,
             network_http_request_demo_requested: false,
             network_http_request_requested: false,
-            network_http_request_result: None,
+            network_http_request_results: Vec::new(),
             broker_hostcall: Box::new(broker_hostcall),
         }
     }
@@ -659,7 +667,7 @@ fn execute_worker_module<'a>(
     let storage_sqlite_result = store.data().storage_sqlite_result.clone();
     let network_http_request_demo_requested = store.data().network_http_request_demo_requested;
     let network_http_request_requested = store.data().network_http_request_requested;
-    let network_http_request_result = store.data().network_http_request_result.clone();
+    let network_http_request_results = store.data().network_http_request_results.clone();
     Ok(WorkerExecution {
         validated,
         storage_file_write_demo_requested,
@@ -673,7 +681,7 @@ fn execute_worker_module<'a>(
         storage_sqlite_result,
         network_http_request_demo_requested,
         network_http_request_requested,
-        network_http_request_result,
+        network_http_request_results,
     })
 }
 
@@ -992,13 +1000,16 @@ fn perform_network_http_request_hostcall(
     let response_json = match response_json {
         Ok(value) => value,
         Err(err) => {
-            caller.data_mut().network_http_request_result = Some(Err(err));
+            caller
+                .data_mut()
+                .network_http_request_results
+                .push(Err(err));
             return -6;
         }
     };
     let response = response_json.as_bytes();
     if response.len() > response_len {
-        caller.data_mut().network_http_request_result = Some(Err(
+        caller.data_mut().network_http_request_results.push(Err(
             "network http_request response does not fit in the output buffer".to_string(),
         ));
         return -7;
@@ -1013,7 +1024,10 @@ fn perform_network_http_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_network_hostcall_error(caller, -9),
     };
-    caller.data_mut().network_http_request_result = Some(Ok(response_json));
+    caller
+        .data_mut()
+        .network_http_request_results
+        .push(Ok(response_json));
     written
 }
 
@@ -1021,9 +1035,12 @@ fn record_network_hostcall_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     code: i32,
 ) -> i32 {
-    caller.data_mut().network_http_request_result = Some(Err(format!(
-        "network http_request hostcall failed with ABI code {code}"
-    )));
+    caller
+        .data_mut()
+        .network_http_request_results
+        .push(Err(format!(
+            "network http_request hostcall failed with ABI code {code}"
+        )));
     code
 }
 
@@ -1864,10 +1881,10 @@ mod tests {
         assert!(!execution.network_http_request_demo_requested);
         assert!(execution.network_http_request_requested);
         assert_eq!(
-            execution.network_http_request_result,
-            Some(Ok(
+            execution.network_http_request_results,
+            vec![Ok(
                 r#"{"ok":true,"transport":"http","status_code":202}"#.to_string()
-            ))
+            )]
         );
     }
 

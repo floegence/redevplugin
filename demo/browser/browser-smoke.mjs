@@ -285,6 +285,9 @@ try {
   await expectText(generatedFrame.locator("#result"), "storage_sqlite");
   await expectText(generatedFrame.locator("#result"), "plugin.sqlite");
   await expectText(generatedFrame.locator("#result"), "network_execute");
+  await expectText(generatedFrame.locator("#result"), "network_execute_websocket");
+  await expectText(generatedFrame.locator("#result"), "network_execute_tcp");
+  await expectText(generatedFrame.locator("#result"), "network_execute_udp");
   await expectText(generatedFrame.locator("#result"), "host-network-executor");
   await expectText(generatedFrame.locator("#result"), "\"gateway_token_visible\": false");
   await expectText(generatedFrame.locator("#result"), "\"storage_grant_visible\": false");

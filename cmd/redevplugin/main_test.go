@@ -258,6 +258,9 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	networkExecutor := &cliRecordingNetworkExecutor{
 		httpStatus: http.StatusAccepted,
 		httpBody:   []byte(`{"ok":true,"source":"cli-scaffold"}`),
+		wsPayload:  []byte("websocket:generated websocket round trip"),
+		tcpPayload: []byte("tcp:generated tcp round trip"),
+		udpPayload: []byte("udp:generated udp round trip"),
 	}
 	h, err := host.New(host.Adapters{
 		SessionResolver:         staticSessionResolver{},
@@ -291,7 +294,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallPackageBytes() error = %v", err)
 	}
-	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	if _, err := h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -414,27 +417,43 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if !ok {
 		t.Fatalf("broker storage_file result missing: %#v", brokerData)
 	}
+	storageFileUsage, ok := storageFile["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker storage_file usage missing: %#v", storageFile)
+	}
 	if storageFile["ok"] != true ||
-		storageFile["store_id"] != "workspace" ||
-		storageFile["path"] != "notes/generated-broker-demo.txt" {
+		storageFile["path"] != "notes/generated-broker-demo.txt" ||
+		storageFile["size_bytes"] != float64(31) ||
+		storageFileUsage["store_id"] != "workspace" ||
+		storageFileUsage["usage_bytes"] != float64(31) {
 		t.Fatalf("broker storage_file result mismatch: %#v", storageFile)
 	}
 	storageKV, ok := brokerData["storage_kv"].(map[string]any)
 	if !ok {
 		t.Fatalf("broker storage_kv result missing: %#v", brokerData)
 	}
+	storageKVUsage, ok := storageKV["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker storage_kv usage missing: %#v", storageKV)
+	}
 	if storageKV["ok"] != true ||
-		storageKV["store_id"] != "settings" ||
-		storageKV["key"] != "demo/last_broker_run" {
+		storageKV["key"] != "demo/last_broker_run" ||
+		storageKV["size_bytes"] != float64(27) ||
+		storageKVUsage["store_id"] != "settings" ||
+		storageKVUsage["usage_bytes"] != float64(27) {
 		t.Fatalf("broker storage_kv result mismatch: %#v", storageKV)
 	}
 	storageSQLite, ok := brokerData["storage_sqlite"].(map[string]any)
 	if !ok {
 		t.Fatalf("broker storage_sqlite result missing: %#v", brokerData)
 	}
+	storageSQLiteUsage, ok := storageSQLite["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker storage_sqlite usage missing: %#v", storageSQLite)
+	}
 	if storageSQLite["ok"] != true ||
-		storageSQLite["store_id"] != "db" ||
-		storageSQLite["database"] != "plugin.sqlite" {
+		storageSQLite["database"] != "plugin.sqlite" ||
+		storageSQLiteUsage["store_id"] != "db" {
 		t.Fatalf("broker storage_sqlite result mismatch: %#v", storageSQLite)
 	}
 	networkExecute, ok := brokerData["network_execute"].(map[string]any)
@@ -455,6 +474,40 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		networkExecutor.lastHTTP.Path != "/v1/worker" ||
 		string(networkExecutor.lastHTTP.Body) != "generated brokered http request" {
 		t.Fatalf("broker network executor call mismatch: calls=%d req=%#v", networkExecutor.httpCalls, networkExecutor.lastHTTP)
+	}
+	if networkWebSocket, ok := brokerData["network_execute_websocket"].(map[string]any); !ok ||
+		networkWebSocket["ok"] != true ||
+		networkWebSocket["connector_id"] != "stream" ||
+		networkWebSocket["transport"] != "websocket" ||
+		networkWebSocket["message_type"] != "text" {
+		t.Fatalf("broker websocket network result mismatch: %#v", brokerData["network_execute_websocket"])
+	}
+	if networkTCP, ok := brokerData["network_execute_tcp"].(map[string]any); !ok ||
+		networkTCP["ok"] != true ||
+		networkTCP["connector_id"] != "mysql" ||
+		networkTCP["transport"] != "tcp" {
+		t.Fatalf("broker tcp network result mismatch: %#v", brokerData["network_execute_tcp"])
+	}
+	if networkUDP, ok := brokerData["network_execute_udp"].(map[string]any); !ok ||
+		networkUDP["ok"] != true ||
+		networkUDP["connector_id"] != "metrics" ||
+		networkUDP["transport"] != "udp" {
+		t.Fatalf("broker udp network result mismatch: %#v", brokerData["network_execute_udp"])
+	}
+	if networkExecutor.wsCalls != 1 ||
+		networkExecutor.lastWS.Grant.ConnectorID != "stream" ||
+		string(networkExecutor.lastWS.Payload) != "generated websocket round trip" {
+		t.Fatalf("broker websocket executor call mismatch: calls=%d req=%#v", networkExecutor.wsCalls, networkExecutor.lastWS)
+	}
+	if networkExecutor.tcpCalls != 1 ||
+		networkExecutor.lastTCP.Grant.ConnectorID != "mysql" ||
+		string(networkExecutor.lastTCP.Payload) != "generated tcp round trip" {
+		t.Fatalf("broker tcp executor call mismatch: calls=%d req=%#v", networkExecutor.tcpCalls, networkExecutor.lastTCP)
+	}
+	if networkExecutor.udpCalls != 1 ||
+		networkExecutor.lastUDP.Grant.ConnectorID != "metrics" ||
+		string(networkExecutor.lastUDP.Payload) != "generated udp round trip" {
+		t.Fatalf("broker udp executor call mismatch: calls=%d req=%#v", networkExecutor.udpCalls, networkExecutor.lastUDP)
 	}
 	rawBrokerData, err := json.Marshal(brokerData)
 	if err != nil {
@@ -807,9 +860,18 @@ func (r cliRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (st
 
 type cliRecordingNetworkExecutor struct {
 	httpCalls  int
+	wsCalls    int
+	tcpCalls   int
+	udpCalls   int
 	lastHTTP   connectivity.HTTPRequest
+	lastWS     connectivity.WebSocketRoundTripRequest
+	lastTCP    connectivity.TCPRoundTripRequest
+	lastUDP    connectivity.UDPRoundTripRequest
 	httpStatus int
 	httpBody   []byte
+	wsPayload  []byte
+	tcpPayload []byte
+	udpPayload []byte
 }
 
 func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
@@ -823,15 +885,25 @@ func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity
 }
 
 func (e *cliRecordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	return connectivity.WebSocketRoundTripResponse{}, errors.New("websocket should not be called by cli scaffold broker test")
+	e.wsCalls++
+	e.lastWS = req
+	messageType := req.MessageType
+	if messageType == "" {
+		messageType = connectivity.WebSocketMessageText
+	}
+	return connectivity.WebSocketRoundTripResponse{MessageType: messageType, Payload: append([]byte(nil), e.wsPayload...)}, nil
 }
 
 func (e *cliRecordingNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	return connectivity.TCPRoundTripResponse{}, errors.New("tcp should not be called by cli scaffold broker test")
+	e.tcpCalls++
+	e.lastTCP = req
+	return connectivity.TCPRoundTripResponse{Payload: append([]byte(nil), e.tcpPayload...)}, nil
 }
 
 func (e *cliRecordingNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	return connectivity.UDPRoundTripResponse{}, errors.New("udp should not be called by cli scaffold broker test")
+	e.udpCalls++
+	e.lastUDP = req
+	return connectivity.UDPRoundTripResponse{Payload: append([]byte(nil), e.udpPayload...)}, nil
 }
 
 func writeCLITestFile(t *testing.T, filename string, content string) {

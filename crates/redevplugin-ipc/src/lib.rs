@@ -229,6 +229,24 @@ pub fn worker_success_result_json(
     storage_sqlite_result_json: Option<&str>,
     network_execute_result_json: Option<&str>,
 ) -> String {
+    worker_success_result_json_with_network_results(
+        identity,
+        wasm_byte_len,
+        storage_file_result_json,
+        storage_kv_result_json,
+        storage_sqlite_result_json,
+        network_execute_result_json.into_iter().collect(),
+    )
+}
+
+pub fn worker_success_result_json_with_network_results(
+    identity: &WorkerInvocationIdentity,
+    wasm_byte_len: usize,
+    storage_file_result_json: Option<&str>,
+    storage_kv_result_json: Option<&str>,
+    storage_sqlite_result_json: Option<&str>,
+    network_execute_result_jsons: Vec<&str>,
+) -> String {
     let storage_file = storage_file_result_json
         .map(|result| format!(",\"storage_file\":{result}"))
         .unwrap_or_default();
@@ -238,9 +256,7 @@ pub fn worker_success_result_json(
     let storage_sqlite = storage_sqlite_result_json
         .map(|result| format!(",\"storage_sqlite\":{result}"))
         .unwrap_or_default();
-    let network_execute = network_execute_result_json
-        .map(|result| format!(",\"network_execute\":{result}"))
-        .unwrap_or_default();
+    let network_execute = network_success_fields(network_execute_result_jsons);
     format!(
         "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}{}{}{}}}}}",
         escape_json_string(&identity.method),
@@ -252,6 +268,41 @@ pub fn worker_success_result_json(
         storage_sqlite,
         network_execute
     )
+}
+
+fn network_success_fields(results: Vec<&str>) -> String {
+    let mut fields = String::new();
+    for (index, result) in results.into_iter().enumerate() {
+        let field = if index == 0 {
+            "network_execute".to_string()
+        } else {
+            format!(
+                "network_execute_{}",
+                network_result_transport(result)
+                    .filter(|transport| !transport.is_empty())
+                    .unwrap_or_else(|| index.to_string())
+            )
+        };
+        fields.push_str(&format!(",\"{}\":{}", escape_json_string(&field), result));
+    }
+    fields
+}
+
+fn network_result_transport(result: &str) -> Option<String> {
+    extract_json_string(result, "transport").map(|value| {
+        value
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('_')
+            .to_string()
+    })
 }
 
 pub fn extract_json_number_u64(input: &str, key: &str) -> Option<u64> {

@@ -492,6 +492,21 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 				Transport:    "http",
 				Scope:        "user",
 				Destinations: []string{"https://api.example.com"},
+			}, {
+				ConnectorID:  "stream",
+				Transport:    "websocket",
+				Scope:        "user",
+				Destinations: []string{"wss://stream.example.com"},
+			}, {
+				ConnectorID:  "mysql",
+				Transport:    "tcp",
+				Scope:        "user",
+				Destinations: []string{"db.example.com:3306"},
+			}, {
+				ConnectorID:  "metrics",
+				Transport:    "udp",
+				Scope:        "user",
+				Destinations: []string{"metrics.example.com:8125"},
 			}},
 		},
 	}
@@ -1113,6 +1128,24 @@ func scaffoldBrokerHostcalls() []memoryHostcallSpec {
 			Module:  "redevplugin.network",
 			Name:    "http_request",
 			Request: mustJSONBytes(map[string]any{"connector_id": "api", "transport": "http", "destination": "https://api.example.com", "operation": "http", "method": "POST", "path": "/v1/worker", "headers": map[string]any{"Content-Type": []string{"text/plain"}}, "body_base64": "Z2VuZXJhdGVkIGJyb2tlcmVkIGh0dHAgcmVxdWVzdA==", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
+			OutLen:  8192,
+		},
+		{
+			Module:  "redevplugin.network",
+			Name:    "http_request",
+			Request: mustJSONBytes(map[string]any{"connector_id": "stream", "transport": "websocket", "destination": "wss://stream.example.com", "operation": "websocket_round_trip", "message_type": "text", "payload_base64": "Z2VuZXJhdGVkIHdlYnNvY2tldCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
+			OutLen:  8192,
+		},
+		{
+			Module:  "redevplugin.network",
+			Name:    "http_request",
+			Request: mustJSONBytes(map[string]any{"connector_id": "mysql", "transport": "tcp", "destination": "db.example.com:3306", "operation": "tcp_round_trip", "payload_base64": "Z2VuZXJhdGVkIHRjcCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
+			OutLen:  8192,
+		},
+		{
+			Module:  "redevplugin.network",
+			Name:    "http_request",
+			Request: mustJSONBytes(map[string]any{"connector_id": "metrics", "transport": "udp", "destination": "metrics.example.com:8125", "operation": "udp_round_trip", "payload_base64": "Z2VuZXJhdGVkIHVkcCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
 			OutLen:  8192,
 		},
 	}
