@@ -9,6 +9,8 @@ paths:
       operationId: installPlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/InstallRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/enable:
@@ -16,6 +18,8 @@ paths:
       operationId: enablePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/EnableRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/disable:
@@ -23,6 +27,8 @@ paths:
       operationId: disablePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/DisableRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/uninstall:
@@ -30,6 +36,8 @@ paths:
       operationId: uninstallPlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/UninstallRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/update:
@@ -37,6 +45,8 @@ paths:
       operationId: updatePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/downgrade:
@@ -44,6 +54,8 @@ paths:
       operationId: downgradePlugin
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/DowngradeRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/catalog:
@@ -62,6 +74,8 @@ paths:
       operationId: openPluginSurface
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/OpenSurfaceRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap:
@@ -70,6 +84,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/ExchangeAssetTicketRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token:
@@ -78,6 +94,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/SurfaceInstanceID"
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/BridgeTokenRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/rpc:
@@ -85,6 +103,8 @@ paths:
       operationId: callPluginMethod
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/RPCRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/confirm:
@@ -92,6 +112,8 @@ paths:
       operationId: confirmPluginIntent
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/RPCRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/intents:
@@ -106,6 +128,8 @@ paths:
       description: Invokes a host-mediated plugin intent without iframe gateway tokens while preserving local policy, permission grants, and dangerous-method fail-closed checks.
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/InvokeIntentRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/operations:
@@ -126,6 +150,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/OperationID"
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/CancelOperationRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/runtime/start:
@@ -133,6 +159,8 @@ paths:
       operationId: startPluginRuntime
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/StartRuntimeRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/runtime/stop:
@@ -152,6 +180,8 @@ paths:
       operationId: exportPluginData
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/ExportDataRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/data/import:
@@ -159,6 +189,8 @@ paths:
       operationId: importPluginData
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/ImportDataRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/permissions:
@@ -171,6 +203,8 @@ paths:
       operationId: grantPluginPermission
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/GrantPermissionRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/permissions/revoke:
@@ -178,6 +212,8 @@ paths:
       operationId: revokePluginPermission
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/RevokePermissionRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/audit:
@@ -195,6 +231,8 @@ paths:
       operationId: bindPluginSecret
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/SecretRefRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/secrets/test:
@@ -202,6 +240,8 @@ paths:
       operationId: testPluginSecret
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/SecretRefRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/secrets/delete:
@@ -209,6 +249,8 @@ paths:
       operationId: deletePluginSecret
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/SecretRefRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema:
@@ -230,11 +272,15 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PluginInstanceID"
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/PatchSettingsRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/bootstrap:
     post:
       operationId: exchangePluginAssetTicket
+      requestBody:
+        $ref: "#/components/requestBodies/SandboxBootstrapRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/assets/{asset_path...}:
@@ -272,6 +318,8 @@ paths:
   /_redevplugin/csp-report:
     post:
       operationId: reportPluginCSPViolation
+      requestBody:
+        $ref: "#/components/requestBodies/CSPReportRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
 components:
@@ -304,6 +352,134 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Envelope"
+  requestBodies:
+    InstallRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InstallRequest"
+    UpdateRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateRequest"
+    DowngradeRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DowngradeRequest"
+    EnableRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnableRequest"
+    DisableRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DisableRequest"
+    UninstallRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UninstallRequest"
+    OpenSurfaceRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OpenSurfaceRequest"
+    ExchangeAssetTicketRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExchangeAssetTicketRequest"
+    BridgeTokenRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BridgeTokenRequest"
+    RPCRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RPCRequest"
+    InvokeIntentRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InvokeIntentRequest"
+    CancelOperationRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CancelOperationRequest"
+    StartRuntimeRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StartRuntimeRequest"
+    ExportDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExportDataRequest"
+    ImportDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportDataRequest"
+    GrantPermissionRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GrantPermissionRequest"
+    RevokePermissionRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RevokePermissionRequest"
+    SecretRefRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SecretRefRequest"
+    PatchSettingsRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PatchSettingsRequest"
+    SandboxBootstrapRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SandboxBootstrapRequest"
+    CSPReportRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
   schemas:
     Envelope:
       type: object
@@ -328,3 +504,191 @@ components:
         - PLUGIN_NETWORK_TARGET_DENIED
         - PLUGIN_RUNTIME_UNAVAILABLE
         - PLUGIN_CONTRACT_MISMATCH
+    TrustState:
+      type: string
+      enum: [bundled, verified, unsigned_local, untrusted, needs_review, blocked_security]
+    InstallRequest:
+      type: object
+      required: [package_base64]
+      additionalProperties: false
+      properties:
+        package_base64: { type: string, contentEncoding: base64, minLength: 1 }
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        plugin_instance_id: { type: string, minLength: 1 }
+    UpdateRequest:
+      type: object
+      required: [plugin_instance_id, package_base64]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        package_base64: { type: string, contentEncoding: base64, minLength: 1 }
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+    DowngradeRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        version: { type: string }
+        package_hash: { type: string }
+    EnableRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+    DisableRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        reason: { type: string }
+    UninstallRequest:
+      type: object
+      required: [plugin_instance_id, delete_data]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        delete_data: { type: boolean }
+    OpenSurfaceRequest:
+      type: object
+      required: [plugin_instance_id, surface_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        surface_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string }
+        owner_session_hash: { type: string }
+        owner_user_hash: { type: string }
+        session_channel_id_hash: { type: string }
+        sandbox_origin: { type: string }
+    ExchangeAssetTicketRequest:
+      type: object
+      required: [asset_ticket]
+      additionalProperties: false
+      properties:
+        asset_ticket: { type: string, minLength: 1 }
+    BridgeHandshake:
+      type: object
+      required: [plugin_id, surface_id, surface_instance_id, active_fingerprint, bridge_nonce, ui_protocol_version]
+      additionalProperties: false
+      properties:
+        type: { const: redevplugin.bridge.handshake }
+        plugin_id: { type: string, minLength: 1 }
+        surface_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        bridge_nonce: { type: string, minLength: 1 }
+        ui_protocol_version: { const: plugin-ui-v1 }
+    BridgeTokenRequest:
+      type: object
+      required: [handshake, bridge_channel_id]
+      additionalProperties: false
+      properties:
+        handshake:
+          $ref: "#/components/schemas/BridgeHandshake"
+        bridge_channel_id: { type: string, minLength: 1 }
+    RPCRequest:
+      type: object
+      required: [plugin_instance_id, surface_instance_id, bridge_channel_id, plugin_gateway_token, method]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        session_channel_id_hash: { type: string }
+        owner_session_hash: { type: string }
+        owner_user_hash: { type: string }
+        bridge_channel_id: { type: string, minLength: 1 }
+        plugin_gateway_token: { type: string, minLength: 1 }
+        confirmation_token: { type: string }
+        method: { type: string, minLength: 1 }
+        params:
+          type: object
+          additionalProperties: true
+    InvokeIntentRequest:
+      type: object
+      required: [intent_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string }
+        intent_id: { type: string, minLength: 1 }
+        params:
+          type: object
+          additionalProperties: true
+        owner_session_hash: { type: string }
+        owner_user_hash: { type: string }
+        session_channel_id_hash: { type: string }
+    CancelOperationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+    StartRuntimeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        target:
+          type: object
+          additionalProperties: false
+          properties:
+            os: { type: string }
+            arch: { type: string }
+    ExportDataRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        include_secrets: { type: boolean }
+    ImportDataRequest:
+      type: object
+      required: [plugin_instance_id, archive_ref]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        archive_ref: { type: string, minLength: 1 }
+        delete_existing: { type: boolean }
+    GrantPermissionRequest:
+      type: object
+      required: [plugin_instance_id, permission_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        permission_id: { type: string, minLength: 1 }
+        granted_by: { type: string }
+        expires_at: { type: string, format: date-time }
+    RevokePermissionRequest:
+      type: object
+      required: [plugin_instance_id, permission_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        permission_id: { type: string, minLength: 1 }
+        revoked_by: { type: string }
+        reason: { type: string }
+    SecretRefRequest:
+      type: object
+      required: [plugin_instance_id, secret_ref, scope]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        secret_ref: { type: string, minLength: 1 }
+        scope: { type: string, enum: [user, environment] }
+    PatchSettingsRequest:
+      type: object
+      required: [values]
+      additionalProperties: false
+      properties:
+        values:
+          type: object
+          additionalProperties: true
+    SandboxBootstrapRequest:
+      type: object
+      required: [surface_instance_id, asset_ticket]
+      additionalProperties: false
+      properties:
+        surface_instance_id: { type: string, minLength: 1 }
+        asset_ticket: { type: string, minLength: 1 }
