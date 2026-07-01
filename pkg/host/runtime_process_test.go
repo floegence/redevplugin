@@ -601,6 +601,112 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	}
 }
 
+func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not found; skipping built Rust runtime integration")
+	}
+	repoRoot := findRepoRootForHostTest(t)
+	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	if runtime.GOOS == "windows" {
+		runtimePath += ".exe"
+	}
+
+	ctx := context.Background()
+	storageBroker, err := storage.NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  storageBroker,
+	})
+	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+		RuntimePath:      runtimePath,
+		Diagnostics:      h.adapters.Diagnostics,
+		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:     storageFilesBroker(h.adapters.Storage),
+		StorageKV:        storageKVBroker(h.adapters.Storage),
+		Connectivity:     h.adapters.Connectivity,
+		HandshakeTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.adapters.RuntimeSupervisor = supervisor
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := supervisor.Stop(stopCtx); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	})
+	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageKVMemoryHostcallFixturePackage(t), "worker.activity")
+	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		StoreID:             "cache",
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant() error = %v", err)
+	}
+	body := []byte("hello from memory kv hostcall")
+
+	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params: map[string]any{
+			"storage_kv_handle_grant_token": storageGrant.HandleGrant.HandleGrantToken,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with storage kv memory hostcall error = %v", err)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("worker result data = %#v, want map", result.Data)
+	}
+	storageKV, ok := data["storage_kv"].(map[string]any)
+	if !ok {
+		t.Fatalf("storage_kv result missing: %#v", data)
+	}
+	if storageKV["ok"] != true || storageKV["key"] != "runs/latest" || storageKV["size_bytes"] != float64(len(body)) {
+		t.Fatalf("storage_kv result mismatch: %#v", storageKV)
+	}
+	read, err := storageBroker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "runs/latest",
+	})
+	if err != nil {
+		t.Fatalf("GetKV() error = %v", err)
+	}
+	if string(read.Value) != string(body) {
+		t.Fatalf("stored kv = %q, want %q", read.Value, body)
+	}
+}
+
 func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntime(t *testing.T) {
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not found; skipping built Rust runtime integration")

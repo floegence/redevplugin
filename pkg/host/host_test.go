@@ -2559,6 +2559,20 @@ func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerStorageKVMemoryHostcallFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageKVFixtureManifestJSON())
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage KV Memory Hostcall</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageKVMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2694,6 +2708,11 @@ func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 func storageMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}`)
 	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "files", exportName, request)
+}
+
+func storageKVMemoryHostcallWorkerWASMForTest(exportName string) []byte {
+	request := []byte(`{"store_id":"cache","operation":"put","key":"runs/latest","value_base64":"aGVsbG8gZnJvbSBtZW1vcnkga3YgaG9zdGNhbGw=","max_bytes":0,"max_entries":0}`)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "kv", exportName, request)
 }
 
 func storageSQLiteMemoryHostcallWorkerWASMForTest(exportName string) []byte {
@@ -3178,6 +3197,64 @@ func workerStorageFixtureManifestJSON() string {
 				{
 					"store_id": "workspace",
 					"kind": "files",
+					"scope": "user",
+					"quota_bytes": 4096,
+					"schema_version": 1,
+					"migration": {
+						"from_version": 1,
+						"to_version": 1,
+						"reversible": true,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:test"
+					}
+				}
+			]
+		}
+	}`
+}
+
+func workerStorageKVFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redevplugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker.storage.kv",
+			"display_name": "Worker Storage KV",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redevplugin-wasm-worker-v1",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216,
+				"idle_timeout_ms": 0
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "write",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+			}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "cache",
+					"kind": "kv",
 					"scope": "user",
 					"quota_bytes": 4096,
 					"schema_version": 1,
