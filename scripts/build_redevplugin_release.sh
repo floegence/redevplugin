@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
+OUT_DIR="$ROOT_DIR/dist/redevplugin-release"
+VERSION=""
+RUNTIME_TARGET=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out-dir)
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --version)
+      VERSION="$2"
+      shift 2
+      ;;
+    --runtime-target)
+      RUNTIME_TARGET="$2"
+      shift 2
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$VERSION" ]]; then
+  VERSION="$(git -C "$ROOT_DIR" describe --tags --always --dirty)"
+fi
+
+if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
+  PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "go is required to build the ReDevPlugin release bundle" >&2
+  exit 1
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo is required to build redevplugin-runtime" >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to build @floegence/redevplugin-ui" >&2
+  exit 1
+fi
+
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/npm" "$OUT_DIR/notices"
+
+(
+  cd "$ROOT_DIR"
+  GOWORK=off go build -trimpath -o "$OUT_DIR/bin/redevplugin" ./cmd/redevplugin
+  go run ./cmd/redevplugin version >"$OUT_DIR/compatibility.json"
+  npm run build
+  (
+    cd "$ROOT_DIR/packages/redevplugin-ui"
+    npm pack --pack-destination "$OUT_DIR/npm" >/dev/null
+  )
+  if [[ -n "$RUNTIME_TARGET" ]]; then
+    rustup target add "$RUNTIME_TARGET" >/dev/null
+    cargo build --release -p redevplugin-runtime --target "$RUNTIME_TARGET"
+    runtime_path="$ROOT_DIR/target/$RUNTIME_TARGET/release/redevplugin-runtime"
+  else
+    cargo build --release -p redevplugin-runtime
+    runtime_path="$ROOT_DIR/target/release/redevplugin-runtime"
+  fi
+  if [[ ! -x "$runtime_path" ]]; then
+    echo "redevplugin-runtime was not built at $runtime_path" >&2
+    exit 1
+  fi
+  cp "$runtime_path" "$OUT_DIR/bin/redevplugin-runtime"
+  cp -R "$ROOT_DIR/spec" "$OUT_DIR/contracts/spec"
+  cp "$ROOT_DIR/README.md" "$OUT_DIR/README.md"
+  cp "$ROOT_DIR/AGENTS.md" "$OUT_DIR/AGENTS.md"
+  cp "$ROOT_DIR/Cargo.lock" "$OUT_DIR/notices/Cargo.lock"
+  cp "$ROOT_DIR/go.sum" "$OUT_DIR/notices/go.sum"
+  cp "$ROOT_DIR/package-lock.json" "$OUT_DIR/notices/package-lock.json"
+)
+
+cat >"$OUT_DIR/THIRD_PARTY_NOTICES.md" <<'NOTICE'
+# Third-Party Notices
+
+This release bundle carries the dependency lockfiles used to build and audit
+the ReDevPlugin Go, TypeScript, and Rust artifacts:
+
+- `notices/go.sum`
+- `notices/package-lock.json`
+- `notices/Cargo.lock`
+
+The Rust dependency license allowlist is defined in `deny.toml` in the source
+repository and is enforced by CI with `cargo deny check` when the tool is
+available. Host products should treat these lockfiles and the compatibility
+manifest as part of the consumed release evidence.
+NOTICE
+
+node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" <<'NODE'
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+
+const [outDir, version, runtimeTarget] = process.argv.slice(2);
+const files = [];
+function walk(dir) {
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      walk(path);
+      continue;
+    }
+    const rel = relative(outDir, path).replaceAll("\\", "/");
+    if (rel === "release-manifest.json" || rel === "SHA256SUMS") {
+      continue;
+    }
+    const sha256 = createHash("sha256").update(readFileSync(path)).digest("hex");
+    files.push({ path: rel, sha256, size: stat.size });
+  }
+}
+walk(outDir);
+files.sort((a, b) => a.path.localeCompare(b.path));
+writeFileSync(
+  join(outDir, "release-manifest.json"),
+  JSON.stringify(
+    {
+      schema_version: "redevplugin.release_manifest.v1",
+      version,
+      runtime_target: runtimeTarget || null,
+      generated_at: new Date().toISOString(),
+      files,
+    },
+    null,
+    2,
+  ) + "\n",
+);
+const sums = files.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\n";
+writeFileSync(join(outDir, "SHA256SUMS"), sums);
+NODE
+
+echo "redevplugin release bundle created at $OUT_DIR"
