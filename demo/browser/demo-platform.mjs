@@ -10,6 +10,8 @@ const defaultDemoBootstrap = Object.freeze({
   sessionChannelIdHash: "session_channel_demo",
 });
 
+resetDemoDocumentScroll();
+
 export const demoBootstrap = createDemoBootstrap();
 
 export function createDemoBootstrap(overrides = {}) {
@@ -1249,4 +1251,13 @@ export function jsonResponse(body, status = 200) {
 
 export function formatJSON(value) {
   return JSON.stringify(value, null, 2);
+}
+
+function resetDemoDocumentScroll() {
+  if (typeof window === "undefined" || typeof window.scrollTo !== "function") {
+    return;
+  }
+  requestAnimationFrame(() => {
+    window.scrollTo(0, 0);
+  });
 }
