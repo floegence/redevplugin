@@ -11,10 +11,13 @@ import (
 	"strings"
 )
 
+var (
+	GoModuleVersion  = "0.0.0-dev"
+	UIPackageVersion = "0.0.0-dev"
+	RuntimeVersion   = "0.0.0-dev"
+)
+
 const (
-	GoModuleVersion               = "0.0.0-dev"
-	UIPackageVersion              = "0.0.0-dev"
-	RuntimeVersion                = "0.0.0-dev"
 	PluginHostProtocolVersion     = "plugin-host-v1"
 	RustIPCVersion                = "rust-ipc-v1"
 	WASMABIVersion                = "redevplugin-wasm-worker-v1"

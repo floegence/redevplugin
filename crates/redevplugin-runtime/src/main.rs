@@ -20,10 +20,12 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("read hello frame: {err}"))?;
     let (request_id, runtime_generation_id) =
         redevplugin_ipc::validate_hello_frame(&line).map_err(|err| err.to_string())?;
+    let runtime_version =
+        option_env!("REDEVPLUGIN_RUNTIME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let ack = redevplugin_ipc::hello_ack_frame(
         &request_id,
         &runtime_generation_id,
-        env!("CARGO_PKG_VERSION"),
+        runtime_version,
         redevplugin_ipc::WASM_ABI_VERSION,
     );
     let mut stdout = io::stdout().lock();

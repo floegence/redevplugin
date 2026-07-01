@@ -38,7 +38,11 @@ jobs:
       - name: Build release bundle
         run: |
           tag="${GITHUB_REF_NAME:-manual}"
-          version="${tag#v}"
+          if [[ "$tag" == v* ]]; then
+            version="${tag#v}"
+          else
+            version="0.0.0-manual.${GITHUB_RUN_NUMBER:-0}"
+          fi
           ./scripts/build_redevplugin_release.sh \
             --version "$version" \
             --runtime-target "${{ matrix.target }}" \

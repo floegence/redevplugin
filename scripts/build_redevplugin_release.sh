@@ -51,21 +51,37 @@ fi
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/npm" "$OUT_DIR/notices"
 
+go_version_pkg="github.com/floegence/redevplugin/pkg/version"
+ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UIPackageVersion=${VERSION} -X ${go_version_pkg}.RuntimeVersion=${VERSION}"
+
 (
   cd "$ROOT_DIR"
-  GOWORK=off go build -trimpath -o "$OUT_DIR/bin/redevplugin" ./cmd/redevplugin
-  go run ./cmd/redevplugin version >"$OUT_DIR/compatibility.json"
+  GOWORK=off go build -trimpath -ldflags "$ldflags" -o "$OUT_DIR/bin/redevplugin" ./cmd/redevplugin
+  "$OUT_DIR/bin/redevplugin" version >"$OUT_DIR/compatibility.json"
   npm run build
+  npm_pkg_dir="$OUT_DIR/.npm-pack/redevplugin-ui"
+  mkdir -p "$npm_pkg_dir"
+  cp "$ROOT_DIR/packages/redevplugin-ui/package.json" "$npm_pkg_dir/package.json"
+  cp -R "$ROOT_DIR/packages/redevplugin-ui/dist" "$npm_pkg_dir/dist"
+  node --input-type=module - "$npm_pkg_dir/package.json" "$VERSION" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const [filename, version] = process.argv.slice(2);
+const pkg = JSON.parse(readFileSync(filename, "utf8"));
+pkg.version = version;
+writeFileSync(filename, JSON.stringify(pkg, null, 2) + "\n");
+NODE
   (
-    cd "$ROOT_DIR/packages/redevplugin-ui"
+    cd "$npm_pkg_dir"
     npm pack --pack-destination "$OUT_DIR/npm" >/dev/null
   )
+  rm -rf "$OUT_DIR/.npm-pack"
   if [[ -n "$RUNTIME_TARGET" ]]; then
     rustup target add "$RUNTIME_TARGET" >/dev/null
-    cargo build --release -p redevplugin-runtime --target "$RUNTIME_TARGET"
+    REDEVPLUGIN_RUNTIME_VERSION="$VERSION" cargo build --release -p redevplugin-runtime --target "$RUNTIME_TARGET"
     runtime_path="$ROOT_DIR/target/$RUNTIME_TARGET/release/redevplugin-runtime"
   else
-    cargo build --release -p redevplugin-runtime
+    REDEVPLUGIN_RUNTIME_VERSION="$VERSION" cargo build --release -p redevplugin-runtime
     runtime_path="$ROOT_DIR/target/release/redevplugin-runtime"
   fi
   if [[ ! -x "$runtime_path" ]]; then
