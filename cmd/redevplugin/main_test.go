@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -889,6 +890,137 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	}
 }
 
+func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	stateRoot := filepath.Join(dir, "state")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.permissions", "Generated Permissions Plugin", scaffoldDir); err != nil {
+		t.Fatalf("scaffold command error = %v", err)
+	}
+	addLifecyclePermissionBindingToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatalf("package command error = %v", err)
+	}
+
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
+	if err != nil {
+		t.Fatalf("dev-install error = %v", err)
+	}
+	var installSummary devLifecycleSummary
+	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
+		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
+	}
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
+		t.Fatalf("dev-enable error = %v", err)
+	}
+	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 0 {
+		t.Fatal("dev-enable should not auto-grant manifest permissions")
+	}
+
+	grantOutput, err := captureCLIOutput(t, "dev-permission-grant", stateRoot, "demo.execute", "alice")
+	if err != nil {
+		t.Fatalf("dev-permission-grant error = %v", err)
+	}
+	var grantSummary devPermissionSummary
+	if err := json.Unmarshal(grantOutput, &grantSummary); err != nil {
+		t.Fatalf("dev-permission-grant output decode error = %v: %s", err, grantOutput)
+	}
+	if !grantSummary.OK ||
+		grantSummary.PluginInstanceID != installSummary.PluginInstanceID ||
+		grantSummary.Permission.PermissionID != "demo.execute" ||
+		grantSummary.Permission.GrantedBy != "alice" ||
+		grantSummary.Permission.Effect != permissions.EffectGrant {
+		t.Fatalf("dev-permission-grant summary mismatch: %#v", grantSummary)
+	}
+	grantedState := loadDevStateForTest(t, stateRoot)
+	if len(grantedState.Permissions.Records) != 1 ||
+		grantedState.Permissions.Records[0].PermissionID != "demo.execute" ||
+		grantedState.Record.PolicyRevision <= installSummary.PolicyRevision {
+		t.Fatalf("permission state not persisted after grant: %#v install=%#v", grantedState.Permissions, installSummary)
+	}
+
+	listOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot, "--active-only")
+	if err != nil {
+		t.Fatalf("dev-permission-list error = %v", err)
+	}
+	var listSummary devPermissionSummary
+	if err := json.Unmarshal(listOutput, &listSummary); err != nil {
+		t.Fatalf("dev-permission-list output decode error = %v: %s", err, listOutput)
+	}
+	if !listSummary.ActiveOnly || len(listSummary.Permissions) != 1 || listSummary.Permissions[0].PermissionID != "demo.execute" {
+		t.Fatalf("dev-permission-list summary mismatch: %#v", listSummary)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.permissions.activity", "http://127.0.0.1:4999"); err != nil {
+		t.Fatalf("dev-open error = %v", err)
+	}
+	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 1 {
+		t.Fatal("permission grant should persist across dev-open")
+	}
+	if _, err := captureCLIOutput(t, "dev-disable", stateRoot); err != nil {
+		t.Fatalf("dev-disable error = %v", err)
+	}
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
+		t.Fatalf("dev-enable after disable error = %v", err)
+	}
+	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 1 {
+		t.Fatal("permission grant should persist across disable and re-enable")
+	}
+
+	revokeOutput, err := captureCLIOutput(t, "dev-permission-revoke", stateRoot, "demo.execute", "reviewed")
+	if err != nil {
+		t.Fatalf("dev-permission-revoke error = %v", err)
+	}
+	var revokeSummary devPermissionSummary
+	if err := json.Unmarshal(revokeOutput, &revokeSummary); err != nil {
+		t.Fatalf("dev-permission-revoke output decode error = %v: %s", err, revokeOutput)
+	}
+	if revokeSummary.Permission.RevokedAt == nil || revokeSummary.Permission.RevokedReason != "reviewed" {
+		t.Fatalf("dev-permission-revoke summary mismatch: %#v", revokeSummary)
+	}
+	revokedState := loadDevStateForTest(t, stateRoot)
+	if len(revokedState.Permissions.Records) != 1 ||
+		revokedState.Permissions.Records[0].RevokedAt == nil ||
+		revokedState.Record.RevokeEpoch <= grantedState.Record.RevokeEpoch {
+		t.Fatalf("permission revoke state mismatch: %#v before=%#v", revokedState.Permissions, grantedState.Record)
+	}
+
+	activeOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot, "--active-only")
+	if err != nil {
+		t.Fatalf("dev-permission-list active after revoke error = %v", err)
+	}
+	var activeSummary devPermissionSummary
+	if err := json.Unmarshal(activeOutput, &activeSummary); err != nil {
+		t.Fatalf("dev-permission-list active output decode error = %v: %s", err, activeOutput)
+	}
+	if len(activeSummary.Permissions) != 0 {
+		t.Fatalf("revoked grant should not be active: %#v", activeSummary)
+	}
+	fullOutput, err := captureCLIOutput(t, "dev-permission-list", stateRoot)
+	if err != nil {
+		t.Fatalf("dev-permission-list full after revoke error = %v", err)
+	}
+	var fullSummary devPermissionSummary
+	if err := json.Unmarshal(fullOutput, &fullSummary); err != nil {
+		t.Fatalf("dev-permission-list full output decode error = %v: %s", err, fullOutput)
+	}
+	if len(fullSummary.Permissions) != 1 || fullSummary.Permissions[0].RevokedAt == nil {
+		t.Fatalf("full grant list should include revoked record: %#v", fullSummary)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-permission-revoke", stateRoot, "missing.permission"); !errors.Is(err, permissions.ErrGrantNotFound) {
+		t.Fatalf("dev-permission-revoke missing error = %v, want ErrGrantNotFound", err)
+	}
+	if _, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--keep-data"); err != nil {
+		t.Fatalf("dev-uninstall keep data error = %v", err)
+	}
+	uninstalledState := loadDevStateForTest(t, stateRoot)
+	if len(uninstalledState.Permissions.Records) != 0 {
+		t.Fatalf("permission grants remained after uninstall: %#v", uninstalledState.Permissions)
+	}
+}
+
 func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 	output, err := captureCLIOutput(t, "version")
 	if err != nil {
@@ -1208,6 +1340,44 @@ func addLifecycleSettingsToManifest(t *testing.T, filename string) {
 			"label":      "API token",
 			"secret_ref": "api_token",
 		}},
+	}
+	updated, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, append(updated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func addLifecyclePermissionBindingToManifest(t *testing.T, filename string) {
+	t.Helper()
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["capability_bindings"] = []map[string]any{{
+		"binding_id":             "demo",
+		"capability_id":          "example.capability.demo",
+		"min_capability_version": "1.0.0",
+		"required_permissions":   []string{"demo.execute"},
+	}}
+	methods, ok := doc["methods"].([]any)
+	if !ok || len(methods) == 0 {
+		t.Fatalf("manifest missing methods: %s", raw)
+	}
+	method, ok := methods[0].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest method has unexpected shape: %#v", methods[0])
+	}
+	method["route"] = map[string]any{
+		"kind":          "capability",
+		"binding_id":    "demo",
+		"target_method": "worker.echo",
 	}
 	updated, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

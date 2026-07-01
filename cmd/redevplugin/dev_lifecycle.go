@@ -16,6 +16,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -39,6 +40,7 @@ type devLifecycleState struct {
 	BrowserOrigins []browsersite.OriginRecord `json:"browser_origins,omitempty"`
 	Settings       settings.MemoryState       `json:"settings,omitempty"`
 	Secrets        devSecretState             `json:"secrets,omitempty"`
+	Permissions    permissions.MemoryState    `json:"permissions,omitempty"`
 	UpdatedAt      time.Time                  `json:"updated_at"`
 }
 
@@ -79,6 +81,18 @@ type devSecretSummary struct {
 	Bound            bool      `json:"bound"`
 	LastTestStatus   string    `json:"last_test_status,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type devPermissionSummary struct {
+	OK               bool                 `json:"ok"`
+	Action           string               `json:"action"`
+	StateRoot        string               `json:"state_root"`
+	PluginInstanceID string               `json:"plugin_instance_id"`
+	PluginID         string               `json:"plugin_id"`
+	Permission       permissions.Record   `json:"permission,omitempty"`
+	Permissions      []permissions.Record `json:"permissions,omitempty"`
+	ActiveOnly       bool                 `json:"active_only,omitempty"`
+	UpdatedAt        time.Time            `json:"updated_at"`
 }
 
 func devInstall(ctx context.Context, stateRoot string, packageFile string) error {
@@ -142,6 +156,7 @@ func devEnable(ctx context.Context, stateRoot string) error {
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
@@ -181,6 +196,7 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string, sandboxOri
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
@@ -220,6 +236,7 @@ func devDisable(ctx context.Context, stateRoot string) error {
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
@@ -247,6 +264,7 @@ func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error 
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
 	state.PackageFile = ""
 	state.UpdatedAt = time.Now().UTC()
 	if err := os.Remove(filepath.Join(harness.stateRoot, devPackageFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -306,6 +324,78 @@ func devSecretDelete(ctx context.Context, stateRoot string, secretRef string, sc
 	return saveAndWriteDevSecret(harness, state, "dev-secret-delete", req)
 }
 
+func devPermissionGrant(ctx context.Context, stateRoot string, permissionID string, grantedBy string) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(grantedBy) == "" {
+		grantedBy = "dev-cli"
+	}
+	record, err := harness.host.GrantPermission(ctx, host.GrantPermissionRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		PermissionID:     permissionID,
+		GrantedBy:        grantedBy,
+	})
+	if err != nil {
+		return err
+	}
+	state.Record = harness.registryStore.record()
+	return saveAndWriteDevPermission(harness, state, "dev-permission-grant", record)
+}
+
+func devPermissionRevoke(ctx context.Context, stateRoot string, permissionID string, reason string) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "dev-cli"
+	}
+	record, err := harness.host.RevokePermission(ctx, host.RevokePermissionRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		PermissionID:     permissionID,
+		RevokedBy:        "dev-cli",
+		Reason:           reason,
+	})
+	if err != nil {
+		return err
+	}
+	state.Record = harness.registryStore.record()
+	return saveAndWriteDevPermission(harness, state, "dev-permission-revoke", record)
+}
+
+func devPermissionList(ctx context.Context, stateRoot string, activeOnly bool) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	records, err := harness.host.ListPermissionGrants(ctx, host.ListPermissionGrantsRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		ActiveOnly:       activeOnly,
+	})
+	if err != nil {
+		return err
+	}
+	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
+	state.UpdatedAt = time.Now().UTC()
+	if err := saveDevState(harness.stateRoot, state); err != nil {
+		return err
+	}
+	return writeJSON(devPermissionSummary{
+		OK:               true,
+		Action:           "dev-permission-list",
+		StateRoot:        harness.stateRoot,
+		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginID:         state.Record.PluginID,
+		Permissions:      records,
+		ActiveOnly:       activeOnly,
+		UpdatedAt:        state.UpdatedAt,
+	})
+}
+
 func devStatus(stateRoot string) error {
 	stateRoot, err := normalizeDevStateRoot(stateRoot)
 	if err != nil {
@@ -321,11 +411,31 @@ func devStatus(stateRoot string) error {
 func saveAndWriteDevSecret(harness devHarness, state devLifecycleState, action string, req host.SecretBindRequest) error {
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
 	return writeDevSecret(action, harness.stateRoot, state, harness.secretStore.recordFor(req, state.UpdatedAt))
+}
+
+func saveAndWriteDevPermission(harness devHarness, state devLifecycleState, action string, record permissions.Record) error {
+	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
+	state.UpdatedAt = time.Now().UTC()
+	if err := saveDevState(harness.stateRoot, state); err != nil {
+		return err
+	}
+	return writeJSON(devPermissionSummary{
+		OK:               true,
+		Action:           action,
+		StateRoot:        harness.stateRoot,
+		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginID:         state.Record.PluginID,
+		Permission:       record,
+		UpdatedAt:        state.UpdatedAt,
+	})
 }
 
 func writeDevLifecycle(action string, stateRoot string, state devLifecycleState) error {
@@ -367,11 +477,13 @@ func writeDevSecret(action string, stateRoot string, state devLifecycleState, se
 }
 
 type devHarness struct {
-	stateRoot     string
-	host          *host.Host
-	browserSite   *devBrowserSiteStore
-	settingsStore *settings.MemoryStore
-	secretStore   *devSecretStore
+	stateRoot       string
+	host            *host.Host
+	registryStore   *devRegistryStore
+	browserSite     *devBrowserSiteStore
+	settingsStore   *settings.MemoryStore
+	secretStore     *devSecretStore
+	permissionStore *permissions.MemoryStore
 }
 
 func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifecycleState, error) {
@@ -405,20 +517,31 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 	browserSite := newDevBrowserSiteStore(state.BrowserOrigins)
 	settingsStore := settings.NewMemoryStoreFromState(state.Settings)
 	secretStore := newDevSecretStore(state.Secrets)
+	permissionStore := permissions.NewMemoryStoreFromState(state.Permissions)
+	registryStore := newDevRegistryStore(state.Record)
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
-		Registry:        newDevRegistryStore(state.Record),
+		Registry:        registryStore,
 		Assets:          assets,
 		Storage:         storageBroker,
 		BrowserSite:     browserSite,
 		Settings:        settingsStore,
 		Secrets:         secretStore,
+		Permissions:     permissionStore,
 	})
 	if err != nil {
 		return devHarness{}, devLifecycleState{}, err
 	}
-	return devHarness{stateRoot: stateRoot, host: h, browserSite: browserSite, settingsStore: settingsStore, secretStore: secretStore}, state, nil
+	return devHarness{
+		stateRoot:       stateRoot,
+		host:            h,
+		registryStore:   registryStore,
+		browserSite:     browserSite,
+		settingsStore:   settingsStore,
+		secretStore:     secretStore,
+		permissionStore: permissionStore,
+	}, state, nil
 }
 
 func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, error) {
@@ -434,6 +557,7 @@ func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, erro
 		BrowserSite:     browserSite,
 		Settings:        settings.NewMemoryStore(),
 		Secrets:         newDevSecretStore(devSecretState{}),
+		Permissions:     permissions.NewMemoryStore(),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -659,6 +783,15 @@ func (s *devRegistryStore) DeletePlugin(_ context.Context, pluginInstanceID stri
 	}
 	delete(s.records, pluginInstanceID)
 	return nil
+}
+
+func (s *devRegistryStore) record() registry.PluginRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, record := range s.records {
+		return record
+	}
+	return registry.PluginRecord{}
 }
 
 type devBrowserSiteStore struct {

@@ -131,19 +131,27 @@ capabilities.
   `dev-secret-bind <secret-ref> [user|environment]`,
   `dev-secret-test <secret-ref> [user|environment]`,
   `dev-secret-delete <secret-ref> [user|environment]`,
+  `dev-permission-grant <permission-id> [granted-by]`,
+  `dev-permission-revoke <permission-id> [reason]`,
+  `dev-permission-list [--active-only]`,
   `dev-uninstall [--delete-data|--keep-data]`, and `dev-status` commands replay
   the saved package through the real Host lifecycle APIs while keeping the
   copied package, filesystem storage root, manifest-level settings, redacted
-  secret-ref binding/test state, and sandbox browser-origin records under the
-  same state root. Dev secret commands never store secret plaintext; they only
-  persist the declared `secret_ref`, scope, bound flag, and test status that the
-  Host settings API can expose as redacted state. This gives generated plugins a local, auditable
+  secret-ref binding/test state, permission grant/revoke records, and sandbox
+  browser-origin records under the same state root. Dev secret commands never
+  store secret plaintext; they only persist the declared `secret_ref`, scope,
+  bound flag, and test status that the Host settings API can expose as redacted
+  state. Dev permission commands call the Host permission APIs, so policy
+  revisions and revoke epochs move exactly as they do in an embedded host
+  product. This gives generated plugins a local, auditable
   install -> enable -> open -> disable -> uninstall flow without importing any
   host-product internals. Uninstall removes the copied package; `--delete-data`
   also removes plugin storage namespaces, manifest settings, dev secret-ref
-  state, and marks browser-origin data cleanup complete, while `--keep-data`
-  marks declared plugin data retained and preserves redacted dev secret-ref
-  state for the local developer profile.
+  state, permission grants, and marks browser-origin data cleanup complete,
+  while `--keep-data` marks declared plugin data retained and preserves redacted
+  dev secret-ref state for the local developer profile. Permission grants are
+  removed on every uninstall, including `--keep-data`, because authorization is
+  tied to the installed plugin lifecycle rather than retained user data.
 - The browser demo under `demo/browser/` runs a real host page plus sandboxed
   iframe plugin page using the built `@floegence/redevplugin-ui` bridge package.
   Start it with `npm run demo:browser`, open the printed host URL, then exercise

@@ -136,6 +136,67 @@ func TestMemoryStoreExpirationAndDelete(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreStateRoundTrip(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
+	if _, err := store.Grant(context.Background(), GrantRequest{
+		PluginInstanceID: "plugin_b",
+		PermissionID:     "storage.write",
+		GrantedBy:        "dev",
+		Now:              now,
+		ExpiresAt:        expiresAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Grant(context.Background(), GrantRequest{
+		PluginInstanceID: "plugin_a",
+		PermissionID:     "network.http",
+		GrantedBy:        "dev",
+		Now:              now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Revoke(context.Background(), RevokeRequest{
+		PluginInstanceID: "plugin_b",
+		PermissionID:     "storage.write",
+		RevokedBy:        "reviewer",
+		Reason:           "scope changed",
+		Now:              now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := store.State()
+	if len(state.Records) != 2 ||
+		state.Records[0].PluginInstanceID != "plugin_a" ||
+		state.Records[1].PluginInstanceID != "plugin_b" ||
+		state.Records[1].ExpiresAt == nil ||
+		state.Records[1].RevokedAt == nil {
+		t.Fatalf("State() mismatch: %#v", state)
+	}
+
+	restored := NewMemoryStoreFromState(state)
+	records, err := restored.List(context.Background(), ListRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(records, state.Records) {
+		t.Fatalf("restored records mismatch: %#v want %#v", records, state.Records)
+	}
+	ok, missing, err := restored.IsGranted(context.Background(), CheckRequest{
+		PluginInstanceID: "plugin_a",
+		PermissionIDs:    []string{"network.http"},
+		Now:              now.Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || len(missing) != 0 {
+		t.Fatalf("restored IsGranted() = %v missing=%v", ok, missing)
+	}
+}
+
 func TestMemoryStoreRejectsInvalidRequests(t *testing.T) {
 	store := NewMemoryStore()
 	if _, err := store.Grant(context.Background(), GrantRequest{PluginInstanceID: "plugin_a"}); !errors.Is(err, ErrInvalidPermission) {

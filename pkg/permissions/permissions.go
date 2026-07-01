@@ -28,6 +28,10 @@ type Record struct {
 	RevokedReason    string     `json:"revoked_reason,omitempty"`
 }
 
+type MemoryState struct {
+	Records []Record `json:"records,omitempty"`
+}
+
 type GrantRequest struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
 	PermissionID     string    `json:"permission_id"`
@@ -76,6 +80,33 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{records: map[string]Record{}}
+}
+
+func NewMemoryStoreFromState(state MemoryState) *MemoryStore {
+	store := NewMemoryStore()
+	for _, record := range state.Records {
+		record.PluginInstanceID = normalizeID(record.PluginInstanceID)
+		record.PermissionID = normalizeID(record.PermissionID)
+		if record.PluginInstanceID == "" || record.PermissionID == "" {
+			continue
+		}
+		store.records[recordKey(record.PluginInstanceID, record.PermissionID)] = cloneRecord(record)
+	}
+	return store
+}
+
+func (s *MemoryStore) State() MemoryState {
+	if s == nil {
+		return MemoryState{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	records := make([]Record, 0, len(s.records))
+	for _, record := range s.records {
+		records = append(records, cloneRecord(record))
+	}
+	sortRecords(records)
+	return MemoryState{Records: records}
 }
 
 func (s *MemoryStore) Grant(_ context.Context, req GrantRequest) (Record, error) {
@@ -145,12 +176,7 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 		}
 		records = append(records, cloneRecord(record))
 	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].PluginInstanceID == records[j].PluginInstanceID {
-			return records[i].PermissionID < records[j].PermissionID
-		}
-		return records[i].PluginInstanceID < records[j].PluginInstanceID
-	})
+	sortRecords(records)
 	return records, nil
 }
 
@@ -240,4 +266,13 @@ func cloneRecord(record Record) Record {
 		record.RevokedAt = &revokedAt
 	}
 	return record
+}
+
+func sortRecords(records []Record) {
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].PluginInstanceID == records[j].PluginInstanceID {
+			return records[i].PermissionID < records[j].PermissionID
+		}
+		return records[i].PluginInstanceID < records[j].PluginInstanceID
+	})
 }
