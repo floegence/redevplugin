@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -2266,6 +2267,318 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 	if !deleteAudits.hasEvent("plugin.cleanup.executed") {
 		t.Fatalf("missing delete cleanup audit event: %#v", deleteAudits.events)
+	}
+}
+
+func TestDeleteRetainedDataRemovesRetainedStoragePayload(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		retainedData:   retainedRegistry,
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatalf("PutKV() error = %v", err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatalf("UninstallPlugin(retain) error = %v", err)
+	}
+	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retainedRecords) != 1 || retainedRecords[0].State != retaineddata.StateRetained {
+		t.Fatalf("retained records mismatch: %#v", retainedRecords)
+	}
+
+	deleted, err := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{RetainedID: retainedRecords[0].RetainedID})
+	if err != nil {
+		t.Fatalf("DeleteRetainedData() error = %v", err)
+	}
+	if deleted.State != retaineddata.StateDeleted || deleted.DeletedAt == nil {
+		t.Fatalf("deleted retained data mismatch: %#v", deleted)
+	}
+	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(namespaces) != 0 {
+		t.Fatalf("retained storage payload still present: %#v", namespaces)
+	}
+	if _, err := broker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+	}); !errors.Is(err, storage.ErrNamespaceNotFound) {
+		t.Fatalf("GetKV() after retained delete error = %v, want ErrNamespaceNotFound", err)
+	}
+	if !audits.hasEvent("plugin.retained_data.deleted") {
+		t.Fatalf("missing retained data delete audit event: %#v", audits.events)
+	}
+}
+
+func TestCleanupExpiredRetainedDataDeletesPayloadAndMarksFailures(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	broker := storage.NewMemoryBroker()
+	browserSite := browsersite.NewMemoryStore()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		browserSite:    browserSite,
+		retainedData:   retainedRegistry,
+	})
+
+	successPluginID := "plugini_retained_expired_success"
+	if err := broker.EnsureNamespace(ctx, storage.Namespace{
+		PluginInstanceID: successPluginID,
+		StoreID:          "cache",
+		Kind:             storage.StoreKV,
+		QuotaBytes:       1024,
+		SchemaVersion:    1,
+	}); err != nil {
+		t.Fatalf("EnsureNamespace(success) error = %v", err)
+	}
+	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: successPluginID,
+		StoreID:          "cache",
+		Key:              "retained/key",
+		Value:            []byte("value"),
+	}); err != nil {
+		t.Fatalf("PutKV(success) error = %v", err)
+	}
+	if err := broker.DeleteNamespace(ctx, successPluginID, false); err != nil {
+		t.Fatalf("DeleteNamespace(retain success) error = %v", err)
+	}
+	deleteAfter := now.Add(-time.Minute)
+	successRecord, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
+		RetainedID:             "retained_expired_success",
+		SourcePluginInstanceID: successPluginID,
+		PublisherID:            "example",
+		PluginID:               "com.example.storage",
+		Version:                "1.0.0",
+		PackageHash:            "sha256:package-success",
+		ManifestHash:           "sha256:manifest-success",
+		StorageRetained:        true,
+		DeleteAfter:            &deleteAfter,
+		Now:                    now.Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Retain(success) error = %v", err)
+	}
+
+	failedPluginID := "plugini_retained_expired_failed"
+	if _, err := browserSite.RegisterOrigin(ctx, browsersite.RegisterRequest{
+		PluginInstanceID:  failedPluginID,
+		PluginID:          "com.example.browser",
+		ActiveFingerprint: "sha256:browser",
+		Origin:            "https://plg-failed.sandbox.redevplugin.local",
+		OwnerSessionHash:  "session_failed",
+		Now:               now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("RegisterOrigin(failed) error = %v", err)
+	}
+	if _, err := browserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
+		PluginInstanceID: failedPluginID,
+		DeleteData:       false,
+		Reason:           "test_retain",
+		Now:              now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("CleanupPluginOrigins(retain failed) error = %v", err)
+	}
+	failedRecord, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
+		RetainedID:             "retained_expired_failed",
+		SourcePluginInstanceID: failedPluginID,
+		PublisherID:            "example",
+		PluginID:               "com.example.browser",
+		Version:                "1.0.0",
+		PackageHash:            "sha256:package-failed",
+		ManifestHash:           "sha256:manifest-failed",
+		BrowserSiteRetained:    true,
+		DeleteAfter:            &deleteAfter,
+		Now:                    now.Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Retain(failed) error = %v", err)
+	}
+
+	result, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now})
+	if !errors.Is(err, ErrRetainedDataCleanupFailed) {
+		t.Fatalf("CleanupExpiredRetainedData() error = %v, want ErrRetainedDataCleanupFailed", err)
+	}
+	if len(result.Deleted) != 1 || result.Deleted[0].RetainedID != successRecord.RetainedID || result.Deleted[0].State != retaineddata.StateDeleted {
+		t.Fatalf("deleted cleanup result mismatch: %#v", result.Deleted)
+	}
+	if len(result.Failed) != 1 || result.Failed[0].RetainedID != failedRecord.RetainedID || result.Failed[0].State != retaineddata.StateDeleteFailedRetryable {
+		t.Fatalf("failed cleanup result mismatch: %#v", result.Failed)
+	}
+	if namespaces, err := broker.ListNamespaces(ctx, successPluginID); err != nil {
+		t.Fatal(err)
+	} else if len(namespaces) != 0 {
+		t.Fatalf("expired retained storage still present: %#v", namespaces)
+	}
+	storedFailed, err := retainedRegistry.Get(ctx, failedRecord.RetainedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedFailed.State != retaineddata.StateDeleteFailedRetryable || storedFailed.DeleteError == "" {
+		t.Fatalf("failed retained record mismatch: %#v", storedFailed)
+	}
+	if !audits.hasEvent("plugin.retained_data.deleted") || !audits.hasEvent("plugin.retained_data.delete_failed") {
+		t.Fatalf("missing retained cleanup audit events: %#v", audits.events)
+	}
+}
+
+func TestCleanupExpiredRetainedDataMaxRecordsKeepsExpiredQueue(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
+	broker := storage.NewMemoryBroker()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		retainedData:   retainedRegistry,
+	})
+	deleteAfter := now.Add(-time.Minute)
+	for index, pluginInstanceID := range []string{"plugini_retained_queue_1", "plugini_retained_queue_2"} {
+		if err := broker.EnsureNamespace(ctx, storage.Namespace{
+			PluginInstanceID: pluginInstanceID,
+			StoreID:          "cache",
+			Kind:             storage.StoreKV,
+			QuotaBytes:       1024,
+			SchemaVersion:    1,
+		}); err != nil {
+			t.Fatalf("EnsureNamespace(%s) error = %v", pluginInstanceID, err)
+		}
+		if err := broker.DeleteNamespace(ctx, pluginInstanceID, false); err != nil {
+			t.Fatalf("DeleteNamespace(retain %s) error = %v", pluginInstanceID, err)
+		}
+		if _, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
+			RetainedID:             fmt.Sprintf("retained_queue_%d", index+1),
+			SourcePluginInstanceID: pluginInstanceID,
+			PublisherID:            "example",
+			PluginID:               "com.example.queue",
+			Version:                "1.0.0",
+			PackageHash:            fmt.Sprintf("sha256:package-queue-%d", index+1),
+			ManifestHash:           fmt.Sprintf("sha256:manifest-queue-%d", index+1),
+			StorageRetained:        true,
+			DeleteAfter:            &deleteAfter,
+			Now:                    now.Add(time.Duration(index-2) * time.Hour),
+		}); err != nil {
+			t.Fatalf("Retain(%s) error = %v", pluginInstanceID, err)
+		}
+	}
+
+	first, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now, MaxRecords: 1})
+	if err != nil {
+		t.Fatalf("CleanupExpiredRetainedData(first) error = %v", err)
+	}
+	if len(first.Deleted) != 1 || first.Deleted[0].RetainedID != "retained_queue_1" {
+		t.Fatalf("first cleanup result mismatch: %#v", first)
+	}
+	queued, err := retainedRegistry.Get(ctx, "retained_queue_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.State != retaineddata.StateExpired {
+		t.Fatalf("unprocessed retained record state = %s, want expired", queued.State)
+	}
+
+	second, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now.Add(time.Minute), MaxRecords: 1})
+	if err != nil {
+		t.Fatalf("CleanupExpiredRetainedData(second) error = %v", err)
+	}
+	if len(second.Deleted) != 1 || second.Deleted[0].RetainedID != "retained_queue_2" {
+		t.Fatalf("second cleanup result mismatch: %#v", second)
+	}
+}
+
+func TestDeleteRetainedDataRefusesActiveStoragePayload(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	broker := storage.NewMemoryBroker()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		retainedData:   retainedRegistry,
+	})
+	pluginInstanceID := "plugini_retained_reactivated"
+	namespace := storage.Namespace{
+		PluginInstanceID: pluginInstanceID,
+		StoreID:          "cache",
+		Kind:             storage.StoreKV,
+		QuotaBytes:       1024,
+		SchemaVersion:    1,
+	}
+	if err := broker.EnsureNamespace(ctx, namespace); err != nil {
+		t.Fatalf("EnsureNamespace(initial) error = %v", err)
+	}
+	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: pluginInstanceID,
+		StoreID:          "cache",
+		Key:              "active/key",
+		Value:            []byte("still-active"),
+	}); err != nil {
+		t.Fatalf("PutKV(initial) error = %v", err)
+	}
+	if err := broker.DeleteNamespace(ctx, pluginInstanceID, false); err != nil {
+		t.Fatalf("DeleteNamespace(retain) error = %v", err)
+	}
+	record, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
+		RetainedID:             "retained_reactivated",
+		SourcePluginInstanceID: pluginInstanceID,
+		PublisherID:            "example",
+		PluginID:               "com.example.reactivated",
+		Version:                "1.0.0",
+		PackageHash:            "sha256:package-reactivated",
+		ManifestHash:           "sha256:manifest-reactivated",
+		StorageRetained:        true,
+		Now:                    now.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Retain() error = %v", err)
+	}
+	if err := broker.EnsureNamespace(ctx, namespace); err != nil {
+		t.Fatalf("EnsureNamespace(reactivate) error = %v", err)
+	}
+
+	failed, err := h.DeleteRetainedData(ctx, DeleteRetainedDataRequest{RetainedID: record.RetainedID, Now: now})
+	if !errors.Is(err, ErrRetainedDataCleanupFailed) {
+		t.Fatalf("DeleteRetainedData() error = %v, want ErrRetainedDataCleanupFailed", err)
+	}
+	if failed.State != retaineddata.StateDeleteFailedRetryable || failed.DeleteError == "" {
+		t.Fatalf("failed retained record mismatch: %#v", failed)
+	}
+	value, err := broker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: pluginInstanceID,
+		StoreID:          "cache",
+		Key:              "active/key",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(active) error = %v", err)
+	}
+	if string(value.Value) != "still-active" {
+		t.Fatalf("active value changed: %q", string(value.Value))
 	}
 }
 

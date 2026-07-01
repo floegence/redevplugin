@@ -60,6 +60,8 @@ var (
 	ErrPluginDataArchiveRequired = errors.New("archive_ref or settings_archive_ref is required")
 	ErrPluginStorageNotDeclared  = errors.New("target plugin does not declare storage")
 	ErrPluginSettingsNotDeclared = errors.New("target plugin does not declare settings")
+	ErrRetainedDataCleanupFailed = errors.New("retained data cleanup failed")
+	ErrRetainedDataUnsafePayload = errors.New("retained data payload is not safe to delete")
 )
 
 type PolicyAdapter interface {
@@ -243,6 +245,24 @@ type UninstallRequest struct {
 	PluginInstanceID string
 	DeleteData       bool
 	Now              time.Time
+}
+
+type ListRetainedDataRequest = retaineddata.ListRequest
+
+type DeleteRetainedDataRequest struct {
+	RetainedID string    `json:"retained_id"`
+	Now        time.Time `json:"now,omitempty"`
+}
+
+type CleanupExpiredRetainedDataRequest struct {
+	Now         time.Time `json:"now,omitempty"`
+	RetryFailed bool      `json:"retry_failed,omitempty"`
+	MaxRecords  int       `json:"max_records,omitempty"`
+}
+
+type RetainedDataCleanupResult struct {
+	Deleted []retaineddata.Record `json:"deleted,omitempty"`
+	Failed  []retaineddata.Record `json:"failed,omitempty"`
 }
 
 type ExportDataRequest struct {
@@ -2285,6 +2305,89 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	return record, nil
 }
 
+func (h *Host) ListRetainedData(ctx context.Context, req ListRetainedDataRequest) ([]retaineddata.Record, error) {
+	if h.adapters.RetainedData == nil {
+		return nil, errors.New("retained data store is required")
+	}
+	return h.adapters.RetainedData.List(ctx, retaineddata.ListRequest(req))
+}
+
+func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataRequest) (retaineddata.Record, error) {
+	if h.adapters.RetainedData == nil {
+		return retaineddata.Record{}, errors.New("retained data store is required")
+	}
+	record, err := h.adapters.RetainedData.Get(ctx, req.RetainedID)
+	if err != nil {
+		return retaineddata.Record{}, err
+	}
+	return h.cleanupRetainedDataRecord(ctx, record, req.Now)
+}
+
+func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpiredRetainedDataRequest) (RetainedDataCleanupResult, error) {
+	if h.adapters.RetainedData == nil {
+		return RetainedDataCleanupResult{}, errors.New("retained data store is required")
+	}
+	now := lifecycleNow(req.Now)
+	expired, err := h.adapters.RetainedData.ExpireBefore(ctx, now)
+	if err != nil {
+		return RetainedDataCleanupResult{}, err
+	}
+	targets := make([]retaineddata.Record, 0, len(expired))
+	seen := map[string]struct{}{}
+	for _, record := range expired {
+		targets = append(targets, record)
+		seen[record.RetainedID] = struct{}{}
+	}
+	previouslyExpired, err := h.adapters.RetainedData.List(ctx, retaineddata.ListRequest{State: retaineddata.StateExpired})
+	if err != nil {
+		return RetainedDataCleanupResult{}, err
+	}
+	for _, record := range previouslyExpired {
+		if _, ok := seen[record.RetainedID]; ok {
+			continue
+		}
+		targets = append(targets, record)
+		seen[record.RetainedID] = struct{}{}
+	}
+	if req.RetryFailed {
+		failed, err := h.adapters.RetainedData.List(ctx, retaineddata.ListRequest{State: retaineddata.StateDeleteFailedRetryable})
+		if err != nil {
+			return RetainedDataCleanupResult{}, err
+		}
+		for _, record := range failed {
+			if _, ok := seen[record.RetainedID]; ok {
+				continue
+			}
+			targets = append(targets, record)
+			seen[record.RetainedID] = struct{}{}
+		}
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].RetainedAt.Equal(targets[j].RetainedAt) {
+			return targets[i].RetainedID < targets[j].RetainedID
+		}
+		return targets[i].RetainedAt.Before(targets[j].RetainedAt)
+	})
+	if req.MaxRecords > 0 && len(targets) > req.MaxRecords {
+		targets = targets[:req.MaxRecords]
+	}
+	result := RetainedDataCleanupResult{}
+	var cleanupErr error
+	for _, record := range targets {
+		finalRecord, err := h.cleanupRetainedDataRecord(ctx, record, now)
+		if err != nil {
+			result.Failed = append(result.Failed, finalRecord)
+			cleanupErr = errors.Join(cleanupErr, err)
+			continue
+		}
+		result.Deleted = append(result.Deleted, finalRecord)
+	}
+	if cleanupErr != nil {
+		return result, cleanupErr
+	}
+	return result, nil
+}
+
 func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (ExportDataResult, error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -3458,6 +3561,112 @@ func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registr
 		},
 	})
 	return !deleteData, nil
+}
+
+func (h *Host) cleanupRetainedDataRecord(ctx context.Context, record retaineddata.Record, now time.Time) (retaineddata.Record, error) {
+	now = lifecycleNow(now)
+	if record.State == retaineddata.StateDeleted || record.State == retaineddata.StateBound {
+		return record, nil
+	}
+	if err := h.deleteRetainedDataPayload(ctx, record, now); err != nil {
+		failed, markErr := h.adapters.RetainedData.MarkDeleteFailed(ctx, retaineddata.DeleteFailedRequest{
+			RetainedID:  record.RetainedID,
+			DeleteError: err.Error(),
+			Now:         now,
+		})
+		if markErr != nil {
+			err = fmt.Errorf("%w; failed to mark retained data delete failure: %v", err, markErr)
+			failed = record
+		}
+		h.reportRetainedDataCleanupFailure(ctx, record, err)
+		h.audit(ctx, AuditEvent{
+			Type:             "plugin.retained_data.delete_failed",
+			PluginID:         record.PluginID,
+			PluginInstanceID: record.SourcePluginInstanceID,
+			Details: map[string]any{
+				"retained_id":  record.RetainedID,
+				"delete_error": err.Error(),
+			},
+		})
+		return failed, fmt.Errorf("%w: %w", ErrRetainedDataCleanupFailed, err)
+	}
+	deleted, err := h.adapters.RetainedData.MarkDeleted(ctx, retaineddata.DeleteRequest{
+		RetainedID: record.RetainedID,
+		Now:        now,
+	})
+	if err != nil {
+		return retaineddata.Record{}, fmt.Errorf("%w: mark retained data deleted: %w", ErrRetainedDataCleanupFailed, err)
+	}
+	h.audit(ctx, AuditEvent{
+		Type:             "plugin.retained_data.deleted",
+		PluginID:         record.PluginID,
+		PluginInstanceID: record.SourcePluginInstanceID,
+		Details: map[string]any{
+			"retained_id":           deleted.RetainedID,
+			"storage_retained":      deleted.StorageRetained,
+			"settings_retained":     deleted.SettingsRetained,
+			"browser_site_retained": deleted.BrowserSiteRetained,
+		},
+	})
+	return deleted, nil
+}
+
+func (h *Host) deleteRetainedDataPayload(ctx context.Context, record retaineddata.Record, now time.Time) error {
+	var cleanupErr error
+	if record.StorageRetained {
+		if h.adapters.Storage == nil {
+			cleanupErr = errors.Join(cleanupErr, errors.New("storage broker is required for retained storage cleanup"))
+		} else if retainedDeleter, ok := h.adapters.Storage.(storage.RetainedDeleter); !ok {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("%w: storage broker does not support retained-only deletion", ErrRetainedDataUnsafePayload))
+		} else if err := retainedDeleter.DeleteRetainedNamespace(ctx, record.SourcePluginInstanceID); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained storage: %w", err))
+		}
+	}
+	if record.SettingsRetained {
+		if h.adapters.Settings == nil {
+			cleanupErr = errors.Join(cleanupErr, errors.New("settings store is required for retained settings cleanup"))
+		} else if err := h.adapters.Settings.Delete(ctx, settings.DeleteRequest{
+			PluginInstanceID: record.SourcePluginInstanceID,
+			DeleteData:       true,
+			RequireRetained:  true,
+			Now:              now,
+		}); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained settings: %w", err))
+		}
+	}
+	if record.BrowserSiteRetained {
+		if h.adapters.BrowserSite == nil {
+			cleanupErr = errors.Join(cleanupErr, errors.New("browser site store is required for retained browser site cleanup"))
+		} else if _, err := h.adapters.BrowserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
+			PluginInstanceID: record.SourcePluginInstanceID,
+			DeleteData:       true,
+			RequireRetained:  true,
+			Reason:           "retained_data_delete",
+			Now:              now,
+		}); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained browser site data: %w", err))
+		}
+	}
+	return cleanupErr
+}
+
+func (h *Host) reportRetainedDataCleanupFailure(ctx context.Context, record retaineddata.Record, err error) {
+	if h.adapters.Diagnostics == nil || err == nil {
+		return
+	}
+	_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+		Type:             "plugin.retained_data.delete_failed",
+		Severity:         "warning",
+		Message:          err.Error(),
+		PluginID:         record.PluginID,
+		PluginInstanceID: record.SourcePluginInstanceID,
+		Details: map[string]any{
+			"retained_id":           record.RetainedID,
+			"storage_retained":      record.StorageRetained,
+			"settings_retained":     record.SettingsRetained,
+			"browser_site_retained": record.BrowserSiteRetained,
+		},
+	})
 }
 
 func (h *Host) recordRetainedDataIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool, summary retainedDataSummary, now time.Time) (retaineddata.Record, error) {

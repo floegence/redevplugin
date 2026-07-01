@@ -899,6 +899,9 @@ test("platform client covers operation and data lifecycle routes", async () => {
   });
   fetch.push({ ok: true, data: { archive_ref: "archive/plugin_instance_1.zip", settings_archive_ref: "archive/plugin_instance_1.settings.json" } });
   fetch.push({ ok: true, data: { imported: true } });
+  fetch.push({ ok: true, data: { retained_data: [{ retained_id: "retained_1", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "retained" }] } });
+  fetch.push({ ok: true, data: { retained_id: "retained_1", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "deleted" } });
+  fetch.push({ ok: true, data: { deleted: [{ retained_id: "retained_2", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "deleted" }], failed: [] } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   const operations = await client.listOperations("plugin_instance_1");
@@ -910,12 +913,18 @@ test("platform client covers operation and data lifecycle routes", async () => {
     settings_archive_ref: exported.settings_archive_ref,
     delete_existing: true,
   });
+  const retained = await client.listRetainedData({ source_plugin_instance_id: "plugin_instance_1", state: "retained" });
+  const deleted = await client.deleteRetainedData("retained_1");
+  const cleanup = await client.cleanupExpiredRetainedData({ retry_failed: true, max_records: 10 });
 
   assert.equal(operations.operations?.[0]?.status, "running");
   assert.equal(canceled.status, "cancel_requested");
   assert.equal(exported.archive_ref, "archive/plugin_instance_1.zip");
   assert.equal(exported.settings_archive_ref, "archive/plugin_instance_1.settings.json");
   assert.equal(imported.imported, true);
+  assert.equal(retained.retained_data?.[0]?.retained_id, "retained_1");
+  assert.equal(deleted.state, "deleted");
+  assert.equal(cleanup.deleted?.[0]?.retained_id, "retained_2");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations?plugin_instance_id=plugin_instance_1");
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/operations/op%201/cancel");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { reason: "user canceled" });
@@ -928,6 +937,11 @@ test("platform client covers operation and data lifecycle routes", async () => {
     settings_archive_ref: "archive/plugin_instance_1.settings.json",
     delete_existing: true,
   });
+  assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id=plugin_instance_1&state=retained");
+  assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/retained-data/delete");
+  assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), { retained_id: "retained_1" });
+  assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/retained-data/cleanup-expired");
+  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { retry_failed: true, max_records: 10 });
 });
 
 test("platform client lists and invokes host-mediated intents", async () => {
@@ -988,6 +1002,27 @@ test("platform client maps dangerous intent confirmation requirement", async () 
   await assert.rejects(
     client.invokeIntent({ plugin_instance_id: "plugin_instance_1", intent_id: "example.danger", params: { target: "db" } }),
     (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_CONFIRMATION_REQUIRED" && err.message === "plugin method confirmation required",
+  );
+});
+
+test("platform client exposes retained cleanup partial result on failure", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: false,
+    error_code: "PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
+    error: "retained data cleanup failed",
+    data: {
+      deleted: [{ retained_id: "retained_deleted", source_plugin_instance_id: "plugin_instance_1", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "deleted" }],
+      failed: [{ retained_id: "retained_failed", source_plugin_instance_id: "plugin_instance_2", publisher_id: "example", plugin_id: "com.example.plugin", version: "1.0.0", package_hash: "sha256:p", manifest_hash: "sha256:m", state: "delete_failed_retryable" }],
+    },
+  });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.cleanupExpiredRetainedData({ retry_failed: true }),
+    (err) => err instanceof PluginBridgeError &&
+      err.errorCode === "PLUGIN_RETAINED_DATA_CLEANUP_FAILED" &&
+      (err.data as { failed?: Array<{ retained_id?: string }> }).failed?.[0]?.retained_id === "retained_failed",
   );
 });
 

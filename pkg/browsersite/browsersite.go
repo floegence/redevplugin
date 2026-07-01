@@ -36,6 +36,7 @@ type RegisterRequest struct {
 type CleanupRequest struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
 	DeleteData       bool      `json:"delete_data"`
+	RequireRetained  bool      `json:"require_retained,omitempty"`
 	Reason           string    `json:"reason,omitempty"`
 	Now              time.Time `json:"now,omitempty"`
 }
@@ -81,10 +82,11 @@ type Cleaner interface {
 }
 
 var (
-	ErrInvalidOrigin   = errors.New("browser site origin is invalid")
-	ErrCleanupFailed   = errors.New("browser site cleanup failed")
-	ErrCleanerRequired = errors.New("browser site cleaner is required")
-	ErrOriginNotFound  = errors.New("browser site origin not found")
+	ErrInvalidOrigin     = errors.New("browser site origin is invalid")
+	ErrCleanupFailed     = errors.New("browser site cleanup failed")
+	ErrCleanerRequired   = errors.New("browser site cleaner is required")
+	ErrOriginNotFound    = errors.New("browser site origin not found")
+	ErrOriginNotRetained = errors.New("browser site origin is not retained")
 )
 
 type MemoryStore struct {
@@ -194,6 +196,19 @@ func (s *MemoryStore) CleanupPluginOrigins(ctx context.Context, req CleanupReque
 	var missingCleanerErr error
 
 	s.mu.Lock()
+	if req.DeleteData && req.RequireRetained {
+		for _, record := range s.records {
+			if record.PluginInstanceID != pluginInstanceID {
+				continue
+			}
+			switch record.State {
+			case StateRetained, StateCleanupPending, StateCleanupFailed, StateCleanupComplete:
+			default:
+				s.mu.Unlock()
+				return CleanupResult{}, fmt.Errorf("%w: %s is %s", ErrOriginNotRetained, record.Origin, record.State)
+			}
+		}
+	}
 	for key, record := range s.records {
 		if record.PluginInstanceID != pluginInstanceID {
 			continue

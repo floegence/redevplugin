@@ -142,6 +142,33 @@ func (b *FileBroker) DeleteNamespace(ctx context.Context, pluginInstanceID strin
 	return nil
 }
 
+func (b *FileBroker) DeleteRetainedNamespace(ctx context.Context, pluginInstanceID string) error {
+	if b == nil {
+		return errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	records, err := b.listNamespacesLocked(pluginInstanceID)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.State != NamespaceRetained {
+			return fmt.Errorf("%w: %s/%s is %s", ErrNamespaceNotRetained, record.PluginInstanceID, record.StoreID, record.State)
+		}
+	}
+	return os.RemoveAll(b.pluginBasePath(pluginInstanceID))
+}
+
 func (b *FileBroker) ExportData(ctx context.Context, req ExportRequest) (string, error) {
 	if b == nil {
 		return "", errors.New("storage broker is nil")

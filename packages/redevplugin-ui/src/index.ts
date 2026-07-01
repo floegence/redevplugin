@@ -65,11 +65,13 @@ export type MessageEventLike = {
 
 export class PluginBridgeError extends Error {
   readonly errorCode: string;
+  readonly data?: unknown;
 
-  constructor(errorCode: string, message: string) {
+  constructor(errorCode: string, message: string, data?: unknown) {
     super(message);
     this.name = "PluginBridgeError";
     this.errorCode = errorCode;
+    this.data = data;
   }
 }
 
@@ -356,7 +358,9 @@ export type PluginTrustState = "bundled" | "verified" | "unsigned_local" | "untr
 
 export type PluginEnableState = "disabled" | "enabled" | "disabled_by_policy";
 
-export type PluginRetainedDataState = "none" | "retained" | "deleted" | "delete_failed_retryable";
+export type PluginRetainedDataRecordState = "retained" | "expired" | "bound" | "deleted" | "delete_failed_retryable";
+
+export type PluginRetainedDataState = "none" | PluginRetainedDataRecordState;
 
 export type PluginRecord = {
   plugin_instance_id: string;
@@ -597,6 +601,54 @@ export type PluginDataImportRequest = {
   delete_existing?: boolean;
 };
 
+export type PluginRetainedDataRecord = {
+  retained_id: string;
+  source_plugin_instance_id: string;
+  bound_plugin_instance_id?: string;
+  publisher_id: string;
+  plugin_id: string;
+  version: string;
+  package_hash: string;
+  manifest_hash: string;
+  state: PluginRetainedDataRecordState | string;
+  storage_retained?: boolean;
+  settings_retained?: boolean;
+  browser_site_retained?: boolean;
+  usage_bytes?: number;
+  delete_after?: string;
+  delete_error?: string;
+  metadata?: Record<string, string>;
+  retained_at?: string;
+  updated_at?: string;
+  bound_at?: string;
+  deleted_at?: string;
+  last_accessed_at?: string;
+  [key: string]: unknown;
+};
+
+export type PluginRetainedDataListOptions = {
+  publisher_id?: string;
+  plugin_id?: string;
+  source_plugin_instance_id?: string;
+  state?: PluginRetainedDataRecordState | string;
+};
+
+export type PluginRetainedDataList = {
+  retained_data?: PluginRetainedDataRecord[];
+  [key: string]: unknown;
+};
+
+export type PluginRetainedDataCleanupRequest = {
+  retry_failed?: boolean;
+  max_records?: number;
+};
+
+export type PluginRetainedDataCleanupResult = {
+  deleted?: PluginRetainedDataRecord[];
+  failed?: PluginRetainedDataRecord[];
+  [key: string]: unknown;
+};
+
 export type PluginSecretRefRequest = {
   plugin_instance_id: string;
   secret_ref: string;
@@ -758,6 +810,32 @@ export class PluginPlatformClient {
     return this.#postJSON("/_redevplugin/api/plugins/data/import", request);
   }
 
+  listRetainedData(options: PluginRetainedDataListOptions = {}): Promise<PluginRetainedDataList> {
+    const params = new URLSearchParams();
+    if (options.publisher_id) {
+      params.set("publisher_id", options.publisher_id);
+    }
+    if (options.plugin_id) {
+      params.set("plugin_id", options.plugin_id);
+    }
+    if (options.source_plugin_instance_id) {
+      params.set("source_plugin_instance_id", options.source_plugin_instance_id);
+    }
+    if (options.state) {
+      params.set("state", options.state);
+    }
+    const query = params.toString();
+    return this.#getJSON(`/_redevplugin/api/plugins/retained-data${query ? `?${query}` : ""}`);
+  }
+
+  deleteRetainedData(retainedId: string): Promise<PluginRetainedDataRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/retained-data/delete", { retained_id: retainedId });
+  }
+
+  cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest = {}): Promise<PluginRetainedDataCleanupResult> {
+    return this.#postJSON("/_redevplugin/api/plugins/retained-data/cleanup-expired", request);
+  }
+
   listPermissions(pluginInstanceId?: string, activeOnly?: boolean): Promise<PluginPermissionList> {
     const params = new URLSearchParams();
     if (pluginInstanceId) {
@@ -834,7 +912,7 @@ export class PluginPlatformClient {
 
 type HostEnvelope<T> =
   | { ok: true; data?: T }
-  | { ok: false; error?: string; error_code?: string };
+  | { ok: false; data?: unknown; error?: string; error_code?: string };
 
 export class PluginSurfaceHost {
   readonly bootstrap: PluginSurfaceHostBootstrap;
@@ -1168,7 +1246,7 @@ async function readHostEnvelope<T>(response: FetchResponseLike, fallbackCode: st
     if (errorCode === "PLUGIN_CONFIRMATION_REQUIRED") {
       throw new PluginConfirmationRequiredError(errorCode, message);
     }
-    throw new PluginBridgeError(errorCode, message);
+    throw new PluginBridgeError(errorCode, message, raw.data);
   }
   return raw.data as T;
 }

@@ -193,6 +193,45 @@ paths:
         $ref: "#/components/requestBodies/ImportDataRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/retained-data:
+    get:
+      operationId: listPluginRetainedData
+      parameters:
+        - name: publisher_id
+          in: query
+          schema: { type: string }
+        - name: plugin_id
+          in: query
+          schema: { type: string }
+        - name: source_plugin_instance_id
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema:
+            $ref: "#/components/schemas/RetainedDataState"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataListEnvelope" }
+  /_redevplugin/api/plugins/retained-data/delete:
+    post:
+      operationId: deletePluginRetainedData
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/DeleteRetainedDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+        "409": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+  /_redevplugin/api/plugins/retained-data/cleanup-expired:
+    post:
+      operationId: cleanupExpiredPluginRetainedData
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/CleanupExpiredRetainedDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataCleanupEnvelope" }
+        "409": { $ref: "#/components/responses/RetainedDataCleanupEnvelope" }
   /_redevplugin/api/plugins/permissions:
     get:
       operationId: listPluginPermissionGrants
@@ -368,6 +407,39 @@ components:
                 properties:
                   data:
                     $ref: "#/components/schemas/ConfirmResult"
+    RetainedDataListEnvelope:
+      description: Retained plugin data list response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RetainedDataList"
+    RetainedDataRecordEnvelope:
+      description: Retained plugin data record response. Error envelopes may include the failed record in data.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RetainedDataRecord"
+    RetainedDataCleanupEnvelope:
+      description: Retained plugin data cleanup response. Partial cleanup failures return ok=false with the same data shape.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RetainedDataCleanupResult"
   requestBodies:
     InstallRequest:
       required: true
@@ -459,6 +531,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ImportDataRequest"
+    DeleteRetainedDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeleteRetainedDataRequest"
+    CleanupExpiredRetainedDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CleanupExpiredRetainedDataRequest"
     GrantPermissionRequest:
       required: true
       content:
@@ -520,6 +604,7 @@ components:
         - PLUGIN_NETWORK_TARGET_DENIED
         - PLUGIN_RUNTIME_UNAVAILABLE
         - PLUGIN_CONTRACT_MISMATCH
+        - PLUGIN_RETAINED_DATA_CLEANUP_FAILED
     TrustState:
       type: string
       enum: [bundled, verified, unsigned_local, untrusted, needs_review, blocked_security]
@@ -683,6 +768,88 @@ components:
         archive_ref: { type: string, minLength: 1 }
         settings_archive_ref: { type: string, minLength: 1 }
         delete_existing: { type: boolean }
+    RetainedDataState:
+      type: string
+      enum: [retained, expired, bound, deleted, delete_failed_retryable]
+    RetainedDataRecord:
+      type: object
+      required:
+        - retained_id
+        - source_plugin_instance_id
+        - publisher_id
+        - plugin_id
+        - version
+        - package_hash
+        - manifest_hash
+        - state
+        - storage_retained
+        - settings_retained
+        - browser_site_retained
+        - retained_at
+        - updated_at
+      additionalProperties: false
+      properties:
+        retained_id: { type: string, minLength: 1 }
+        source_plugin_instance_id: { type: string, minLength: 1 }
+        bound_plugin_instance_id: { type: string }
+        publisher_id: { type: string, minLength: 1 }
+        plugin_id: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        package_hash: { type: string, minLength: 1 }
+        manifest_hash: { type: string, minLength: 1 }
+        state:
+          $ref: "#/components/schemas/RetainedDataState"
+        storage_retained: { type: boolean }
+        settings_retained: { type: boolean }
+        browser_site_retained: { type: boolean }
+        usage_bytes:
+          type: integer
+          minimum: 0
+        delete_after: { type: string, format: date-time }
+        delete_error: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        retained_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        bound_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time }
+        last_accessed_at: { type: string, format: date-time }
+    RetainedDataList:
+      type: object
+      required: [retained_data]
+      additionalProperties: false
+      properties:
+        retained_data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetainedDataRecord"
+    RetainedDataCleanupResult:
+      type: object
+      additionalProperties: false
+      properties:
+        deleted:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetainedDataRecord"
+        failed:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetainedDataRecord"
+    DeleteRetainedDataRequest:
+      type: object
+      required: [retained_id]
+      additionalProperties: false
+      properties:
+        retained_id: { type: string, minLength: 1 }
+    CleanupExpiredRetainedDataRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        retry_failed: { type: boolean }
+        max_records:
+          type: integer
+          minimum: 1
     GrantPermissionRequest:
       type: object
       required: [plugin_instance_id, permission_id]

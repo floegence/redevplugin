@@ -22,6 +22,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -39,6 +40,9 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
 		"POST /_redevplugin/api/plugins/rpc":                                         false,
 		"POST /_redevplugin/api/plugins/data/export":                                 false,
+		"GET /_redevplugin/api/plugins/retained-data":                                false,
+		"POST /_redevplugin/api/plugins/retained-data/delete":                        false,
+		"POST /_redevplugin/api/plugins/retained-data/cleanup-expired":               false,
 		"GET /_redevplugin/api/plugins/intents":                                      false,
 		"POST /_redevplugin/api/plugins/intents/invoke":                              false,
 		"GET /_redevplugin/api/plugins/platform/compatibility":                       false,
@@ -1356,6 +1360,119 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 		"archive_ref":        exported.ArchiveRef,
 		"delete_existing":    true,
 	})
+}
+
+func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
+	ctx := context.Background()
+	storageBroker := storage.NewMemoryBroker()
+	h := newHTTPTestHostWithStorage(t, storageBroker)
+	handler := Handler{Host: h}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
+		"trust_state":    "verified",
+	})
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if err := storageBroker.SetUsage(ctx, installed.PluginInstanceID, "db", 1024); err != nil {
+		t.Fatalf("SetUsage() error = %v", err)
+	}
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"delete_data":        false,
+	})
+
+	listed := getJSON[struct {
+		RetainedData []retaineddata.Record `json:"retained_data"`
+	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
+	if len(listed.RetainedData) != 1 || listed.RetainedData[0].State != retaineddata.StateRetained {
+		t.Fatalf("retained-data list mismatch: %#v", listed.RetainedData)
+	}
+	deleted := postJSON[retaineddata.Record](t, handler, "/_redevplugin/api/plugins/retained-data/delete", map[string]any{
+		"retained_id": listed.RetainedData[0].RetainedID,
+	})
+	if deleted.State != retaineddata.StateDeleted {
+		t.Fatalf("retained-data delete mismatch: %#v", deleted)
+	}
+	if namespaces, err := storageBroker.ListNamespaces(ctx, installed.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	} else if len(namespaces) != 0 {
+		t.Fatalf("retained storage still present after HTTP delete: %#v", namespaces)
+	}
+}
+
+func TestHandlerRetainedDataDeleteFailureReturnsCleanupCodeAndRecord(t *testing.T) {
+	ctx := context.Background()
+	storageBroker := storage.NewMemoryBroker()
+	h := newHTTPTestHostWithStorage(t, storageBroker)
+	handler := Handler{Host: h}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
+		"trust_state":    "verified",
+	})
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"delete_data":        false,
+	})
+	listed := getJSON[struct {
+		RetainedData []retaineddata.Record `json:"retained_data"`
+	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
+	if len(listed.RetainedData) != 1 {
+		t.Fatalf("retained-data list mismatch: %#v", listed.RetainedData)
+	}
+	if err := storageBroker.EnsureNamespace(ctx, storage.Namespace{
+		PluginInstanceID: installed.PluginInstanceID,
+		StoreID:          "db",
+		Kind:             storage.StoreSQLite,
+		QuotaBytes:       1024 * 1024,
+		SchemaVersion:    1,
+	}); err != nil {
+		t.Fatalf("EnsureNamespace(reactivate) error = %v", err)
+	}
+
+	reqBody, err := json.Marshal(map[string]any{"retained_id": listed.RetainedData[0].RetainedID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/retained-data/delete", bytes.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete retained data status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		OK        bool                `json:"ok"`
+		ErrorCode string              `json:"error_code"`
+		Data      retaineddata.Record `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrRetainedDataCleanupFailed) || envelope.Data.State != retaineddata.StateDeleteFailedRetryable {
+		t.Fatalf("cleanup failure envelope mismatch: %#v", envelope)
+	}
+}
+
+func TestHandlerCleanupExpiredRetainedDataRejectsInvalidMaxRecords(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/retained-data/cleanup-expired", bytes.NewBufferString(`{"max_records":0}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cleanup max_records status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) {
+		t.Fatalf("cleanup max_records envelope mismatch: %#v", envelope)
+	}
 }
 
 func TestHandlerDataExportImportSettingsArchive(t *testing.T) {

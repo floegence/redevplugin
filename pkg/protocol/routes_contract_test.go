@@ -72,7 +72,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	}
 	got := map[routeFixture]bool{}
 	for _, route := range requestBodies {
-		got[routeFixture{Method: route.Method, Path: route.Path}] = true
+		got[routeFixture(route)] = true
 	}
 	for _, route := range requiredJSONRequestBodyRoutes() {
 		if !got[route] {
@@ -95,6 +95,9 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"asset_ticket: { type: string, minLength: 1 }",
 		"ui_protocol_version: { const: plugin-ui-v1 }",
 		"scope: { type: string, enum: [user, environment] }",
+		"RetainedDataRecord:",
+		"RetainedDataCleanupResult:",
+		"PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)
@@ -198,6 +201,8 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/runtime/start"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/data/export"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/data/import"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/delete"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/grant"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/revoke"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/secrets/bind"},

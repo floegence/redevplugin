@@ -31,6 +31,7 @@ var (
 	ErrInvalidKVKey         = errors.New("storage kv key is invalid")
 	ErrInvalidSQLite        = errors.New("storage sqlite request is invalid")
 	ErrNamespaceNotFound    = errors.New("storage namespace not found")
+	ErrNamespaceNotRetained = errors.New("storage namespace is not retained")
 	ErrQuotaExceeded        = errors.New("storage quota exceeded")
 	ErrArchiveNotFound      = errors.New("storage archive not found")
 	ErrFileNotFound         = errors.New("storage file not found")
@@ -114,6 +115,10 @@ type SQLiteBroker interface {
 type Inspector interface {
 	ListNamespaces(ctx context.Context, pluginInstanceID string) ([]NamespaceRecord, error)
 	Usage(ctx context.Context, pluginInstanceID string, storeID string) (Usage, error)
+}
+
+type RetainedDeleter interface {
+	DeleteRetainedNamespace(ctx context.Context, pluginInstanceID string) error
 }
 
 type FileReadRequest struct {
@@ -352,6 +357,33 @@ func (b *MemoryBroker) DeleteNamespace(_ context.Context, pluginInstanceID strin
 		record.UpdatedAt = now
 		record.RetainedAt = &now
 		b.namespaces[key] = record
+	}
+	return nil
+}
+
+func (b *MemoryBroker) DeleteRetainedNamespace(_ context.Context, pluginInstanceID string) error {
+	if b == nil {
+		return errors.New("storage broker is nil")
+	}
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidNamespace)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for key, record := range b.namespaces {
+		if key.pluginInstanceID == pluginInstanceID && record.State != NamespaceRetained {
+			return fmt.Errorf("%w: %s/%s is %s", ErrNamespaceNotRetained, record.PluginInstanceID, record.StoreID, record.State)
+		}
+	}
+	for key := range b.namespaces {
+		if key.pluginInstanceID != pluginInstanceID {
+			continue
+		}
+		delete(b.namespaces, key)
+		delete(b.kv, key)
 	}
 	return nil
 }

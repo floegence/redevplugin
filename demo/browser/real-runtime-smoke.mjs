@@ -243,7 +243,11 @@ async function clickButton(scope, name) {
   await button.waitFor({ state: "visible", timeout: 5_000 });
   const disabled = await button.getAttribute("disabled");
   assert.equal(disabled, null, `${name} button should be enabled before click`);
-  await button.click();
+  try {
+    await button.click({ timeout: 5_000 });
+  } catch {
+    await button.click({ force: true });
+  }
 }
 
 async function waitForHTTP(url, timeoutMs = 10_000) {

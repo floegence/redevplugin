@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -74,6 +75,15 @@ type disableRequest struct {
 type uninstallRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id"`
 	DeleteData       bool   `json:"delete_data"`
+}
+
+type deleteRetainedDataRequest struct {
+	RetainedID string `json:"retained_id"`
+}
+
+type cleanupExpiredRetainedDataRequest struct {
+	RetryFailed bool `json:"retry_failed,omitempty"`
+	MaxRecords  *int `json:"max_records,omitempty"`
 }
 
 type openSurfaceRequest struct {
@@ -239,6 +249,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleExportData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/data/import":
 		h.handleImportData(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/retained-data":
+		h.handleListRetainedData(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/delete":
+		h.handleDeleteRetainedData(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/cleanup-expired":
+		h.handleCleanupExpiredRetainedData(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/permissions":
 		h.handleListPermissions(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/permissions/grant":
@@ -332,6 +348,9 @@ func RouteSet() []Route {
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/stop"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/import"},
+		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/retained-data"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/delete"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/permissions"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/grant"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/revoke"},
@@ -851,6 +870,75 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"imported": true}})
+}
+
+func (h Handler) handleListRetainedData(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	records, err := h.Host.ListRetainedData(r.Context(), host.ListRetainedDataRequest{
+		PublisherID:            strings.TrimSpace(r.URL.Query().Get("publisher_id")),
+		PluginID:               strings.TrimSpace(r.URL.Query().Get("plugin_id")),
+		SourcePluginInstanceID: strings.TrimSpace(r.URL.Query().Get("source_plugin_instance_id")),
+		State:                  retaineddata.State(strings.TrimSpace(r.URL.Query().Get("state"))),
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"retained_data": records}})
+}
+
+func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req deleteRetainedDataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.DeleteRetainedData(r.Context(), host.DeleteRetainedDataRequest{RetainedID: req.RetainedID})
+	if err != nil {
+		envelope := Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))}
+		if record.RetainedID != "" {
+			envelope.Data = record
+		}
+		WriteJSON(w, httpStatusForDataLifecycleError(err), envelope)
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleCleanupExpiredRetainedData(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req cleanupExpiredRetainedDataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	maxRecords := 0
+	if req.MaxRecords != nil {
+		if *req.MaxRecords < 1 {
+			WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "max_records must be at least 1 when provided", ErrorCode: string(security.ErrInvalidRequest)})
+			return
+		}
+		maxRecords = *req.MaxRecords
+	}
+	result, err := h.Host.CleanupExpiredRetainedData(r.Context(), host.CleanupExpiredRetainedDataRequest{
+		RetryFailed: req.RetryFailed,
+		MaxRecords:  maxRecords,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Data: result, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
 }
 
 func (h Handler) handleListPermissions(w http.ResponseWriter, r *http.Request) {
@@ -1602,7 +1690,9 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+	case errors.Is(err, host.ErrRetainedDataCleanupFailed):
+		return security.ErrRetainedDataCleanupFailed
+	case errors.Is(err, retaineddata.ErrNotFound), errors.Is(err, retaineddata.ErrInvalidRecord), errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
 		return security.ErrInvalidRequest
 	default:
 		return security.ErrPermissionDenied
@@ -1701,7 +1791,9 @@ func httpStatusForDataLifecycleError(err error) int {
 	switch {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
-	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+	case errors.Is(err, host.ErrRetainedDataCleanupFailed):
+		return http.StatusConflict
+	case errors.Is(err, retaineddata.ErrNotFound), errors.Is(err, retaineddata.ErrInvalidRecord), errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
 		return http.StatusBadRequest
 	default:
 		return http.StatusForbidden

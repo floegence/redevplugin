@@ -35,6 +35,7 @@ var (
 	ErrNotDeclared     = errors.New("plugin settings are not declared")
 	ErrInvalidSetting  = errors.New("plugin setting is invalid")
 	ErrArchiveNotFound = errors.New("plugin settings archive not found")
+	ErrNotRetained     = errors.New("plugin settings are not retained")
 )
 
 type EnsureRequest struct {
@@ -64,6 +65,7 @@ type MarkSecretRequest struct {
 type DeleteRequest struct {
 	PluginInstanceID string
 	DeleteData       bool
+	RequireRetained  bool
 	Now              time.Time
 }
 
@@ -345,6 +347,9 @@ func (s *MemoryStore) Delete(_ context.Context, req DeleteRequest) error {
 		return nil
 	}
 	if req.DeleteData {
+		if req.RequireRetained && record.State != StateRetained {
+			return fmt.Errorf("%w: settings state is %s", ErrNotRetained, record.State)
+		}
 		delete(s.records, pluginInstanceID)
 		return nil
 	}

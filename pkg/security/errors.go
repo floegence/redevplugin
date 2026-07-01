@@ -16,4 +16,5 @@ const (
 	ErrContractMismatch            ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
 	ErrTrustVerificationRequired   ErrorCode = "PLUGIN_TRUST_VERIFICATION_REQUIRED"
 	ErrTrustVerificationInvalid    ErrorCode = "PLUGIN_TRUST_VERIFICATION_INVALID"
+	ErrRetainedDataCleanupFailed   ErrorCode = "PLUGIN_RETAINED_DATA_CLEANUP_FAILED"
 )
