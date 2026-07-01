@@ -19,8 +19,12 @@ const client = new PluginBridgeClient({ ...bootstrap, parentOrigin });
 const status = document.querySelector("#plugin-status");
 const fetchButton = document.querySelector("#weather-fetch");
 const compareButton = document.querySelector("#weather-compare");
+const detectButton = document.querySelector("#weather-detect");
 const locationInput = document.querySelector("#weather-location");
 const savedLocations = document.querySelector("#saved-locations");
+const detectedLocation = document.querySelector("#detected-location");
+const detectedConfidence = document.querySelector("#detected-confidence");
+const detectedCoordinates = document.querySelector("#detected-coordinates");
 const place = document.querySelector("#weather-place");
 const temp = document.querySelector("#weather-temp");
 const condition = document.querySelector("#weather-condition");
@@ -68,6 +72,15 @@ compareButton.addEventListener("click", async () => {
   await callPlugin("weather.saved.compare", {});
 });
 
+detectButton.addEventListener("click", async () => {
+  const detected = await callPlugin("weather.location.detect", {});
+  const location = detected?.data?.location ?? detected?.location;
+  if (location) {
+    locationInput.value = location;
+    await callPlugin("weather.fetch", { location });
+  }
+});
+
 locationInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -79,7 +92,9 @@ async function loadSavedLocation() {
   const response = await callPlugin("weather.location.get", {});
   const location = response?.data?.location ?? response?.location ?? "San Francisco";
   const locations = response?.data?.saved_locations ?? response?.saved_locations ?? [location];
+  const detected = response?.data?.detected_locations ?? response?.detected_locations ?? [];
   renderSavedLocations(locations);
+  renderDetectedLocations(detected);
   locationInput.value = location;
   await callPlugin("weather.fetch", { location });
 }
@@ -95,11 +110,17 @@ async function callPlugin(method, payload) {
     if (Array.isArray(data?.saved_locations)) {
       renderSavedLocations(data.saved_locations);
     }
+    if (Array.isArray(data?.detected_locations)) {
+      renderDetectedLocations(data.detected_locations);
+    }
     if (Array.isArray(data?.comparisons)) {
       renderComparisons(data.comparisons);
     }
     if (data?.location && method !== "weather.fetch") {
       place.textContent = data.location;
+    }
+    if (method === "weather.location.detect") {
+      renderDetectedLocation(data);
     }
     status.textContent = "ready";
     writeResult({ method, response });
@@ -149,6 +170,9 @@ function renderWeather(data) {
     return item;
   }));
   renderNetworkHistory(data.network_history ?? []);
+  if (Array.isArray(data.detected_locations)) {
+    renderDetectedLocations(data.detected_locations);
+  }
   forecast.replaceChildren(...parsed.forecast.map((day) => {
     const item = document.createElement("div");
     item.innerHTML = `<strong>${escapeHTML(day.day)}</strong><span>${Number(day.high_c)}°/${Number(day.low_c)}°</span><small>${escapeHTML(day.condition)} · ${Number(day.precipitation_percent ?? 0)}% rain</small>`;
@@ -159,6 +183,19 @@ function renderWeather(data) {
     item.innerHTML = `<strong>${escapeHTML(point.hour)}</strong><span>${Number(point.temperature_c)}°</span><small>${escapeHTML(point.condition)} · ${Number(point.wind_kph)} kph</small>`;
     return item;
   }));
+}
+
+function renderDetectedLocation(data) {
+  detectedLocation.textContent = `${data.location ?? "Unknown"} · ${data.source ?? "network geolocation broker"}`;
+  detectedConfidence.textContent = `${Math.round(Number(data.confidence ?? 0) * 100)}%`;
+  detectedCoordinates.textContent = `${Number(data.latitude ?? 0).toFixed(3)}, ${Number(data.longitude ?? 0).toFixed(3)}`;
+}
+
+function renderDetectedLocations(locations) {
+  if (!locations.length) {
+    return;
+  }
+  renderDetectedLocation(locations[0]);
 }
 
 function renderSavedLocations(locations) {

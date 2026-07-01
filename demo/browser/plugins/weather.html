@@ -18,10 +18,26 @@
 
       <div id="weather-form" class="weather-search">
         <input id="weather-location" autocomplete="off" placeholder="City or region" />
+        <button id="weather-detect" type="button" class="secondary-button">Detect location</button>
         <button id="weather-fetch" type="button">Fetch</button>
         <button id="weather-compare" type="button" class="secondary-button">Compare saved</button>
       </div>
       <div id="saved-locations" class="saved-locations" aria-label="Saved weather locations"></div>
+
+      <section class="detected-location-panel" aria-label="Detected location state">
+        <div>
+          <span class="metric-label">detected</span>
+          <strong id="detected-location">waiting</strong>
+        </div>
+        <div>
+          <span class="metric-label">confidence</span>
+          <strong id="detected-confidence">--</strong>
+        </div>
+        <div>
+          <span class="metric-label">coordinates</span>
+          <strong id="detected-coordinates">--</strong>
+        </div>
+      </section>
 
       <section class="weather-card" aria-label="Parsed weather result">
         <div>

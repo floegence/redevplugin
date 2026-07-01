@@ -2,7 +2,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createWeatherAPIPayload } from "./demo-platform.mjs";
+import { createWeatherAPIPayload, createWeatherGeolocationPayload } from "./demo-platform.mjs";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const extraPluginRoot = process.env.EXTRA_PLUGIN_ROOT ? resolve(process.env.EXTRA_PLUGIN_ROOT) : "";
@@ -31,6 +31,10 @@ function serveStatic(label, request, response) {
   }
   if (requestURL.pathname === "/demo/weather-api/v1/forecast") {
     serveWeatherAPI(requestURL, response);
+    return;
+  }
+  if (requestURL.pathname === "/demo/weather-api/v1/geolocate") {
+    serveWeatherGeolocationAPI(requestURL, response);
     return;
   }
   let pathname = decodeURIComponent(requestURL.pathname);
@@ -120,6 +124,18 @@ function serveWeatherAPI(requestURL, response) {
     "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
     "X-Demo-Weather-Fetch": Number.isFinite(fetchCount) && fetchCount % 2 === 0 ? "hit" : "miss",
+    "X-ReDevPlugin-Demo-Origin": "host-network-broker",
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function serveWeatherGeolocationAPI(requestURL, response) {
+  const fetchCount = Number(requestURL.searchParams.get("fetch_count") ?? 1);
+  const payload = createWeatherGeolocationPayload(fetchCount);
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Demo-Weather-Geolocation": Number.isFinite(fetchCount) && fetchCount % 2 === 0 ? "browser-hint" : "geoip",
     "X-ReDevPlugin-Demo-Origin": "host-network-broker",
   });
   response.end(JSON.stringify(payload));

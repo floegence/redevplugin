@@ -119,6 +119,14 @@ try {
   await expectText(gameFrame.locator("#energy"), "%");
   await expectText(gameFrame.locator("#game-event-feed"), "power-up");
   await expectText(gameFrame.locator("#mission-title"), "Break the front line");
+  await gameFrame.getByRole("button", { name: "Storm challenge" }).click();
+  await expectText(gameFrame.locator("#challenge-mode"), "storm");
+  await expectText(gameFrame.locator("#storm-wave"), "1");
+  await expectText(gameFrame.locator("#game-event-feed"), "storm challenge opened");
+  await gameFrame.getByRole("button", { name: "Bank storm" }).click();
+  await expectText(gameFrame.locator("#plugin-result"), "game.challenge.report");
+  await expectText(gameFrame.locator("#plugin-result"), "game/challenges/history");
+  await expectText(gameFrame.locator("#challenge-list"), "wave 1");
   await gameFrame.getByRole("button", { name: "Reset" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "\"reset\": true");
   await gameFrame.getByRole("button", { name: "Power-up" }).click();
@@ -137,7 +145,7 @@ try {
   await gameFrame.getByRole("button", { name: "Load snapshot" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "game.snapshot.load");
   await expectText(gameFrame.locator("#plugin-result"), "game/snapshots");
-  await expectText(page.locator("#rpc-count"), "5");
+  await expectText(page.locator("#rpc-count"), "6");
 
   await page.getByRole("button", { name: "Schedule planner" }).click();
   await expectText(page.locator("#handshake-count"), "1");
@@ -150,6 +158,7 @@ try {
   await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 1");
   await expectText(scheduleFrame.locator("#schedule-storage-usage"), "KiB");
   await expectText(scheduleFrame.locator("#schedule-transaction"), "sqlite-demo");
+  await expectText(scheduleFrame.locator("#schedule-sql-preview"), "SELECT * FROM schedule_items");
   await expectText(scheduleFrame.locator("#schedule-tag-cloud"), "team");
   await expectText(scheduleFrame.locator("#schedule-timeline"), "Platform standup");
   await scheduleFrame.locator("#schedule-status").selectOption("open");
@@ -158,6 +167,7 @@ try {
   await scheduleFrame.locator("#schedule-tag").fill("qa");
   await scheduleFrame.locator("#schedule-priority").selectOption("high");
   await scheduleFrame.locator("#schedule-duration").fill("55");
+  await scheduleFrame.locator("#schedule-notes").fill("Exercise notes persistence through the demo SQLite broker.");
   await scheduleFrame.getByRole("button", { name: "Add" }).click();
   await expectText(scheduleFrame.locator("#schedule-list"), "Browser QA review");
   await expectText(scheduleFrame.locator("#schedule-count"), "3");
@@ -184,10 +194,15 @@ try {
   await expectText(scheduleFrame.locator("#schedule-count"), "13");
   await expectText(scheduleFrame.locator("#schedule-journal"), "bulk_plan");
   await expectText(scheduleFrame.locator("#schedule-tag-cloud"), "runtime");
+  await scheduleFrame.getByRole("button", { name: "Backup" }).click();
+  await expectText(scheduleFrame.locator("#backup-count"), "1 snapshots");
+  await expectText(scheduleFrame.locator("#backup-list"), "schedule/snapshots");
+  await expectText(scheduleFrame.locator("#schedule-transaction"), "backup");
+  await expectText(scheduleFrame.locator("#schedule-sql-preview"), "schedule_backups");
   await scheduleFrame.getByRole("button", { name: "Archive done" }).click();
   await expectText(scheduleFrame.locator("#schedule-count"), "11");
   await expectText(scheduleFrame.locator("#schedule-journal"), "archive_done");
-  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 6");
+  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 7");
   await page.reload({ waitUntil: "load" });
   await expectText(page.locator("#host-status"), "listening");
   await expectText(page.locator("#handshake-count"), "1");
@@ -198,7 +213,7 @@ try {
   await expectMissingText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
   await expectText(reloadedScheduleFrame.locator("#schedule-count"), "11");
   await expectText(reloadedScheduleFrame.locator("#schedule-storage-source"), "host storage broker");
-  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 6");
+  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 7");
   await expectText(reloadedScheduleFrame.locator("#schedule-journal"), "archive_done");
 
   await page.getByRole("button", { name: "Weather console" }).click();
@@ -207,6 +222,11 @@ try {
   await expectText(weatherFrame.locator("#plugin-status"), "ready");
   await expectText(weatherFrame.locator("#weather-place"), "San Francisco");
   await expectText(weatherFrame.locator("#saved-locations"), "Shanghai");
+  await weatherFrame.getByRole("button", { name: "Detect location" }).click();
+  await expectText(weatherFrame.locator("#detected-location"), "network");
+  await expectText(weatherFrame.locator("#detected-confidence"), "%");
+  await expectText(weatherFrame.locator("#detected-coordinates"), ".");
+  await expectText(weatherFrame.locator("#network-history"), "GET /v1/geolocate");
   await weatherFrame.locator("#weather-location").fill("Shanghai");
   await weatherFrame.getByRole("button", { name: "Fetch" }).click();
   await expectText(weatherFrame.locator("#weather-place"), "Shanghai");
@@ -226,7 +246,7 @@ try {
   await expectText(weatherFrame.locator("#plugin-result"), "weather.fetch");
   await expectText(weatherFrame.locator("#plugin-result"), "api.weather.example");
   await weatherFrame.getByRole("button", { name: "Compare saved" }).click();
-  await expectText(weatherFrame.locator("#weather-compare-count"), "3 locations");
+  await expectText(weatherFrame.locator("#weather-compare-count"), "4 locations");
   await expectText(weatherFrame.locator("#weather-compare-grid"), "San Francisco");
   await expectText(weatherFrame.locator("#weather-compare-grid"), "Shanghai");
   await expectText(weatherFrame.locator("#weather-compare-grid"), "London");

@@ -26,20 +26,25 @@ const levelEl = document.querySelector("#level");
 const comboEl = document.querySelector("#combo");
 const bricksClearedEl = document.querySelector("#bricks-cleared");
 const speedEl = document.querySelector("#speed");
+const stormLevelEl = document.querySelector("#storm-level");
+const stormWaveEl = document.querySelector("#storm-wave");
 const energyEl = document.querySelector("#energy");
 const livesEl = document.querySelector("#lives");
 const powerupsEl = document.querySelector("#powerups");
 const elapsedEl = document.querySelector("#elapsed");
+const challengeModeEl = document.querySelector("#challenge-mode");
 const leaderboard = document.querySelector("#leaderboard");
 const toggleButton = document.querySelector("#game-toggle");
 const resetButton = document.querySelector("#game-reset");
 const boostButton = document.querySelector("#game-boost");
 const powerupButton = document.querySelector("#game-powerup");
+const challengeButton = document.querySelector("#game-challenge");
 const runSyncButton = document.querySelector("#game-run-sync");
 const saveButton = document.querySelector("#game-save");
 const snapshotSaveButton = document.querySelector("#game-snapshot-save");
 const snapshotLoadButton = document.querySelector("#game-snapshot-load");
 const snapshotList = document.querySelector("#snapshot-list");
+const challengeList = document.querySelector("#challenge-list");
 const missionTitle = document.querySelector("#mission-title");
 const missionDetail = document.querySelector("#mission-detail");
 const heatFill = document.querySelector("#heat-fill");
@@ -62,12 +67,18 @@ let shake = 0;
 let paddleX = 360;
 let startedAt = performance.now();
 let nextMission = "clear";
+let challengeActive = false;
+let stormLevel = 1;
+let stormWave = 0;
+let stormTimer = 0;
 const ball = { x: 180, y: 80, vx: 230, vy: 190, radius: 13 };
 let bricks = createBricks(level);
 let powerups = createPowerups(level);
+let hazards = createHazards(stormLevel);
 const particles = [];
 const trails = [];
 const events = [];
+const stars = createStars(90);
 
 client.onLifecycle((event) => {
   status.textContent = event.type;
@@ -106,6 +117,36 @@ powerupButton.addEventListener("click", () => {
     x: paddleX,
     y: canvas.height - 70,
   });
+});
+
+challengeButton.addEventListener("click", async () => {
+  if (!challengeActive) {
+    challengeActive = true;
+    stormWave = Math.max(1, stormWave);
+    stormTimer = 0;
+    hazards = createHazards(stormLevel + stormWave);
+    speed = Math.min(2.2, speed + 0.18);
+    peakSpeed = Math.max(peakSpeed, speed);
+    rememberEvent("storm challenge opened", "violet");
+    challengeButton.textContent = "Bank storm";
+    updateHUD();
+    return;
+  }
+  await callPlugin("game.challenge.report", {
+    id: `challenge-${Date.now().toString(36)}`,
+    score,
+    storm_level: stormLevel,
+    waves_survived: stormWave,
+    max_combo: combo,
+    bricks_cleared: bricksCleared,
+    powerups_collected: powerupsCollected,
+    peak_speed: peakSpeed,
+    duration_ms: Math.round(performance.now() - startedAt),
+    completed: stormWave >= 3,
+  });
+  challengeActive = false;
+  challengeButton.textContent = "Storm challenge";
+  updateHUD();
 });
 
 runSyncButton.addEventListener("click", async () => {
@@ -159,6 +200,8 @@ function tick(now) {
 
 function update(dt) {
   energy = Math.min(100, energy + dt * 4);
+  updateStorm(dt);
+  updateStars(dt);
   trails.push({ x: ball.x, y: ball.y, radius: ball.radius, life: 0.9 });
   if (trails.length > 28) {
     trails.shift();
@@ -222,10 +265,28 @@ function update(dt) {
       collectPowerup(powerup);
     }
   }
+  for (const hazard of hazards) {
+    hazard.x += hazard.vx * dt;
+    hazard.y += Math.sin(performance.now() / 300 + hazard.phase) * dt * 18;
+    if (hazard.x < -hazard.radius) {
+      hazard.x = canvas.width + hazard.radius;
+      hazard.y = 72 + Math.random() * 260;
+    }
+    if (challengeActive && Math.hypot(ball.x - hazard.x, ball.y - hazard.y) < ball.radius + hazard.radius) {
+      ball.vx *= -1.05;
+      ball.vy *= -1.05;
+      energy = Math.max(0, energy - 12);
+      combo = Math.max(0, combo - 1);
+      shake = 12;
+      spawnParticles(ball.x, ball.y, "#fb7185", 18);
+      rememberEvent("storm hazard deflected", "red");
+    }
+  }
   if (bricks.every((brick) => brick.hit)) {
     level += 1;
     bricks = createBricks(level);
     powerups = createPowerups(level);
+    hazards = createHazards(stormLevel + stormWave);
     resetBall();
     speed = Math.min(2.2, speed + 0.1);
     peakSpeed = Math.max(peakSpeed, speed);
@@ -250,6 +311,12 @@ function draw() {
   gradient.addColorStop(1, "#172554");
   context.fillStyle = gradient;
   context.fillRect(0, 0, canvas.width, canvas.height);
+  for (const star of stars) {
+    context.globalAlpha = star.alpha;
+    context.fillStyle = challengeActive ? "#fef08a" : "#67e8f9";
+    context.fillRect(star.x, star.y, star.size, star.size);
+  }
+  context.globalAlpha = 1;
   context.fillStyle = "rgba(125,211,252,0.08)";
   for (let x = -40; x < canvas.width; x += 42) {
     context.fillRect(x + Math.sin(performance.now() / 600 + x) * 3, 0, 1, canvas.height);
@@ -281,6 +348,22 @@ function draw() {
     roundRect(context, -14, -14, 28, 28, 8);
     context.fill();
     context.restore();
+  }
+  for (const hazard of hazards) {
+    if (!challengeActive) {
+      continue;
+    }
+    const hazardGlow = context.createRadialGradient(hazard.x, hazard.y, 2, hazard.x, hazard.y, hazard.radius + 18);
+    hazardGlow.addColorStop(0, "rgba(251,113,133,0.95)");
+    hazardGlow.addColorStop(0.5, "rgba(251,113,133,0.28)");
+    hazardGlow.addColorStop(1, "rgba(251,113,133,0)");
+    context.fillStyle = hazardGlow;
+    context.beginPath();
+    context.arc(hazard.x, hazard.y, hazard.radius + 18, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = "#fb7185";
+    roundRect(context, hazard.x - hazard.radius, hazard.y - hazard.radius / 2, hazard.radius * 2, hazard.radius, 8);
+    context.fill();
   }
   for (const particle of particles) {
     context.globalAlpha = Math.max(0, particle.life);
@@ -322,6 +405,26 @@ function createBricks(nextLevel) {
   }));
 }
 
+function createHazards(nextLevel) {
+  return Array.from({ length: Math.min(6, 2 + Math.floor(nextLevel / 2)) }, (_, index) => ({
+    x: canvas.width + 90 + index * 126,
+    y: 86 + (index % 4) * 74,
+    vx: -(82 + nextLevel * 13 + index * 4),
+    radius: 12 + (index % 3) * 3,
+    phase: index * 0.8,
+  }));
+}
+
+function createStars(count) {
+  return Array.from({ length: count }, () => ({
+    x: Math.random() * canvas.width,
+    y: Math.random() * canvas.height,
+    size: 1 + Math.random() * 2,
+    vx: 12 + Math.random() * 48,
+    alpha: 0.16 + Math.random() * 0.58,
+  }));
+}
+
 function resetRound() {
   score = 0;
   combo = 0;
@@ -332,15 +435,21 @@ function resetRound() {
   level = 1;
   speed = 1;
   peakSpeed = 1;
+  challengeActive = false;
+  stormLevel = 1;
+  stormWave = 0;
+  stormTimer = 0;
   startedAt = performance.now();
   particles.length = 0;
   trails.length = 0;
   events.length = 0;
   bricks = createBricks(level);
   powerups = createPowerups(level);
+  hazards = createHazards(stormLevel);
   resetBall();
   running = true;
   toggleButton.textContent = "Pause";
+  challengeButton.textContent = "Storm challenge";
   updateHUD();
 }
 
@@ -393,6 +502,35 @@ function collectPowerup(powerup) {
   rememberEvent(`${powerup.kind} power-up`, powerup.kind === "wide" ? "green" : "violet");
 }
 
+function updateStorm(dt) {
+  if (!challengeActive) {
+    return;
+  }
+  stormTimer += dt;
+  if (stormTimer > 5.5) {
+    stormTimer = 0;
+    stormWave += 1;
+    stormLevel = Math.max(stormLevel, Math.ceil(stormWave / 2));
+    hazards = createHazards(stormLevel + stormWave);
+    speed = Math.min(2.2, speed + 0.08);
+    peakSpeed = Math.max(peakSpeed, speed);
+    score += 18 + stormWave * 4;
+    energy = Math.min(100, energy + 10);
+    spawnParticles(canvas.width / 2, canvas.height / 2, "#f0abfc", 24);
+    rememberEvent(`storm wave ${stormWave}`, "violet");
+  }
+}
+
+function updateStars(dt) {
+  for (const star of stars) {
+    star.x -= star.vx * dt * (challengeActive ? 3.2 : 1);
+    if (star.x < 0) {
+      star.x = canvas.width;
+      star.y = Math.random() * canvas.height;
+    }
+  }
+}
+
 function updateTrails(dt) {
   for (const trail of trails) {
     trail.life -= dt * 1.7;
@@ -434,6 +572,9 @@ async function callPlugin(method, payload) {
     if (Array.isArray(data?.snapshots)) {
       renderSnapshots(data.snapshots);
     }
+    if (Array.isArray(data?.challenge_history)) {
+      renderChallenges(data.challenge_history);
+    }
     if (Array.isArray(data?.events)) {
       renderEventFeed(data.events);
     }
@@ -466,6 +607,9 @@ function captureSnapshot() {
     lives,
     energy,
     speed,
+    storm_level: stormLevel,
+    waves_survived: stormWave,
+    challenge_active: challengeActive,
     next_mission: nextMission,
   };
 }
@@ -482,10 +626,14 @@ function applySnapshot(snapshot) {
   lives = Number(snapshot.lives ?? lives);
   energy = Number(snapshot.energy ?? energy);
   speed = Number(snapshot.speed ?? speed);
+  stormLevel = Number(snapshot.storm_level ?? stormLevel);
+  stormWave = Number(snapshot.waves_survived ?? stormWave);
+  challengeActive = Boolean(snapshot.challenge_active ?? challengeActive);
   nextMission = String(snapshot.next_mission ?? nextMission);
   peakSpeed = Math.max(peakSpeed, speed);
   bricks = createBricks(level);
   powerups = createPowerups(level);
+  hazards = createHazards(stormLevel + stormWave);
   resetBall();
   startedAt = performance.now();
 }
@@ -497,10 +645,13 @@ function updateHUD() {
   comboEl.textContent = String(combo);
   bricksClearedEl.textContent = String(bricksCleared);
   speedEl.textContent = `${speed.toFixed(1)}x`;
+  stormLevelEl.textContent = String(stormLevel);
+  stormWaveEl.textContent = String(stormWave);
   energyEl.textContent = `${Math.round(energy)}%`;
   livesEl.textContent = String(lives);
   powerupsEl.textContent = String(powerupsCollected);
   elapsedEl.textContent = `${Math.round((performance.now() - startedAt) / 1000)}s`;
+  challengeModeEl.textContent = challengeActive ? "storm" : "off";
   const heat = Math.min(100, Math.round((combo / Math.max(1, bricks.length)) * 120 + speed * 8));
   heatFill.style.width = `${heat}%`;
   heatLabel.textContent = `${heat}%`;
@@ -530,6 +681,26 @@ function renderSnapshots(rows) {
     item.addEventListener("click", () => {
       applySnapshot(row);
       writeResult({ method: "game.snapshot.apply_local", snapshot: row });
+      updateHUD();
+    });
+    return item;
+  }));
+}
+
+function renderChallenges(rows) {
+  challengeList.replaceChildren(...rows.map((row, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "snapshot-chip challenge-chip";
+    item.textContent = `#${index + 1} wave ${Number(row.waves_survived)} · ${Number(row.score)} pts`;
+    item.addEventListener("click", () => {
+      stormLevel = Number(row.storm_level ?? stormLevel);
+      stormWave = Number(row.waves_survived ?? stormWave);
+      score = Number(row.score ?? score);
+      combo = Number(row.max_combo ?? combo);
+      challengeActive = false;
+      challengeButton.textContent = "Storm challenge";
+      writeResult({ method: "game.challenge.apply_local", challenge: row });
       updateHUD();
     });
     return item;

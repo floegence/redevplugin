@@ -61,6 +61,7 @@
         <button id="schedule-seed-week" type="button" class="secondary-button">Seed week</button>
         <button id="schedule-bulk-plan" type="button" class="secondary-button">Plan sprint</button>
         <button id="schedule-archive-done" type="button" class="secondary-button">Archive done</button>
+        <button id="schedule-backup" type="button" class="secondary-button">Backup</button>
       </div>
 
       <div id="schedule-form" class="schedule-form">
@@ -74,6 +75,7 @@
           <option value="high">High</option>
         </select>
         <input id="schedule-duration" name="duration" type="number" min="5" max="240" step="5" value="30" aria-label="Duration minutes" />
+        <input id="schedule-notes" name="notes" autocomplete="off" placeholder="Notes for SQLite record" />
         <button id="schedule-add" type="button">Add</button>
       </div>
 
@@ -102,7 +104,16 @@
           <span class="metric-label">sqlite transaction</span>
           <strong id="schedule-transaction">waiting</strong>
           <p id="schedule-transaction-detail">No write transaction yet.</p>
+          <code id="schedule-sql-preview">SELECT * FROM schedule_items ORDER BY date, time</code>
         </div>
+      </section>
+
+      <section class="backup-panel" aria-label="Schedule backup files">
+        <div>
+          <span class="metric-label">file backups</span>
+          <strong id="backup-count">0 snapshots</strong>
+        </div>
+        <div id="backup-list"></div>
       </section>
 
       <section class="journal-panel" aria-label="Schedule storage journal">

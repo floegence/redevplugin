@@ -149,6 +149,18 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(runSync.data.data.storage_key, "game/runs/latest");
   assert.equal(runSync.data.data.events[0].label, "synced 1 runtime events");
   assert.equal(runSync.data.data.mission.key, "sync");
+  const challenge = await rpc(platform, "game.challenge.report", {
+    score: 96,
+    storm_level: 2,
+    waves_survived: 3,
+    max_combo: 8,
+    bricks_cleared: 14,
+    powerups_collected: 2,
+    completed: true,
+  });
+  assert.equal(challenge.data.data.storage_key, "game/challenges/history");
+  assert.equal(challenge.data.data.challenge_history[0].waves_survived, 3);
+  assert.equal(challenge.data.data.achievements.includes("storm-runner"), true);
 
   const brokeredWorker = await rpc(platform, "worker.brokerDemo", { note: "generated plugin broker smoke" });
   assert.equal(brokeredWorker.data.data.method, "worker.brokerDemo");
@@ -182,7 +194,13 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   const sprint = await rpc(platform, "schedule.items.bulkPlan", { view: { status: "all" } });
   assert.equal(sprint.data.data.added, 4);
   assert.equal(sprint.data.data.transaction.rows_changed, 4);
+  assert.match(sprint.data.data.transaction.sql_preview, /INSERT INTO schedule_items/);
   assert.equal(sprint.data.data.journal[0].action, "bulk_plan");
+  const backup = await rpc(platform, "schedule.storage.backup", { view: { status: "all" } });
+  assert.equal(backup.data.data.backups.length, 1);
+  assert.match(backup.data.data.backup.filename, /schedule\/snapshots/);
+  assert.equal(backup.data.data.transaction.mode, "backup");
+  assert.equal(backup.data.data.source, "host files broker + sqlite snapshot");
   const archived = await rpc(platform, "schedule.items.archiveDone", { view: { status: "all" } });
   assert.equal(archived.data.data.archived, 1);
   assert.equal(archived.data.data.storage.records, 12);
@@ -190,6 +208,10 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
 
   const saved = await rpc(platform, "weather.location.save", { location: "Shanghai" });
   assert.equal(saved.data.data.location, "Shanghai");
+  const detected = await rpc(platform, "weather.location.detect", {});
+  assert.equal(detected.data.data.network.connector_id, "weather_geolocation");
+  assert.equal(detected.data.data.detected_locations[0].location, detected.data.data.location);
+  assert.equal(detected.data.data.saved_locations[0], detected.data.data.location);
   const weather = await rpc(platform, "weather.fetch", { location: "Shanghai" });
   assert.equal(weather.data.data.current.condition, "Warm evening haze");
   assert.equal(weather.data.data.network.transport, "http");
@@ -200,7 +222,8 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(weather.data.data.hourly.length, 4);
   assert.equal(weather.data.data.air_quality.category, "good");
   assert.equal(weather.data.data.alerts.length, 0);
-  assert.equal(weather.data.data.network_history.length, 1);
+  assert.equal(weather.data.data.network_history.length, 2);
+  assert.match(weather.data.data.network_history[1].operation, /geolocate/);
   const comparison = await rpc(platform, "weather.saved.compare", {});
   assert.equal(comparison.data.data.comparisons.length, 3);
   assert.equal(comparison.data.data.comparisons[0].network.transport, "http");

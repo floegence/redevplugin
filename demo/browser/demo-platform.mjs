@@ -37,11 +37,14 @@ export function createDemoPlatformFetch(options = {}) {
       gameEvents: state.gameEvents,
       gameSaves: state.gameSaves,
       gameSnapshots: state.gameSnapshots,
+      gameChallenges: state.gameChallenges,
       scheduleItems: state.scheduleItems,
       scheduleJournal: state.scheduleJournal,
+      scheduleBackups: state.scheduleBackups,
       scheduleRevision: state.scheduleRevision,
       weatherLocation: state.weatherLocation,
       weatherSavedLocations: state.weatherSavedLocations,
+      weatherDetectedLocations: state.weatherDetectedLocations,
       weatherNetworkEvents: state.weatherNetworkEvents,
       hostSettings: state.hostSettings,
       settingsRevision: state.settingsRevision,
@@ -253,6 +256,7 @@ export function createDemoPlatformFetch(options = {}) {
                 events: state.gameEvents,
                 leaderboard: gameLeaderboard(state),
                 mission: gameMission(state.gameLastRun),
+                challenge_history: state.gameChallenges,
                 storage: "host-backed kv store",
               },
             },
@@ -270,6 +274,7 @@ export function createDemoPlatformFetch(options = {}) {
                 leaderboard: gameLeaderboard(state),
                 mission: gameMission(state.gameLastRun),
                 snapshots: state.gameSnapshots,
+                challenge_history: state.gameChallenges,
                 storage: "host-backed kv store",
               },
             },
@@ -302,6 +307,7 @@ export function createDemoPlatformFetch(options = {}) {
                 best_score: state.gameBestScore,
                 events: state.gameEvents,
                 mission: gameMission(run),
+                challenge_history: state.gameChallenges,
                 storage: "host-backed kv store",
                 storage_key: "game/runs/latest",
               },
@@ -337,6 +343,40 @@ export function createDemoPlatformFetch(options = {}) {
               },
             },
           });
+        case "game.challenge.report": {
+          const challenge = normalizeGameChallenge(body.params);
+          state.gameChallenges = [challenge, ...state.gameChallenges].slice(0, 5);
+          state.gameEvents = [
+            normalizeGameEvent({
+              label: `storm wave ${challenge.waves_survived} banked`,
+              tone: challenge.completed ? "violet" : "blue",
+              score: challenge.score,
+              level: challenge.storm_level,
+              combo: challenge.max_combo,
+              at: challenge.saved_at,
+            }),
+            ...state.gameEvents,
+          ].slice(0, 8);
+          state.gameBestScore = Math.max(state.gameBestScore, challenge.score);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                reported: true,
+                challenge,
+                challenge_history: state.gameChallenges,
+                best_score: state.gameBestScore,
+                events: state.gameEvents,
+                achievements: gameAchievements(challenge),
+                mission: gameMission(challenge),
+                storage: "host-backed kv store",
+                storage_key: "game/challenges/history",
+                runtime_actor: "wasm-game-loop-demo",
+              },
+            },
+          });
+        }
         case "schedule.items.list":
           return jsonResponse({
             ok: true,
@@ -347,6 +387,7 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("read", state, 0),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted_at: new Date().toISOString(),
@@ -369,6 +410,7 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("insert", state, 1),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -392,6 +434,7 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("update", state, 1),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -415,6 +458,7 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("delete", state, 1),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -439,6 +483,7 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("bulk_insert", state, seeded.length),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -464,6 +509,7 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("bulk_delete", state, archived),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
                 persisted: true,
@@ -488,8 +534,34 @@ export function createDemoPlatformFetch(options = {}) {
                 timeline: scheduleTimeline(state.scheduleItems),
                 storage: scheduleStorageMetadata(state),
                 transaction: scheduleTransaction("bulk_insert", state, planned.length),
+                backups: state.scheduleBackups,
                 journal: state.scheduleJournal,
                 source: "host storage broker",
+                persisted: true,
+                persisted_at: new Date().toISOString(),
+              },
+            },
+          });
+        }
+        case "schedule.storage.backup": {
+          const backup = createScheduleBackup(state);
+          state.scheduleBackups = [backup, ...state.scheduleBackups].slice(0, 5);
+          state.scheduleRevision += 1;
+          appendScheduleJournal(state, "backup", backup.filename);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                backup,
+                backups: state.scheduleBackups,
+                items: filterScheduleItems(state.scheduleItems, body.params?.view),
+                stats: scheduleStats(state.scheduleItems),
+                timeline: scheduleTimeline(state.scheduleItems),
+                storage: scheduleStorageMetadata(state),
+                transaction: scheduleTransaction("backup", state, state.scheduleItems.length),
+                journal: state.scheduleJournal,
+                source: "host files broker + sqlite snapshot",
                 persisted: true,
                 persisted_at: new Date().toISOString(),
               },
@@ -503,6 +575,7 @@ export function createDemoPlatformFetch(options = {}) {
               data: {
                 location: state.weatherLocation,
                 saved_locations: state.weatherSavedLocations,
+                detected_locations: state.weatherDetectedLocations,
                 source: "plugin settings storage",
               },
             },
@@ -517,11 +590,32 @@ export function createDemoPlatformFetch(options = {}) {
               data: {
                 location: state.weatherLocation,
                 saved_locations: state.weatherSavedLocations,
+                detected_locations: state.weatherDetectedLocations,
                 source: "plugin settings storage",
                 saved: true,
               },
             },
           });
+        case "weather.location.detect": {
+          const detected = await fetchDetectedLocationPayload(state.weatherFetches + 1, { networkBaseURL, networkFetch });
+          state.weatherLocation = normalizeLocation(detected.location);
+          state.weatherSavedLocations = rememberLocation(state.weatherSavedLocations, state.weatherLocation);
+          state.weatherDetectedLocations = rememberDetectedLocation(state.weatherDetectedLocations, detected);
+          state.weatherNetworkEvents = rememberWeatherNetworkEvent(state.weatherNetworkEvents, detected.network);
+          persistState();
+          return jsonResponse({
+            ok: true,
+            data: {
+              data: {
+                ...detected,
+                saved_locations: state.weatherSavedLocations,
+                detected_locations: state.weatherDetectedLocations,
+                network_history: state.weatherNetworkEvents,
+                source: "host network broker",
+              },
+            },
+          });
+        }
         case "weather.fetch": {
           const location = normalizeLocation(body.params?.location ?? state.weatherLocation);
           state.weatherLocation = location;
@@ -531,6 +625,7 @@ export function createDemoPlatformFetch(options = {}) {
           state.weatherNetworkEvents = rememberWeatherNetworkEvent(state.weatherNetworkEvents, payload.network);
           payload.network_history = state.weatherNetworkEvents;
           payload.saved_locations = state.weatherSavedLocations;
+          payload.detected_locations = state.weatherDetectedLocations;
           persistState();
           return jsonResponse({
             ok: true,
@@ -555,6 +650,7 @@ export function createDemoPlatformFetch(options = {}) {
               data: {
                 comparisons,
                 saved_locations: state.weatherSavedLocations,
+                detected_locations: state.weatherDetectedLocations,
                 network_history: state.weatherNetworkEvents,
                 source: "host network broker",
               },
@@ -579,10 +675,12 @@ function createDefaultDemoState() {
     gameLastRun: null,
     gameSaves: 0,
     gameSnapshots: [],
+    gameChallenges: [],
     scheduleRevision: 1,
     scheduleJournal: [
       { action: "init", detail: "seed fixture", revision: 1, at: "2026-06-30T00:00:00Z" },
     ],
+    scheduleBackups: [],
     scheduleItems: [
       {
         id: "sched-standup",
@@ -620,6 +718,7 @@ function createDefaultDemoState() {
     ],
     weatherLocation: "San Francisco",
     weatherSavedLocations: ["San Francisco", "Shanghai", "London"],
+    weatherDetectedLocations: [],
     weatherNetworkEvents: [],
     weatherFetches: 0,
     hostSettings: { accent_mode: "teal", telemetry_enabled: false },
@@ -724,11 +823,17 @@ function applyPersistedState(state, persisted = {}) {
   if (Array.isArray(persisted.gameSnapshots)) {
     state.gameSnapshots = persisted.gameSnapshots.map(normalizeGameSnapshot).slice(0, 5);
   }
+  if (Array.isArray(persisted.gameChallenges)) {
+    state.gameChallenges = persisted.gameChallenges.map(normalizeGameChallenge).slice(0, 5);
+  }
   if (Array.isArray(persisted.scheduleItems)) {
     state.scheduleItems = persisted.scheduleItems.map(normalizePersistedScheduleItem).sort(compareScheduleItems);
   }
   if (Array.isArray(persisted.scheduleJournal)) {
     state.scheduleJournal = persisted.scheduleJournal.map(normalizeJournalEntry).slice(0, 8);
+  }
+  if (Array.isArray(persisted.scheduleBackups)) {
+    state.scheduleBackups = persisted.scheduleBackups.map(normalizeScheduleBackup).slice(0, 5);
   }
   if (Number.isFinite(Number(persisted.scheduleRevision))) {
     state.scheduleRevision = Math.max(1, Math.round(Number(persisted.scheduleRevision)));
@@ -738,6 +843,9 @@ function applyPersistedState(state, persisted = {}) {
   }
   if (Array.isArray(persisted.weatherSavedLocations)) {
     state.weatherSavedLocations = persisted.weatherSavedLocations.map(normalizeLocation).slice(0, 6);
+  }
+  if (Array.isArray(persisted.weatherDetectedLocations)) {
+    state.weatherDetectedLocations = persisted.weatherDetectedLocations.map(normalizeDetectedLocation).slice(0, 5);
   }
   if (Array.isArray(persisted.weatherNetworkEvents)) {
     state.weatherNetworkEvents = persisted.weatherNetworkEvents.map(normalizeWeatherNetworkEvent).slice(0, 6);
@@ -918,6 +1026,22 @@ function normalizeGameSnapshot(params = {}) {
   };
 }
 
+function normalizeGameChallenge(params = {}) {
+  return {
+    id: String(params.id || `challenge-${Date.now().toString(36)}`).slice(0, 80),
+    score: Math.max(0, Math.round(Number(params.score ?? 0))),
+    storm_level: Math.max(1, Math.round(Number(params.storm_level ?? params.level ?? 1))),
+    waves_survived: Math.max(0, Math.round(Number(params.waves_survived ?? 0))),
+    max_combo: Math.max(0, Math.round(Number(params.max_combo ?? params.combo ?? 0))),
+    bricks_cleared: Math.max(0, Math.round(Number(params.bricks_cleared ?? 0))),
+    powerups_collected: Math.max(0, Math.round(Number(params.powerups_collected ?? 0))),
+    peak_speed: Math.max(1, Number(params.peak_speed ?? 1)),
+    duration_ms: Math.max(0, Math.round(Number(params.duration_ms ?? 0))),
+    completed: Boolean(params.completed),
+    saved_at: typeof params.saved_at === "string" ? params.saved_at : new Date().toISOString(),
+  };
+}
+
 function normalizeGameTelemetry(params = {}) {
   return {
     events: Array.isArray(params.events) ? params.events.map(normalizeGameEvent).slice(0, 8) : [],
@@ -951,6 +1075,9 @@ function gameAchievements(run) {
   }
   if (run.powerups_collected >= 2) {
     achievements.push("power-collector");
+  }
+  if (Number(run.waves_survived ?? 0) >= 3) {
+    achievements.push("storm-runner");
   }
   return achievements;
 }
@@ -1000,14 +1127,51 @@ function scheduleStorageMetadata(state) {
 
 function scheduleTransaction(mode, state, rowsChanged) {
   const rows = Math.max(0, Math.round(Number(rowsChanged ?? 0)));
+  const table = mode === "backup" ? "schedule_backups" : "schedule_items";
+  const sqlByMode = {
+    read: "SELECT * FROM schedule_items ORDER BY date, time",
+    insert: "INSERT INTO schedule_items (...) VALUES (...)",
+    update: "UPDATE schedule_items SET done = ? WHERE id = ?",
+    delete: "DELETE FROM schedule_items WHERE id = ?",
+    bulk_insert: "INSERT INTO schedule_items SELECT * FROM json_each(?)",
+    bulk_delete: "DELETE FROM schedule_items WHERE done = true",
+    backup: "INSERT INTO schedule_backups (...) VALUES (...)",
+  };
   return {
     engine: "sqlite-demo",
     mode,
+    table,
+    sql_preview: sqlByMode[mode] ?? "BEGIN IMMEDIATE; COMMIT;",
     revision: state.scheduleRevision,
     rows_changed: rows,
     bytes_written: rows === 0 ? 0 : 512 + rows * 192,
     journal_mode: "wal",
     committed_at: new Date().toISOString(),
+  };
+}
+
+function createScheduleBackup(state) {
+  const backup = {
+    id: `backup-${state.scheduleRevision}-${Date.now().toString(36)}`,
+    filename: `schedule/snapshots/rev-${state.scheduleRevision}.json`,
+    item_count: state.scheduleItems.length,
+    journal_count: state.scheduleJournal.length,
+    size_bytes: 640 + state.scheduleItems.length * 284 + state.scheduleJournal.length * 96,
+    checksum: `sha256:${String(state.scheduleRevision).padStart(2, "0")}demo${String(state.scheduleItems.length).padStart(2, "0")}`,
+    created_at: new Date().toISOString(),
+  };
+  return normalizeScheduleBackup(backup);
+}
+
+function normalizeScheduleBackup(backup = {}) {
+  return {
+    id: String(backup.id || `backup-${Date.now().toString(36)}`).slice(0, 80),
+    filename: String(backup.filename || "schedule/snapshots/latest.json").slice(0, 140),
+    item_count: Math.max(0, Math.round(Number(backup.item_count ?? 0))),
+    journal_count: Math.max(0, Math.round(Number(backup.journal_count ?? 0))),
+    size_bytes: Math.max(0, Math.round(Number(backup.size_bytes ?? 0))),
+    checksum: String(backup.checksum || "sha256:demo").slice(0, 96),
+    created_at: typeof backup.created_at === "string" ? backup.created_at : "2026-06-30T00:00:00Z",
   };
 }
 
@@ -1054,6 +1218,108 @@ function normalizeLocation(value) {
 function rememberLocation(locations, location) {
   const next = [location, ...locations.filter((candidate) => candidate.toLowerCase() !== location.toLowerCase())];
   return next.slice(0, 6);
+}
+
+function rememberDetectedLocation(locations, detected) {
+  const normalized = normalizeDetectedLocation(detected);
+  const next = [
+    normalized,
+    ...locations.filter((candidate) => candidate.location.toLowerCase() !== normalized.location.toLowerCase()),
+  ];
+  return next.slice(0, 5);
+}
+
+function normalizeDetectedLocation(value = {}) {
+  return {
+    location: normalizeLocation(value.location),
+    confidence: Math.max(0, Math.min(1, Number(value.confidence ?? 0.92))),
+    source: String(value.source || "network geolocation broker").slice(0, 80),
+    latitude: Number(value.latitude ?? 37.7749),
+    longitude: Number(value.longitude ?? -122.4194),
+    detected_at: typeof value.detected_at === "string" ? value.detected_at : "2026-06-30T00:00:00Z",
+  };
+}
+
+async function fetchDetectedLocationPayload(fetchCount = 1, options = {}) {
+  if (typeof options.networkFetch !== "function" || !options.networkBaseURL) {
+    return createDetectedLocationPayload(fetchCount);
+  }
+  const upstreamURL = new URL("/demo/weather-api/v1/geolocate", options.networkBaseURL);
+  upstreamURL.searchParams.set("fetch_count", String(fetchCount));
+
+  const startedAt = Date.now();
+  const response = await options.networkFetch(upstreamURL.href, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "x-redevplugin-connector": "weather_geolocation",
+    },
+  });
+  const rawResponseBody = await response.text();
+  let rawPayload;
+  try {
+    rawPayload = JSON.parse(rawResponseBody);
+  } catch {
+    rawPayload = createWeatherGeolocationPayload(fetchCount);
+  }
+  return createDetectedLocationPayloadFromRaw(rawPayload, rawResponseBody, {
+    brokerEndpoint: upstreamURL.href,
+    latencyMs: Math.max(1, Date.now() - startedAt),
+    responseHeaders: headersToObject(response.headers),
+    responseStatus: response.status,
+    upstreamMode: "host http fetch",
+  });
+}
+
+function createDetectedLocationPayload(fetchCount = 1) {
+  const rawPayload = createWeatherGeolocationPayload(fetchCount);
+  return createDetectedLocationPayloadFromRaw(rawPayload, JSON.stringify(rawPayload), {
+    latencyMs: 30 + fetchCount,
+    responseHeaders: { "content-type": "application/json" },
+    responseStatus: 200,
+    upstreamMode: "in-memory fixture",
+  });
+}
+
+export function createWeatherGeolocationPayload(fetchCount = 1) {
+  const candidates = [
+    { location: "San Francisco", latitude: 37.7749, longitude: -122.4194, confidence: 0.94, source: "demo network geoip" },
+    { location: "Tokyo", latitude: 35.6762, longitude: 139.6503, confidence: 0.88, source: "demo network browser hint" },
+    { location: "London", latitude: 51.5072, longitude: -0.1276, confidence: 0.91, source: "demo network region" },
+  ];
+  return {
+    ...candidates[Math.max(0, fetchCount - 1) % candidates.length],
+    detected_at: "2026-06-30T08:00:03Z",
+  };
+}
+
+function createDetectedLocationPayloadFromRaw(rawPayload, rawResponseBody, network) {
+  const normalized = normalizeDetectedLocation(rawPayload);
+  return {
+    ...normalized,
+    network: {
+      connector_id: "weather_geolocation",
+      transport: "http",
+      operation: "GET /v1/geolocate",
+      destination: "https://geo.weather.example",
+      broker_endpoint: network.brokerEndpoint ?? "in-memory://weather-api/v1/geolocate",
+      request_headers: {
+        accept: "application/json",
+        "x-redevplugin-connector": "weather_geolocation",
+      },
+      response_status: network.responseStatus ?? 200,
+      response_headers: network.responseHeaders ?? {},
+      latency_ms: network.latencyMs ?? 0,
+      bytes_received: rawResponseBody.length,
+      parsed: true,
+      upstream_mode: network.upstreamMode ?? "unknown",
+    },
+    raw_response_body: rawResponseBody,
+    parser: {
+      format: "json",
+      fields: ["location", "latitude", "longitude", "confidence", "source"],
+    },
+  };
 }
 
 async function fetchWeatherPayload(location, fetchCount = 1, options = {}) {

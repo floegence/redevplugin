@@ -372,7 +372,7 @@ pre {
   display: grid;
   font-size: 13px;
   gap: 8px;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   padding: 10px 12px;
   text-transform: uppercase;
 }
@@ -391,7 +391,7 @@ pre {
 }
 
 .arcade-telemetry {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .arcade-telemetry > div,
@@ -507,7 +507,8 @@ pre {
   padding: 10px;
 }
 
-.snapshot-panel {
+.snapshot-panel,
+.challenge-panel {
   background: rgb(15 23 42 / 72%);
   border: 1px solid rgb(125 211 252 / 24%);
   border-radius: 8px;
@@ -517,7 +518,8 @@ pre {
   padding: 12px;
 }
 
-.snapshot-panel > div {
+.snapshot-panel > div,
+.challenge-panel > div {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -533,6 +535,11 @@ pre {
 
 .snapshot-chip:hover {
   background: rgb(103 232 249 / 24%);
+}
+
+.challenge-chip {
+  background: rgb(240 171 252 / 14%);
+  border-color: rgb(240 171 252 / 32%);
 }
 
 .arcade-shell pre {
@@ -594,11 +601,11 @@ pre {
 }
 
 .schedule-form {
-  grid-template-columns: minmax(180px, 1.3fr) minmax(132px, 0.8fr) minmax(108px, 0.55fr) minmax(98px, 0.6fr) minmax(112px, 0.62fr) minmax(90px, 0.45fr) auto;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(132px, 0.8fr) minmax(108px, 0.55fr) minmax(98px, 0.6fr) minmax(112px, 0.62fr) minmax(90px, 0.45fr) minmax(170px, 1fr) auto;
 }
 
 .schedule-filter {
-  grid-template-columns: minmax(160px, 1fr) minmax(132px, 0.45fr) auto auto auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(132px, 0.45fr) auto auto auto auto;
 }
 
 .schedule-board {
@@ -780,6 +787,48 @@ pre {
   padding: 12px;
 }
 
+.backup-panel {
+  background: #ffffff;
+  border: 1px solid #d7dfcf;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.backup-panel > div:first-child strong {
+  color: #315a2e;
+  display: block;
+  font-size: 18px;
+}
+
+.backup-panel > div:last-child {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.backup-card {
+  background: #f8fafc;
+  border: 1px solid #dbe4d4;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.backup-card strong,
+.backup-card span,
+.backup-card code {
+  display: block;
+}
+
+.backup-card span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 6px;
+}
+
 .journal-panel ol {
   display: grid;
   gap: 8px;
@@ -825,7 +874,7 @@ pre {
 }
 
 .weather-search {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
 }
 
 .saved-locations {
@@ -838,6 +887,27 @@ pre {
 .saved-locations button {
   min-height: 32px;
   padding: 0 10px;
+}
+
+.detected-location-panel {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.35fr) minmax(170px, 0.5fr);
+  margin-top: 12px;
+}
+
+.detected-location-panel > div {
+  background: #ffffff;
+  border: 1px solid #cbd7e2;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.detected-location-panel strong {
+  color: #1d4ed8;
+  display: block;
+  font-size: 15px;
+  overflow-wrap: anywhere;
 }
 
 .weather-card {
@@ -1145,10 +1215,12 @@ pre {
   .schedule-storage,
   .schedule-board,
   .schedule-insights,
+  .backup-panel > div:last-child,
   .timeline-rail,
   .arcade-telemetry,
   .mission-panel,
   .weather-search,
+  .detected-location-panel,
   .weather-metrics,
   .weather-quality,
   .network-strip,

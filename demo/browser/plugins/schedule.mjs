@@ -22,12 +22,14 @@ const refreshButton = document.querySelector("#schedule-refresh");
 const seedWeekButton = document.querySelector("#schedule-seed-week");
 const bulkPlanButton = document.querySelector("#schedule-bulk-plan");
 const archiveDoneButton = document.querySelector("#schedule-archive-done");
+const backupButton = document.querySelector("#schedule-backup");
 const titleInput = document.querySelector("#schedule-title");
 const dateInput = document.querySelector("#schedule-date");
 const timeInput = document.querySelector("#schedule-time");
 const tagInput = document.querySelector("#schedule-tag");
 const priorityInput = document.querySelector("#schedule-priority");
 const durationInput = document.querySelector("#schedule-duration");
+const notesInput = document.querySelector("#schedule-notes");
 const queryInput = document.querySelector("#schedule-query");
 const statusInput = document.querySelector("#schedule-status");
 const list = document.querySelector("#schedule-list");
@@ -44,6 +46,9 @@ const timeline = document.querySelector("#schedule-timeline");
 const tagCloud = document.querySelector("#schedule-tag-cloud");
 const transactionStatus = document.querySelector("#schedule-transaction");
 const transactionDetail = document.querySelector("#schedule-transaction-detail");
+const sqlPreview = document.querySelector("#schedule-sql-preview");
+const backupCount = document.querySelector("#backup-count");
+const backupList = document.querySelector("#backup-list");
 const journalCount = document.querySelector("#journal-count");
 const journal = document.querySelector("#schedule-journal");
 const result = document.querySelector("#plugin-result");
@@ -67,17 +72,19 @@ addButton.addEventListener("click", async () => {
     tag: tagInput.value || "focus",
     priority: priorityInput.value,
     duration_minutes: durationInput.value,
-    notes: "Created from the sandboxed schedule plugin UI.",
+    notes: notesInput.value || "Created from the sandboxed schedule plugin UI.",
     view: currentView(),
   });
   titleInput.value = "";
   tagInput.value = "";
+  notesInput.value = "";
 });
 
 refreshButton.addEventListener("click", refreshItems);
 seedWeekButton.addEventListener("click", () => callPlugin("schedule.items.seedWeek", { view: currentView() }));
 bulkPlanButton.addEventListener("click", () => callPlugin("schedule.items.bulkPlan", { view: currentView() }));
 archiveDoneButton.addEventListener("click", () => callPlugin("schedule.items.archiveDone", { view: currentView() }));
+backupButton.addEventListener("click", () => callPlugin("schedule.storage.backup", { view: currentView() }));
 statusInput.addEventListener("change", refreshItems);
 queryInput.addEventListener("input", debounce(refreshItems, 180));
 
@@ -107,6 +114,9 @@ async function callPlugin(method, payload) {
     }
     if (data?.transaction) {
       renderTransaction(data.transaction);
+    }
+    if (Array.isArray(data?.backups)) {
+      renderBackups(data.backups);
     }
     if (data?.source || data?.persisted_at) {
       renderStorageState(data);
@@ -169,6 +179,7 @@ function renderTagCloud(tags) {
 function renderTransaction(transaction) {
   transactionStatus.textContent = `${transaction.engine ?? "sqlite-demo"} · ${transaction.mode ?? "read"}`;
   transactionDetail.textContent = `${Number(transaction.rows_changed ?? 0)} rows, rev ${Number(transaction.revision ?? 0)}, ${formatBytes(transaction.bytes_written ?? 0)} written`;
+  sqlPreview.textContent = transaction.sql_preview ?? "BEGIN IMMEDIATE; COMMIT;";
 }
 
 function renderStorageState(data) {
@@ -196,6 +207,16 @@ function renderJournal(entries) {
     const row = document.createElement("li");
     row.innerHTML = `<strong>${escapeHTML(entry.action)}</strong><span>rev ${Number(entry.revision ?? 0)} · ${formatTime(entry.at)}</span><p>${escapeHTML(entry.detail)}</p>`;
     return row;
+  }));
+}
+
+function renderBackups(backups) {
+  backupCount.textContent = `${backups.length} snapshots`;
+  backupList.replaceChildren(...backups.slice(0, 5).map((backup) => {
+    const card = document.createElement("div");
+    card.className = "backup-card";
+    card.innerHTML = `<strong>${escapeHTML(backup.filename)}</strong><span>${Number(backup.item_count)} items · ${formatBytes(backup.size_bytes)}</span><code>${escapeHTML(backup.checksum)}</code>`;
+    return card;
   }));
 }
 
