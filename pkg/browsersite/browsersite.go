@@ -236,6 +236,7 @@ func (s *MemoryStore) CleanupPluginOrigins(ctx context.Context, req CleanupReque
 		sortRecords(pending)
 		return CleanupResult{Records: pending}, missingCleanerErr
 	}
+	sortRecords(pending)
 
 	records := make([]OriginRecord, 0, len(pending))
 	var firstErr error
