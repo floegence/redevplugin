@@ -116,7 +116,8 @@ try {
   await expectText(frame.locator("#result"), "plugin.sqlite");
   await expectText(frame.locator("#result"), "network_execute");
   await expectText(frame.locator("#result"), "host-network-executor");
-  await expectText(frame.locator("#result"), "notes/from-real-demo.txt");
+  await expectText(frame.locator("#result"), "notes/generated-broker-demo.txt");
+  await expectText(frame.locator("#result"), "generated brokered http request");
   await expectText(frame.locator("#result"), "\"storage_grant_visible\": false");
   await expectText(page.locator("#rpc-count"), "2");
 

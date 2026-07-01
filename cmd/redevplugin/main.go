@@ -1027,20 +1027,38 @@ func scaffoldWorkerWAT() string {
 }
 
 func scaffoldBrokerWorkerWAT() string {
-	return "(module\n" +
-		"  ;; Broker demo worker scaffold. It imports the host-owned storage and\n" +
-		"  ;; network brokers so generated plugins expose the backend capability\n" +
-		"  ;; shape without shipping a native process.\n" +
-		"  (import \"redevplugin.storage\" \"files_write_demo\" (func $storage))\n" +
-		"  (import \"redevplugin.storage\" \"kv_put_demo\" (func $kv))\n" +
-		"  (import \"redevplugin.storage\" \"sqlite_exec_demo\" (func $sqlite))\n" +
-		"  (import \"redevplugin.network\" \"http_request_demo\" (func $network))\n" +
+	var b strings.Builder
+	b.WriteString("(module\n" +
+		"  ;; Broker worker scaffold. Generated plugins use the real\n" +
+		"  ;; linear-memory storage/network ABI; Host injects identity,\n" +
+		"  ;; handle grants, policy revisions, and network grants at runtime.\n" +
+		"  (import \"redevplugin.storage\" \"files\" (func $storage_files (param i32 i32 i32 i32) (result i32)))\n" +
+		"  (import \"redevplugin.storage\" \"kv\" (func $storage_kv (param i32 i32 i32 i32) (result i32)))\n" +
+		"  (import \"redevplugin.storage\" \"sqlite\" (func $storage_sqlite (param i32 i32 i32 i32) (result i32)))\n" +
+		"  (import \"redevplugin.network\" \"http_request\" (func $network_http_request (param i32 i32 i32 i32) (result i32)))\n" +
+		"  (memory (export \"memory\") 1)\n" +
 		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
-		"    call $storage\n" +
-		"    call $kv\n" +
-		"    call $sqlite\n" +
-		"    call $network)\n" +
-		")\n"
+		"    ;; Each call passes request_ptr, request_len, response_ptr, response_len.\n")
+	requestOffset := uint32(0)
+	responseOffset := uint32(4096)
+	for _, call := range scaffoldBrokerHostcalls() {
+		fmt.Fprintf(&b, "    i32.const %d\n", requestOffset)
+		fmt.Fprintf(&b, "    i32.const %d\n", len(call.Request))
+		fmt.Fprintf(&b, "    i32.const %d\n", responseOffset)
+		fmt.Fprintf(&b, "    i32.const %d\n", call.OutLen)
+		fmt.Fprintf(&b, "    call $%s_%s\n", strings.ReplaceAll(call.Module, "redevplugin.", ""), call.Name)
+		b.WriteString("    drop\n")
+		requestOffset += uint32(len(call.Request)) + 16
+		responseOffset += call.OutLen
+	}
+	b.WriteString("  )\n")
+	requestOffset = 0
+	for _, call := range scaffoldBrokerHostcalls() {
+		fmt.Fprintf(&b, "  (data (i32.const %d) %q)\n", requestOffset, string(call.Request))
+		requestOffset += uint32(len(call.Request)) + 16
+	}
+	b.WriteString(")\n")
+	return b.String()
 }
 
 func scaffoldWorkerABIJSON() string {
@@ -1068,12 +1086,122 @@ func minimalWorkerWASM() []byte {
 }
 
 func scaffoldBrokerWorkerWASM() []byte {
-	return importedNoArgHostcallWorkerWASM("redevplugin_worker_invoke", [][2]string{
-		{"redevplugin.storage", "files_write_demo"},
-		{"redevplugin.storage", "kv_put_demo"},
-		{"redevplugin.storage", "sqlite_exec_demo"},
-		{"redevplugin.network", "http_request_demo"},
-	})
+	return importedMemoryHostcallSequenceWorkerWASM("redevplugin_worker_invoke", scaffoldBrokerHostcalls())
+}
+
+func scaffoldBrokerHostcalls() []memoryHostcallSpec {
+	return []memoryHostcallSpec{
+		{
+			Module:  "redevplugin.storage",
+			Name:    "files",
+			Request: mustJSONBytes(map[string]any{"store_id": "workspace", "operation": "write", "path": "notes/generated-broker-demo.txt", "data_base64": "Z2VuZXJhdGVkIHBsdWdpbiBzdG9yYWdlIHNhbXBsZQ==", "max_bytes": 0, "max_entries": 0, "recursive": false}),
+			OutLen:  4096,
+		},
+		{
+			Module:  "redevplugin.storage",
+			Name:    "kv",
+			Request: mustJSONBytes(map[string]any{"store_id": "settings", "operation": "put", "key": "demo/last_broker_run", "value_base64": "Z2VuZXJhdGVkIGJhY2tlbmQga3Ygc2FtcGxl", "prefix": "", "max_bytes": 0, "max_entries": 0}),
+			OutLen:  4096,
+		},
+		{
+			Module:  "redevplugin.storage",
+			Name:    "sqlite",
+			Request: mustJSONBytes(map[string]any{"store_id": "db", "operation": "exec", "database": "plugin.sqlite", "sql": "CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)", "args": []any{}, "max_rows": 0, "max_response_bytes": 0, "timeout_ms": 1000}),
+			OutLen:  4096,
+		},
+		{
+			Module:  "redevplugin.network",
+			Name:    "http_request",
+			Request: mustJSONBytes(map[string]any{"connector_id": "api", "transport": "http", "destination": "https://api.example.com", "operation": "http", "method": "POST", "path": "/v1/worker", "headers": map[string]any{"Content-Type": []string{"text/plain"}}, "body_base64": "Z2VuZXJhdGVkIGJyb2tlcmVkIGh0dHAgcmVxdWVzdA==", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
+			OutLen:  8192,
+		},
+	}
+}
+
+type memoryHostcallSpec struct {
+	Module  string
+	Name    string
+	Request []byte
+	OutLen  uint32
+}
+
+func mustJSONBytes(value any) []byte {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func importedMemoryHostcallSequenceWorkerWASM(exportName string, calls []memoryHostcallSpec) []byte {
+	exportNameBytes := []byte(exportName)
+	module := []byte{
+		0x00, 0x61, 0x73, 0x6d,
+		0x01, 0x00, 0x00, 0x00,
+		0x01, 0x0c, 0x02,
+		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
+		0x60, 0x00, 0x00,
+		0x02,
+	}
+	importPayload := []byte{byte(len(calls))}
+	for _, call := range calls {
+		importModule := []byte(call.Module)
+		importName := []byte(call.Name)
+		importPayload = append(importPayload, byte(len(importModule)))
+		importPayload = append(importPayload, importModule...)
+		importPayload = append(importPayload, byte(len(importName)))
+		importPayload = append(importPayload, importName...)
+		importPayload = append(importPayload, 0x00, 0x00)
+	}
+	module = appendLEBUint32(module, uint32(len(importPayload)))
+	module = append(module, importPayload...)
+	module = append(module,
+		0x03, 0x02, 0x01, 0x01,
+		0x05, 0x03, 0x01, 0x00, 0x01,
+		0x07,
+	)
+	exportPayload := []byte{0x02, 0x06}
+	exportPayload = append(exportPayload, []byte("memory")...)
+	exportPayload = append(exportPayload, 0x02, 0x00, byte(len(exportNameBytes)))
+	exportPayload = append(exportPayload, exportNameBytes...)
+	exportPayload = append(exportPayload, 0x00, byte(len(calls)))
+	module = appendLEBUint32(module, uint32(len(exportPayload)))
+	module = append(module, exportPayload...)
+	module = append(module, 0x0a)
+	codePayload := []byte{0x01}
+	body := []byte{0x00}
+	dataPayload := []byte{byte(len(calls))}
+	requestOffset := uint32(0)
+	responseOffset := uint32(4096)
+	for index, call := range calls {
+		body = append(body, 0x41)
+		body = appendLEBInt32(body, int32(requestOffset))
+		body = append(body, 0x41)
+		body = appendLEBInt32(body, int32(len(call.Request)))
+		body = append(body, 0x41)
+		body = appendLEBInt32(body, int32(responseOffset))
+		body = append(body, 0x41)
+		body = appendLEBInt32(body, int32(call.OutLen))
+		body = append(body, 0x10, byte(index), 0x1a)
+
+		dataPayload = append(dataPayload, 0x00, 0x41)
+		dataPayload = appendLEBInt32(dataPayload, int32(requestOffset))
+		dataPayload = append(dataPayload, 0x0b)
+		dataPayload = appendLEBUint32(dataPayload, uint32(len(call.Request)))
+		dataPayload = append(dataPayload, call.Request...)
+
+		requestOffset += uint32(len(call.Request)) + 16
+		responseOffset += call.OutLen
+	}
+	body = append(body, 0x0b)
+	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
+	codePayload = append(codePayload, body...)
+	module = appendLEBUint32(module, uint32(len(codePayload)))
+	module = append(module, codePayload...)
+	module = append(module, 0x0b)
+	module = appendLEBUint32(module, uint32(len(dataPayload)))
+	module = append(module, dataPayload...)
+	return module
 }
 
 func importedNoArgHostcallWorkerWASM(exportName string, imports [][2]string) []byte {

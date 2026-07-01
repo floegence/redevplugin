@@ -42,8 +42,6 @@ const (
 	realDemoBrokerStoreID       = "workspace"
 	realDemoBrokerKVStoreID     = "settings"
 	realDemoBrokerSQLiteStoreID = "db"
-	realDemoBrokerFilePath      = "notes/from-real-demo.txt"
-	realDemoBrokerKVKey         = "demo/last_broker_run"
 )
 
 var realDemoNetworkMatrix = []realDemoNetworkCase{
@@ -322,18 +320,8 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		}
 		broker := realDemoBrokerPayload{
 			StorageHandleGrantToken:       storageGrant.HandleGrant.HandleGrantToken,
-			StorageStoreID:                realDemoBrokerStoreID,
-			StoragePath:                   realDemoBrokerFilePath,
-			StorageDataBase64:             base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker storage")),
 			StorageKVHandleGrantToken:     storageKVGrant.HandleGrant.HandleGrantToken,
-			StorageKVStoreID:              realDemoBrokerKVStoreID,
-			StorageKVKey:                  realDemoBrokerKVKey,
-			StorageKVValueBase64:          base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker kv")),
 			StorageSQLiteHandleGrantToken: storageSQLiteGrant.HandleGrant.HandleGrantToken,
-			StorageSQLiteStoreID:          realDemoBrokerSQLiteStoreID,
-			StorageSQLiteDatabase:         "plugin.sqlite",
-			StorageSQLiteSQL:              "CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)",
-			NetworkBodyBase64:             base64.StdEncoding.EncodeToString([]byte("hello from browser-driven Rust worker network")),
 		}
 		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), bootstrapJSON(broker), health.RuntimeGenerationID))
 	})
@@ -382,18 +370,8 @@ type realDemoBootstrapPayload struct {
 
 type realDemoBrokerPayload struct {
 	StorageHandleGrantToken       string `json:"storage_handle_grant_token"`
-	StorageStoreID                string `json:"storage_store_id"`
-	StoragePath                   string `json:"storage_path"`
-	StorageDataBase64             string `json:"storage_data_base64"`
 	StorageKVHandleGrantToken     string `json:"storage_kv_handle_grant_token"`
-	StorageKVStoreID              string `json:"storage_kv_store_id"`
-	StorageKVKey                  string `json:"storage_kv_key"`
-	StorageKVValueBase64          string `json:"storage_kv_value_base64"`
 	StorageSQLiteHandleGrantToken string `json:"storage_sqlite_handle_grant_token"`
-	StorageSQLiteStoreID          string `json:"storage_sqlite_store_id"`
-	StorageSQLiteDatabase         string `json:"storage_sqlite_database"`
-	StorageSQLiteSQL              string `json:"storage_sqlite_sql"`
-	NetworkBodyBase64             string `json:"network_body_base64"`
 }
 
 func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPayload {
@@ -600,12 +578,7 @@ func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {
 }
 
 func realDemoBrokerWorkerWASM() []byte {
-	return importedNoArgHostcallWorkerWASM("redevplugin_worker_invoke", [][2]string{
-		{"redevplugin.storage", "files_write_demo"},
-		{"redevplugin.storage", "kv_put_demo"},
-		{"redevplugin.storage", "sqlite_exec_demo"},
-		{"redevplugin.network", "http_request_demo"},
-	})
+	return scaffoldBrokerWorkerWASM()
 }
 
 func realDemoNetworkWorkerWASM(networkCase realDemoNetworkCase) []byte {
@@ -701,11 +674,11 @@ func importedMemoryHostcallWorkerWASM(importModuleName string, importNameName st
 		0x41, 0x00,
 		0x41,
 	}
-	body = appendLEBUint32(body, uint32(len(request)))
+	body = appendLEBInt32(body, int32(len(request)))
 	body = append(body, 0x41)
-	body = appendLEBUint32(body, 1024)
+	body = appendLEBInt32(body, 1024)
 	body = append(body, 0x41)
-	body = appendLEBUint32(body, 4096)
+	body = appendLEBInt32(body, 4096)
 	body = append(body, 0x10, 0x00, 0x1a, 0x0b)
 	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
 	codePayload = append(codePayload, body...)
@@ -713,7 +686,7 @@ func importedMemoryHostcallWorkerWASM(importModuleName string, importNameName st
 	module = append(module, codePayload...)
 	module = append(module, 0x0b)
 	dataPayload := []byte{0x01, 0x00, 0x41}
-	dataPayload = appendLEBUint32(dataPayload, 0)
+	dataPayload = appendLEBInt32(dataPayload, 0)
 	dataPayload = append(dataPayload, 0x0b)
 	dataPayload = appendLEBUint32(dataPayload, uint32(len(request)))
 	dataPayload = append(dataPayload, request...)
@@ -731,6 +704,21 @@ func appendLEBUint32(out []byte, value uint32) []byte {
 		}
 		out = append(out, b)
 		if value == 0 {
+			return out
+		}
+	}
+}
+
+func appendLEBInt32(out []byte, value int32) []byte {
+	for {
+		b := byte(value & 0x7f)
+		value >>= 7
+		done := (value == 0 && b&0x40 == 0) || (value == -1 && b&0x40 != 0)
+		if !done {
+			b |= 0x80
+		}
+		out = append(out, b)
+		if done {
 			return out
 		}
 	}
@@ -1189,18 +1177,8 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
           body.params = {
             ...(body.params || {}),
             storage_handle_grant_token: brokerConfig.storage_handle_grant_token,
-            storage_store_id: brokerConfig.storage_store_id,
-            storage_path: brokerConfig.storage_path,
-            storage_data_base64: brokerConfig.storage_data_base64,
             storage_kv_handle_grant_token: brokerConfig.storage_kv_handle_grant_token,
-            storage_kv_store_id: brokerConfig.storage_kv_store_id,
-            storage_kv_key: brokerConfig.storage_kv_key,
-            storage_kv_value_base64: brokerConfig.storage_kv_value_base64,
             storage_sqlite_handle_grant_token: brokerConfig.storage_sqlite_handle_grant_token,
-            storage_sqlite_store_id: brokerConfig.storage_sqlite_store_id,
-            storage_sqlite_database: brokerConfig.storage_sqlite_database,
-            storage_sqlite_sql: brokerConfig.storage_sqlite_sql,
-            network_body_base64: brokerConfig.network_body_base64,
           };
           nextInit = { ...init, body: JSON.stringify(body) };
         }

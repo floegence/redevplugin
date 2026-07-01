@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -194,8 +196,15 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(brokerWATRaw, []byte(`"sqlite_exec_demo"`)) {
-		t.Fatalf("scaffold broker wat missing sqlite hostcall: %s", brokerWATRaw)
+	for _, want := range []string{`"files"`, `"kv"`, `"sqlite"`, `"http_request"`, `(memory (export "memory") 1)`} {
+		if !bytes.Contains(brokerWATRaw, []byte(want)) {
+			t.Fatalf("scaffold broker wat missing %q: %s", want, brokerWATRaw)
+		}
+	}
+	for _, legacy := range []string{"files_write_demo", "kv_put_demo", "sqlite_exec_demo", "http_request_demo"} {
+		if bytes.Contains(brokerWATRaw, []byte(legacy)) || bytes.Contains(brokerWASMRaw, []byte(legacy)) {
+			t.Fatalf("scaffold broker worker still references legacy hostcall %q", legacy)
+		}
 	}
 	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
@@ -241,11 +250,22 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	storageBroker, err := storage.NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	connectivityBroker := connectivity.NewMemoryBroker()
+	networkExecutor := &cliRecordingNetworkExecutor{
+		httpStatus: http.StatusAccepted,
+		httpBody:   []byte(`{"ok":true,"source":"cli-scaffold"}`),
+	}
 	h, err := host.New(host.Adapters{
 		SessionResolver:         staticSessionResolver{},
 		Policy:                  staticPolicyAdapter{},
 		RuntimeArtifactResolver: cliRuntimeResolver{path: runtimePath},
-		Storage:                 storage.NewMemoryBroker(),
+		Storage:                 storageBroker,
+		Connectivity:            connectivityBroker,
+		NetworkExecutor:         networkExecutor,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -334,6 +354,116 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		data["method"] != "worker.echo" ||
 		data["worker_id"] != "backend" {
 		t.Fatalf("generated scaffold runtime result mismatch: %#v", data)
+	}
+
+	storageGrant, err := h.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		StoreID:             "workspace",
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Now:                 now.Add(5 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant(workspace) error = %v", err)
+	}
+	kvGrant, err := h.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		StoreID:             "settings",
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Now:                 now.Add(5 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant(settings) error = %v", err)
+	}
+	sqliteGrant, err := h.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+		PluginInstanceID:    installed.PluginInstanceID,
+		StoreID:             "db",
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Now:                 now.Add(5 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant(db) error = %v", err)
+	}
+
+	brokerResult, err := h.CallPluginMethod(ctx, host.CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		SessionChannelIDHash: "session_channel_hash",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		BridgeChannelID:      "bridge_generated_runtime",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.brokerDemo",
+		Params: map[string]any{
+			"storage_handle_grant_token":        storageGrant.HandleGrant.HandleGrantToken,
+			"storage_kv_handle_grant_token":     kvGrant.HandleGrant.HandleGrantToken,
+			"storage_sqlite_handle_grant_token": sqliteGrant.HandleGrant.HandleGrantToken,
+		},
+		Now: now.Add(6 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with generated broker worker error = %v", err)
+	}
+	brokerData, ok := brokerResult.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("broker worker result data = %#v, want map", brokerResult.Data)
+	}
+	storageFile, ok := brokerData["storage_file"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker storage_file result missing: %#v", brokerData)
+	}
+	if storageFile["ok"] != true ||
+		storageFile["store_id"] != "workspace" ||
+		storageFile["path"] != "notes/generated-broker-demo.txt" {
+		t.Fatalf("broker storage_file result mismatch: %#v", storageFile)
+	}
+	storageKV, ok := brokerData["storage_kv"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker storage_kv result missing: %#v", brokerData)
+	}
+	if storageKV["ok"] != true ||
+		storageKV["store_id"] != "settings" ||
+		storageKV["key"] != "demo/last_broker_run" {
+		t.Fatalf("broker storage_kv result mismatch: %#v", storageKV)
+	}
+	storageSQLite, ok := brokerData["storage_sqlite"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker storage_sqlite result missing: %#v", brokerData)
+	}
+	if storageSQLite["ok"] != true ||
+		storageSQLite["store_id"] != "db" ||
+		storageSQLite["database"] != "plugin.sqlite" {
+		t.Fatalf("broker storage_sqlite result mismatch: %#v", storageSQLite)
+	}
+	networkExecute, ok := brokerData["network_execute"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker network_execute result missing: %#v", brokerData)
+	}
+	if networkExecute["ok"] != true ||
+		networkExecute["connector_id"] != "api" ||
+		networkExecute["transport"] != "http" ||
+		networkExecute["status_code"] != float64(http.StatusAccepted) {
+		t.Fatalf("broker network_execute result mismatch: %#v", networkExecute)
+	}
+	if networkExecutor.httpCalls != 1 ||
+		networkExecutor.lastHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
+		networkExecutor.lastHTTP.Grant.ConnectorID != "api" ||
+		networkExecutor.lastHTTP.Grant.Destination.Host != "api.example.com" ||
+		networkExecutor.lastHTTP.Method != http.MethodPost ||
+		networkExecutor.lastHTTP.Path != "/v1/worker" ||
+		string(networkExecutor.lastHTTP.Body) != "generated brokered http request" {
+		t.Fatalf("broker network executor call mismatch: calls=%d req=%#v", networkExecutor.httpCalls, networkExecutor.lastHTTP)
+	}
+	rawBrokerData, err := json.Marshal(brokerData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{gateway.GatewayToken, storageGrant.HandleGrant.HandleGrantToken, kvGrant.HandleGrant.HandleGrantToken, sqliteGrant.HandleGrant.HandleGrantToken} {
+		if secret != "" && bytes.Contains(rawBrokerData, []byte(secret)) {
+			t.Fatalf("broker result leaked token %q in %s", secret, rawBrokerData)
+		}
 	}
 }
 
@@ -673,6 +803,35 @@ type cliRuntimeResolver struct {
 
 func (r cliRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (string, error) {
 	return r.path, nil
+}
+
+type cliRecordingNetworkExecutor struct {
+	httpCalls  int
+	lastHTTP   connectivity.HTTPRequest
+	httpStatus int
+	httpBody   []byte
+}
+
+func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+	e.httpCalls++
+	e.lastHTTP = req
+	status := e.httpStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
+}
+
+func (e *cliRecordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
+	return connectivity.WebSocketRoundTripResponse{}, errors.New("websocket should not be called by cli scaffold broker test")
+}
+
+func (e *cliRecordingNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
+	return connectivity.TCPRoundTripResponse{}, errors.New("tcp should not be called by cli scaffold broker test")
+}
+
+func (e *cliRecordingNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
+	return connectivity.UDPRoundTripResponse{}, errors.New("udp should not be called by cli scaffold broker test")
 }
 
 func writeCLITestFile(t *testing.T, filename string, content string) {

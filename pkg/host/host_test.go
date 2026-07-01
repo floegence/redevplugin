@@ -2855,11 +2855,11 @@ func importedMemoryHostcallWorkerWASMForTest(importModuleName string, importName
 		0x41, 0x00,
 		0x41,
 	}
-	body = appendLEBUint32(body, uint32(len(request)))
+	body = appendLEBInt32(body, int32(len(request)))
 	body = append(body, 0x41)
-	body = appendLEBUint32(body, 512)
+	body = appendLEBInt32(body, 512)
 	body = append(body, 0x41)
-	body = appendLEBUint32(body, 512)
+	body = appendLEBInt32(body, 512)
 	body = append(body, 0x10, 0x00, 0x1a, 0x0b)
 	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
 	codePayload = append(codePayload, body...)
@@ -2883,6 +2883,21 @@ func appendLEBUint32(out []byte, value uint32) []byte {
 		}
 		out = append(out, b)
 		if value == 0 {
+			return out
+		}
+	}
+}
+
+func appendLEBInt32(out []byte, value int32) []byte {
+	for {
+		b := byte(value & 0x7f)
+		value >>= 7
+		done := (value == 0 && b&0x40 == 0) || (value == -1 && b&0x40 != 0)
+		if !done {
+			b |= 0x80
+		}
+		out = append(out, b)
+		if done {
 			return out
 		}
 	}

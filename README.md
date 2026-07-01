@@ -99,25 +99,24 @@ capabilities.
   header and required function export through `redevplugin-wasm-abi`, executes
   the exported no-argument worker entrypoint with the embedded Wasmi engine, and
   returns a successful scaffold worker result over `invoke_worker_result`. It
-  also exposes the first brokered hostcall slices. The early
-  `redevplugin.storage/files_write_demo`, `redevplugin.storage/kv_put_demo`,
-  `redevplugin.storage/sqlite_exec_demo`, and
-  `redevplugin.network/http_request_demo` imports prove fixed storage and
-  network broker routing. The newer
+  also exposes brokered storage and network hostcalls. Generated plugins now use
+  the real linear-memory ABI by default:
   `redevplugin.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32`,
   `redevplugin.storage/kv(req_ptr, req_len, out_ptr, out_len) -> i32`,
   `redevplugin.storage/sqlite(req_ptr, req_len, out_ptr, out_len) -> i32`, and
-  `redevplugin.network/http_request(req_ptr, req_len, out_ptr, out_len) -> i32`
-  imports are the first linear-memory ABI slices: the worker writes bounded
-  JSON broker requests into WASM memory, the Rust runtime injects Host-owned
-  identity, policy, grant, and revoke context, executes the requests through
-  the `storage_file`, `storage_kv`, `storage_sqlite`, and `network_execute` IPC
-  paths, and writes JSON responses back into worker-provided output buffers.
-  Host integration tests build and exercise the real Rust runtime whenever a
-  local Cargo toolchain is available, including FileBroker file writes, KV
-  writes, SQLite DDL through the filesystem-backed broker, fixed demo imports,
-  and HTTP/WebSocket/TCP/UDP network memory hostcalls,
-  and linear-memory HTTP executor paths.
+  `redevplugin.network/http_request(req_ptr, req_len, out_ptr, out_len) -> i32`.
+  The worker writes bounded JSON broker requests into WASM memory, the Rust
+  runtime injects Host-owned identity, policy, grant, and revoke context,
+  executes the requests through the `storage_file`, `storage_kv`,
+  `storage_sqlite`, and `network_execute` IPC paths, and writes JSON responses
+  back into worker-provided output buffers. The earlier fixed
+  `*_demo` imports remain covered only as legacy runtime compatibility fixtures,
+  not as the scaffolded plugin backend contract. Host integration tests build
+  and exercise the real Rust runtime whenever a local Cargo toolchain is
+  available, including FileBroker file writes, KV writes, SQLite DDL through the
+  filesystem-backed broker, generated scaffold broker workers using the memory
+  ABI, HTTP/WebSocket/TCP/UDP network memory hostcalls, and linear-memory HTTP
+  executor paths.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the

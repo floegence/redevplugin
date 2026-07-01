@@ -109,7 +109,7 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		"http://app.redevplugin.localhost:4175",
 		"http://plg-real.redevplugin.localhost:4176",
 		`{"plugin_id":"com.example.real.demo","plugin_instance_id":"plugin_real","surface_id":"com.example.real.demo.activity","surface_instance_id":"surface_real","active_fingerprint":"sha256:real","owner_session_hash":"owner","owner_user_hash":"user","session_channel_id_hash":"channel","asset_ticket":"ticket_secret","asset_ticket_id":"ticket_id","bridge_nonce":"nonce"}`,
-		`{"storage_handle_grant_token":"storage_secret","storage_store_id":"workspace","storage_path":"notes/from-real-demo.txt","storage_data_base64":"ZGF0YQ==","storage_kv_handle_grant_token":"kv_secret","storage_kv_store_id":"settings","storage_kv_key":"demo/last_broker_run","storage_kv_value_base64":"a3Y=","storage_sqlite_handle_grant_token":"sqlite_secret","storage_sqlite_store_id":"db","storage_sqlite_database":"plugin.sqlite","storage_sqlite_sql":"CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)","network_body_base64":"Ym9keQ=="}`,
+		`{"storage_handle_grant_token":"storage_secret","storage_kv_handle_grant_token":"kv_secret","storage_sqlite_handle_grant_token":"sqlite_secret"}`,
 		"runtime_generation",
 	)
 
@@ -123,9 +123,6 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		`storage_handle_grant_token: brokerConfig.storage_handle_grant_token`,
 		`storage_kv_handle_grant_token: brokerConfig.storage_kv_handle_grant_token`,
 		`storage_sqlite_handle_grant_token: brokerConfig.storage_sqlite_handle_grant_token`,
-		`storage_sqlite_store_id: brokerConfig.storage_sqlite_store_id`,
-		`storage_sqlite_database: brokerConfig.storage_sqlite_database`,
-		`storage_sqlite_sql: brokerConfig.storage_sqlite_sql`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("real demo html missing %q", want)
@@ -135,6 +132,11 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		`new URL("/ui/index.html", pluginOrigin)`,
 		`/_redevplugin/api/plugins/surfaces/`,
 		`credentials: "same-origin"`,
+		`storage_path: brokerConfig.storage_path`,
+		`storage_data_base64: brokerConfig.storage_data_base64`,
+		`storage_kv_value_base64: brokerConfig.storage_kv_value_base64`,
+		`storage_sqlite_sql: brokerConfig.storage_sqlite_sql`,
+		`network_body_base64: brokerConfig.network_body_base64`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("real demo html contains forbidden legacy flow %q", forbidden)
@@ -166,7 +168,7 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 		`storage_kv_handle_grant_token`,
 		`storage_kv_value_base64`,
 		`storage_sqlite_handle_grant_token`,
-		`storage_sqlite_store_id`,
+		`storage_path`,
 		`storage_sqlite_sql`,
 		`network_body_base64`,
 		`brokerConfig`,
