@@ -70,9 +70,20 @@ function serveFile(filename, label, response) {
   response.writeHead(200, {
     "Cache-Control": "no-store",
     "Content-Type": contentTypes.get(extname(filename)) ?? "application/octet-stream",
+    ...securityHeaders(label),
     "X-ReDevPlugin-Demo-Origin": label,
   });
   createReadStream(filename).pipe(response);
+}
+
+function securityHeaders(label) {
+  if (label !== "plugin") {
+    return {};
+  }
+  return {
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), display-capture=(), usb=(), serial=()",
+    "X-Content-Type-Options": "nosniff",
+  };
 }
 
 function serveDemoStream(request, requestURL, response) {

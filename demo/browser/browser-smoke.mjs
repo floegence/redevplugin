@@ -24,6 +24,7 @@ const generatedOpen = JSON.parse(
   await runCLI(["dev-open", generatedStateRoot, "com.example.generated.browser.activity", `http://127.0.0.1:${pluginPort}`]),
 );
 assert.equal(generatedOpen.browser_origin_count, 1);
+const pluginOrigin = `http://127.0.0.1:${pluginPort}`;
 const hostURL = `http://127.0.0.1:${hostPort}/demo/browser/index.html?plugin_origin=http://127.0.0.1:${pluginPort}`;
 const server = spawn(process.execPath, ["demo/browser/server.mjs"], {
   cwd: new URL("../..", import.meta.url),
@@ -66,6 +67,7 @@ try {
 
   const frame = page.frameLocator("#plugin-frame");
   await expectText(frame.locator("#plugin-status"), "ready");
+  await assertPluginBrowserSecurity(page, frame, pluginOrigin);
 
   await frame.getByRole("button", { name: "Echo" }).click();
   await expectText(frame.locator("#plugin-result"), "hello from iframe");
@@ -317,7 +319,8 @@ try {
   assert.equal(generatedUninstall.retained_data_state, "deleted");
   assert.equal(generatedUninstall.package_retained, false);
 
-  assert.deepEqual(consoleErrors, []);
+  const unexpectedConsoleErrors = consoleErrors.filter((entry) => !isExpectedSandboxPermissionViolation(entry));
+  assert.deepEqual(unexpectedConsoleErrors, []);
   await browser.close();
   console.log("browser demo smoke passed");
 } finally {
@@ -371,6 +374,150 @@ async function canvasChecksum(locator) {
     }
     return checksum;
   });
+}
+
+async function assertPluginBrowserSecurity(page, frame, pluginOrigin) {
+  const before = await runSandboxSecurityProbe(frame, "write");
+  assert.equal(before.localStorageValue, "dirty");
+  assert.equal(before.indexedDBValue, "dirty");
+  assert.equal(before.cacheSupported, true);
+  assert.equal(before.cacheMatched, true);
+  assert.equal(before.cameraAllowed, false);
+  assert.equal(before.microphoneAllowed, false);
+  assert.notEqual(before.mediaCapture, "allowed");
+
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Storage.clearDataForOrigin", {
+      origin: pluginOrigin,
+      storageTypes: "local_storage,indexeddb,cache_storage",
+    });
+  } finally {
+    await cdp.detach();
+  }
+
+  const after = await runSandboxSecurityProbe(frame, "read");
+  assert.equal(after.localStorageValue, null);
+  assert.equal(after.indexedDBValue, null);
+  assert.equal(after.cacheMatched, false);
+}
+
+async function runSandboxSecurityProbe(frame, mode) {
+  return frame.locator("body").evaluate(async (_body, probeMode) => {
+    const storageKey = "redevplugin-security-probe";
+    const dbName = "redevplugin-security-probe-db";
+    const storeName = "items";
+    const cacheName = "redevplugin-security-probe-cache";
+    const cacheRequest = new Request(`${window.location.origin}/demo/browser/security-probe.txt`);
+
+    const requestToPromise = (request) =>
+      new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error ?? new Error("indexedDB request failed"));
+      });
+
+    const deleteDatabase = () =>
+      new Promise((resolve, reject) => {
+        const request = indexedDB.deleteDatabase(dbName);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error ?? new Error("indexedDB delete failed"));
+        request.onblocked = () => resolve();
+      });
+
+    const openDatabase = () =>
+      new Promise((resolve, reject) => {
+        const request = indexedDB.open(dbName, 1);
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore(storeName);
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error ?? new Error("indexedDB open failed"));
+      });
+
+    const writeIndexedDB = async (value) => {
+      const database = await openDatabase();
+      try {
+        const transaction = database.transaction(storeName, "readwrite");
+        transaction.objectStore(storeName).put(value, storageKey);
+        await new Promise((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error ?? new Error("indexedDB write failed"));
+        });
+      } finally {
+        database.close();
+      }
+    };
+
+    const readIndexedDB = async () => {
+      let database;
+      try {
+        database = await openDatabase();
+        if (!database.objectStoreNames.contains(storeName)) {
+          return null;
+        }
+        const transaction = database.transaction(storeName, "readonly");
+        const result = await requestToPromise(transaction.objectStore(storeName).get(storageKey));
+        return result ?? null;
+      } catch {
+        return null;
+      } finally {
+        database?.close();
+      }
+    };
+
+    const cacheMatched = async () => {
+      if (!("caches" in window)) {
+        return false;
+      }
+      return Boolean(await caches.match(cacheRequest));
+    };
+
+    if (probeMode === "write") {
+      localStorage.setItem(storageKey, "dirty");
+      await deleteDatabase();
+      await writeIndexedDB("dirty");
+      if ("caches" in window) {
+        const cache = await caches.open(cacheName);
+        await cache.put(cacheRequest, new Response("dirty", { headers: { "Content-Type": "text/plain" } }));
+      }
+    }
+
+    const policy = document.permissionsPolicy ?? document.featurePolicy ?? null;
+    const mediaCapture = await probeMediaCapture();
+    return {
+      localStorageValue: localStorage.getItem(storageKey),
+      indexedDBValue: await readIndexedDB(),
+      cacheSupported: "caches" in window,
+      cacheMatched: await cacheMatched(),
+      cameraAllowed: policy?.allowsFeature("camera") ?? null,
+      microphoneAllowed: policy?.allowsFeature("microphone") ?? null,
+      mediaCapture: mediaCapture.state,
+      mediaCaptureError: mediaCapture.error,
+    };
+
+    async function probeMediaCapture() {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        return { state: "api_unavailable", error: "" };
+      }
+      try {
+        const stream = await Promise.race([
+          navigator.mediaDevices.getUserMedia({ audio: true, video: true }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1_000)),
+        ]);
+        stream.getTracks().forEach((track) => track.stop());
+        return { state: "allowed", error: "" };
+      } catch (error) {
+        return {
+          state: "blocked",
+          error: error instanceof Error ? error.name || error.message : String(error),
+        };
+      }
+    }
+  }, mode);
+}
+
+function isExpectedSandboxPermissionViolation(entry) {
+  return /^error: Permissions policy violation: (camera|microphone) is not allowed in this document\.$/.test(entry);
 }
 
 async function waitForHTTP(url, timeoutMs = 5_000) {
