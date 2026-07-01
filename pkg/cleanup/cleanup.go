@@ -54,20 +54,7 @@ func NewMemoryOrchestrator() *MemoryOrchestrator {
 }
 
 func (o *MemoryOrchestrator) PlanUninstall(_ context.Context, pluginInstanceID string, deleteData bool) (Plan, error) {
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if pluginInstanceID == "" {
-		return Plan{}, ErrInvalidPlan
-	}
-	phases := []Phase{PhaseTombstone, PhaseRevoke}
-	if deleteData {
-		phases = append(phases, PhaseDeleteData)
-	}
-	phases = append(phases, PhaseDeletePackage, PhaseComplete)
-	return Plan{
-		PluginInstanceID: pluginInstanceID,
-		DeleteData:       deleteData,
-		Phases:           phases,
-	}, nil
+	return buildUninstallPlan(pluginInstanceID, deleteData)
 }
 
 func (o *MemoryOrchestrator) Execute(_ context.Context, plan Plan) error {
@@ -161,4 +148,21 @@ func containsPhase(phases []Phase, target Phase) bool {
 		}
 	}
 	return false
+}
+
+func buildUninstallPlan(pluginInstanceID string, deleteData bool) (Plan, error) {
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return Plan{}, ErrInvalidPlan
+	}
+	phases := []Phase{PhaseTombstone, PhaseRevoke}
+	if deleteData {
+		phases = append(phases, PhaseDeleteData)
+	}
+	phases = append(phases, PhaseDeletePackage, PhaseComplete)
+	return Plan{
+		PluginInstanceID: pluginInstanceID,
+		DeleteData:       deleteData,
+		Phases:           phases,
+	}, nil
 }
