@@ -128,6 +128,7 @@ try {
   await expectText(gameFrame.locator("#plugin-result"), "game/challenges/history");
   await expectText(gameFrame.locator("#challenge-list"), "wave 1");
   await gameFrame.getByRole("button", { name: "Reset" }).click();
+  await expectText(gameFrame.locator("#plugin-status"), "ready");
   await expectText(gameFrame.locator("#plugin-result"), "\"reset\": true");
   await gameFrame.getByRole("button", { name: "Power-up" }).click();
   await gameFrame.getByRole("button", { name: "Sync run" }).click();

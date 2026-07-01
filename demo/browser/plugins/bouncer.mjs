@@ -448,6 +448,7 @@ function resetRound() {
   hazards = createHazards(stormLevel);
   resetBall();
   running = true;
+  status.textContent = "ready";
   toggleButton.textContent = "Pause";
   challengeButton.textContent = "Storm challenge";
   updateHUD();
