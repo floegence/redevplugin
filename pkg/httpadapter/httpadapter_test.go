@@ -1437,10 +1437,7 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 		},
 	})
 
-	var listed struct {
-		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
-	}
-	listed = getJSON[struct {
+	listed := getJSON[struct {
 		DiagnosticEvents []host.DiagnosticEvent `json:"diagnostic_events"`
 	}](t, handler, "/_redevplugin/api/plugins/diagnostics?plugin_instance_id=plugin_http&severity=warning")
 	if len(listed.DiagnosticEvents) != 1 {
@@ -1463,10 +1460,7 @@ func TestHandlerListsAuditEvents(t *testing.T) {
 		"plugin_instance_id": installed.PluginInstanceID,
 	})
 
-	var listed struct {
-		AuditEvents []host.AuditEvent `json:"audit_events"`
-	}
-	listed = getJSON[struct {
+	listed := getJSON[struct {
 		AuditEvents []host.AuditEvent `json:"audit_events"`
 	}](t, handler, "/_redevplugin/api/plugins/audit?plugin_instance_id="+installed.PluginInstanceID+"&type=plugin.enabled&limit=5")
 	if len(listed.AuditEvents) != 1 {

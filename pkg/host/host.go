@@ -29,6 +29,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -169,6 +170,7 @@ type Adapters struct {
 	NetworkExecutor         connectivity.NetworkExecutor
 	Operations              operation.Store
 	Permissions             permissions.Store
+	SecurityPolicy          security.PolicyStore
 	Cleanup                 cleanup.Orchestrator
 	BrowserSite             browsersite.Store
 	Settings                settings.Store
@@ -273,6 +275,22 @@ type RevokePermissionRequest struct {
 type ListPermissionGrantsRequest struct {
 	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
 	ActiveOnly       bool   `json:"active_only,omitempty"`
+}
+
+type PutSecurityPolicyRequest struct {
+	PluginInstanceID   string    `json:"plugin_instance_id"`
+	AllowedPermissions []string  `json:"allowed_permissions,omitempty"`
+	DeniedMethods      []string  `json:"denied_methods,omitempty"`
+	Now                time.Time `json:"now,omitempty"`
+}
+
+type GetSecurityPolicyRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+}
+
+type DeleteSecurityPolicyRequest struct {
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	Now              time.Time `json:"now,omitempty"`
 }
 
 type GetSettingsRequest struct {
@@ -561,6 +579,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Permissions == nil {
 		adapters.Permissions = permissions.NewMemoryStore()
+	}
+	if adapters.SecurityPolicy == nil {
+		adapters.SecurityPolicy = security.NewMemoryPolicyStore()
 	}
 	if adapters.Cleanup == nil {
 		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
@@ -1033,6 +1054,9 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 		return resolvedMethodCall{}, errors.New("plugin method denied by local policy")
 	}
 	requiredPermissions := requiredPermissionsForMethod(record.Manifest, method)
+	if err := h.enforceSecurityPolicy(ctx, record, method, requiredPermissions); err != nil {
+		return resolvedMethodCall{}, err
+	}
 	granted, missing, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		PermissionIDs:    requiredPermissions,
@@ -1114,6 +1138,9 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 		return resolvedIntentCall{}, errors.New("plugin intent denied by local policy")
 	}
 	requiredPermissions := requiredPermissionsForMethod(resolved.record.Manifest, resolved.method)
+	if err := h.enforceSecurityPolicy(ctx, resolved.record, resolved.method, requiredPermissions); err != nil {
+		return resolvedIntentCall{}, err
+	}
 	granted, missing, err := h.adapters.Permissions.IsGranted(ctx, permissions.CheckRequest{
 		PluginInstanceID: resolved.record.PluginInstanceID,
 		PermissionIDs:    requiredPermissions,
@@ -1551,6 +1578,67 @@ func (h *Host) ListPermissionGrants(ctx context.Context, req ListPermissionGrant
 		PluginInstanceID: req.PluginInstanceID,
 		ActiveOnly:       req.ActiveOnly,
 	})
+}
+
+func (h *Host) PutSecurityPolicy(ctx context.Context, req PutSecurityPolicyRequest) (security.PolicyRecord, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return security.PolicyRecord{}, err
+	}
+	policy, err := h.adapters.SecurityPolicy.PutPolicy(ctx, security.PutPolicyRequest{
+		PluginInstanceID:   record.PluginInstanceID,
+		AllowedPermissions: req.AllowedPermissions,
+		DeniedMethods:      req.DeniedMethods,
+		Now:                req.Now,
+	})
+	if err != nil {
+		return security.PolicyRecord{}, err
+	}
+	updated, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, true, req.Now)
+	if err != nil {
+		return security.PolicyRecord{}, err
+	}
+	if err := h.refreshConnectivityPolicy(ctx, updated); err != nil {
+		return security.PolicyRecord{}, err
+	}
+	if err := h.revokePluginRuntimeCapabilities(ctx, updated, req.Now); err != nil {
+		return security.PolicyRecord{}, err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.security_policy.updated", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return policy, nil
+}
+
+func (h *Host) GetSecurityPolicy(ctx context.Context, req GetSecurityPolicyRequest) (security.PolicyRecord, error) {
+	if _, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID); err != nil {
+		return security.PolicyRecord{}, err
+	}
+	return h.adapters.SecurityPolicy.GetPolicy(ctx, req.PluginInstanceID)
+}
+
+func (h *Host) ListSecurityPolicies(ctx context.Context) ([]security.PolicyRecord, error) {
+	return h.adapters.SecurityPolicy.ListPolicies(ctx)
+}
+
+func (h *Host) DeleteSecurityPolicy(ctx context.Context, req DeleteSecurityPolicyRequest) error {
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	if err := h.adapters.SecurityPolicy.DeletePolicy(ctx, record.PluginInstanceID); err != nil {
+		return err
+	}
+	updated, err := h.adapters.Registry.BumpPolicyRevision(ctx, record.PluginInstanceID, true, req.Now)
+	if err != nil {
+		return err
+	}
+	if err := h.refreshConnectivityPolicy(ctx, updated); err != nil {
+		return err
+	}
+	if err := h.revokePluginRuntimeCapabilities(ctx, updated, req.Now); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.security_policy.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
 }
 
 func (h *Host) ListAuditEvents(ctx context.Context, req ListAuditEventsRequest) ([]AuditEvent, error) {
@@ -2751,6 +2839,31 @@ func requiredPermissionsForMethod(m manifest.Manifest, method manifest.MethodSpe
 		return nil
 	}
 	return normalizeStringSet(binding.RequiredPermissions)
+}
+
+func (h *Host) enforceSecurityPolicy(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, requiredPermissions []string) error {
+	if h.adapters.SecurityPolicy == nil {
+		return errors.New("security policy store is required")
+	}
+	evaluation, err := h.adapters.SecurityPolicy.EvaluatePolicy(ctx, security.EvaluatePolicyRequest{
+		PluginInstanceID:    record.PluginInstanceID,
+		Method:              method.Method,
+		RequiredPermissions: requiredPermissions,
+	})
+	if err != nil {
+		return err
+	}
+	if evaluation.Allowed {
+		return nil
+	}
+	switch evaluation.Reason {
+	case security.PolicyDenyReasonMethodDenied:
+		return fmt.Errorf("%w: method %q is denied", security.ErrPolicyDenied, evaluation.DeniedMethod)
+	case security.PolicyDenyReasonPermissionNotAllowed:
+		return fmt.Errorf("%w: permissions not allowed: %s", security.ErrPolicyDenied, strings.Join(evaluation.MissingPermissions, ", "))
+	default:
+		return fmt.Errorf("%w: method %q", security.ErrPolicyDenied, method.Method)
+	}
 }
 
 func manifestWorker(m manifest.Manifest, workerID string) (manifest.WorkerSpec, bool) {

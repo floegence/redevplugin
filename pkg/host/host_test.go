@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -1184,6 +1185,78 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "allowed"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	beforePolicy, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	policy, err := h.PutSecurityPolicy(context.Background(), PutSecurityPolicyRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		DeniedMethods:    []string{"echo.ping"},
+	})
+	if err != nil {
+		t.Fatalf("PutSecurityPolicy() error = %v", err)
+	}
+	if len(policy.DeniedMethods) != 1 || policy.DeniedMethods[0] != "echo.ping" {
+		t.Fatalf("policy mismatch: %#v", policy)
+	}
+	afterPolicy, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterPolicy.PolicyRevision <= beforePolicy.PolicyRevision || afterPolicy.RevokeEpoch <= beforePolicy.RevokeEpoch {
+		t.Fatalf("security policy update did not bump policy/revoke revisions: before=%#v after=%#v", beforePolicy, afterPolicy)
+	}
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+	}); !errors.Is(err, security.ErrPolicyDenied) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrPolicyDenied", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called before security policy allowed it: %d", capabilityAdapter.calls)
+	}
+
+	if err := h.DeleteSecurityPolicy(context.Background(), DeleteSecurityPolicyRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("DeleteSecurityPolicy() error = %v", err)
+	}
+	_, gateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() after policy delete error = %v", err)
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
+	}
+	if !audits.hasEvent("plugin.security_policy.updated") || !audits.hasEvent("plugin.security_policy.deleted") {
+		t.Fatalf("missing security policy audit events: %#v", audits.events)
 	}
 }
 
@@ -2926,6 +2999,7 @@ type testHostOptions struct {
 	cleanup                 cleanup.Orchestrator
 	browserSite             browsersite.Store
 	permissions             permissions.Store
+	securityPolicy          security.PolicyStore
 	runtimeSupervisor       runtimeclient.Supervisor
 	runtimeArtifactResolver RuntimeArtifactResolver
 	secrets                 SecretStoreAdapter
@@ -2968,6 +3042,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Cleanup:                 opts.cleanup,
 		BrowserSite:             opts.browserSite,
 		Permissions:             opts.permissions,
+		SecurityPolicy:          opts.securityPolicy,
 		RuntimeSupervisor:       opts.runtimeSupervisor,
 		RuntimeArtifactResolver: opts.runtimeArtifactResolver,
 		Secrets:                 opts.secrets,
@@ -4112,9 +4187,9 @@ func networkFixtureManifestJSON(blocked bool) string {
 
 func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
-	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, packageBytes, surfaceID)
+	installed, _ := installEnableAndMintGatewayWithoutPermissions(t, h, packageBytes, surfaceID)
 	grantDeclaredPermissions(t, h, installed)
-	_, gateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
 	return installed, gateway
 }
 

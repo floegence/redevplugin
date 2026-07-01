@@ -1450,6 +1450,8 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return security.ErrConfirmationRequired
+	case errors.Is(err, security.ErrPolicyDenied):
+		return security.ErrPermissionDenied
 	case errors.Is(err, permissions.ErrPermissionDenied):
 		return security.ErrPermissionDenied
 	case errors.Is(err, bridge.ErrTokenExpired):
@@ -1549,6 +1551,8 @@ func httpStatusForRPCError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return http.StatusConflict
+	case errors.Is(err, security.ErrPolicyDenied):
+		return http.StatusForbidden
 	case errors.Is(err, permissions.ErrPermissionDenied):
 		return http.StatusForbidden
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
@@ -1564,6 +1568,8 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return security.ErrConfirmationRequired
+	case errors.Is(err, security.ErrPolicyDenied):
+		return security.ErrPermissionDenied
 	case errors.Is(err, permissions.ErrPermissionDenied):
 		return security.ErrPermissionDenied
 	case errors.Is(err, registry.ErrNotFound):
@@ -1579,6 +1585,8 @@ func httpStatusForIntentError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return http.StatusConflict
+	case errors.Is(err, security.ErrPolicyDenied):
+		return http.StatusForbidden
 	case errors.Is(err, permissions.ErrPermissionDenied):
 		return http.StatusForbidden
 	case errors.Is(err, registry.ErrNotFound):
@@ -1587,17 +1595,6 @@ func httpStatusForIntentError(err error) int {
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusBadRequest
-	}
-}
-
-func errorCodeForStorageError(err error) security.ErrorCode {
-	switch {
-	case errors.Is(err, storage.ErrQuotaExceeded):
-		return security.ErrStorageQuotaExceeded
-	case errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
-		return security.ErrInvalidRequest
-	default:
-		return security.ErrPermissionDenied
 	}
 }
 
@@ -1695,17 +1692,6 @@ func httpStatusForPermissionError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, permissions.ErrPermissionDenied):
 		return http.StatusForbidden
-	default:
-		return http.StatusForbidden
-	}
-}
-
-func httpStatusForStorageError(err error) int {
-	switch {
-	case errors.Is(err, storage.ErrQuotaExceeded):
-		return http.StatusRequestEntityTooLarge
-	case errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
-		return http.StatusBadRequest
 	default:
 		return http.StatusForbidden
 	}
