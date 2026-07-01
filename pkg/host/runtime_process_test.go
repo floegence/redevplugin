@@ -387,6 +387,191 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 	}
 }
 
+func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRuntime(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not found; skipping built Rust runtime integration")
+	}
+	repoRoot := findRepoRootForHostTest(t)
+	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	if runtime.GOOS == "windows" {
+		runtimePath += ".exe"
+	}
+
+	cases := []struct {
+		name          string
+		transport     connectivity.Transport
+		response      func(*recordingHostNetworkExecutor)
+		assertRequest func(*testing.T, *recordingHostNetworkExecutor, string)
+		assertResult  func(*testing.T, map[string]any)
+	}{
+		{
+			name:      "websocket",
+			transport: connectivity.TransportWebSocket,
+			response: func(executor *recordingHostNetworkExecutor) {
+				executor.wsResponse = connectivity.WebSocketRoundTripResponse{MessageType: connectivity.WebSocketMessageText, Payload: []byte("websocket:pong")}
+			},
+			assertRequest: func(t *testing.T, executor *recordingHostNetworkExecutor, pluginInstanceID string) {
+				t.Helper()
+				if executor.websocketCalls != 1 ||
+					executor.lastWebSocket.Grant.PluginInstanceID != pluginInstanceID ||
+					executor.lastWebSocket.Grant.ConnectorID != "stream" ||
+					executor.lastWebSocket.Grant.Destination.Host != "stream.example.com" ||
+					executor.lastWebSocket.Grant.RuntimeGenerationID == "" ||
+					executor.lastWebSocket.MessageType != connectivity.WebSocketMessageText ||
+					string(executor.lastWebSocket.Payload) != "hello websocket" ||
+					executor.lastWebSocket.MaxRequestBytes != 1024 ||
+					executor.lastWebSocket.MaxResponseBytes != 4096 ||
+					executor.lastWebSocket.Timeout != time.Second {
+					t.Fatalf("websocket executor call mismatch: calls=%d req=%#v", executor.websocketCalls, executor.lastWebSocket)
+				}
+			},
+			assertResult: func(t *testing.T, networkExecute map[string]any) {
+				t.Helper()
+				if networkExecute["ok"] != true ||
+					networkExecute["connector_id"] != "stream" ||
+					networkExecute["transport"] != "websocket" ||
+					networkExecute["message_type"] != "text" ||
+					networkExecute["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("websocket:pong")) {
+					t.Fatalf("websocket network_execute result mismatch: %#v", networkExecute)
+				}
+			},
+		},
+		{
+			name:      "tcp",
+			transport: connectivity.TransportTCP,
+			response: func(executor *recordingHostNetworkExecutor) {
+				executor.tcpResponse = connectivity.TCPRoundTripResponse{Payload: []byte("tcp:pong")}
+			},
+			assertRequest: func(t *testing.T, executor *recordingHostNetworkExecutor, pluginInstanceID string) {
+				t.Helper()
+				if executor.tcpCalls != 1 ||
+					executor.lastTCP.Grant.PluginInstanceID != pluginInstanceID ||
+					executor.lastTCP.Grant.ConnectorID != "mysql" ||
+					executor.lastTCP.Grant.Destination.Host != "db.example.com" ||
+					executor.lastTCP.Grant.Destination.Port != 3306 ||
+					executor.lastTCP.Grant.RuntimeGenerationID == "" ||
+					string(executor.lastTCP.Payload) != "hello tcp" ||
+					executor.lastTCP.MaxReadBytes != 4096 ||
+					executor.lastTCP.Timeout != time.Second {
+					t.Fatalf("tcp executor call mismatch: calls=%d req=%#v", executor.tcpCalls, executor.lastTCP)
+				}
+			},
+			assertResult: func(t *testing.T, networkExecute map[string]any) {
+				t.Helper()
+				if networkExecute["ok"] != true ||
+					networkExecute["connector_id"] != "mysql" ||
+					networkExecute["transport"] != "tcp" ||
+					networkExecute["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("tcp:pong")) {
+					t.Fatalf("tcp network_execute result mismatch: %#v", networkExecute)
+				}
+			},
+		},
+		{
+			name:      "udp",
+			transport: connectivity.TransportUDP,
+			response: func(executor *recordingHostNetworkExecutor) {
+				executor.udpResponse = connectivity.UDPRoundTripResponse{Payload: []byte("udp:pong")}
+			},
+			assertRequest: func(t *testing.T, executor *recordingHostNetworkExecutor, pluginInstanceID string) {
+				t.Helper()
+				if executor.udpCalls != 1 ||
+					executor.lastUDP.Grant.PluginInstanceID != pluginInstanceID ||
+					executor.lastUDP.Grant.ConnectorID != "metrics" ||
+					executor.lastUDP.Grant.Destination.Host != "metrics.example.com" ||
+					executor.lastUDP.Grant.Destination.Port != 8125 ||
+					executor.lastUDP.Grant.RuntimeGenerationID == "" ||
+					string(executor.lastUDP.Payload) != "hello udp" ||
+					executor.lastUDP.MaxReadBytes != 4096 ||
+					executor.lastUDP.Timeout != time.Second {
+					t.Fatalf("udp executor call mismatch: calls=%d req=%#v", executor.udpCalls, executor.lastUDP)
+				}
+			},
+			assertResult: func(t *testing.T, networkExecute map[string]any) {
+				t.Helper()
+				if networkExecute["ok"] != true ||
+					networkExecute["connector_id"] != "metrics" ||
+					networkExecute["transport"] != "udp" ||
+					networkExecute["payload_base64"] != base64.StdEncoding.EncodeToString([]byte("udp:pong")) {
+					t.Fatalf("udp network_execute result mismatch: %#v", networkExecute)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			broker := connectivity.NewMemoryBroker()
+			executor := &recordingHostNetworkExecutor{}
+			tc.response(executor)
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode:      true,
+				localGenerated:     true,
+				storageBroker:      storage.NewMemoryBroker(),
+				connectivityBroker: broker,
+				networkExecutor:    executor,
+			})
+			supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+				RuntimePath:      runtimePath,
+				Diagnostics:      h.adapters.Diagnostics,
+				Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
+				HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+				StorageFiles:     storageFilesBroker(h.adapters.Storage),
+				StorageKV:        storageKVBroker(h.adapters.Storage),
+				Connectivity:     broker,
+				NetworkExecutor:  executor,
+				HandshakeTimeout: 5 * time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.adapters.RuntimeSupervisor = supervisor
+			t.Cleanup(func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := supervisor.Stop(stopCtx); err != nil {
+					t.Errorf("Stop() error = %v", err)
+				}
+			})
+			if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkTransportMemoryHostcallFixturePackage(t, tc.transport), "worker.activity")
+
+			result, err := h.CallPluginMethod(ctx, CallMethodRequest{
+				PluginInstanceID:     installed.PluginInstanceID,
+				SurfaceInstanceID:    "surface_rpc",
+				SessionChannelIDHash: "channel_hash",
+				OwnerSessionHash:     "session_hash",
+				OwnerUserHash:        "user_hash",
+				BridgeChannelID:      "bridge_rpc",
+				GatewayToken:         gateway.GatewayToken,
+				Method:               "worker.echo",
+				Params:               map[string]any{},
+			})
+			if err != nil {
+				t.Fatalf("CallPluginMethod() with %s network memory hostcall error = %v", tc.name, err)
+			}
+			data, ok := result.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("worker result data = %#v, want map", result.Data)
+			}
+			networkExecute, ok := data["network_execute"].(map[string]any)
+			if !ok {
+				t.Fatalf("network_execute result missing: %#v", data)
+			}
+			tc.assertResult(t, networkExecute)
+			tc.assertRequest(t, executor, installed.PluginInstanceID)
+		})
+	}
+}
+
 func TestCallPluginMethodWorkerStorageHostcallThroughBuiltRustRuntime(t *testing.T) {
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not found; skipping built Rust runtime integration")

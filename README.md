@@ -92,8 +92,8 @@ capabilities.
   streaming envelope contract instead of the one-shot round trip API.
 - Host tests include a black-box runtime subprocess path that invokes a worker
   method, has the helper runtime request `network_execute` over IPC, mints the
-  grant through the Host connectivity broker, and records the HTTP executor
-  request/response before returning the worker result.
+  grant through the Host connectivity broker, and records HTTP, WebSocket, TCP,
+  and UDP executor request/response paths before returning the worker result.
 - The Rust runtime now performs the first executable worker slice: it requests
   the bound WASM artifact from the Host over IPC, validates the WASM binary
   header and required function export through `redevplugin-wasm-abi`, executes
@@ -116,6 +116,7 @@ capabilities.
   Host integration tests build and exercise the real Rust runtime whenever a
   local Cargo toolchain is available, including FileBroker file writes, KV
   writes, SQLite DDL through the filesystem-backed broker, fixed demo imports,
+  and HTTP/WebSocket/TCP/UDP network memory hostcalls,
   and linear-memory HTTP executor paths.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
   filesystem broker namespaces, quota, and usage without dumping plugin file

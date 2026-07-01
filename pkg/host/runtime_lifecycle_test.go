@@ -139,10 +139,19 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 }
 
 type recordingHostNetworkExecutor struct {
-	httpCalls  int
-	lastHTTP   connectivity.HTTPRequest
-	httpStatus int
-	httpBody   []byte
+	httpCalls      int
+	websocketCalls int
+	tcpCalls       int
+	udpCalls       int
+	lastHTTP       connectivity.HTTPRequest
+	lastWebSocket  connectivity.WebSocketRoundTripRequest
+	lastTCP        connectivity.TCPRoundTripRequest
+	lastUDP        connectivity.UDPRoundTripRequest
+	httpStatus     int
+	httpBody       []byte
+	wsResponse     connectivity.WebSocketRoundTripResponse
+	tcpResponse    connectivity.TCPRoundTripResponse
+	udpResponse    connectivity.UDPRoundTripResponse
 }
 
 func (e *recordingHostNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
@@ -155,16 +164,22 @@ func (e *recordingHostNetworkExecutor) DoHTTP(_ context.Context, req connectivit
 	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
 }
 
-func (e *recordingHostNetworkExecutor) WebSocketRoundTrip(context.Context, connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	return connectivity.WebSocketRoundTripResponse{}, nil
+func (e *recordingHostNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
+	e.websocketCalls++
+	e.lastWebSocket = req
+	return e.wsResponse, nil
 }
 
-func (e *recordingHostNetworkExecutor) TCPRoundTrip(context.Context, connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	return connectivity.TCPRoundTripResponse{}, nil
+func (e *recordingHostNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
+	e.tcpCalls++
+	e.lastTCP = req
+	return e.tcpResponse, nil
 }
 
-func (e *recordingHostNetworkExecutor) UDPRoundTrip(context.Context, connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	return connectivity.UDPRoundTripResponse{}, nil
+func (e *recordingHostNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
+	e.udpCalls++
+	e.lastUDP = req
+	return e.udpResponse, nil
 }
 
 func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {

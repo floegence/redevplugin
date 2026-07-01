@@ -2531,6 +2531,20 @@ func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildWorkerNetworkTransportMemoryHostcallFixturePackage(t *testing.T, transport connectivity.Transport) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkTransportFixtureManifestJSON(transport))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Transport Memory Hostcall</title>")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkTransportMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke", transport))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -2702,6 +2716,21 @@ func importedHostcallWorkerWASMForTest(importModule string, importName string, e
 
 func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "http_request", exportName, request)
+}
+
+func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transport connectivity.Transport) []byte {
+	var request []byte
+	switch transport {
+	case connectivity.TransportWebSocket:
+		request = []byte(`{"connector_id":"stream","transport":"websocket","destination":"wss://stream.example.com","operation":"websocket_round_trip","message_type":"text","payload_base64":"aGVsbG8gd2Vic29ja2V0","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
+	case connectivity.TransportTCP:
+		request = []byte(`{"connector_id":"mysql","transport":"tcp","destination":"db.example.com:3306","operation":"tcp_round_trip","payload_base64":"aGVsbG8gdGNw","max_response_bytes":4096,"timeout_ms":1000}`)
+	case connectivity.TransportUDP:
+		request = []byte(`{"connector_id":"metrics","transport":"udp","destination":"metrics.example.com:8125","operation":"udp_round_trip","payload_base64":"aGVsbG8gdWRw","max_response_bytes":4096,"timeout_ms":1000}`)
+	default:
+		request = []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
+	}
 	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "http_request", exportName, request)
 }
 
@@ -3154,6 +3183,55 @@ func workerNetworkFixtureManifestJSON() string {
 			"connectors": [
 				{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}
 			]
+		}
+	}`
+}
+
+func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport) string {
+	connectors := map[connectivity.Transport]string{
+		connectivity.TransportWebSocket: `{"connector_id": "stream", "transport": "websocket", "scope": "user", "destinations": ["wss://stream.example.com"]}`,
+		connectivity.TransportTCP:       `{"connector_id": "mysql", "transport": "tcp", "scope": "environment", "destinations": ["db.example.com:3306"]}`,
+		connectivity.TransportUDP:       `{"connector_id": "metrics", "transport": "udp", "scope": "environment", "destinations": ["metrics.example.com:8125"]}`,
+	}
+	connector, ok := connectors[transport]
+	if !ok {
+		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
+	}
+	return `{
+		"schema_version": "redevplugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker.network.transport",
+			"display_name": "Worker Network Transport",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redevplugin-wasm-worker-v1",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216,
+				"idle_timeout_ms": 0
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "read",
+				"execution": "sync",
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+			}
+		],
+		"network_access": {
+			"connectors": [` + connector + `]
 		}
 	}`
 }
