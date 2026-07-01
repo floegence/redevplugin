@@ -17,11 +17,13 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -305,6 +307,90 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 	}
 	if len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Metadata["trust.key_id"] != "old" {
 		t.Fatalf("version history metadata mismatch: %#v", updated.VersionHistory)
+	}
+}
+
+func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
+	ctx := context.Background()
+	stages := installstage.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		installStages:  stages,
+	})
+	v1 := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+	v2 := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")
+	now := time.Date(2026, 7, 2, 20, 0, 0, 0, time.UTC)
+
+	installed, err := h.InstallPackage(ctx, InstallRequest{
+		PackageReader: bytes.NewReader(v1),
+		PackageSize:   int64(len(v1)),
+		TrustState:    registry.TrustVerified,
+		Now:           now,
+	})
+	if err != nil {
+		t.Fatalf("InstallPackage() error = %v", err)
+	}
+	stageRecords, err := stages.List(ctx, installstage.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stageRecords) != 1 ||
+		stageRecords[0].Action != installstage.ActionInstall ||
+		stageRecords[0].Status != installstage.StatusCommitted ||
+		stageRecords[0].ResolvedTrust != string(registry.TrustVerified) ||
+		stageRecords[0].PackageHash != installed.PackageHash {
+		t.Fatalf("install stage mismatch: %#v", stageRecords)
+	}
+
+	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(v2),
+		PackageSize:      int64(len(v2)),
+		Now:              now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlugin() error = %v", err)
+	}
+	stageRecords, err = stages.List(ctx, installstage.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stageRecords) != 2 ||
+		stageRecords[1].Action != installstage.ActionUpdate ||
+		stageRecords[1].Status != installstage.StatusCommitted ||
+		stageRecords[1].ResolvedTrust != string(registry.TrustVerified) ||
+		stageRecords[1].PackageHash != updated.PackageHash {
+		t.Fatalf("update stage mismatch: %#v", stageRecords)
+	}
+}
+
+func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
+	ctx := context.Background()
+	stages := installstage.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		installStages:  stages,
+		trustVerifier:  &recordingPackageTrustVerifier{err: errors.New("signature revoked")},
+	})
+	packageBytes := buildFixturePackage(t)
+	if _, err := h.InstallPackage(ctx, InstallRequest{
+		PackageReader: bytes.NewReader(packageBytes),
+		PackageSize:   int64(len(packageBytes)),
+		TrustState:    registry.TrustVerified,
+	}); err == nil {
+		t.Fatal("InstallPackage() expected trust failure")
+	}
+	stageRecords, err := stages.List(ctx, installstage.ListRequest{Status: installstage.StatusFailed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stageRecords) != 1 || stageRecords[0].ErrorCode != "trust_failed" || !strings.Contains(stageRecords[0].ErrorMessage, "signature revoked") {
+		t.Fatalf("failed stage mismatch: %#v", stageRecords)
+	}
+	if _, err := h.adapters.Registry.GetPlugin(ctx, stageRecords[0].PluginInstanceID); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("GetPlugin() after failed install error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -2038,11 +2124,13 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	ctx := context.Background()
 	retainBroker := storage.NewMemoryBroker()
 	retainCleanup := cleanup.NewMemoryOrchestrator()
+	retainedRegistry := retaineddata.NewMemoryStore()
 	retainHost, _, retainAudits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
 		storageBroker:  retainBroker,
 		cleanup:        retainCleanup,
+		retainedData:   retainedRegistry,
 	})
 	retainedPlugin, err := InstallPackageBytes(ctx, retainHost, buildStorageFixturePackage(t), registry.TrustVerified)
 	if err != nil {
@@ -2068,6 +2156,21 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 	if len(retained) != 2 || retained[0].State != storage.NamespaceRetained || retained[1].State != storage.NamespaceRetained {
 		t.Fatalf("retained namespaces mismatch: %#v", retained)
+	}
+	retainedRecords, err := retainedRegistry.List(ctx, retaineddata.ListRequest{SourcePluginInstanceID: retainedPlugin.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retainedRecords) != 1 ||
+		retainedRecords[0].State != retaineddata.StateRetained ||
+		!retainedRecords[0].StorageRetained ||
+		retainedRecords[0].SettingsRetained ||
+		retainedRecords[0].BrowserSiteRetained ||
+		retainedRecords[0].UsageBytes == 0 {
+		t.Fatalf("retained data registry mismatch: %#v", retainedRecords)
+	}
+	if !retainAudits.hasEvent("plugin.retained_data.recorded") {
+		t.Fatalf("missing retained data audit event: %#v", retainAudits.events)
 	}
 	if _, err := retainBroker.GetKV(ctx, storage.KVGetRequest{
 		PluginInstanceID: retainedPlugin.PluginInstanceID,
@@ -2997,7 +3100,9 @@ type testHostOptions struct {
 	connectivityBroker      connectivity.Broker
 	networkExecutor         connectivity.NetworkExecutor
 	cleanup                 cleanup.Orchestrator
+	retainedData            retaineddata.Store
 	browserSite             browsersite.Store
+	installStages           installstage.Store
 	permissions             permissions.Store
 	securityPolicy          security.PolicyStore
 	runtimeSupervisor       runtimeclient.Supervisor
@@ -3040,7 +3145,9 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Connectivity:            opts.connectivityBroker,
 		NetworkExecutor:         opts.networkExecutor,
 		Cleanup:                 opts.cleanup,
+		RetainedData:            opts.retainedData,
 		BrowserSite:             opts.browserSite,
+		InstallStages:           opts.installStages,
 		Permissions:             opts.permissions,
 		SecurityPolicy:          opts.securityPolicy,
 		RuntimeSupervisor:       opts.runtimeSupervisor,

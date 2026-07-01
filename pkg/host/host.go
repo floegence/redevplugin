@@ -22,12 +22,14 @@ import (
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/installstage"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
@@ -79,6 +81,8 @@ const (
 	PackageTrustActionInstall PackageTrustAction = "install"
 	PackageTrustActionUpdate  PackageTrustAction = "update"
 )
+
+const installStageTTL = 30 * time.Minute
 
 type PackageTrustVerificationRequest struct {
 	Action              PackageTrustAction     `json:"action"`
@@ -162,6 +166,7 @@ type Adapters struct {
 	RuntimeSupervisor       runtimeclient.Supervisor
 	SurfaceCatalog          SurfaceCatalogSink
 	Assets                  pluginpkg.AssetStore
+	InstallStages           installstage.Store
 	Capabilities            *capability.Registry
 	CoreActions             CoreActionAdapter
 	SurfaceTokens           *bridge.SurfaceTokenService
@@ -172,6 +177,7 @@ type Adapters struct {
 	Permissions             permissions.Store
 	SecurityPolicy          security.PolicyStore
 	Cleanup                 cleanup.Orchestrator
+	RetainedData            retaineddata.Store
 	BrowserSite             browsersite.Store
 	Settings                settings.Store
 	Streams                 stream.Store
@@ -586,6 +592,9 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.Cleanup == nil {
 		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
 	}
+	if adapters.RetainedData == nil {
+		adapters.RetainedData = retaineddata.NewMemoryStore()
+	}
 	if adapters.BrowserSite == nil {
 		adapters.BrowserSite = browsersite.NewMemoryStore()
 	}
@@ -597,6 +606,9 @@ func New(adapters Adapters) (*Host, error) {
 	}
 	if adapters.Assets == nil {
 		adapters.Assets = pluginpkg.NewMemoryAssetStore()
+	}
+	if adapters.InstallStages == nil {
+		adapters.InstallStages = installstage.NewMemoryStore()
 	}
 	return &Host{
 		adapters:      adapters,
@@ -1163,18 +1175,40 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, req.TrustState, nil, req.PluginInstanceID, req.Now)
+	pluginInstanceID := req.PluginInstanceID
+	if strings.TrimSpace(pluginInstanceID) == "" {
+		pluginInstanceID = defaultPluginInstanceID(pkg)
+	}
+	stage, err := h.createInstallStage(ctx, installstage.ActionInstall, pkg, pluginInstanceID, string(req.TrustState), req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record := packageRecord(pkg, trust, req.PluginInstanceID, metadata)
+	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, req.TrustState, nil, pluginInstanceID, req.Now)
+	if err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, req.Now)
+	}
+	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
+		StageID:       stage.StageID,
+		ResolvedTrust: string(trust),
+		ValidationSummary: map[string]string{
+			"trust": "resolved",
+		},
+		Now: req.Now,
+	}); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	record := packageRecord(pkg, trust, pluginInstanceID, metadata)
 	record.EnableState = registry.EnableDisabled
 	record.RetainedDataState = registry.RetainedDataNone
 	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, req.Now)
 	}
 	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: req.Now})
 	if err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, req.Now)
+	}
+	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: req.Now}); err != nil {
+		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
 		return registry.PluginRecord{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.installed", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
@@ -1197,36 +1231,101 @@ func (h *Host) UpdatePlugin(ctx context.Context, req UpdateRequest) (registry.Pl
 	if requestedTrust == "" {
 		requestedTrust = current.TrustState
 	}
-	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, requestedTrust, &current, current.PluginInstanceID, req.Now)
+	stage, err := h.createInstallStage(ctx, installstage.ActionUpdate, pkg, current.PluginInstanceID, string(requestedTrust), req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, requestedTrust, &current, current.PluginInstanceID, req.Now)
+	if err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, req.Now)
+	}
 	next := packageRecord(pkg, trust, current.PluginInstanceID, metadata)
 	if err := validateSamePluginIdentity(current, next); err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, req.Now)
+	}
+	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
+		StageID:       stage.StageID,
+		ResolvedTrust: string(trust),
+		ValidationSummary: map[string]string{
+			"trust":   "resolved",
+			"version": "switch_prepared",
+		},
+		Now: req.Now,
+	}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	next.VersionHistory = current.VersionHistory
 	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, req.Now), req.Now)
 	if next.EnableState == registry.EnableEnabled {
 		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
-			return registry.PluginRecord{}, err
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_validation_failed", err, req.Now)
 		}
 	}
 	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, req.Now)
 	}
 	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: req.Now})
 	if err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, req.Now)
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, stored, req.Now); err != nil {
-		return registry.PluginRecord{}, err
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, req.Now)
 	}
 	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_refresh_failed", err, req.Now)
+	}
+	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: req.Now}); err != nil {
+		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
 		return registry.PluginRecord{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.updated", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
+}
+
+func (h *Host) createInstallStage(ctx context.Context, action installstage.Action, pkg pluginpkg.Package, pluginInstanceID string, requestedTrust string, now time.Time) (installstage.Record, error) {
+	if h.adapters.InstallStages == nil {
+		return installstage.Record{}, errors.New("install stage store is required")
+	}
+	stageID, err := installstage.NewStageID()
+	if err != nil {
+		return installstage.Record{}, err
+	}
+	stageNow := lifecycleNow(now)
+	return h.adapters.InstallStages.Create(ctx, installstage.CreateRequest{
+		StageID:          stageID,
+		Action:           action,
+		PluginInstanceID: pluginInstanceID,
+		PublisherID:      pkg.Manifest.Publisher.PublisherID,
+		PluginID:         pkg.Manifest.PluginID(),
+		Version:          pkg.Manifest.Version(),
+		PackageHash:      pkg.PackageHash,
+		ManifestHash:     pkg.ManifestHash,
+		EntriesHash:      pkg.EntriesHash,
+		RequestedTrust:   requestedTrust,
+		ValidationSummary: map[string]string{
+			"package_read": "ok",
+		},
+		ExpiresAt: stageNow.Add(installStageTTL),
+		Now:       stageNow,
+	})
+}
+
+func (h *Host) markInstallStageFailed(ctx context.Context, stageID string, code string, cause error, now time.Time) error {
+	if cause == nil {
+		cause = errors.New("install stage failed")
+	}
+	if h.adapters.InstallStages == nil {
+		return cause
+	}
+	if _, err := h.adapters.InstallStages.MarkFailed(ctx, installstage.MarkFailedRequest{
+		StageID:      stageID,
+		ErrorCode:    code,
+		ErrorMessage: cause.Error(),
+		Now:          lifecycleNow(now),
+	}); err != nil {
+		return fmt.Errorf("%w; failed to update install stage: %v", cause, err)
+	}
+	return cause
 }
 
 func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (registry.PluginRecord, error) {
@@ -2118,13 +2217,25 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.cleanup.executed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	if err := h.deleteOrRetainStorage(ctx, record, req.DeleteData); err != nil {
+	retainedSummary := retainedDataSummary{}
+	storageRetained, storageUsage, err := h.deleteOrRetainStorage(ctx, record, req.DeleteData)
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := h.deleteOrRetainSettings(ctx, record, req.DeleteData, req.Now); err != nil {
+	retainedSummary.StorageRetained = storageRetained
+	retainedSummary.UsageBytes += storageUsage
+	settingsRetained, err := h.deleteOrRetainSettings(ctx, record, req.DeleteData, req.Now)
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	if err := h.deleteOrRetainBrowserSiteData(ctx, record, req.DeleteData, req.Now); err != nil {
+	retainedSummary.SettingsRetained = settingsRetained
+	browserSiteRetained, err := h.deleteOrRetainBrowserSiteData(ctx, record, req.DeleteData, req.Now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	retainedSummary.BrowserSiteRetained = browserSiteRetained
+	retainedRecord, err := h.recordRetainedDataIfNeeded(ctx, record, req.DeleteData, retainedSummary, req.Now)
+	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if err := h.adapters.Permissions.DeletePluginGrants(ctx, record.PluginInstanceID); err != nil {
@@ -2137,6 +2248,20 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	record, err = h.adapters.Registry.MarkUninstalled(ctx, req.PluginInstanceID, retained, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if retainedRecord.RetainedID != "" {
+		h.audit(ctx, AuditEvent{
+			Type:             "plugin.retained_data.recorded",
+			PluginID:         record.PluginID,
+			PluginInstanceID: record.PluginInstanceID,
+			Details: map[string]any{
+				"retained_id":           retainedRecord.RetainedID,
+				"storage_retained":      retainedRecord.StorageRetained,
+				"settings_retained":     retainedRecord.SettingsRetained,
+				"browser_site_retained": retainedRecord.BrowserSiteRetained,
+				"usage_bytes":           retainedRecord.UsageBytes,
+			},
+		})
 	}
 	if err := h.revokePluginRuntimeCapabilities(ctx, record, req.Now); err != nil {
 		return registry.PluginRecord{}, err
@@ -3224,49 +3349,71 @@ func (h *Host) refreshConnectivityPolicy(ctx context.Context, record registry.Pl
 	return nil
 }
 
-func (h *Host) deleteOrRetainStorage(ctx context.Context, record registry.PluginRecord, deleteData bool) error {
+type retainedDataSummary struct {
+	StorageRetained     bool
+	SettingsRetained    bool
+	BrowserSiteRetained bool
+	UsageBytes          int64
+}
+
+func (h *Host) deleteOrRetainStorage(ctx context.Context, record registry.PluginRecord, deleteData bool) (bool, int64, error) {
 	if record.Manifest.Storage == nil || len(record.Manifest.Storage.Stores) == 0 {
-		return nil
+		return false, 0, nil
 	}
 	if h.adapters.Storage == nil {
-		return errors.New("storage broker is required for plugins that declare storage")
+		return false, 0, errors.New("storage broker is required for plugins that declare storage")
 	}
 	if err := h.adapters.Storage.DeleteNamespace(ctx, record.PluginInstanceID, deleteData); err != nil {
-		return err
+		return false, 0, err
 	}
 	eventType := "plugin.storage.retained"
 	if deleteData {
 		eventType = "plugin.storage.deleted"
 	}
 	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return nil
+	if deleteData {
+		return false, 0, nil
+	}
+	usageBytes := int64(0)
+	if inspector, ok := h.adapters.Storage.(storage.Inspector); ok {
+		namespaces, err := inspector.ListNamespaces(ctx, record.PluginInstanceID)
+		if err != nil {
+			return false, 0, err
+		}
+		for _, namespace := range namespaces {
+			if namespace.State == storage.NamespaceRetained {
+				usageBytes += namespace.UsageBytes
+			}
+		}
+	}
+	return true, usageBytes, nil
 }
 
-func (h *Host) deleteOrRetainSettings(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) error {
+func (h *Host) deleteOrRetainSettings(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) (bool, error) {
 	if record.Manifest.Settings == nil {
-		return nil
+		return false, nil
 	}
 	if h.adapters.Settings == nil {
-		return errors.New("settings store is required for plugins that declare settings")
+		return false, errors.New("settings store is required for plugins that declare settings")
 	}
 	if err := h.adapters.Settings.Delete(ctx, settings.DeleteRequest{
 		PluginInstanceID: record.PluginInstanceID,
 		DeleteData:       deleteData,
 		Now:              now,
 	}); err != nil {
-		return err
+		return false, err
 	}
 	eventType := "plugin.settings.retained"
 	if deleteData {
 		eventType = "plugin.settings.deleted"
 	}
 	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return nil
+	return !deleteData, nil
 }
 
-func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) error {
+func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) (bool, error) {
 	if h.adapters.BrowserSite == nil {
-		return nil
+		return false, nil
 	}
 	reason := "uninstall_keep_data"
 	if deleteData {
@@ -3293,10 +3440,10 @@ func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registr
 				},
 			})
 		}
-		return err
+		return false, err
 	}
 	if len(result.Records) == 0 {
-		return nil
+		return false, nil
 	}
 	eventType := "plugin.browser_site.retained"
 	if deleteData {
@@ -3310,7 +3457,55 @@ func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registr
 			"origin_count": len(result.Records),
 		},
 	})
-	return nil
+	return !deleteData, nil
+}
+
+func (h *Host) recordRetainedDataIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool, summary retainedDataSummary, now time.Time) (retaineddata.Record, error) {
+	if deleteData || (!summary.StorageRetained && !summary.SettingsRetained && !summary.BrowserSiteRetained) {
+		return retaineddata.Record{}, nil
+	}
+	if h.adapters.RetainedData == nil {
+		return retaineddata.Record{}, errors.New("retained data store is required")
+	}
+	retainedID, err := retaineddata.NewRetainedID()
+	if err != nil {
+		return retaineddata.Record{}, err
+	}
+	return h.adapters.RetainedData.Retain(ctx, retaineddata.RetainRequest{
+		RetainedID:             retainedID,
+		SourcePluginInstanceID: record.PluginInstanceID,
+		PublisherID:            record.PublisherID,
+		PluginID:               record.PluginID,
+		Version:                record.Version,
+		PackageHash:            record.PackageHash,
+		ManifestHash:           record.ManifestHash,
+		StorageRetained:        summary.StorageRetained,
+		SettingsRetained:       summary.SettingsRetained,
+		BrowserSiteRetained:    summary.BrowserSiteRetained,
+		UsageBytes:             summary.UsageBytes,
+		Metadata: map[string]string{
+			"reason": "uninstall_keep_data",
+		},
+		Now: lifecycleNow(now),
+	})
+}
+
+func (h *Host) reportLifecycleDiagnostic(ctx context.Context, record registry.PluginRecord, eventType string, err error, details map[string]any) {
+	if h.adapters.Diagnostics == nil || err == nil {
+		return
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+		Type:              eventType,
+		Severity:          "warning",
+		Message:           err.Error(),
+		PluginID:          record.PluginID,
+		PluginInstanceID:  record.PluginInstanceID,
+		ActiveFingerprint: record.ActiveFingerprint,
+		Details:           details,
+	})
 }
 
 func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Namespace, error) {
@@ -3420,6 +3615,13 @@ func (h *Host) audit(ctx context.Context, event AuditEvent) {
 func defaultPluginInstanceID(pkg pluginpkg.Package) string {
 	sum := sha256.Sum256([]byte(pkg.Manifest.Publisher.PublisherID + "\x00" + pkg.Manifest.PluginID() + "\x00" + pkg.PackageHash))
 	return "plugini_" + hex.EncodeToString(sum[:16])
+}
+
+func lifecycleNow(now time.Time) time.Time {
+	if now.IsZero() {
+		return time.Now().UTC()
+	}
+	return now.UTC()
 }
 
 func defaultSurfaceInstanceID(record registry.PluginRecord, surfaceID string, ownerSessionHash string) string {
