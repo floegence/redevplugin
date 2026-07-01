@@ -63,13 +63,15 @@ test("demo platform requires confirmation before cache deletion", async () => {
     headers: {},
     body: JSON.stringify({ method: "demo.cache.delete" }),
   });
-  const token = (await confirmation.json()).data.confirmation_token;
+  const confirmationBody = await confirmation.json();
+  assert.equal(confirmationBody.data.confirmation_token, undefined);
+  const confirmationID = confirmationBody.data.confirmation_id;
   const approved = await platform.fetch("/_redevplugin/api/plugins/rpc", {
     method: "POST",
     headers: {},
     body: JSON.stringify({
       plugin_gateway_token: "gateway_token_parent_only_demo",
-      confirmation_token: token,
+      confirmation_id: confirmationID,
       method: "demo.cache.delete",
       params: { path: "workspace/cache/index.sqlite" },
     }),
@@ -161,6 +163,13 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(challenge.data.data.storage_key, "game/challenges/history");
   assert.equal(challenge.data.data.challenge_history[0].waves_survived, 3);
   assert.equal(challenge.data.data.achievements.includes("storm-runner"), true);
+  const replay = await rpc(platform, "game.replay.export", {
+    run: { score: 102, level: 2, combo: 5, duration_ms: 4800 },
+    frame_count: 288,
+  });
+  assert.equal(replay.data.data.storage_key, "game/replays");
+  assert.equal(replay.data.data.replay.frame_count, 288);
+  assert.match(replay.data.data.replay.filename, /game\/replays/);
 
   const brokeredWorker = await rpc(platform, "worker.brokerDemo", { note: "generated plugin broker smoke" });
   assert.equal(brokeredWorker.data.data.method, "worker.brokerDemo");
@@ -199,12 +208,21 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   const backup = await rpc(platform, "schedule.storage.backup", { view: { status: "all" } });
   assert.equal(backup.data.data.backups.length, 1);
   assert.match(backup.data.data.backup.filename, /schedule\/snapshots/);
+  assert.equal(backup.data.data.backup.item_snapshot.length, 13);
   assert.equal(backup.data.data.transaction.mode, "backup");
   assert.equal(backup.data.data.source, "host files broker + sqlite snapshot");
+  const inspected = await rpc(platform, "schedule.storage.inspect", { view: { status: "all" } });
+  assert.equal(inspected.data.data.health.status, "healthy");
+  assert.equal(inspected.data.data.schema.database, "plugin.sqlite");
+  assert.match(inspected.data.data.transaction.sql_preview, /PRAGMA table_info/);
   const archived = await rpc(platform, "schedule.items.archiveDone", { view: { status: "all" } });
   assert.equal(archived.data.data.archived, 1);
   assert.equal(archived.data.data.storage.records, 12);
   assert.equal(archived.data.data.journal[0].action, "archive_done");
+  const restored = await rpc(platform, "schedule.storage.restoreLatest", { view: { status: "all" } });
+  assert.equal(restored.data.data.restored, true);
+  assert.equal(restored.data.data.storage.records, 13);
+  assert.equal(restored.data.data.journal[0].action, "restore_backup");
 
   const saved = await rpc(platform, "weather.location.save", { location: "Shanghai" });
   assert.equal(saved.data.data.location, "Shanghai");
@@ -224,6 +242,10 @@ test("rich demo plugins exercise game, storage, and network methods", async () =
   assert.equal(weather.data.data.alerts.length, 0);
   assert.equal(weather.data.data.network_history.length, 2);
   assert.match(weather.data.data.network_history[1].operation, /geolocate/);
+  const parser = await rpc(platform, "weather.parser.explain", { location: "Shanghai" });
+  assert.equal(parser.data.data.parser_explanation.quality, "valid-json");
+  assert.equal(parser.data.data.parser_explanation.field_count, 7);
+  assert.equal(parser.data.data.parser_explanation.steps[0].field, "current.temperature_c");
   const comparison = await rpc(platform, "weather.saved.compare", {});
   assert.equal(comparison.data.data.comparisons.length, 3);
   assert.equal(comparison.data.data.comparisons[0].network.transport, "http");

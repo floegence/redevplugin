@@ -26,6 +26,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 )
 
 func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
@@ -451,15 +452,24 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	asset, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession: session.AssetSession,
-		AssetPath:    "ui/index.html",
-		Now:          now.Add(3 * time.Second),
+		AssetSession:   session.AssetSession,
+		AssetSessionID: session.AssetSessionID,
+		AssetPath:      "ui/index.html",
+		Now:            now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("ReadSurfaceAsset() error = %v", err)
 	}
 	if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
 		t.Fatalf("asset mismatch: session=%#v entry=%#v content=%q", asset.Session, asset.Entry, string(asset.Content))
+	}
+	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
+		AssetSession:   session.AssetSession,
+		AssetSessionID: "asset_session_other",
+		AssetPath:      "ui/index.html",
+		Now:            now.Add(3 * time.Second),
+	}); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("ReadSurfaceAsset(wrong session id) error = %v, want ErrTokenAudience", err)
 	}
 }
 
@@ -605,6 +615,53 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	}
 }
 
+func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+	}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
+		runtimeSupervisor: runtime,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PermissionID:     "read",
+		RevokedBy:        "tester",
+		Reason:           "test revoke",
+	}); err != nil {
+		t.Fatalf("RevokePermission() error = %v", err)
+	}
+	updated, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != installed.PluginInstanceID || runtime.lastRevokeEpoch != updated.RevokeEpoch {
+		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d updated=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, updated)
+	}
+	if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
+		PluginInstanceID:     installed.PluginInstanceID,
+		ActiveFingerprint:    installed.ActiveFingerprint,
+		SurfaceInstanceID:    "surface_rpc",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_rpc",
+	}, bridge.RevisionBinding{
+		PolicyRevision:     installed.PolicyRevision,
+		ManagementRevision: installed.ManagementRevision,
+		RevokeEpoch:        installed.RevokeEpoch,
+	}, time.Now().UTC()); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken() after permission revoke error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
+	}
+}
+
 func TestCallPluginMethodRegistersOperation(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_pull_1"}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
@@ -696,6 +753,57 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.stream.started") {
 		t.Fatalf("missing stream audit event: %#v", audits.events)
+	}
+}
+
+func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{StreamID: "stream_disable_1"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.activity")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "logs.tail",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
+		StreamID: "stream_disable_1",
+		Data:     []byte("line before disable"),
+	}); err != nil {
+		t.Fatalf("AppendStreamEvent() before disable error = %v", err)
+	}
+
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"}); err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+
+	assertHostStreamStatus(t, h, "stream_disable_1", stream.StatusOrphanedDisabled)
+	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
+		StreamID: "stream_disable_1",
+		Data:     []byte("line after disable"),
+	}); !errors.Is(err, stream.ErrStreamClosed) {
+		t.Fatalf("AppendStreamEvent() after disable error = %v, want %v", err, stream.ErrStreamClosed)
+	}
+	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{
+		StreamID:     "stream_disable_1",
+		StreamTicket: result.StreamTicket,
+	}); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ReadStream() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if !audits.hasEvent("plugin.streams.disabled_transitioned") {
+		t.Fatalf("missing disabled stream transition audit event: %#v", audits.events)
 	}
 }
 
@@ -1115,20 +1223,173 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
 	}
-	if confirmation.ConfirmationToken == "" || confirmation.RequestHash != result.RequestHash {
+	if confirmation.ConfirmationID == "" || confirmation.RequestHash != result.RequestHash {
 		t.Fatalf("confirmation result mismatch: %#v vs request hash %q", confirmation, result.RequestHash)
 	}
 	if !audits.hasEvent("plugin.confirmation.issued") {
 		t.Fatalf("missing confirmation audit event: %#v", audits.events)
 	}
 
-	call.ConfirmationToken = confirmation.ConfirmationToken
+	call.ConfirmationID = confirmation.ConfirmationID
 	confirmed, err := h.CallPluginMethod(context.Background(), call)
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
 	}
 	if confirmed.Data == nil || capabilityAdapter.calls != 1 {
 		t.Fatalf("confirmed call mismatch: result=%#v calls=%d", confirmed, capabilityAdapter.calls)
+	}
+	if !audits.hasEvent("plugin.confirmation.consumed") {
+		t.Fatalf("missing consumed confirmation audit event: %#v", audits.events)
+	}
+}
+
+func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+	}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		capabilityID:       "example.capability.echo",
+		capabilityAdapter:  capabilityAdapter,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	call.ConfirmationID = confirmation.ConfirmationID
+
+	disabled, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"})
+	if err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != installed.PluginInstanceID || runtime.lastRevokeEpoch != disabled.RevokeEpoch {
+		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d disabled=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, disabled)
+	}
+	if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
+		PluginInstanceID:     installed.PluginInstanceID,
+		ActiveFingerprint:    installed.ActiveFingerprint,
+		SurfaceInstanceID:    "surface_rpc",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_rpc",
+	}, bridge.RevisionBinding{
+		PolicyRevision:     installed.PolicyRevision,
+		ManagementRevision: installed.ManagementRevision,
+		RevokeEpoch:        installed.RevokeEpoch,
+	}, time.Now().UTC()); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() after disable expected fail-closed error")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter called after disabled confirmation: %d", capabilityAdapter.calls)
+	}
+	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
+	}
+}
+
+func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
+	ctx := context.Background()
+	runtime := &recordingRuntimeSupervisor{
+		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		revokeErr: errors.New("runtime pipe closed"),
+	}
+	connectivityBroker := connectivity.NewMemoryBroker()
+	diagnostics := &diagnosticSink{}
+	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivityBroker,
+		storageBroker:      storage.NewMemoryBroker(),
+		diagnostics:        diagnostics,
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		ActiveFingerprint:  enabled.ActiveFingerprint,
+		PolicyRevision:     enabled.PolicyRevision,
+		ManagementRevision: enabled.ManagementRevision,
+		RevokeEpoch:        enabled.RevokeEpoch,
+		ConnectorID:        "api",
+		Transport:          connectivity.TransportHTTP,
+		Destination:        "https://api.example.com",
+	}); err != nil {
+		t.Fatalf("MintConnectionGrant(before disable) error = %v", err)
+	}
+
+	disabled, err := h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: enabled.PluginInstanceID, Reason: "policy"})
+	if err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokeEpoch != disabled.RevokeEpoch {
+		t.Fatalf("runtime revoke call mismatch: calls=%d epoch=%d disabled=%#v", runtime.revokeCalls, runtime.lastRevokeEpoch, disabled)
+	}
+	if len(surfaces.snapshots) != 2 || len(surfaces.snapshots[1].Surfaces) != 0 {
+		t.Fatalf("disable did not clear surfaces after runtime revoke failure: %#v", surfaces.snapshots)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		ActiveFingerprint:  enabled.ActiveFingerprint,
+		PolicyRevision:     enabled.PolicyRevision,
+		ManagementRevision: enabled.ManagementRevision,
+		RevokeEpoch:        enabled.RevokeEpoch,
+		ConnectorID:        "api",
+		Transport:          connectivity.TransportHTTP,
+		Destination:        "https://api.example.com",
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant(after disable) error = %v, want %v", err, connectivity.ErrConnectorDenied)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime_capabilities.revoke_failed" {
+		t.Fatalf("diagnostics mismatch: %#v", diagnostics.events)
+	}
+}
+
+func TestStoreConfirmationIntentCapsPendingIntentsPerPlugin(t *testing.T) {
+	h := &Host{}
+	now := time.Now().UTC()
+	for i := 0; i < maxPendingConfirmationIntentsPerPlugin+1; i++ {
+		h.storeConfirmationIntent(confirmationIntent{
+			ConfirmationID:   "confirmation_" + strconv.Itoa(i),
+			PluginInstanceID: "plugini_confirm",
+			IssuedAt:         now.Add(time.Duration(i) * time.Second),
+			ExpiresAt:        now.Add(time.Hour),
+		})
+	}
+	if len(h.confirmations) != maxPendingConfirmationIntentsPerPlugin {
+		t.Fatalf("pending confirmation count = %d, want %d", len(h.confirmations), maxPendingConfirmationIntentsPerPlugin)
+	}
+	if _, ok := h.confirmations["confirmation_0"]; ok {
+		t.Fatalf("oldest confirmation was not evicted: %#v", h.confirmations)
+	}
+	if _, ok := h.confirmations["confirmation_1"]; !ok {
+		t.Fatalf("newer confirmation was unexpectedly evicted: %#v", h.confirmations)
 	}
 }
 
@@ -1271,7 +1532,7 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 	}
 }
 
-func TestConfirmationTokenCannotBeReusedForDifferentParams(t *testing.T) {
+func TestConfirmationIntentCannotBeReusedForDifferentParams(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -1296,16 +1557,56 @@ func TestConfirmationTokenCannotBeReusedForDifferentParams(t *testing.T) {
 		t.Fatal(err)
 	}
 	call.Params = map[string]any{"target": "other"}
-	call.ConfirmationToken = confirmation.ConfirmationToken
+	call.ConfirmationID = confirmation.ConfirmationID
 	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
 		t.Fatal("CallPluginMethod() expected confirmation audience error")
+	}
+	call.Params = map[string]any{"target": "db"}
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() expected consumed confirmation intent to reject retry")
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
 	}
 }
 
-func TestConfirmationTokenBindsFullParamsBeyondManifestHashFieldHints(t *testing.T) {
+func TestConfirmationIntentConsumesOnceAfterSuccess(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.ConfirmationID = confirmation.ConfirmationID
+	if _, err := h.CallPluginMethod(context.Background(), call); err != nil {
+		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() expected confirmation intent replay rejection")
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("capability adapter calls after replay = %d, want 1 before replay only", capabilityAdapter.calls)
+	}
+}
+
+func TestConfirmationIntentBindsFullParamsBeyondManifestHashFieldHints(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -1330,9 +1631,9 @@ func TestConfirmationTokenBindsFullParamsBeyondManifestHashFieldHints(t *testing
 		t.Fatal(err)
 	}
 	call.Params = map[string]any{"target": "db", "ui_note": "changed"}
-	call.ConfirmationToken = confirmation.ConfirmationToken
+	call.ConfirmationID = confirmation.ConfirmationID
 	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
-		t.Fatal("CallPluginMethod() expected confirmation token to bind full params")
+		t.Fatal("CallPluginMethod() expected confirmation intent to bind full params")
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
@@ -1468,7 +1769,8 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	enabled, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	if !audits.hasEvent("plugin.connectivity.policy_installed") {
@@ -1536,6 +1838,77 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.connectivity.handle_grant_minted") {
 		t.Fatalf("missing connectivity handle grant audit event: %#v", audits.events)
+	}
+	if _, err := h.GrantPermission(context.Background(), GrantPermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PermissionID:     "network.audit",
+		GrantedBy:        "test",
+	}); err != nil {
+		t.Fatalf("GrantPermission(network.audit) error = %v", err)
+	}
+	afterGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		ActiveFingerprint:  enabled.ActiveFingerprint,
+		PolicyRevision:     enabled.PolicyRevision,
+		ManagementRevision: enabled.ManagementRevision,
+		RevokeEpoch:        enabled.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant(stale after grant) error = %v, want %v", err, connectivity.ErrConnectorDenied)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+		PluginInstanceID:   afterGrant.PluginInstanceID,
+		ActiveFingerprint:  afterGrant.ActiveFingerprint,
+		PolicyRevision:     afterGrant.PolicyRevision,
+		ManagementRevision: afterGrant.ManagementRevision,
+		RevokeEpoch:        afterGrant.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); err != nil {
+		t.Fatalf("MintConnectionGrant(fresh after grant) error = %v", err)
+	}
+	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PermissionID:     "network.audit",
+		RevokedBy:        "test",
+		Reason:           "test",
+	}); err != nil {
+		t.Fatalf("RevokePermission(network.audit) error = %v", err)
+	}
+	afterRevoke, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+		PluginInstanceID:   afterGrant.PluginInstanceID,
+		ActiveFingerprint:  afterGrant.ActiveFingerprint,
+		PolicyRevision:     afterGrant.PolicyRevision,
+		ManagementRevision: afterGrant.ManagementRevision,
+		RevokeEpoch:        afterGrant.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant(stale after revoke) error = %v, want %v", err, connectivity.ErrConnectorDenied)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
+		PluginInstanceID:   afterRevoke.PluginInstanceID,
+		ActiveFingerprint:  afterRevoke.ActiveFingerprint,
+		PolicyRevision:     afterRevoke.PolicyRevision,
+		ManagementRevision: afterRevoke.ManagementRevision,
+		RevokeEpoch:        afterRevoke.RevokeEpoch,
+		ConnectorID:        "mysql",
+		Transport:          connectivity.TransportTCP,
+		Destination:        "db.example.com:3306",
+	}); err != nil {
+		t.Fatalf("MintConnectionGrant(fresh after revoke) error = %v", err)
 	}
 	if _, err := h.MintNetworkHandleGrant(context.Background(), MintConnectionGrantRequest{
 		PluginInstanceID: installed.PluginInstanceID,
@@ -1717,6 +2090,121 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}
 	if !deleteAudits.hasEvent("plugin.cleanup.executed") {
 		t.Fatalf("missing delete cleanup audit event: %#v", deleteAudits.events)
+	}
+}
+
+func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+	}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		runtimeSupervisor: runtime,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	uninstalled, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true})
+	if err != nil {
+		t.Fatalf("UninstallPlugin() error = %v", err)
+	}
+	if runtime.revokeCalls != 2 || runtime.lastRevokedPlugin != installed.PluginInstanceID || runtime.lastRevokeEpoch != uninstalled.RevokeEpoch {
+		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d uninstalled=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, uninstalled)
+	}
+	if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
+		PluginInstanceID:     installed.PluginInstanceID,
+		ActiveFingerprint:    installed.ActiveFingerprint,
+		SurfaceInstanceID:    "surface_rpc",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_rpc",
+	}, bridge.RevisionBinding{
+		PolicyRevision:     installed.PolicyRevision,
+		ManagementRevision: installed.ManagementRevision,
+		RevokeEpoch:        installed.RevokeEpoch,
+	}, time.Now().UTC()); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken() after uninstall error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
+	}
+}
+
+func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.T) {
+	ctx := context.Background()
+	connectivityBroker := connectivity.NewMemoryBroker()
+	h, surfaces, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		connectivityBroker: connectivityBroker,
+		storageBroker:      storage.NewMemoryBroker(),
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 1 {
+		t.Fatalf("enable surface publish mismatch: %#v", surfaces.snapshots)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		ActiveFingerprint:  enabled.ActiveFingerprint,
+		PolicyRevision:     enabled.PolicyRevision,
+		ManagementRevision: enabled.ManagementRevision,
+		RevokeEpoch:        enabled.RevokeEpoch,
+		ConnectorID:        "api",
+		Transport:          connectivity.TransportHTTP,
+		Destination:        "https://api.example.com",
+	}); err != nil {
+		t.Fatalf("MintConnectionGrant() before uninstall error = %v", err)
+	}
+	if _, err := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
+		StreamID:             "stream_uninstall_1",
+		PluginID:             enabled.PluginID,
+		PluginInstanceID:     enabled.PluginInstanceID,
+		Method:               "network.watch",
+		Execution:            string(manifest.MethodExecutionSubscription),
+		SurfaceInstanceID:    "surface_network",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_network",
+	}); err != nil {
+		t.Fatalf("Streams.Register() error = %v", err)
+	}
+
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: enabled.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin() error = %v", err)
+	}
+
+	if len(surfaces.snapshots) != 2 || len(surfaces.snapshots[1].Surfaces) != 0 {
+		t.Fatalf("uninstall did not clear surfaces: %#v", surfaces.snapshots)
+	}
+	assertHostStreamStatus(t, h, "stream_uninstall_1", stream.StatusOrphanedRemoved)
+	if _, err := h.AppendStreamEvent(ctx, AppendStreamEventRequest{
+		StreamID: "stream_uninstall_1",
+		Data:     []byte("line after uninstall"),
+	}); !errors.Is(err, stream.ErrStreamClosed) {
+		t.Fatalf("AppendStreamEvent() after uninstall error = %v, want %v", err, stream.ErrStreamClosed)
+	}
+	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		ActiveFingerprint:  enabled.ActiveFingerprint,
+		PolicyRevision:     enabled.PolicyRevision,
+		ManagementRevision: enabled.ManagementRevision,
+		RevokeEpoch:        enabled.RevokeEpoch,
+		ConnectorID:        "api",
+		Transport:          connectivity.TransportHTTP,
+		Destination:        "https://api.example.com",
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant() after uninstall error = %v, want %v", err, connectivity.ErrConnectorDenied)
+	}
+	if !audits.hasEvent("plugin.streams.uninstalled_transitioned") {
+		t.Fatalf("missing uninstalled stream transition audit event: %#v", audits.events)
 	}
 }
 
@@ -3844,16 +4332,20 @@ type recordingSecretStore struct {
 }
 
 type recordingRuntimeSupervisor struct {
-	calls         int
-	startCalls    int
-	stopCalls     int
-	startedTarget runtimeclient.Target
-	health        runtimeclient.Health
-	result        capability.Result
-	err           error
-	lastLease     runtimeclient.Lease
-	lastMethod    string
-	lastPayload   []byte
+	calls             int
+	startCalls        int
+	stopCalls         int
+	revokeCalls       int
+	startedTarget     runtimeclient.Target
+	health            runtimeclient.Health
+	result            capability.Result
+	err               error
+	revokeErr         error
+	lastLease         runtimeclient.Lease
+	lastMethod        string
+	lastPayload       []byte
+	lastRevokedPlugin string
+	lastRevokeEpoch   uint64
 }
 
 type recordingRuntimeArtifactResolver struct {
@@ -3881,6 +4373,17 @@ func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want o
 	}
 	if record.Status != want {
 		t.Fatalf("operation %s status = %s, want %s: %#v", operationID, record.Status, want, record)
+	}
+}
+
+func assertHostStreamStatus(t *testing.T, h *Host, streamID string, want stream.Status) {
+	t.Helper()
+	record, err := h.adapters.Streams.Get(context.Background(), streamID)
+	if err != nil {
+		t.Fatalf("Streams.Get(%s) error = %v", streamID, err)
+	}
+	if record.Status != want {
+		t.Fatalf("stream %s status = %s, want %s: %#v", streamID, record.Status, want, record)
 	}
 }
 
@@ -3950,8 +4453,11 @@ func (r *recordingRuntimeSupervisor) InvokeWorker(_ context.Context, lease runti
 	return json.Marshal(r.result)
 }
 
-func (r *recordingRuntimeSupervisor) Revoke(context.Context, string, uint64) error {
-	return nil
+func (r *recordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) error {
+	r.revokeCalls++
+	r.lastRevokedPlugin = pluginInstanceID
+	r.lastRevokeEpoch = revokeEpoch
+	return r.revokeErr
 }
 
 func (r *recordingRuntimeArtifactResolver) RuntimePath(_ context.Context, target RuntimeTarget) (string, error) {

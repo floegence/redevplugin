@@ -113,7 +113,7 @@ type rpcRequest struct {
 	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
 	BridgeChannelID      string         `json:"bridge_channel_id"`
 	GatewayToken         string         `json:"plugin_gateway_token"`
-	ConfirmationToken    string         `json:"confirmation_token,omitempty"`
+	ConfirmationID       string         `json:"confirmation_id,omitempty"`
 	Method               string         `json:"method"`
 	Params               map[string]any `json:"params,omitempty"`
 }
@@ -176,7 +176,8 @@ type startRuntimeRequest struct {
 	Target host.RuntimeTarget `json:"target,omitempty"`
 }
 
-const assetSessionCookieName = "__Host-redevplugin-asset-session"
+const assetSessionCookieName = "__Secure-redevplugin-asset-session"
+const assetPathPrefix = "/_redevplugin/assets/"
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
 
 // OwnerSessionHashHeader optionally carries the host session binding used by
@@ -343,7 +344,7 @@ func RouteSet() []Route {
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
 		{Method: http.MethodPatch, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
 		{Method: http.MethodPost, Path: "/_redevplugin/bootstrap"},
-		{Method: http.MethodGet, Path: "/_redevplugin/assets/{asset_path...}"},
+		{Method: http.MethodGet, Path: "/_redevplugin/assets/{asset_session_id}/{asset_path...}"},
 		{Method: http.MethodGet, Path: "/_redevplugin/stream/{stream_id}"},
 		{Method: http.MethodPost, Path: "/_redevplugin/csp-report"},
 	}
@@ -627,7 +628,7 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		OwnerUserHash:        req.OwnerUserHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		GatewayToken:         req.GatewayToken,
-		ConfirmationToken:    req.ConfirmationToken,
+		ConfirmationID:       req.ConfirmationID,
 		Method:               req.Method,
 		Params:               req.Params,
 	})
@@ -1090,7 +1091,7 @@ func (h Handler) handleSandboxBootstrap(w http.ResponseWriter, r *http.Request) 
 	http.SetCookie(w, &http.Cookie{
 		Name:     assetSessionCookieName,
 		Value:    result.AssetSession,
-		Path:     "/",
+		Path:     assetSessionCookiePath(result.AssetSessionID),
 		Expires:  result.ExpiresAt,
 		MaxAge:   maxAgeSeconds(time.Until(result.ExpiresAt)),
 		HttpOnly: true,
@@ -1109,7 +1110,7 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
 	}
-	assetPath, ok := assetPathFromSandboxPath(r.URL.Path)
+	assetSessionID, assetPath, ok := assetPathFromSandboxPath(r.URL.Path)
 	if !ok {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "asset path is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
@@ -1120,8 +1121,9 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.Host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
-		AssetSession: cookie.Value,
-		AssetPath:    assetPath,
+		AssetSession:   cookie.Value,
+		AssetSessionID: assetSessionID,
+		AssetPath:      assetPath,
 	})
 	if err != nil {
 		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
@@ -1265,23 +1267,43 @@ func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string
 	return pluginInstanceID, true
 }
 
-func assetPathFromSandboxPath(requestPath string) (string, bool) {
-	const prefix = "/_redevplugin/assets/"
-	if !strings.HasPrefix(requestPath, prefix) {
-		return "", false
+func assetPathFromSandboxPath(requestPath string) (string, string, bool) {
+	if !strings.HasPrefix(requestPath, assetPathPrefix) {
+		return "", "", false
 	}
-	assetPath := strings.TrimPrefix(requestPath, prefix)
-	if assetPath == "" {
-		return "", false
+	rest := strings.TrimPrefix(requestPath, assetPathPrefix)
+	sessionID, assetPath, ok := strings.Cut(rest, "/")
+	if !ok || !validAssetSessionID(sessionID) || assetPath == "" {
+		return "", "", false
 	}
 	clean := path.Clean(assetPath)
 	if clean != assetPath || clean == "." || strings.HasPrefix(assetPath, "../") || strings.Contains(assetPath, "/../") || strings.HasPrefix(assetPath, ".") || strings.Contains(assetPath, "/.") {
-		return "", false
+		return "", "", false
 	}
 	if !strings.HasPrefix(assetPath, "ui/") {
-		return "", false
+		return "", "", false
 	}
-	return assetPath, true
+	return sessionID, assetPath, true
+}
+
+func assetSessionCookiePath(assetSessionID string) string {
+	if !validAssetSessionID(assetSessionID) {
+		return assetPathPrefix
+	}
+	return assetPathPrefix + assetSessionID + "/"
+}
+
+func validAssetSessionID(value string) bool {
+	if value == "" || strings.Contains(value, "/") || strings.HasPrefix(value, ".") {
+		return false
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func streamIDFromPath(requestPath string) (string, bool) {

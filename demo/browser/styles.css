@@ -508,7 +508,8 @@ pre {
 }
 
 .snapshot-panel,
-.challenge-panel {
+.challenge-panel,
+.replay-panel {
   background: rgb(15 23 42 / 72%);
   border: 1px solid rgb(125 211 252 / 24%);
   border-radius: 8px;
@@ -519,7 +520,8 @@ pre {
 }
 
 .snapshot-panel > div,
-.challenge-panel > div {
+.challenge-panel > div,
+.replay-panel > div {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -540,6 +542,11 @@ pre {
 .challenge-chip {
   background: rgb(240 171 252 / 14%);
   border-color: rgb(240 171 252 / 32%);
+}
+
+.replay-chip {
+  background: rgb(254 240 138 / 14%);
+  border-color: rgb(254 240 138 / 32%);
 }
 
 .arcade-shell pre {
@@ -605,7 +612,7 @@ pre {
 }
 
 .schedule-filter {
-  grid-template-columns: minmax(160px, 1fr) minmax(132px, 0.45fr) auto auto auto auto;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
 }
 
 .schedule-board {
@@ -777,6 +784,30 @@ pre {
   margin: 8px 0 0;
 }
 
+.schedule-health-panel {
+  background: #ffffff;
+  border: 1px solid #d7dfcf;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.schedule-health-panel > div {
+  background: #f8fafc;
+  border: 1px solid #dbe4d4;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.schedule-health-panel strong {
+  color: #315a2e;
+  display: block;
+  overflow-wrap: anywhere;
+}
+
 .journal-panel {
   background: #ffffff;
   border: 1px solid #d7dfcf;
@@ -874,7 +905,7 @@ pre {
 }
 
 .weather-search {
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(124px, auto));
 }
 
 .saved-locations {
@@ -1087,6 +1118,65 @@ pre {
   min-height: 150px;
 }
 
+.parser-explain-panel {
+  background: #ffffff;
+  border: 1px solid #cbd7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.parser-explain-panel > div {
+  background: #f8fafc;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.parser-explain-panel strong {
+  color: #1d4ed8;
+  display: block;
+  font-size: 16px;
+}
+
+.parser-explain-panel ol {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.parser-explain-panel li {
+  background: #f8fafc;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  min-height: 92px;
+  padding: 10px;
+}
+
+.parser-explain-panel li strong,
+.parser-explain-panel li span,
+.parser-explain-panel li small {
+  display: block;
+}
+
+.parser-explain-panel li strong {
+  overflow-wrap: anywhere;
+}
+
+.parser-explain-panel li span,
+.parser-explain-panel li small {
+  color: #64748b;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
 .network-history-panel {
   background: #ffffff;
   border: 1px solid #cbd7e2;
@@ -1215,6 +1305,7 @@ pre {
   .schedule-storage,
   .schedule-board,
   .schedule-insights,
+  .schedule-health-panel,
   .backup-panel > div:last-child,
   .timeline-rail,
   .arcade-telemetry,
@@ -1228,6 +1319,8 @@ pre {
   .hourly-strip,
   .network-debug-panel,
   .journal-panel ol,
+  .parser-explain-panel,
+  .parser-explain-panel ol,
   .network-history-panel ol,
   .weather-compare-grid {
     grid-template-columns: 1fr;

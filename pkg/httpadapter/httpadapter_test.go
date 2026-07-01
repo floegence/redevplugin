@@ -54,7 +54,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"PATCH /_redevplugin/api/plugins/{plugin_instance_id}/settings":              false,
 		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":         false,
 		"POST /_redevplugin/bootstrap":                                               false,
-		"GET /_redevplugin/assets/{asset_path...}":                                   false,
+		"GET /_redevplugin/assets/{asset_session_id}/{asset_path...}":                false,
 		"POST /_redevplugin/csp-report":                                              false,
 	}
 	for _, route := range routes {
@@ -194,6 +194,97 @@ func TestHandlerWebSecurityDoesNotRequireCSRFForSandboxBootstrap(t *testing.T) {
 	}
 	if guard.evaluateCount != 1 || guard.csrfCount != 0 {
 		t.Fatalf("guard calls = evaluate:%d csrf:%d", guard.evaluateCount, guard.csrfCount)
+	}
+}
+
+func TestHandlerWebSecurityCSRFClassificationCoversRouteSet(t *testing.T) {
+	csrfExemptUnsafePaths := map[string]struct{}{
+		"/_redevplugin/bootstrap":  {},
+		"/_redevplugin/csp-report": {},
+	}
+	for _, route := range RouteSet() {
+		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
+			guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow}
+			handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+			body := ""
+			if route.Method == http.MethodPost || route.Method == http.MethodPatch || route.Method == http.MethodPut {
+				body = `{}`
+			}
+			req := httptest.NewRequest(route.Method, samplePathForRoute(route.Path), bytes.NewBufferString(body))
+			req.Header.Set(OwnerSessionHashHeader, "session_hash")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if guard.evaluateCount != 1 {
+				t.Fatalf("Evaluate count = %d, want 1", guard.evaluateCount)
+			}
+			_, csrfExempt := csrfExemptUnsafePaths[route.Path]
+			wantCSRF := route.Method != http.MethodGet &&
+				route.Method != http.MethodHead &&
+				route.Method != http.MethodOptions &&
+				strings.HasPrefix(route.Path, "/_redevplugin/api/plugins/") &&
+				!csrfExempt
+			if wantCSRF && guard.csrfCount != 1 {
+				t.Fatalf("CSRF count = %d, want 1 for %s", guard.csrfCount, route.Path)
+			}
+			if !wantCSRF && guard.csrfCount != 0 {
+				t.Fatalf("CSRF count = %d, want 0 for %s", guard.csrfCount, route.Path)
+			}
+		})
+	}
+}
+
+func TestOpenAPIDeclaresOwnerSessionHashForCSRFRoutes(t *testing.T) {
+	spec := readOpenAPIContract(t)
+	for _, route := range RouteSet() {
+		req := httptest.NewRequest(route.Method, samplePathForRoute(route.Path), nil)
+		if !requiresCSRF(req) {
+			continue
+		}
+		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
+			block, ok := openAPIOperationBlock(spec, route.Path, route.Method)
+			if !ok {
+				t.Fatalf("OpenAPI missing operation for %s %s", route.Method, route.Path)
+			}
+			if !strings.Contains(block, `#/components/parameters/OwnerSessionHashHeader`) {
+				t.Fatalf("OpenAPI operation for %s %s must declare %s; block:\n%s", route.Method, route.Path, OwnerSessionHashHeader, block)
+			}
+		})
+	}
+}
+
+func TestOpenAPIConfirmationResponseBelongsToConfirmRoute(t *testing.T) {
+	spec := readOpenAPIContract(t)
+	rpcBlock, ok := openAPIOperationBlock(spec, "/_redevplugin/api/plugins/rpc", http.MethodPost)
+	if !ok {
+		t.Fatal("OpenAPI missing rpc operation")
+	}
+	if strings.Contains(rpcBlock, `#/components/responses/ConfirmEnvelope`) {
+		t.Fatalf("rpc operation must not use ConfirmEnvelope; block:\n%s", rpcBlock)
+	}
+	confirmBlock, ok := openAPIOperationBlock(spec, "/_redevplugin/api/plugins/confirm", http.MethodPost)
+	if !ok {
+		t.Fatal("OpenAPI missing confirm operation")
+	}
+	if !strings.Contains(confirmBlock, `#/components/responses/ConfirmEnvelope`) {
+		t.Fatalf("confirm operation must use ConfirmEnvelope; block:\n%s", confirmBlock)
+	}
+}
+
+func TestHandlerWebSecurityIgnoresNonPluginPaths(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDeny, csrfErr: websecurity.ErrCSRFRequired}
+	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}
+	req := httptest.NewRequest(http.MethodPost, "/healthz", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("non-plugin path status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if guard.evaluateCount != 0 || guard.csrfCount != 0 {
+		t.Fatalf("guard should not run for non-plugin path, evaluate=%d csrf=%d", guard.evaluateCount, guard.csrfCount)
 	}
 }
 
@@ -511,14 +602,24 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatalf("sandbox bootstrap status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != assetSessionCookieName || cookies[0].Value == "" || cookies[0].Path != "/" || !cookies[0].HttpOnly || !cookies[0].Secure {
+	var bootstrapEnvelope struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			AssetSessionID string `json:"asset_session_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &bootstrapEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	assetURL := "/_redevplugin/assets/" + bootstrapEnvelope.Data.AssetSessionID + "/ui/index.html"
+	if len(cookies) != 1 || cookies[0].Name != assetSessionCookieName || cookies[0].Value == "" || cookies[0].Path != assetSessionCookiePath(bootstrapEnvelope.Data.AssetSessionID) || !cookies[0].HttpOnly || !cookies[0].Secure {
 		t.Fatalf("asset session cookie mismatch: %#v", cookies)
 	}
 	if strings.Contains(rec.Body.String(), cookies[0].Value) || strings.Contains(rec.Body.String(), `"asset_session"`) {
 		t.Fatalf("sandbox bootstrap body leaked asset session token: %s", rec.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/ui/index.html", nil)
+	req = httptest.NewRequest(http.MethodGet, assetURL, nil)
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -535,7 +636,15 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatalf("asset nosniff = %q", got)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/manifest.json", nil)
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/asset_session_other/ui/index.html", nil)
+	req.AddCookie(cookies[0])
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("mismatched asset session id status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/"+bootstrapEnvelope.Data.AssetSessionID+"/manifest.json", nil)
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -787,10 +896,10 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	}
 
 	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redevplugin/api/plugins/confirm", body)
-	if confirmation.ConfirmationToken == "" || confirmation.RequestHash == "" {
+	if confirmation.ConfirmationID == "" || confirmation.RequestHash == "" {
 		t.Fatalf("confirmation response mismatch: %#v", confirmation)
 	}
-	body["confirmation_token"] = confirmation.ConfirmationToken
+	body["confirmation_id"] = confirmation.ConfirmationID
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", body)
 	if result.Data == nil || adapter.last.Method != "danger.run" {
 		t.Fatalf("confirmed rpc mismatch: result=%#v invocation=%#v", result, adapter.last)
@@ -1460,13 +1569,83 @@ func samplePathForRoute(path string) string {
 		return "/_redevplugin/api/plugins/plugini_test/settings/schema"
 	case "/_redevplugin/api/plugins/{plugin_instance_id}/settings":
 		return "/_redevplugin/api/plugins/plugini_test/settings"
-	case "/_redevplugin/assets/{asset_path...}":
-		return "/_redevplugin/assets/ui/index.html"
+	case "/_redevplugin/assets/{asset_session_id}/{asset_path...}":
+		return "/_redevplugin/assets/assetsession_test/ui/index.html"
 	case "/_redevplugin/stream/{stream_id}":
 		return "/_redevplugin/stream/stream_test"
 	default:
 		return path
 	}
+}
+
+func readOpenAPIContract(t *testing.T) string {
+	t.Helper()
+	candidates := []string{
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v1.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v1.yaml"),
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		raw, err := os.ReadFile(candidate)
+		if err == nil {
+			return string(raw)
+		}
+		lastErr = err
+	}
+	t.Fatalf("read OpenAPI contract: %v", lastErr)
+	return ""
+}
+
+func openAPIOperationBlock(spec, routePath, method string) (string, bool) {
+	lines := strings.Split(spec, "\n")
+	pathLine := "  " + routePath + ":"
+	methodLine := "    " + strings.ToLower(method) + ":"
+	pathStart := -1
+	for i, line := range lines {
+		if line == pathLine {
+			pathStart = i
+			break
+		}
+	}
+	if pathStart == -1 {
+		return "", false
+	}
+	pathEnd := len(lines)
+	for i := pathStart + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "  /") || lines[i] == "components:" {
+			pathEnd = i
+			break
+		}
+	}
+	methodStart := -1
+	for i := pathStart + 1; i < pathEnd; i++ {
+		if lines[i] == methodLine {
+			methodStart = i
+			break
+		}
+	}
+	if methodStart == -1 {
+		return "", false
+	}
+	methodEnd := pathEnd
+	for i := methodStart + 1; i < pathEnd; i++ {
+		if strings.TrimSpace(lines[i]) != "" && leadingSpaces(lines[i]) <= 4 {
+			methodEnd = i
+			break
+		}
+	}
+	return strings.Join(lines[methodStart:methodEnd], "\n"), true
+}
+
+func leadingSpaces(line string) int {
+	count := 0
+	for _, r := range line {
+		if r != ' ' {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 func newHTTPTestHost(t *testing.T) *host.Host {

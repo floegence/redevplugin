@@ -38,7 +38,7 @@ const (
 	realDemoUser                = "real_demo_owner_user"
 	realDemoChannel             = "real_demo_session_channel"
 	realDemoCapability          = "example.capability.real_demo"
-	realDemoAssetCookieName     = "__Host-redevplugin-asset-session"
+	realDemoAssetCookieName     = "__Secure-redevplugin-asset-session"
 	realDemoBrokerStoreID       = "workspace"
 	realDemoBrokerKVStoreID     = "settings"
 	realDemoBrokerSQLiteStoreID = "db"
@@ -339,7 +339,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		errCh <- pluginServer.ListenAndServe()
 	}()
 	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo host: %s/demo/real/index.html\n", hostOrigin)
-	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo plugin sandbox assets: %s/_redevplugin/assets/ui/index.html\n", sandboxOrigin)
+	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo plugin sandbox assets: %s/_redevplugin/assets/{asset_session_id}/ui/index.html\n", sandboxOrigin)
 	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo runtime_generation_id: %s\n", health.RuntimeGenerationID)
 	select {
 	case <-ctx.Done():
@@ -1066,8 +1066,9 @@ function tokenLeakCheck(value) {
   return {
     asset_ticket_visible: location.href.includes('asset_ticket') || document.cookie.includes('` + realDemoAssetCookieName + `'),
     gateway_token_visible: serialized.includes('plugin_gateway_token') || serialized.includes('gateway_token'),
-    confirmation_token_visible: serialized.includes('confirmation_token'),
+    confirmation_token_visible: serialized.includes('confirmation_token') || serialized.includes('confirmation_secret'),
     storage_grant_visible: serialized.includes(storageGrantMarker) || serialized.includes(handleGrantMarker),
+    network_grant_visible: serialized.includes('connection_grant_token') || serialized.includes('network_grant_token'),
   };
 }
 
@@ -1202,13 +1203,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
       const bootstrap = ` + bootstrap + `;
       const brokerConfig = ` + brokerConfig + `;
       const pluginOrigin = "` + pluginOrigin + `";
-      const pluginURL = new URL("/_redevplugin/assets/ui/index.html", pluginOrigin);
-      pluginURL.searchParams.set("parent_origin", location.origin);
-      pluginURL.searchParams.set("plugin_id", bootstrap.plugin_id);
-      pluginURL.searchParams.set("surface_id", bootstrap.surface_id);
-      pluginURL.searchParams.set("surface_instance_id", bootstrap.surface_instance_id);
-      pluginURL.searchParams.set("active_fingerprint", bootstrap.active_fingerprint);
-      pluginURL.searchParams.set("bridge_nonce", bootstrap.bridge_nonce);
+      let pluginURL = null;
       const iframe = document.querySelector("#plugin-frame");
       let handshakes = 0;
       let rpcCalls = 0;
@@ -1232,7 +1227,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
           };
           nextInit = { ...init, body: JSON.stringify(body) };
         }
-        const trackResult = url.endsWith("/bridge-token") || url.endsWith("/rpc") || url.endsWith("/confirm");
+        const trackResult = url.endsWith("/rpc") || url.endsWith("/confirm");
         if (url.endsWith("/bridge-token")) {
           handshakes += 1;
           document.querySelector("#handshake-count").textContent = String(handshakes);
@@ -1241,7 +1236,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
         if (url.endsWith("/rpc")) {
           rpcCalls += 1;
           document.querySelector("#rpc-count").textContent = String(rpcCalls);
-          log("rpc", { method: body.method, confirmed: Boolean(body.confirmation_token) });
+          log("rpc", { method: body.method, confirmed: Boolean(body.confirmation_id) });
         }
         const response = await fetch(input, nextInit);
         if (trackResult) {
@@ -1265,7 +1260,7 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
           ownerUserHash: bootstrap.owner_user_hash,
           sessionChannelIdHash: bootstrap.session_channel_id_hash,
         },
-        iframeOrigin: pluginURL.origin,
+        iframeOrigin: pluginOrigin,
         iframeWindow: iframe.contentWindow,
         parentWindow: window,
         fetch: hostFetch,
@@ -1319,10 +1314,22 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
         if (!assetResponse.ok) {
           throw new Error("asset bootstrap failed with HTTP " + assetResponse.status);
         }
+        const assetEnvelope = await assetResponse.json();
+        const assetSessionId = assetEnvelope?.data?.asset_session_id;
+        if (!assetSessionId) {
+          throw new Error("asset bootstrap response omitted asset_session_id");
+        }
+        pluginURL = new URL("/_redevplugin/assets/" + encodeURIComponent(assetSessionId) + "/ui/index.html", pluginOrigin);
+        pluginURL.searchParams.set("parent_origin", location.origin);
+        pluginURL.searchParams.set("plugin_id", bootstrap.plugin_id);
+        pluginURL.searchParams.set("surface_id", bootstrap.surface_id);
+        pluginURL.searchParams.set("surface_instance_id", bootstrap.surface_instance_id);
+        pluginURL.searchParams.set("active_fingerprint", bootstrap.active_fingerprint);
+        pluginURL.searchParams.set("bridge_nonce", bootstrap.bridge_nonce);
         iframe.src = pluginURL.href;
         document.querySelector("#host-status").textContent = "listening";
         document.querySelector("#runtime-ready").textContent = "1";
-        log("host-ready", { host_origin: "` + hostOrigin + `", plugin_origin: pluginURL.origin, asset_ticket_id: bootstrap.asset_ticket_id });
+        log("host-ready", { host_origin: "` + hostOrigin + `", plugin_origin: pluginURL.origin, asset_ticket_id: bootstrap.asset_ticket_id, asset_session_id: assetSessionId });
       } catch (error) {
         document.querySelector("#host-status").textContent = "error";
         log("host-error", { message: String(error?.message || error) });

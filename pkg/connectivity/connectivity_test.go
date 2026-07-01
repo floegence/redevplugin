@@ -459,6 +459,35 @@ func TestExecutorRejectsExpiredAndMismatchedGrants(t *testing.T) {
 	}
 }
 
+func TestExecutorDefaultDialerRejectsBlockedResolvedAddress(t *testing.T) {
+	grant := testGrant(t, TransportTCP, "db.example.com:443", time.Minute)
+	executor := NewExecutor(ExecutorOptions{
+		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("10.0.0.12")}}, nil
+		},
+	})
+	_, err := executor.TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: grant, Timeout: time.Millisecond})
+	if !errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("TCPRoundTrip(resolved private address) error = %v, want %v", err, ErrTargetDenied)
+	}
+}
+
+func TestExecutorDefaultDialerAllowsPublicResolvedAddress(t *testing.T) {
+	grant := testGrant(t, TransportTCP, "db.example.com:443", time.Minute)
+	executor := NewExecutor(ExecutorOptions{
+		Dialer: &net.Dialer{Timeout: time.Millisecond},
+		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}, nil
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	_, err := executor.TCPRoundTrip(ctx, TCPRoundTripRequest{Grant: grant, Timeout: time.Millisecond})
+	if errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("TCPRoundTrip(public resolved address) error = %v, want non-classifier dial failure", err)
+	}
+}
+
 func testGrant(t *testing.T, transport Transport, rawDestination string, ttl time.Duration) ConnectionGrant {
 	t.Helper()
 	destination, err := ParseDestination(transport, rawDestination)

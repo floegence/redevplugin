@@ -140,13 +140,17 @@ try {
   await expectText(gameFrame.locator("#plugin-result"), "host-backed kv store");
   await expectText(gameFrame.locator("#plugin-result"), "achievements");
   await expectText(gameFrame.locator("#leaderboard"), "Latest run");
+  await gameFrame.getByRole("button", { name: "Export replay" }).click();
+  await expectText(gameFrame.locator("#plugin-result"), "game.replay.export");
+  await expectText(gameFrame.locator("#plugin-result"), "game/replays");
+  await expectText(gameFrame.locator("#replay-list"), "KiB");
   await gameFrame.getByRole("button", { name: "Save snapshot" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "game.snapshot.save");
   await expectText(gameFrame.locator("#snapshot-list"), "pts");
   await gameFrame.getByRole("button", { name: "Load snapshot" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "game.snapshot.load");
   await expectText(gameFrame.locator("#plugin-result"), "game/snapshots");
-  await expectText(page.locator("#rpc-count"), "6");
+  await expectText(page.locator("#rpc-count"), "7");
 
   await page.getByRole("button", { name: "Schedule planner" }).click();
   await expectText(page.locator("#handshake-count"), "1");
@@ -200,10 +204,18 @@ try {
   await expectText(scheduleFrame.locator("#backup-list"), "schedule/snapshots");
   await expectText(scheduleFrame.locator("#schedule-transaction"), "backup");
   await expectText(scheduleFrame.locator("#schedule-sql-preview"), "schedule_backups");
+  await scheduleFrame.getByRole("button", { name: "Inspect DB" }).click();
+  await expectText(scheduleFrame.locator("#schedule-health"), "healthy");
+  await expectText(scheduleFrame.locator("#schedule-schema"), "plugin.sqlite");
+  await expectText(scheduleFrame.locator("#schedule-sql-preview"), "PRAGMA table_info");
   await scheduleFrame.getByRole("button", { name: "Archive done" }).click();
   await expectText(scheduleFrame.locator("#schedule-count"), "11");
   await expectText(scheduleFrame.locator("#schedule-journal"), "archive_done");
-  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 7");
+  await scheduleFrame.getByRole("button", { name: "Restore latest" }).click();
+  await expectText(scheduleFrame.locator("#schedule-count"), "13");
+  await expectText(scheduleFrame.locator("#schedule-journal"), "restore_backup");
+  await expectText(scheduleFrame.locator("#schedule-restores"), "1");
+  await expectText(scheduleFrame.locator("#schedule-storage-revision"), "rev 8");
   await page.reload({ waitUntil: "load" });
   await expectText(page.locator("#host-status"), "listening");
   await expectText(page.locator("#handshake-count"), "1");
@@ -211,11 +223,11 @@ try {
   await expectText(reloadedScheduleFrame.locator("#plugin-status"), "ready");
   await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Architecture sync");
   await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Plugin runtime profiling");
-  await expectMissingText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
-  await expectText(reloadedScheduleFrame.locator("#schedule-count"), "11");
+  await expectText(reloadedScheduleFrame.locator("#schedule-list"), "Browser QA review");
+  await expectText(reloadedScheduleFrame.locator("#schedule-count"), "13");
   await expectText(reloadedScheduleFrame.locator("#schedule-storage-source"), "host storage broker");
-  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 7");
-  await expectText(reloadedScheduleFrame.locator("#schedule-journal"), "archive_done");
+  await expectText(reloadedScheduleFrame.locator("#schedule-storage-revision"), "rev 8");
+  await expectText(reloadedScheduleFrame.locator("#schedule-journal"), "restore_backup");
 
   await page.getByRole("button", { name: "Weather console" }).click();
   await expectText(page.locator("#handshake-count"), "1");
@@ -246,6 +258,10 @@ try {
   await expectText(weatherFrame.locator("#network-history"), "GET /v1/forecast");
   await expectText(weatherFrame.locator("#plugin-result"), "weather.fetch");
   await expectText(weatherFrame.locator("#plugin-result"), "api.weather.example");
+  await weatherFrame.getByRole("button", { name: "Explain parser" }).click();
+  await expectText(weatherFrame.locator("#parser-quality"), "valid-json");
+  await expectText(weatherFrame.locator("#parser-fields"), "7");
+  await expectText(weatherFrame.locator("#parser-steps"), "current.temperature_c");
   await weatherFrame.getByRole("button", { name: "Compare saved" }).click();
   await expectText(weatherFrame.locator("#weather-compare-count"), "4 locations");
   await expectText(weatherFrame.locator("#weather-compare-grid"), "San Francisco");

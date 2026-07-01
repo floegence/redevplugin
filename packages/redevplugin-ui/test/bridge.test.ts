@@ -431,7 +431,7 @@ test("surface host maps rpc envelope errors into bridge responses", async () => 
   host.dispose();
 });
 
-test("surface host owns dangerous confirmation token and retries confirmed rpc", async () => {
+test("surface host uses server-held confirmation intent and retries confirmed rpc", async () => {
   const parent = new FakeWindow();
   const iframe = new FakeWindow();
   const fetch = new FakeFetch();
@@ -441,7 +441,7 @@ test("surface host owns dangerous confirmation token and retries confirmed rpc",
   fetch.push({
     ok: true,
     data: {
-      confirmation_token: "confirmation_secret",
+      confirmation_id: "confirmation_intent_1",
       confirmation_token_id: "confirmation_token_1",
       request_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
@@ -498,7 +498,7 @@ test("surface host owns dangerous confirmation token and retries confirmed rpc",
     owner_user_hash: "owner_user_hash",
     bridge_channel_id: "bridge_channel_1",
     plugin_gateway_token: "gateway_secret",
-    confirmation_token: "confirmation_secret",
+    confirmation_id: "confirmation_intent_1",
     method: "danger.run",
     params: { target: "db" },
   });
@@ -512,6 +512,8 @@ test("surface host owns dangerous confirmation token and retries confirmed rpc",
     },
   });
   assert.equal(JSON.stringify(iframe.sent).includes("confirmation_secret"), false);
+  assert.equal(JSON.stringify(fetch.calls).includes("confirmation_secret"), false);
+  assert.equal(JSON.stringify(fetch.calls).includes("confirmation_token\":\""), false);
   host.dispose();
 });
 
@@ -524,7 +526,7 @@ test("surface host rejects dangerous call when confirmation callback declines", 
   fetch.push({
     ok: true,
     data: {
-      confirmation_token: "confirmation_secret",
+      confirmation_id: "confirmation_intent_1",
       confirmation_token_id: "confirmation_token_1",
       request_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     },

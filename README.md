@@ -8,7 +8,7 @@ This repository owns the host-neutral plugin platform core. Host products own
 their product policy, UI shell integration, session adapters, and business
 capabilities.
 
-## Current Skeleton
+## Current Platform Snapshot
 
 - Go module: `github.com/floegence/redevplugin`
 - TypeScript package: `@floegence/redevplugin-ui`
@@ -165,14 +165,17 @@ capabilities.
   are served from separate localhost origins to exercise exact-origin sandbox
   bridge behavior. The demo picker includes a workspace tools plugin, an
   animated canvas bouncer game with particles, trails, power-ups, score saving,
-  achievements, and a host-backed leaderboard; a schedule planner that
-  lists/adds/toggles/deletes host-backed stored items, displays storage
-  revision/quota/timeline metadata, and keeps data through host-page reloads;
+  achievements, replay file exports, stored challenge snapshots, and a
+  host-backed leaderboard; a schedule planner that lists/adds/toggles/deletes
+  host-backed stored items, displays storage revision/quota/timeline metadata,
+  inspects the demo SQLite schema, backs up and restores stored items through
+  the file broker, and keeps data through host-page reloads;
   and a weather plugin that saves the current location, requests a
   host-network-backed HTTP forecast payload through the demo network broker,
   parses the raw JSON response inside the sandboxed plugin UI, and renders
-  current, hourly, forecast, broker endpoint, response headers, and parser
-  diagnostics views.
+  current, hourly, forecast, broker endpoint, response headers, parser
+  field-mapping diagnostics, saved-location comparison, and network-history
+  views.
   For the Flower-generated plugin path, run `npm run demo:browser:generated`.
   That launcher scaffolds a plugin with a backend worker skeleton, packages it,
   installs it into a temporary dev state root, enables it, opens its activity
@@ -194,9 +197,10 @@ capabilities.
   runtime process. In that real-server path the host page and plugin sandbox use
   separate `*.redevplugin.localhost` origins, the parent exchanges the asset
   ticket through the sandbox `/_redevplugin/bootstrap` endpoint, the iframe loads
-  packaged UI through `/_redevplugin/assets/ui/index.html`, and the smoke asserts
-  the HttpOnly asset-session cookie plus absence of legacy `/ui/index.html`
-  static loading. The generated plugin UI is clicked in the browser and must
+  packaged UI through `/_redevplugin/assets/{asset_session_id}/ui/index.html`,
+  and the smoke asserts the path-scoped HttpOnly asset-session cookie plus
+  absence of legacy `/ui/index.html` static loading. The generated plugin UI is
+  clicked in the browser and must
   receive a `worker.echo` result whose transport is `rust runtime ipc`. It also
   clicks a `worker.brokerDemo` flow that routes through the Rust runtime and a
   WASM worker into the Storage Broker and Network Broker, proving the backend
@@ -211,7 +215,7 @@ capabilities.
   without iframe gateway tokens while still preserving local policy evaluation,
   permission grants, audit events, and dangerous-method fail-closed behavior.
 
-This skeleton intentionally does not import Redeven internals and does not
+ReDevPlugin intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
 
 ## Local Checks

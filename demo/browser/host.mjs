@@ -181,7 +181,7 @@ function openPlugin(plugin) {
       if (path.endsWith("/rpc")) {
         rpcCalls += 1;
         rpcCount.textContent = String(rpcCalls);
-        addLog("rpc", { method: body.method, confirmed: Boolean(body.confirmation_token) });
+        addLog("rpc", { method: body.method, confirmed: Boolean(body.confirmation_id) });
       }
       if (path.endsWith("/confirm")) {
         addLog("confirmation-intent", { method: body.method });

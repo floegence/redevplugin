@@ -34,7 +34,7 @@
   {"method": "GET", "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
   {"method": "PATCH", "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
   {"method": "POST", "path": "/_redevplugin/bootstrap"},
-  {"method": "GET", "path": "/_redevplugin/assets/{asset_path...}"},
+  {"method": "GET", "path": "/_redevplugin/assets/{asset_session_id}/{asset_path...}"},
   {"method": "GET", "path": "/_redevplugin/stream/{stream_id}"},
   {"method": "POST", "path": "/_redevplugin/csp-report"}
 ]

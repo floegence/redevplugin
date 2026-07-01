@@ -61,7 +61,9 @@
         <button id="schedule-seed-week" type="button" class="secondary-button">Seed week</button>
         <button id="schedule-bulk-plan" type="button" class="secondary-button">Plan sprint</button>
         <button id="schedule-archive-done" type="button" class="secondary-button">Archive done</button>
+        <button id="schedule-inspect" type="button" class="secondary-button">Inspect DB</button>
         <button id="schedule-backup" type="button" class="secondary-button">Backup</button>
+        <button id="schedule-restore" type="button" class="secondary-button">Restore latest</button>
       </div>
 
       <div id="schedule-form" class="schedule-form">
@@ -105,6 +107,25 @@
           <strong id="schedule-transaction">waiting</strong>
           <p id="schedule-transaction-detail">No write transaction yet.</p>
           <code id="schedule-sql-preview">SELECT * FROM schedule_items ORDER BY date, time</code>
+        </div>
+      </section>
+
+      <section class="schedule-health-panel" aria-label="Schedule database health">
+        <div>
+          <span class="metric-label">db health</span>
+          <strong id="schedule-health">waiting</strong>
+        </div>
+        <div>
+          <span class="metric-label">wal checkpoint</span>
+          <strong id="schedule-wal">--</strong>
+        </div>
+        <div>
+          <span class="metric-label">restores</span>
+          <strong id="schedule-restores">0</strong>
+        </div>
+        <div>
+          <span class="metric-label">schema</span>
+          <strong id="schedule-schema">plugin.sqlite</strong>
         </div>
       </section>
 

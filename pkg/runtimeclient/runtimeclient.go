@@ -387,7 +387,7 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string,
 		return err
 	}
 	if s == nil || !s.isReady() {
-		return ErrRuntimeNotReady
+		return nil
 	}
 	rawPayload, err := json.Marshal(revokeEpochRequestPayload{
 		PluginInstanceID: pluginInstanceID,
@@ -813,7 +813,17 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 	if err := ctx.Err(); err != nil {
 		return ipcFrame{}, err
 	}
-	s.ipcMu.Lock()
+	s.mu.Lock()
+	if !s.readyLocked() || s.ipcIn == nil || s.ipcOut == nil {
+		s.mu.Unlock()
+		return ipcFrame{}, ErrRuntimeNotReady
+	}
+	preLockHealth := s.health
+	s.mu.Unlock()
+	if err := s.lockIPC(ctx); err != nil {
+		s.invalidateRuntimeAfterIPCFailure(preLockHealth, "runtime ipc lock context canceled", err)
+		return ipcFrame{}, err
+	}
 	defer s.ipcMu.Unlock()
 	s.mu.Lock()
 	if !s.readyLocked() || s.ipcIn == nil || s.ipcOut == nil {
@@ -855,6 +865,7 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 
 		select {
 		case <-ctx.Done():
+			s.invalidateRuntimeAfterIPCFailure(health, "runtime ipc request context canceled", ctx.Err())
 			return ipcFrame{}, ctx.Err()
 		case got := <-result:
 			if got.err != nil {
@@ -908,6 +919,52 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 			return got.frame, nil
 		}
 	}
+}
+
+func (s *ProcessSupervisor) lockIPC(ctx context.Context) error {
+	for {
+		if s.ipcMu.TryLock() {
+			return nil
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *ProcessSupervisor) invalidateRuntimeAfterIPCFailure(health Health, message string, err error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.health.RuntimeGenerationID != health.RuntimeGenerationID || s.cmd == nil {
+		s.mu.Unlock()
+		return
+	}
+	cancel := s.cancel
+	cmd := s.cmd
+	s.health.Ready = false
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	details := map[string]any{
+		"runtime_instance_id":   health.RuntimeInstanceID,
+		"runtime_generation_id": health.RuntimeGenerationID,
+	}
+	if err != nil {
+		details["error"] = err.Error()
+	}
+	s.emit("plugin.runtime.ipc.invalidated", "warning", message, details)
 }
 
 func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Writer, runtimeGenerationID string, frame ipcFrame, allowedArtifact *ArtifactRequest) error {

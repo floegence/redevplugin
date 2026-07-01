@@ -20,6 +20,7 @@
         <input id="weather-location" autocomplete="off" placeholder="City or region" />
         <button id="weather-detect" type="button" class="secondary-button">Detect location</button>
         <button id="weather-fetch" type="button">Fetch</button>
+        <button id="weather-explain" type="button" class="secondary-button">Explain parser</button>
         <button id="weather-compare" type="button" class="secondary-button">Compare saved</button>
       </div>
       <div id="saved-locations" class="saved-locations" aria-label="Saved weather locations"></div>
@@ -86,6 +87,22 @@
           <strong id="network-parser">json</strong>
         </div>
         <pre id="raw-weather-response">{}</pre>
+      </section>
+
+      <section class="parser-explain-panel" aria-label="Weather parser explanation">
+        <div>
+          <span class="metric-label">parser run</span>
+          <strong id="parser-run">0</strong>
+        </div>
+        <div>
+          <span class="metric-label">fields mapped</span>
+          <strong id="parser-fields">0</strong>
+        </div>
+        <div>
+          <span class="metric-label">quality</span>
+          <strong id="parser-quality">waiting</strong>
+        </div>
+        <ol id="parser-steps"></ol>
       </section>
 
       <section class="network-history-panel" aria-label="Recent network requests">

@@ -543,6 +543,7 @@ type ExecutorOptions struct {
 	HTTPClient       *http.Client
 	Dialer           *net.Dialer
 	DialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
+	LookupIPAddr     func(ctx context.Context, host string) ([]net.IPAddr, error)
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
 	DefaultTimeout   time.Duration
@@ -571,7 +572,7 @@ func NewExecutor(options ExecutorOptions) *Executor {
 	}
 	dialContext := options.DialContext
 	if dialContext == nil {
-		dialContext = dialer.DialContext
+		dialContext = guardedDialContext(dialer, options.LookupIPAddr)
 	}
 	httpClient := options.HTTPClient
 	if httpClient == nil {
@@ -933,6 +934,49 @@ func timeoutOrDefault(timeout time.Duration, fallback time.Duration) time.Durati
 
 func grantEndpoint(grant ConnectionGrant) string {
 	return net.JoinHostPort(grant.Destination.Host, strconv.Itoa(grant.Destination.Port))
+}
+
+func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, string) ([]net.IPAddr, error)) func(context.Context, string, string) (net.Conn, error) {
+	if dialer == nil {
+		dialer = &net.Dialer{}
+	}
+	if lookupIPAddr == nil {
+		lookupIPAddr = net.DefaultResolver.LookupIPAddr
+	}
+	classifier := DefaultClassifier()
+	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+		host, portText, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil {
+			return nil, fmt.Errorf("%w: port is invalid", ErrInvalidConnector)
+		}
+		transport := TransportTCP
+		if strings.HasPrefix(strings.ToLower(network), "udp") {
+			transport = TransportUDP
+		}
+		destination := Destination{Transport: transport, Host: strings.Trim(host, "[]"), Port: port}
+		addresses, err := lookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(addresses) == 0 {
+			return nil, fmt.Errorf("%w: host %q resolved to no addresses", ErrTargetDenied, host)
+		}
+		for _, resolved := range addresses {
+			addr, ok := netip.AddrFromSlice(resolved.IP)
+			if !ok {
+				return nil, fmt.Errorf("%w: resolved address is invalid", ErrInvalidConnector)
+			}
+			addr = addr.Unmap()
+			if err := classifier.EvaluateResolvedAddress(destination, addr); err != nil {
+				return nil, err
+			}
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
 }
 
 func (e *Executor) dialWebSocket(ctx context.Context, grant ConnectionGrant) (net.Conn, error) {

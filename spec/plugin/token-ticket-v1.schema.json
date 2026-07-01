@@ -109,6 +109,7 @@
               "plugin_instance_id",
               "active_fingerprint",
               "surface_instance_id",
+              "confirmation_id",
               "bridge_channel_id",
               "method",
               "request_hash"

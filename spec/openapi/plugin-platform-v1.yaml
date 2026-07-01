@@ -115,7 +115,7 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/RPCRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/ConfirmEnvelope" }
   /_redevplugin/api/plugins/intents:
     get:
       operationId: listPluginIntents
@@ -283,10 +283,15 @@ paths:
         $ref: "#/components/requestBodies/SandboxBootstrapRequest"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
-  /_redevplugin/assets/{asset_path...}:
+  /_redevplugin/assets/{asset_session_id}/{asset_path...}:
     get:
       operationId: getPluginAsset
       parameters:
+        - name: asset_session_id
+          in: path
+          required: true
+          schema: { type: string }
+          description: Non-secret asset session route id returned by the bootstrap exchange. The HttpOnly asset session cookie must validate to the same token id.
         - name: asset_path...
           in: path
           required: true
@@ -352,6 +357,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Envelope"
+    ConfirmEnvelope:
+      description: Confirmation intent response. The raw confirmation token stays server-side and is never returned to parent JavaScript or the plugin iframe.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ConfirmResult"
   requestBodies:
     InstallRequest:
       required: true
@@ -603,11 +619,25 @@ components:
         owner_user_hash: { type: string }
         bridge_channel_id: { type: string, minLength: 1 }
         plugin_gateway_token: { type: string, minLength: 1 }
-        confirmation_token: { type: string }
+        confirmation_id: { type: string }
         method: { type: string, minLength: 1 }
         params:
           type: object
           additionalProperties: true
+    ConfirmResult:
+      type: object
+      required: [confirmation_id, confirmation_token_id, request_hash, expires_at]
+      additionalProperties: false
+      properties:
+        confirmation_id: { type: string, minLength: 1 }
+        confirmation_token_id:
+          type: string
+          minLength: 1
+          description: Opaque audit/display id for the server-held confirmation token. It is not a credential.
+        request_hash:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+        expires_at: { type: string, format: date-time }
     InvokeIntentRequest:
       type: object
       required: [intent_id]

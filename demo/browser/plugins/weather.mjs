@@ -20,6 +20,7 @@ const status = document.querySelector("#plugin-status");
 const fetchButton = document.querySelector("#weather-fetch");
 const compareButton = document.querySelector("#weather-compare");
 const detectButton = document.querySelector("#weather-detect");
+const explainButton = document.querySelector("#weather-explain");
 const locationInput = document.querySelector("#weather-location");
 const savedLocations = document.querySelector("#saved-locations");
 const detectedLocation = document.querySelector("#detected-location");
@@ -51,6 +52,10 @@ const compareGrid = document.querySelector("#weather-compare-grid");
 const forecast = document.querySelector("#forecast");
 const hourly = document.querySelector("#hourly");
 const rawWeatherResponse = document.querySelector("#raw-weather-response");
+const parserRun = document.querySelector("#parser-run");
+const parserFields = document.querySelector("#parser-fields");
+const parserQuality = document.querySelector("#parser-quality");
+const parserSteps = document.querySelector("#parser-steps");
 const result = document.querySelector("#plugin-result");
 
 client.onLifecycle((event) => {
@@ -70,6 +75,11 @@ fetchButton.addEventListener("click", async () => {
 
 compareButton.addEventListener("click", async () => {
   await callPlugin("weather.saved.compare", {});
+});
+
+explainButton.addEventListener("click", async () => {
+  const location = locationInput.value.trim() || "San Francisco";
+  await callPlugin("weather.parser.explain", { location });
 });
 
 detectButton.addEventListener("click", async () => {
@@ -115,6 +125,9 @@ async function callPlugin(method, payload) {
     }
     if (Array.isArray(data?.comparisons)) {
       renderComparisons(data.comparisons);
+    }
+    if (data?.parser_explanation) {
+      renderParserExplanation(data.parser_explanation);
     }
     if (data?.location && method !== "weather.fetch") {
       place.textContent = data.location;
@@ -225,6 +238,17 @@ function renderComparisons(entries) {
       renderWeather(entry);
     });
     return card;
+  }));
+}
+
+function renderParserExplanation(explanation) {
+  parserRun.textContent = String(explanation.run ?? 0);
+  parserFields.textContent = String(explanation.field_count ?? 0);
+  parserQuality.textContent = explanation.quality ?? "valid";
+  parserSteps.replaceChildren(...(explanation.steps ?? []).map((step) => {
+    const item = document.createElement("li");
+    item.innerHTML = `<strong>${escapeHTML(step.field)}</strong><span>${escapeHTML(step.source)}</span><small>${escapeHTML(step.value)}</small>`;
+    return item;
   }));
 }
 

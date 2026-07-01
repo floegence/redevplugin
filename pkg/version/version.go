@@ -94,7 +94,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "plugin-platform-openapi",
 				Path:    "spec/openapi/plugin-platform-v1.yaml",
 				Version: PluginPlatformOpenAPIVersion,
-				SHA256:  "725bd9e44a50105c12d27c806514ac3e2c4ac07856f2a624118531bc0c4d2c92",
+				SHA256:  "8938c1a91a35f4f13da3373bc3d868e37e61c5e03b5d01dc4d9be1c0b18a0154",
 			},
 			{
 				ID:      "manifest-schema",
@@ -112,7 +112,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "token-ticket-schema",
 				Path:    "spec/plugin/token-ticket-v1.schema.json",
 				Version: TokenTicketSchemaVersion,
-				SHA256:  "0a96578cdedc73b1fa96ee94cbc23c03b97d1dcd1def52f412f02c978af32f14",
+				SHA256:  "ce3070b66d3ee31eb239febb4e7bfab064d4d83b6c306b7624f148dbf6889288",
 			},
 			{
 				ID:      "iframe-bridge-schema",

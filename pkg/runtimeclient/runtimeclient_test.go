@@ -108,6 +108,106 @@ func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorInvalidatesRuntimeOnCanceledIPC(t *testing.T) {
+	store := observability.NewMemoryStore()
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE=1"),
+		Diagnostics: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := supervisor.InvokeWorker(ctx, Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("InvokeWorker() canceled error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	health, err = supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Ready {
+		t.Fatalf("runtime should be marked not ready after canceled IPC: %#v", health)
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_2"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeNotReady) {
+		t.Fatalf("InvokeWorker(after canceled IPC) error = %v, want %v", err, ErrRuntimeNotReady)
+	}
+	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorRevokeInvalidatesRuntimeWhenIPCLockIsBusy(t *testing.T) {
+	store := observability.NewMemoryStore()
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE=1"),
+		Diagnostics: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := supervisor.InvokeWorker(context.Background(), Lease{
+			LeaseID:             "lease_busy",
+			LeaseToken:          "token_busy",
+			RuntimeGenerationID: health.RuntimeGenerationID,
+			PluginInstanceID:    "plugini_1",
+		}, "worker.echo", workerInvocationFixture())
+		done <- err
+	}()
+	time.Sleep(25 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := supervisor.Revoke(ctx, "plugini_1", 4); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Revoke(busy IPC) error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("busy InvokeWorker did not return after runtime invalidation")
+	}
+	health, err = supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Ready {
+		t.Fatalf("runtime should be marked not ready after busy revoke timeout: %#v", health)
+	}
+	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorRevokeIsNoopWhenRuntimeIsNotReady(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Revoke(context.Background(), "plugini_1", 1); err != nil {
+		t.Fatalf("Revoke(not ready) error = %v", err)
+	}
+}
+
 func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
 	provider := &recordingArtifactProvider{
 		content: []byte("wasm bytes"),
@@ -1114,6 +1214,10 @@ func runRuntimeClientHelper() {
 		}
 		switch request.FrameType {
 		case ipcFrameTypeInvokeWorker:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE") == "1" {
+				time.Sleep(10 * time.Second)
+				continue
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT") == "1" {
 				if !requestArtifactFromHelper(reader, encoder, request) {
 					continue

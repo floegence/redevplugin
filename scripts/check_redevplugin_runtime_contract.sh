@@ -78,6 +78,10 @@ fi
   grep -q 'struct NetworkExecuteRequest' crates/redevplugin-ipc/src/lib.rs
   grep -q 'network_execute_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_network_execute_response' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_RUNTIME_CAPABILITY_REVOKED' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'RuntimeRevocations' crates/redevplugin-runtime/src/main.rs
+  grep -q 'handle_revoke_epoch' crates/redevplugin-runtime/src/main.rs
+  grep -q 'worker_invocation_rejects_stale_epoch_before_opening_artifact' crates/redevplugin-runtime/src/main.rs
   grep -q 'ERR_WASM_WORKER_INVALID' crates/redevplugin-ipc/src/lib.rs
   grep -q 'worker_success_result_json' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_worker_module' crates/redevplugin-wasm-abi/src/lib.rs

@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use wasmi::{AsContext, AsContextMut};
+use wasmi::{AsContext, AsContextMut, Config};
+
+const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
 
 fn main() {
     if let Err(err) = run() {
@@ -30,6 +33,7 @@ fn run() -> Result<(), String> {
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write hello ack: {err}"))?;
 
+    let mut revocations = RuntimeRevocations::default();
     loop {
         line.clear();
         let read = reader
@@ -47,19 +51,14 @@ fn run() -> Result<(), String> {
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => handle_worker_invocation(
                 &mut reader,
                 &mut stdout,
+                &revocations,
                 &request_id,
                 &runtime_generation_id,
                 &line,
             )?,
-            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => redevplugin_ipc::response_frame(
-                redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
-                &request_id,
-                &runtime_generation_id,
-                true,
-                None,
-                None,
-                None,
-            ),
+            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
+                handle_revoke_epoch(&mut revocations, &request_id, &runtime_generation_id, &line)
+            }
             _ => redevplugin_ipc::response_frame(
                 "diagnostic",
                 &request_id,
@@ -82,6 +81,7 @@ fn run() -> Result<(), String> {
 fn handle_worker_invocation<R: BufRead, W: Write>(
     reader: &mut R,
     stdout: &mut W,
+    revocations: &RuntimeRevocations,
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
@@ -100,6 +100,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
+    if let Err(err) = revocations.validate_invocation_frame(line) {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
     let artifact_request_id = format!("{request_id}:artifact");
     let open_handle =
         redevplugin_ipc::open_handle_frame(&artifact_request_id, runtime_generation_id, &identity);
@@ -456,6 +469,121 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     ))
 }
 
+#[derive(Default)]
+struct RuntimeRevocations {
+    revoked_epoch_by_plugin: HashMap<String, u64>,
+}
+
+impl RuntimeRevocations {
+    fn revoke_plugin(&mut self, plugin_instance_id: &str, revoke_epoch: u64) {
+        self.revoked_epoch_by_plugin
+            .entry(plugin_instance_id.to_string())
+            .and_modify(|current| *current = (*current).max(revoke_epoch))
+            .or_insert(revoke_epoch);
+    }
+
+    fn validate_invocation_frame(&self, frame: &str) -> Result<(), RuntimeRevocationError> {
+        let plugin_instance_id = required_json_string(frame, "plugin_instance_id")
+            .map_err(|_| RuntimeRevocationError::InvalidInvocation)?;
+        let invocation_epoch = required_json_number(frame, "revoke_epoch")
+            .map_err(|_| RuntimeRevocationError::InvalidInvocation)?;
+        match self.revoked_epoch_by_plugin.get(&plugin_instance_id) {
+            Some(revoked_epoch) if invocation_epoch < *revoked_epoch => {
+                Err(RuntimeRevocationError::Revoked {
+                    plugin_instance_id,
+                    invocation_epoch,
+                    revoked_epoch: *revoked_epoch,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeRevocationError {
+    InvalidInvocation,
+    Revoked {
+        plugin_instance_id: String,
+        invocation_epoch: u64,
+        revoked_epoch: u64,
+    },
+}
+
+impl RuntimeRevocationError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInvocation => redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+            Self::Revoked { .. } => redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeRevocationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInvocation => write!(
+                formatter,
+                "worker invocation is missing a valid plugin_instance_id or revoke_epoch"
+            ),
+            Self::Revoked {
+                plugin_instance_id,
+                invocation_epoch,
+                revoked_epoch,
+            } => write!(
+                formatter,
+                "runtime capability for plugin {plugin_instance_id} was revoked at epoch {revoked_epoch}; invocation epoch {invocation_epoch} is stale"
+            ),
+        }
+    }
+}
+
+fn handle_revoke_epoch(
+    revocations: &mut RuntimeRevocations,
+    request_id: &str,
+    runtime_generation_id: &str,
+    line: &str,
+) -> String {
+    let plugin_instance_id = match required_json_string(line, "plugin_instance_id") {
+        Ok(value) => value,
+        Err(err) => {
+            return redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
+                Some(err.as_str()),
+            );
+        }
+    };
+    let revoke_epoch = match required_last_json_number(line, "revoke_epoch") {
+        Ok(value) => value,
+        Err(err) => {
+            return redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
+                Some(err.as_str()),
+            );
+        }
+    };
+    revocations.revoke_plugin(&plugin_instance_id, revoke_epoch);
+    redevplugin_ipc::response_frame(
+        redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
+        request_id,
+        runtime_generation_id,
+        true,
+        None,
+        None,
+        None,
+    )
+}
+
 #[derive(Debug)]
 struct WorkerExecution {
     validated: redevplugin_wasm_abi::ValidatedWorkerModule,
@@ -526,7 +654,9 @@ fn execute_worker_module<'a>(
     broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
 ) -> Result<WorkerExecution, String> {
     let validated = redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
-    let engine = wasmi::Engine::default();
+    let mut config = Config::default();
+    config.consume_fuel(true);
+    let engine = wasmi::Engine::new(&config);
     let module = wasmi::Module::new(&engine, wasm_bytes)
         .map_err(|err| format!("compile wasm worker module: {err}"))?;
     let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&engine);
@@ -667,6 +797,9 @@ fn execute_worker_module<'a>(
         )
         .map_err(|err| format!("define network memory hostcall import: {err}"))?;
     let mut store = wasmi::Store::new(&engine, WorkerHostState::new(broker_hostcall));
+    store
+        .set_fuel(DEFAULT_WASM_WORKER_FUEL)
+        .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
     let instance = linker
         .instantiate_and_start(&mut store, &module)
         .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
@@ -1684,6 +1817,26 @@ fn required_json_number(input: &str, key: &str) -> Result<u64, String> {
     redevplugin_ipc::extract_json_number_u64(input, key).ok_or_else(|| format!("missing {key}"))
 }
 
+fn required_last_json_number(input: &str, key: &str) -> Result<u64, String> {
+    let pattern = format!("\"{key}\"");
+    let key_start = input
+        .rfind(&pattern)
+        .ok_or_else(|| format!("missing {key}"))?;
+    let after_key = &input[key_start + pattern.len()..];
+    let colon = after_key
+        .find(':')
+        .ok_or_else(|| format!("missing {key}"))?;
+    let after_colon = after_key[colon + 1..].trim_start();
+    let digits: String = after_colon
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return Err(format!("missing {key}"));
+    }
+    digits.parse().map_err(|_| format!("invalid {key}"))
+}
+
 fn request_json_string(input: &str, key: &str) -> Option<String> {
     redevplugin_ipc::extract_json_string(input, key).filter(|value| !value.trim().is_empty())
 }
@@ -1806,6 +1959,138 @@ mod tests {
     fn rejects_invalid_base64() {
         let err = decode_base64("abc$").expect_err("invalid base64");
         assert!(err.contains("invalid character"));
+    }
+
+    #[test]
+    fn runtime_revocations_keep_highest_epoch_per_plugin() {
+        let mut revocations = RuntimeRevocations::default();
+        revocations.revoke_plugin("plugini_1", 4);
+        revocations.revoke_plugin("plugini_1", 2);
+        revocations.revoke_plugin("plugini_2", 1);
+
+        let stale = revocations
+            .validate_invocation_frame(&worker_invocation_frame("plugini_1", 3))
+            .expect_err("old epoch should be stale");
+        assert_eq!(
+            stale.code(),
+            redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED
+        );
+        assert!(stale.to_string().contains("epoch 4"));
+        revocations
+            .validate_invocation_frame(&worker_invocation_frame("plugini_1", 4))
+            .expect("equal epoch is allowed for freshly issued leases");
+        revocations
+            .validate_invocation_frame(&worker_invocation_frame("plugini_1", 5))
+            .expect("newer epoch is allowed");
+        revocations
+            .validate_invocation_frame(&worker_invocation_frame("plugini_2", 1))
+            .expect("another plugin has an independent revoke epoch");
+    }
+
+    #[test]
+    fn runtime_revocations_reject_invalid_invocation_context() {
+        let revocations = RuntimeRevocations::default();
+        let missing_plugin = revocations
+            .validate_invocation_frame(r#"{"payload":{"lease":{"revoke_epoch":1}}}"#)
+            .expect_err("missing plugin should be invalid");
+        assert_eq!(
+            missing_plugin.code(),
+            redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID
+        );
+        let missing_epoch = revocations
+            .validate_invocation_frame(
+                r#"{"payload":{"lease":{"plugin_instance_id":"plugini_1"}}}"#,
+            )
+            .expect_err("missing epoch should be invalid");
+        assert_eq!(
+            missing_epoch.code(),
+            redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID
+        );
+    }
+
+    #[test]
+    fn handle_revoke_epoch_updates_runtime_revocation_state() {
+        let mut revocations = RuntimeRevocations::default();
+        let response = handle_revoke_epoch(
+            &mut revocations,
+            "r1",
+            "g1",
+            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+        );
+        assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
+        assert!(response.contains(r#""ok":true"#));
+        let err = revocations
+            .validate_invocation_frame(&worker_invocation_frame("plugini_1", 6))
+            .expect_err("old invocation should be revoked");
+        assert_eq!(err.code(), redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED);
+    }
+
+    #[test]
+    fn handle_revoke_epoch_fails_closed_for_invalid_frame() {
+        let mut revocations = RuntimeRevocations::default();
+        let response = handle_revoke_epoch(
+            &mut revocations,
+            "r1",
+            "g1",
+            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
+        );
+        assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
+        assert!(response.contains(r#""ok":false"#));
+        assert!(response.contains(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID));
+        revocations
+            .validate_invocation_frame(&worker_invocation_frame("plugini_1", 0))
+            .expect("invalid revoke frame must not create a revocation record");
+    }
+
+    #[test]
+    fn worker_invocation_rejects_stale_epoch_before_opening_artifact() {
+        let mut revocations = RuntimeRevocations::default();
+        revocations.revoke_plugin("plugini_1", 5);
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &revocations,
+            "r1",
+            "g1",
+            &worker_invocation_frame("plugini_1", 4),
+        )
+        .expect("worker invocation response");
+
+        assert!(
+            output.is_empty(),
+            "stale invocation must not request an artifact"
+        );
+        assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
+        assert!(response.contains(r#""ok":false"#));
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED));
+    }
+
+    #[test]
+    fn worker_invocation_allows_current_epoch_to_open_artifact() {
+        let mut revocations = RuntimeRevocations::default();
+        revocations.revoke_plugin("plugini_1", 5);
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &revocations,
+            "r1",
+            "g1",
+            &worker_invocation_frame("plugini_1", 5),
+        )
+        .expect("worker invocation response");
+
+        let output = String::from_utf8(output).expect("artifact request utf8");
+        assert!(
+            output.contains(r#""frame_type":"open_handle""#),
+            "current invocation should request the bound worker artifact: {output}"
+        );
+        assert!(response.contains(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED));
     }
 
     #[test]
@@ -1979,6 +2264,12 @@ mod tests {
             }
             WorkerHostcallRequest::NetworkExecute(_) => Err("unexpected network call".to_string()),
         }
+    }
+
+    fn worker_invocation_frame(plugin_instance_id: &str, revoke_epoch: u64) -> String {
+        format!(
+            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"lease_1","lease_token":"token_1","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
+        )
     }
 
     fn minimal_worker_wasm(export_name: &str) -> Vec<u8> {

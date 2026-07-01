@@ -22,7 +22,9 @@ const refreshButton = document.querySelector("#schedule-refresh");
 const seedWeekButton = document.querySelector("#schedule-seed-week");
 const bulkPlanButton = document.querySelector("#schedule-bulk-plan");
 const archiveDoneButton = document.querySelector("#schedule-archive-done");
+const inspectButton = document.querySelector("#schedule-inspect");
 const backupButton = document.querySelector("#schedule-backup");
+const restoreButton = document.querySelector("#schedule-restore");
 const titleInput = document.querySelector("#schedule-title");
 const dateInput = document.querySelector("#schedule-date");
 const timeInput = document.querySelector("#schedule-time");
@@ -49,6 +51,10 @@ const transactionDetail = document.querySelector("#schedule-transaction-detail")
 const sqlPreview = document.querySelector("#schedule-sql-preview");
 const backupCount = document.querySelector("#backup-count");
 const backupList = document.querySelector("#backup-list");
+const healthStatus = document.querySelector("#schedule-health");
+const walStatus = document.querySelector("#schedule-wal");
+const restoreCount = document.querySelector("#schedule-restores");
+const schemaSummary = document.querySelector("#schedule-schema");
 const journalCount = document.querySelector("#journal-count");
 const journal = document.querySelector("#schedule-journal");
 const result = document.querySelector("#plugin-result");
@@ -84,7 +90,9 @@ refreshButton.addEventListener("click", refreshItems);
 seedWeekButton.addEventListener("click", () => callPlugin("schedule.items.seedWeek", { view: currentView() }));
 bulkPlanButton.addEventListener("click", () => callPlugin("schedule.items.bulkPlan", { view: currentView() }));
 archiveDoneButton.addEventListener("click", () => callPlugin("schedule.items.archiveDone", { view: currentView() }));
+inspectButton.addEventListener("click", () => callPlugin("schedule.storage.inspect", { view: currentView() }));
 backupButton.addEventListener("click", () => callPlugin("schedule.storage.backup", { view: currentView() }));
+restoreButton.addEventListener("click", () => callPlugin("schedule.storage.restoreLatest", { view: currentView() }));
 statusInput.addEventListener("change", refreshItems);
 queryInput.addEventListener("input", debounce(refreshItems, 180));
 
@@ -117,6 +125,9 @@ async function callPlugin(method, payload) {
     }
     if (Array.isArray(data?.backups)) {
       renderBackups(data.backups);
+    }
+    if (data?.health || data?.schema) {
+      renderStorageHealth(data.health, data.schema);
     }
     if (data?.source || data?.persisted_at) {
       renderStorageState(data);
@@ -189,6 +200,15 @@ function renderStorageState(data) {
     storageUsage.textContent = `${formatBytes(data.storage.used_bytes)} / ${formatBytes(data.storage.quota_bytes)}`;
   }
   persistedAt.textContent = formatTime(data.persisted_at);
+}
+
+function renderStorageHealth(health, schema) {
+  healthStatus.textContent = health?.status ?? "healthy";
+  walStatus.textContent = health?.wal_checkpoint ?? "clean";
+  restoreCount.textContent = String(health?.restores ?? 0);
+  if (schema) {
+    schemaSummary.textContent = `${schema.database ?? "plugin.sqlite"} · ${Array.isArray(schema.tables) ? schema.tables.length : 0} tables`;
+  }
 }
 
 function renderTimeline(items) {

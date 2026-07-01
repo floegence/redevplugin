@@ -300,7 +300,7 @@ export type ReadPluginStreamOptions = {
 };
 
 export type PluginConfirmationResult = {
-  confirmation_token: string;
+  confirmation_id: string;
   confirmation_token_id: string;
   request_hash: string;
   expires_at?: string;
@@ -959,7 +959,7 @@ export class PluginSurfaceHost {
         this.#postError(request.id, "PLUGIN_CONFIRMATION_REJECTED", "Plugin method confirmation was rejected");
         return;
       }
-      const result = await this.#callRPC(request, confirmation.confirmation_token);
+      const result = await this.#callRPC(request, confirmation.confirmation_id);
       this.#postToIframe({ type: "redevplugin.bridge.response", id: request.id, ok: true, data: result });
     } catch (error) {
       const bridgeError = toBridgeError(error, "PLUGIN_PERMISSION_DENIED");
@@ -967,15 +967,15 @@ export class PluginSurfaceHost {
     }
   }
 
-  #callRPC(request: PluginBridgeRequest, confirmationToken?: string): Promise<PluginMethodResult> {
-    return this.#postJSON<PluginMethodResult>(`/_redevplugin/api/plugins/rpc`, this.#rpcBody(request, confirmationToken));
+  #callRPC(request: PluginBridgeRequest, confirmationId?: string): Promise<PluginMethodResult> {
+    return this.#postJSON<PluginMethodResult>(`/_redevplugin/api/plugins/rpc`, this.#rpcBody(request, confirmationId));
   }
 
   #prepareConfirmation(request: PluginBridgeRequest): Promise<PluginConfirmationResult> {
     return this.#postJSON<PluginConfirmationResult>(`/_redevplugin/api/plugins/confirm`, this.#rpcBody(request));
   }
 
-  #rpcBody(request: PluginBridgeRequest, confirmationToken?: string): Record<string, unknown> {
+  #rpcBody(request: PluginBridgeRequest, confirmationId?: string): Record<string, unknown> {
     const body: Record<string, unknown> = {
       plugin_instance_id: this.bootstrap.pluginInstanceId,
       surface_instance_id: this.bootstrap.surfaceInstanceId,
@@ -987,8 +987,8 @@ export class PluginSurfaceHost {
       method: request.method,
       params: request.params,
     };
-    if (confirmationToken) {
-      body.confirmation_token = confirmationToken;
+    if (confirmationId) {
+      body.confirmation_id = confirmationId;
     }
     return body;
   }

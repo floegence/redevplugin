@@ -149,16 +149,39 @@ func TestSurfaceDisposeRevokesGatewayToken(t *testing.T) {
 	}
 }
 
+func TestSurfaceRevokePluginDropsSessionsAndTokens(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	bootstrap, gateway := mintTestGatewayToken(t, service, now)
+	audience := testSurfaceAudience("bridge_1")
+
+	if revoked := service.RevokePlugin(audience.PluginInstanceID, 0, now.Add(4*time.Second)); revoked == 0 {
+		t.Fatal("RevokePlugin() revoked no tokens")
+	}
+	if _, err := service.ValidateGatewayToken(gateway.GatewayToken, audience, testRevision(4), now.Add(5*time.Second)); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken() after plugin revoke error = %v, want %v", err, ErrTokenRevoked)
+	}
+	if _, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(6 * time.Second),
+	}); !errors.Is(err, ErrSurfaceSessionNotFound) {
+		t.Fatalf("ExchangeAssetTicket() after plugin revoke error = %v, want %v", err, ErrSurfaceSessionNotFound)
+	}
+}
+
 func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	audience := testSurfaceAudience("bridge_1")
+	audience.ConfirmationID = "confirmation_1"
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
 		PluginInstanceID:     audience.PluginInstanceID,
 		ActiveFingerprint:    audience.ActiveFingerprint,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		ConfirmationID:       audience.ConfirmationID,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
@@ -208,12 +231,14 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	audience := testSurfaceAudience("bridge_1")
+	audience.ConfirmationID = "confirmation_1"
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	req := MintConfirmationTokenRequest{
 		PluginInstanceID:     audience.PluginInstanceID,
 		ActiveFingerprint:    audience.ActiveFingerprint,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		ConfirmationID:       audience.ConfirmationID,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
@@ -227,6 +252,11 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	missingMethod.Method = ""
 	if _, err := service.MintConfirmationToken(missingMethod); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintConfirmationToken() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	missingConfirmationID := req
+	missingConfirmationID.ConfirmationID = ""
+	if _, err := service.MintConfirmationToken(missingConfirmationID); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintConfirmationToken() missing confirmation id error = %v, want %v", err, ErrMissingTokenAudience)
 	}
 	badHash := req
 	badHash.RequestHash = "sha256:not-a-real-hash"

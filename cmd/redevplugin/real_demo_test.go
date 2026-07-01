@@ -56,7 +56,7 @@ func TestRealDemoSandboxHandlerOnlyExposesSandboxRoutes(t *testing.T) {
 		{
 			name:         "packaged ui assets delegate to canonical asset handler",
 			method:       http.MethodGet,
-			path:         "/_redevplugin/assets/ui/index.html",
+			path:         "/_redevplugin/assets/asset_session_test/ui/index.html",
 			wantStatus:   http.StatusNoContent,
 			wantPlatform: true,
 		},
@@ -114,8 +114,9 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 	)
 
 	for _, want := range []string{
-		`new URL("/_redevplugin/assets/ui/index.html", pluginOrigin)`,
+		`new URL("/_redevplugin/assets/" + encodeURIComponent(assetSessionId) + "/ui/index.html", pluginOrigin)`,
 		`new URL("/_redevplugin/bootstrap", pluginOrigin)`,
+		`asset bootstrap response omitted asset_session_id`,
 		`credentials: "include"`,
 		`surface_instance_id: bootstrap.surface_instance_id`,
 		`asset_ticket: bootstrap.asset_ticket`,
@@ -129,6 +130,7 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		`new URL("/_redevplugin/assets/ui/index.html", pluginOrigin)`,
 		`new URL("/ui/index.html", pluginOrigin)`,
 		`/_redevplugin/api/plugins/surfaces/`,
 		`credentials: "same-origin"`,
@@ -158,6 +160,7 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 		`parseNetworkBody`,
 		`parseNetworkPayload`,
 		`storage_grant_visible`,
+		`network_grant_visible`,
 	} {
 		if !strings.Contains(html+js, want) {
 			t.Fatalf("real demo plugin surface missing %q", want)

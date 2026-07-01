@@ -84,8 +84,9 @@ type AssetSessionResult struct {
 }
 
 type ValidateAssetSessionRequest struct {
-	AssetSession string    `json:"asset_session"`
-	Now          time.Time `json:"now,omitempty"`
+	AssetSession   string    `json:"asset_session"`
+	AssetSessionID string    `json:"asset_session_id,omitempty"`
+	Now            time.Time `json:"now,omitempty"`
 }
 
 type AssetSessionValidation struct {
@@ -110,6 +111,7 @@ type MintConfirmationTokenRequest struct {
 	PluginInstanceID     string          `json:"plugin_instance_id"`
 	ActiveFingerprint    string          `json:"active_fingerprint"`
 	SurfaceInstanceID    string          `json:"surface_instance_id"`
+	ConfirmationID       string          `json:"confirmation_id"`
 	OwnerSessionHash     string          `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string          `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string          `json:"session_channel_id_hash,omitempty"`
@@ -382,6 +384,9 @@ func (s *SurfaceTokenService) ValidateAssetSession(req ValidateAssetSessionReque
 	if err != nil {
 		return AssetSessionValidation{}, err
 	}
+	if strings.TrimSpace(req.AssetSessionID) != "" && req.AssetSessionID != record.TokenID {
+		return AssetSessionValidation{}, ErrTokenAudience
+	}
 	state, err := s.getState(record.Audience.SurfaceInstanceID, now)
 	if err != nil {
 		return AssetSessionValidation{}, err
@@ -466,6 +471,7 @@ func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenReq
 		return ConfirmationTokenResult{}, errors.New("surface token service is nil")
 	}
 	if strings.TrimSpace(req.SurfaceInstanceID) == "" ||
+		strings.TrimSpace(req.ConfirmationID) == "" ||
 		strings.TrimSpace(req.BridgeChannelID) == "" ||
 		strings.TrimSpace(req.Method) == "" {
 		return ConfirmationTokenResult{}, ErrMissingTokenAudience
@@ -485,6 +491,7 @@ func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenReq
 		PluginInstanceID:     req.PluginInstanceID,
 		ActiveFingerprint:    req.ActiveFingerprint,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
+		ConfirmationID:       req.ConfirmationID,
 		OwnerSessionHash:     req.OwnerSessionHash,
 		OwnerUserHash:        req.OwnerUserHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
@@ -737,6 +744,23 @@ func (s *SurfaceTokenService) DisposeSurface(surfaceInstanceID string, now time.
 	}
 	s.tokens.RevokeSurface(surfaceInstanceID, now)
 	return true
+}
+
+func (s *SurfaceTokenService) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) int {
+	if s == nil {
+		return 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	s.mu.Lock()
+	for surfaceInstanceID, state := range s.sessions {
+		if state.session.PluginInstanceID == pluginInstanceID {
+			delete(s.sessions, surfaceInstanceID)
+		}
+	}
+	s.mu.Unlock()
+	return s.tokens.RevokePlugin(pluginInstanceID, minimumRevokeEpoch, now)
 }
 
 func (s *SurfaceTokenService) getState(surfaceInstanceID string, now time.Time) (surfaceState, error) {

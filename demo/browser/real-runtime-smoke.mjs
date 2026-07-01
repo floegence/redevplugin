@@ -43,7 +43,7 @@ try {
   const hostURL = `http://${hostName}:${hostPort}/demo/real/index.html`;
   const sandboxOrigin = `http://${sandboxHost}:${pluginPort}`;
   await waitForHTTP(hostURL);
-  const assetBeforeBootstrap = await fetch(`${sandboxOrigin}/_redevplugin/assets/ui/index.html`);
+  const assetBeforeBootstrap = await fetch(`${sandboxOrigin}/_redevplugin/assets/asset_session_probe/ui/index.html`);
   assert.equal(assetBeforeBootstrap.status, 403);
   const sandboxManagementProbe = await fetch(`${sandboxOrigin}/_redevplugin/api/plugins/install`, {
     method: "POST",
@@ -62,7 +62,7 @@ try {
   });
   page.on("response", (response) => {
     const url = response.url();
-    if (url.includes("/_redevplugin/bootstrap") || url.includes("/_redevplugin/assets/ui/index.html")) {
+    if (url.includes("/_redevplugin/bootstrap") || url.includes("/_redevplugin/assets/")) {
       responseHeaderReads.push(response.allHeaders().then((headers) => {
         responseHeaders.set(url, headers);
       }));
@@ -83,31 +83,31 @@ try {
   await expectText(page.locator("#runtime-ready"), "1");
   await Promise.all(responseHeaderReads);
   const iframeSrc = await page.locator("#plugin-frame").getAttribute("src");
-  assert.ok(iframeSrc?.startsWith(`${sandboxOrigin}/_redevplugin/assets/ui/index.html?`), iframeSrc ?? "");
+  assert.match(iframeSrc ?? "", new RegExp(`^${escapeRegExp(sandboxOrigin)}/_redevplugin/assets/[^/]+/ui/index\\.html\\?`));
   assert.equal(new URL(iframeSrc).searchParams.has("asset_ticket"), false);
   assert.ok(requestedURLs.some((url) => url === `${sandboxOrigin}/_redevplugin/bootstrap`));
-  assert.ok(requestedURLs.some((url) => url.startsWith(`${sandboxOrigin}/_redevplugin/assets/ui/index.html?`)));
+  assert.ok(requestedURLs.some((url) => /^http:\/\/plg-real\.redevplugin\.localhost:\d+\/_redevplugin\/assets\/[^/]+\/ui\/index\.html\?/.test(url)));
   assert.equal(requestedURLs.some((url) => url.startsWith(`${sandboxOrigin}/ui/index.html`)), false);
   const bootstrapHeaders = headerEntry(responseHeaders, `${sandboxOrigin}/_redevplugin/bootstrap`);
   const setCookie = bootstrapHeaders["set-cookie"] ?? "";
-  assert.match(setCookie, /__Host-redevplugin-asset-session=/);
+  assert.match(setCookie, /__Secure-redevplugin-asset-session=/);
   assert.match(setCookie, /HttpOnly/i);
   assert.match(setCookie, /Secure/i);
   assert.match(setCookie, /SameSite=Strict/i);
-  assert.match(setCookie, /Path=\//i);
+  assert.match(setCookie, /Path=\/_redevplugin\/assets\/[^;]+\/?/i);
   assert.equal(/Domain=/i.test(setCookie), false);
-  const assetHeaders = headerEntry(responseHeaders, `${sandboxOrigin}/_redevplugin/assets/ui/index.html`);
+  const assetHeaders = headerEntry(responseHeaders, `${sandboxOrigin}/_redevplugin/assets/`);
   assert.equal(assetHeaders["x-content-type-options"], "nosniff");
 
   const frame = page.frameLocator("#plugin-frame");
   await expectText(frame.locator("#status"), "Ready");
-  await frame.getByRole("button", { name: "Invoke backend" }).click();
+  await clickPluginButton(frame, "Invoke backend");
   await expectText(frame.locator("#status"), "Backend responded");
   await expectText(frame.locator("#result"), "rust runtime ipc");
   await expectText(frame.locator("#result"), "\"worker_id\": \"backend\"");
   await expectText(page.locator("#rpc-count"), "1");
 
-  await frame.getByRole("button", { name: "Storage + network" }).click();
+  await clickPluginButton(frame, "Storage + network");
   await expectText(frame.locator("#status"), "Brokered backend responded");
   await expectText(frame.locator("#result"), "storage_file");
   await expectText(frame.locator("#result"), "storage_kv");
@@ -121,7 +121,7 @@ try {
   await expectText(frame.locator("#result"), "\"storage_grant_visible\": false");
   await expectText(page.locator("#rpc-count"), "2");
 
-  await frame.getByRole("button", { name: "Network matrix" }).click();
+  await clickPluginButton(frame, "Network matrix");
   await expectText(frame.locator("#status"), "Network matrix completed");
   await expectText(frame.locator("#result"), "network.matrix");
   await expectText(frame.locator("#result"), "http:hello http");
@@ -132,18 +132,19 @@ try {
   await expectText(frame.locator("#result"), "\"transport\": \"tcp\"");
   await expectText(frame.locator("#result"), "\"transport\": \"udp\"");
   await expectText(frame.locator("#result"), "\"gateway_token_visible\": false");
+  await expectText(frame.locator("#result"), "\"network_grant_visible\": false");
   await expectText(page.locator("#rpc-count"), "6");
 
-  await frame.getByRole("button", { name: "Dangerous action" }).click();
+  await clickPluginButton(frame, "Dangerous action");
   await expectText(page.locator("#confirmation-method"), "danger.run");
-  await page.getByRole("button", { name: "Deny" }).click();
+  await clickButton(page, "Deny");
   await expectText(frame.locator("#status"), "Dangerous action blocked");
   await expectText(frame.locator("#result"), "PLUGIN_CONFIRMATION_REJECTED");
   await expectText(page.locator("#rpc-count"), "7");
 
-  await frame.getByRole("button", { name: "Dangerous action" }).click();
+  await clickPluginButton(frame, "Dangerous action");
   await expectText(page.locator("#confirmation-method"), "danger.run");
-  await page.getByRole("button", { name: "Approve" }).click();
+  await clickButton(page, "Approve");
   await expectText(frame.locator("#status"), "Dangerous action confirmed");
   await expectText(frame.locator("#result"), "real http adapter confirmation");
   await expectText(frame.locator("#result"), "\"asset_ticket_visible\": false");
@@ -233,6 +234,18 @@ async function expectText(locator, expected, timeoutMs = 5_000) {
   throw new Error(`expected text ${JSON.stringify(expected)} but last saw ${JSON.stringify(last)}`);
 }
 
+async function clickPluginButton(frame, name) {
+  await clickButton(frame, name);
+}
+
+async function clickButton(scope, name) {
+  const button = scope.getByRole("button", { name });
+  await button.waitFor({ state: "visible", timeout: 5_000 });
+  const disabled = await button.getAttribute("disabled");
+  assert.equal(disabled, null, `${name} button should be enabled before click`);
+  await button.click();
+}
+
 async function waitForHTTP(url, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -261,6 +274,10 @@ function headerEntry(headersByURL, urlPrefix) {
     }
   }
   throw new Error(`missing response headers for ${urlPrefix}`);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function getFreePort(excluding) {

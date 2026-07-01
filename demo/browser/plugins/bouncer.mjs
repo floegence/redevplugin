@@ -41,10 +41,12 @@ const powerupButton = document.querySelector("#game-powerup");
 const challengeButton = document.querySelector("#game-challenge");
 const runSyncButton = document.querySelector("#game-run-sync");
 const saveButton = document.querySelector("#game-save");
+const replayExportButton = document.querySelector("#game-export-replay");
 const snapshotSaveButton = document.querySelector("#game-snapshot-save");
 const snapshotLoadButton = document.querySelector("#game-snapshot-load");
 const snapshotList = document.querySelector("#snapshot-list");
 const challengeList = document.querySelector("#challenge-list");
+const replayList = document.querySelector("#replay-list");
 const missionTitle = document.querySelector("#mission-title");
 const missionDetail = document.querySelector("#mission-detail");
 const heatFill = document.querySelector("#heat-fill");
@@ -117,6 +119,7 @@ powerupButton.addEventListener("click", () => {
     x: paddleX,
     y: canvas.height - 70,
   });
+  updateHUD();
 });
 
 challengeButton.addEventListener("click", async () => {
@@ -170,6 +173,13 @@ saveButton.addEventListener("click", async () => {
     powerups_collected: powerupsCollected,
     peak_speed: peakSpeed,
     duration_ms: Math.round(performance.now() - startedAt),
+  });
+});
+
+replayExportButton.addEventListener("click", async () => {
+  await callPlugin("game.replay.export", {
+    run: captureSnapshot(),
+    frame_count: Math.max(180, Math.round((performance.now() - startedAt) / 16.6)),
   });
 });
 
@@ -426,6 +436,7 @@ function createStars(count) {
 }
 
 function resetRound() {
+  const wasRunning = running;
   score = 0;
   combo = 0;
   bricksCleared = 0;
@@ -448,10 +459,14 @@ function resetRound() {
   hazards = createHazards(stormLevel);
   resetBall();
   running = true;
+  lastFrame = performance.now();
   status.textContent = "ready";
   toggleButton.textContent = "Pause";
   challengeButton.textContent = "Storm challenge";
   updateHUD();
+  if (!wasRunning) {
+    requestAnimationFrame(tick);
+  }
 }
 
 function resetBall() {
@@ -575,6 +590,9 @@ async function callPlugin(method, payload) {
     }
     if (Array.isArray(data?.challenge_history)) {
       renderChallenges(data.challenge_history);
+    }
+    if (Array.isArray(data?.replay_exports)) {
+      renderReplayExports(data.replay_exports);
     }
     if (Array.isArray(data?.events)) {
       renderEventFeed(data.events);
@@ -708,6 +726,19 @@ function renderChallenges(rows) {
   }));
 }
 
+function renderReplayExports(rows) {
+  replayList.replaceChildren(...rows.map((row, index) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "snapshot-chip replay-chip";
+    item.textContent = `#${index + 1} ${Number(row.frame_count)}f · ${formatBytes(row.size_bytes)}`;
+    item.addEventListener("click", () => {
+      writeResult({ method: "game.replay.inspect_local", replay: row });
+    });
+    return item;
+  }));
+}
+
 function renderMission(mission) {
   nextMission = String(mission.key ?? nextMission);
   missionTitle.textContent = mission.title ?? "Bank the run";
@@ -753,6 +784,17 @@ function escapeHTML(value) {
 
 function escapeClass(value) {
   return String(value || "default").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "default";
+}
+
+function formatBytes(value) {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+  return `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
 function roundRect(ctx, x, y, w, h, radius) {
