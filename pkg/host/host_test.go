@@ -815,6 +815,74 @@ func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"}); err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{"message": "after disable"},
+	}); err == nil {
+		t.Fatal("CallPluginMethod() after disable expected fail-closed error")
+	}
+	if runtime.calls != 0 {
+		t.Fatalf("runtime invoked after disable: calls=%d lease=%#v", runtime.calls, runtime.lastLease)
+	}
+}
+
+func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+
+	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+		t.Fatalf("UninstallPlugin() error = %v", err)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{"message": "after uninstall"},
+	}); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("CallPluginMethod() after uninstall error = %v, want %v", err, registry.ErrNotFound)
+	}
+	if runtime.calls != 0 {
+		t.Fatalf("runtime invoked after uninstall: calls=%d lease=%#v", runtime.calls, runtime.lastLease)
+	}
+}
+
 func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 	coreAdapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
