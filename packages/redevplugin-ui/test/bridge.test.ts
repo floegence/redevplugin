@@ -895,18 +895,24 @@ test("platform client covers operation and data lifecycle routes", async () => {
       updated_at: "2026-06-30T00:00:02Z",
     },
   });
-  fetch.push({ ok: true, data: { archive_ref: "archive/plugin_instance_1.zip" } });
+  fetch.push({ ok: true, data: { archive_ref: "archive/plugin_instance_1.zip", settings_archive_ref: "archive/plugin_instance_1.settings.json" } });
   fetch.push({ ok: true, data: { imported: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   const operations = await client.listOperations("plugin_instance_1");
   const canceled = await client.cancelOperation("op 1", "user canceled");
   const exported = await client.exportData({ plugin_instance_id: "plugin_instance_1" });
-  const imported = await client.importData({ plugin_instance_id: "plugin_instance_1", archive_ref: exported.archive_ref, delete_existing: true });
+  const imported = await client.importData({
+    plugin_instance_id: "plugin_instance_1",
+    archive_ref: exported.archive_ref,
+    settings_archive_ref: exported.settings_archive_ref,
+    delete_existing: true,
+  });
 
   assert.equal(operations.operations?.[0]?.status, "running");
   assert.equal(canceled.status, "cancel_requested");
   assert.equal(exported.archive_ref, "archive/plugin_instance_1.zip");
+  assert.equal(exported.settings_archive_ref, "archive/plugin_instance_1.settings.json");
   assert.equal(imported.imported, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/operations?plugin_instance_id=plugin_instance_1");
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/operations/op%201/cancel");
@@ -917,6 +923,7 @@ test("platform client covers operation and data lifecycle routes", async () => {
   assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
     archive_ref: "archive/plugin_instance_1.zip",
+    settings_archive_ref: "archive/plugin_instance_1.settings.json",
     delete_existing: true,
   });
 });

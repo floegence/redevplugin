@@ -133,9 +133,10 @@ type exportDataRequest struct {
 }
 
 type importDataRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	ArchiveRef       string `json:"archive_ref"`
-	DeleteExisting   bool   `json:"delete_existing,omitempty"`
+	PluginInstanceID   string `json:"plugin_instance_id"`
+	ArchiveRef         string `json:"archive_ref"`
+	SettingsArchiveRef string `json:"settings_archive_ref,omitempty"`
+	DeleteExisting     bool   `json:"delete_existing,omitempty"`
 }
 
 type grantPermissionRequest struct {
@@ -823,7 +824,7 @@ func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
 		IncludeSecrets:   req.IncludeSecrets,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForStorageError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStorageError(err))})
+		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -840,11 +841,12 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Host.ImportPluginData(r.Context(), host.ImportDataRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		ArchiveRef:       req.ArchiveRef,
-		DeleteExisting:   req.DeleteExisting,
+		PluginInstanceID:   req.PluginInstanceID,
+		ArchiveRef:         req.ArchiveRef,
+		SettingsArchiveRef: req.SettingsArchiveRef,
+		DeleteExisting:     req.DeleteExisting,
 	}); err != nil {
-		WriteJSON(w, httpStatusForStorageError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStorageError(err))})
+		WriteJSON(w, httpStatusForDataLifecycleError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"imported": true}})
@@ -1577,6 +1579,17 @@ func errorCodeForStorageError(err error) security.ErrorCode {
 	}
 }
 
+func errorCodeForDataLifecycleError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return security.ErrStorageQuotaExceeded
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
+		return security.ErrInvalidRequest
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
 func errorCodeForSecretError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrInvalidSecretRef), errors.Is(err, registry.ErrNotFound):
@@ -1670,6 +1683,17 @@ func httpStatusForStorageError(err error) int {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
+		return http.StatusBadRequest
+	default:
+		return http.StatusForbidden
+	}
+}
+
+func httpStatusForDataLifecycleError(err error) int {
+	switch {
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
 		return http.StatusBadRequest
 	default:
 		return http.StatusForbidden

@@ -32,8 +32,9 @@ const (
 )
 
 var (
-	ErrNotDeclared    = errors.New("plugin settings are not declared")
-	ErrInvalidSetting = errors.New("plugin setting is invalid")
+	ErrNotDeclared     = errors.New("plugin settings are not declared")
+	ErrInvalidSetting  = errors.New("plugin setting is invalid")
+	ErrArchiveNotFound = errors.New("plugin settings archive not found")
 )
 
 type EnsureRequest struct {
@@ -63,6 +64,20 @@ type MarkSecretRequest struct {
 type DeleteRequest struct {
 	PluginInstanceID string
 	DeleteData       bool
+	Now              time.Time
+}
+
+type ExportRequest struct {
+	PluginInstanceID string
+	IncludeSecrets   bool
+	Now              time.Time
+}
+
+type ImportRequest struct {
+	PluginInstanceID string
+	ArchiveRef       string
+	DeleteExisting   bool
+	Spec             *manifest.SettingsSpec
 	Now              time.Time
 }
 
@@ -99,24 +114,42 @@ type Record struct {
 	RetainedAt       *time.Time                  `json:"retained_at,omitempty"`
 }
 
+type ArchiveRecord struct {
+	ArchiveRef             string                      `json:"archive_ref"`
+	SourcePluginInstanceID string                      `json:"source_plugin_instance_id"`
+	IncludeSecrets         bool                        `json:"include_secrets"`
+	SchemaVersion          int                         `json:"schema_version"`
+	Fields                 []manifest.SettingFieldSpec `json:"fields"`
+	Values                 map[string]any              `json:"values"`
+	Secrets                map[string]SecretState      `json:"secrets"`
+	SettingsRevision       uint64                      `json:"settings_revision"`
+	UpdatedAt              time.Time                   `json:"updated_at"`
+	CreatedAt              time.Time                   `json:"created_at"`
+}
+
 type Store interface {
 	Ensure(ctx context.Context, req EnsureRequest) (Snapshot, error)
 	Get(ctx context.Context, req GetRequest) (Snapshot, error)
 	Patch(ctx context.Context, req PatchRequest) (Snapshot, error)
 	MarkSecret(ctx context.Context, req MarkSecretRequest) (Snapshot, error)
+	Export(ctx context.Context, req ExportRequest) (string, error)
+	Import(ctx context.Context, req ImportRequest) (Snapshot, error)
 	Delete(ctx context.Context, req DeleteRequest) error
 }
 
 type MemoryStore struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	records map[string]Record
+	mu         sync.Mutex
+	now        func() time.Time
+	nextExport int
+	records    map[string]Record
+	archives   map[string]ArchiveRecord
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		now:     func() time.Time { return time.Now().UTC() },
-		records: map[string]Record{},
+		now:      func() time.Time { return time.Now().UTC() },
+		records:  map[string]Record{},
+		archives: map[string]ArchiveRecord{},
 	}
 }
 
@@ -296,6 +329,106 @@ func (s *MemoryStore) Delete(_ context.Context, req DeleteRequest) error {
 	return nil
 }
 
+func (s *MemoryStore) Export(_ context.Context, req ExportRequest) (string, error) {
+	if s == nil {
+		return "", errors.New("settings store is nil")
+	}
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" {
+		return "", fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.records[pluginInstanceID]
+	if !ok || record.State != StateActive {
+		return "", ErrNotDeclared
+	}
+	secrets := map[string]SecretState(nil)
+	if req.IncludeSecrets {
+		secrets = cloneSecrets(record.Secrets)
+	}
+	s.nextExport++
+	ref := fmt.Sprintf("settings_archive_%06d", s.nextExport)
+	s.archives[ref] = ArchiveRecord{
+		ArchiveRef:             ref,
+		SourcePluginInstanceID: pluginInstanceID,
+		IncludeSecrets:         req.IncludeSecrets,
+		SchemaVersion:          record.SchemaVersion,
+		Fields:                 cloneFields(record.Fields),
+		Values:                 cloneMap(record.Values),
+		Secrets:                secrets,
+		SettingsRevision:       record.SettingsRevision,
+		UpdatedAt:              record.UpdatedAt,
+		CreatedAt:              now,
+	}
+	return ref, nil
+}
+
+func (s *MemoryStore) Import(_ context.Context, req ImportRequest) (Snapshot, error) {
+	if s == nil {
+		return Snapshot{}, errors.New("settings store is nil")
+	}
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" {
+		return Snapshot{}, fmt.Errorf("%w: plugin_instance_id is required", ErrInvalidSetting)
+	}
+	archiveRef := strings.TrimSpace(req.ArchiveRef)
+	if archiveRef == "" {
+		return Snapshot{}, ErrArchiveNotFound
+	}
+	if req.Spec == nil {
+		return Snapshot{}, ErrNotDeclared
+	}
+	if err := validateSpec(*req.Spec); err != nil {
+		return Snapshot{}, err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	archive, ok := s.archives[archiveRef]
+	if !ok {
+		return Snapshot{}, ErrArchiveNotFound
+	}
+	fields := cloneFields(req.Spec.Fields)
+	values := normalizedValuesForFields(fields, nil)
+	secrets := normalizedSecretsForFields(fields, nil)
+	revision := uint64(1)
+	if existing, exists := s.records[pluginInstanceID]; exists && existing.State == StateActive {
+		revision = existing.SettingsRevision + 1
+		if !req.DeleteExisting {
+			values = normalizedValuesForFields(fields, existing.Values)
+			secrets = normalizedSecretsForFields(fields, existing.Secrets)
+		}
+	}
+	imported, err := importedValuesForFields(fields, archive.Values, values)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	record := Record{
+		PluginInstanceID: pluginInstanceID,
+		SchemaVersion:    req.Spec.SchemaVersion,
+		SettingsRevision: revision,
+		State:            StateActive,
+		Fields:           fields,
+		Values:           imported,
+		Secrets:          secrets,
+		UpdatedAt:        now,
+	}
+	s.records[pluginInstanceID] = record
+	return snapshot(record), nil
+}
+
 func validateSpec(spec manifest.SettingsSpec) error {
 	if spec.SchemaVersion <= 0 {
 		return fmt.Errorf("%w: schema_version must be positive", ErrInvalidSetting)
@@ -371,6 +504,26 @@ func normalizedSecretsForFields(fields []manifest.SettingFieldSpec, existing map
 		}
 	}
 	return secrets
+}
+
+func importedValuesForFields(fields []manifest.SettingFieldSpec, archived map[string]any, base map[string]any) (map[string]any, error) {
+	values := cloneMap(base)
+	byKey := fieldsByKey(fields)
+	for key, value := range archived {
+		field, ok := byKey[key]
+		if !ok {
+			continue
+		}
+		if field.Type == FieldSecret {
+			continue
+		}
+		normalized, err := normalizeValue(field, value)
+		if err != nil {
+			return nil, err
+		}
+		values[key] = normalized
+	}
+	return values, nil
 }
 
 func snapshot(record Record) Snapshot {
@@ -539,6 +692,23 @@ func cloneFields(fields []manifest.SettingFieldSpec) []manifest.SettingFieldSpec
 	cloned := make([]manifest.SettingFieldSpec, len(fields))
 	copy(cloned, fields)
 	sort.SliceStable(cloned, func(i, j int) bool { return cloned[i].Key < cloned[j].Key })
+	return cloned
+}
+
+func cloneMap(values map[string]any) map[string]any {
+	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		cloned[key] = cloneValue(value)
+	}
+	return cloned
+}
+
+func cloneSecrets(values map[string]SecretState) map[string]SecretState {
+	cloned := make(map[string]SecretState, len(values))
+	for key, value := range values {
+		value.UpdatedAt = cloneTimePtr(value.UpdatedAt)
+		cloned[key] = value
+	}
 	return cloned
 }
 

@@ -645,11 +645,13 @@ components:
         include_secrets: { type: boolean }
     ImportDataRequest:
       type: object
-      required: [plugin_instance_id, archive_ref]
+      required: [plugin_instance_id]
       additionalProperties: false
+      description: At least one of archive_ref or settings_archive_ref must be supplied. Storage archive refs and settings archive refs are separated so settings secrets can remain redacted and require rebinding after import.
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
         archive_ref: { type: string, minLength: 1 }
+        settings_archive_ref: { type: string, minLength: 1 }
         delete_existing: { type: boolean }
     GrantPermissionRequest:
       type: object

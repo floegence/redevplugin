@@ -49,7 +49,13 @@ type ListAuditEventsRequest = observability.ListAuditRequest
 
 type ListDiagnosticEventsRequest = observability.ListDiagnosticRequest
 
-var ErrStreamTicketRequired = errors.New("stream ticket is required")
+var (
+	ErrStreamTicketRequired      = errors.New("stream ticket is required")
+	ErrPluginDataNotDeclared     = errors.New("plugin does not declare exportable data")
+	ErrPluginDataArchiveRequired = errors.New("archive_ref or settings_archive_ref is required")
+	ErrPluginStorageNotDeclared  = errors.New("target plugin does not declare storage")
+	ErrPluginSettingsNotDeclared = errors.New("target plugin does not declare settings")
+)
 
 type PolicyAdapter interface {
 	EvaluateLocalPolicy(ctx context.Context, session sessionctx.Context, plugin PluginRef, method manifest.MethodSpec) (PolicyDecision, error)
@@ -219,13 +225,15 @@ type ExportDataRequest struct {
 }
 
 type ImportDataRequest struct {
-	PluginInstanceID string
-	ArchiveRef       string
-	DeleteExisting   bool
+	PluginInstanceID   string
+	ArchiveRef         string
+	SettingsArchiveRef string
+	DeleteExisting     bool
 }
 
 type ExportDataResult struct {
-	ArchiveRef string `json:"archive_ref"`
+	ArchiveRef         string `json:"archive_ref,omitempty"`
+	SettingsArchiveRef string `json:"settings_archive_ref,omitempty"`
 }
 
 type GrantPermissionRequest struct {
@@ -1968,18 +1976,41 @@ func (h *Host) ExportPluginData(ctx context.Context, req ExportDataRequest) (Exp
 	if err != nil {
 		return ExportDataResult{}, err
 	}
-	if h.adapters.Storage == nil {
-		return ExportDataResult{}, errors.New("storage broker is required")
+	result := ExportDataResult{}
+	if record.Manifest.Storage != nil && len(record.Manifest.Storage.Stores) > 0 {
+		if h.adapters.Storage == nil {
+			return ExportDataResult{}, errors.New("storage broker is required")
+		}
+		archiveRef, err := h.adapters.Storage.ExportData(ctx, storage.ExportRequest{
+			PluginInstanceID: record.PluginInstanceID,
+			IncludeSecrets:   req.IncludeSecrets,
+		})
+		if err != nil {
+			return ExportDataResult{}, err
+		}
+		result.ArchiveRef = archiveRef
 	}
-	archiveRef, err := h.adapters.Storage.ExportData(ctx, storage.ExportRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		IncludeSecrets:   req.IncludeSecrets,
-	})
-	if err != nil {
-		return ExportDataResult{}, err
+	if record.Manifest.Settings != nil {
+		if h.adapters.Settings == nil {
+			return ExportDataResult{}, errors.New("settings store is required")
+		}
+		if _, err := h.ensureSettings(ctx, record, time.Time{}, false); err != nil {
+			return ExportDataResult{}, err
+		}
+		settingsArchiveRef, err := h.adapters.Settings.Export(ctx, settings.ExportRequest{
+			PluginInstanceID: record.PluginInstanceID,
+			IncludeSecrets:   req.IncludeSecrets,
+		})
+		if err != nil {
+			return ExportDataResult{}, err
+		}
+		result.SettingsArchiveRef = settingsArchiveRef
+	}
+	if result.ArchiveRef == "" && result.SettingsArchiveRef == "" {
+		return ExportDataResult{}, ErrPluginDataNotDeclared
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.data.exported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
-	return ExportDataResult{ArchiveRef: archiveRef}, nil
+	return result, nil
 }
 
 func (h *Host) GetSettingsSchema(ctx context.Context, req GetSettingsRequest) (SettingsSchemaResult, error) {
@@ -2046,28 +2077,51 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) erro
 	if err != nil {
 		return err
 	}
-	if h.adapters.Storage == nil {
-		return errors.New("storage broker is required")
+	archiveRef := strings.TrimSpace(req.ArchiveRef)
+	settingsArchiveRef := strings.TrimSpace(req.SettingsArchiveRef)
+	if archiveRef == "" && settingsArchiveRef == "" {
+		return ErrPluginDataArchiveRequired
 	}
-	namespaces, err := storageNamespacesFromManifest(record)
-	if err != nil {
-		return err
-	}
-	if len(namespaces) == 0 {
-		return errors.New("target plugin does not declare storage")
-	}
-	for _, ns := range namespaces {
-		if err := h.adapters.Storage.EnsureNamespace(ctx, ns); err != nil {
-			return fmt.Errorf("ensure storage namespace %q: %w", ns.StoreID, err)
+	if archiveRef != "" {
+		if h.adapters.Storage == nil {
+			return errors.New("storage broker is required")
+		}
+		namespaces, err := storageNamespacesFromManifest(record)
+		if err != nil {
+			return err
+		}
+		if len(namespaces) == 0 {
+			return ErrPluginStorageNotDeclared
+		}
+		for _, ns := range namespaces {
+			if err := h.adapters.Storage.EnsureNamespace(ctx, ns); err != nil {
+				return fmt.Errorf("ensure storage namespace %q: %w", ns.StoreID, err)
+			}
+		}
+		if err := h.adapters.Storage.ImportData(ctx, storage.ImportRequest{
+			PluginInstanceID: record.PluginInstanceID,
+			ArchiveRef:       archiveRef,
+			DeleteExisting:   req.DeleteExisting,
+			TargetNamespaces: namespaces,
+		}); err != nil {
+			return err
 		}
 	}
-	if err := h.adapters.Storage.ImportData(ctx, storage.ImportRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		ArchiveRef:       req.ArchiveRef,
-		DeleteExisting:   req.DeleteExisting,
-		TargetNamespaces: namespaces,
-	}); err != nil {
-		return err
+	if settingsArchiveRef != "" {
+		if record.Manifest.Settings == nil {
+			return ErrPluginSettingsNotDeclared
+		}
+		if h.adapters.Settings == nil {
+			return errors.New("settings store is required")
+		}
+		if _, err := h.adapters.Settings.Import(ctx, settings.ImportRequest{
+			PluginInstanceID: record.PluginInstanceID,
+			ArchiveRef:       settingsArchiveRef,
+			DeleteExisting:   req.DeleteExisting,
+			Spec:             record.Manifest.Settings,
+		}); err != nil {
+			return err
+		}
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.data.imported", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return nil

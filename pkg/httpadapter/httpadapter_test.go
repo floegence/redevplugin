@@ -1249,6 +1249,37 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 	})
 }
 
+func TestHandlerDataExportImportSettingsArchive(t *testing.T) {
+	h := newHTTPTestHost(t)
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.PatchPluginSettings(context.Background(), host.PatchSettingsRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		Values:           map[string]any{"default_engine": "podman"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+
+	exported := postJSON[host.ExportDataResult](t, handler, "/_redevplugin/api/plugins/data/export", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if exported.SettingsArchiveRef == "" {
+		t.Fatal("export response missing settings_archive_ref")
+	}
+
+	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/data/import", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"settings_archive_ref": exported.SettingsArchiveRef,
+		"delete_existing":      true,
+	})
+}
+
 func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	secrets := &httpRecordingSecretStore{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secrets})

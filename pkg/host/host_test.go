@@ -2081,6 +2081,84 @@ func TestExportImportPluginData(t *testing.T) {
 	}
 }
 
+func TestExportImportPluginSettingsData(t *testing.T) {
+	ctx := context.Background()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  storage.NewMemoryBroker(),
+		secrets:        &recordingSecretStore{},
+	})
+	source, err := InstallPackageBytes(ctx, h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		Values:           map[string]any{"default_engine": "podman", "show_stopped": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.BindSecretRef(ctx, SecretBindRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		SecretRef:        "api_token",
+		Scope:            "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID, IncludeSecrets: true})
+	if err != nil {
+		t.Fatalf("ExportPluginData(settings) error = %v", err)
+	}
+	if exported.ArchiveRef != "" {
+		t.Fatalf("settings-only export should not create storage archive: %#v", exported)
+	}
+	if exported.SettingsArchiveRef == "" {
+		t.Fatal("settings export response missing settings_archive_ref")
+	}
+	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		Values:           map[string]any{"default_engine": "docker", "show_stopped": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DeleteSecretRef(ctx, SecretDeleteRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		SecretRef:        "api_token",
+		Scope:            "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ImportPluginData(ctx, ImportDataRequest{
+		PluginInstanceID:   source.PluginInstanceID,
+		SettingsArchiveRef: exported.SettingsArchiveRef,
+		DeleteExisting:     true,
+	}); err != nil {
+		t.Fatalf("ImportPluginData(settings) error = %v", err)
+	}
+	imported, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Values["default_engine"] != "podman" || imported.Values["show_stopped"] != false {
+		t.Fatalf("imported settings mismatch: %#v", imported.Values)
+	}
+	secret, ok := imported.Values["api_token"].(settings.SecretValue)
+	if !ok {
+		t.Fatalf("imported secret should be redacted state: %#v", imported.Values["api_token"])
+	}
+	if secret.Set {
+		t.Fatalf("settings import must not restore secret binding state: %#v", secret)
+	}
+	if !audits.hasEvent("plugin.data.exported") || !audits.hasEvent("plugin.data.imported") {
+		t.Fatalf("missing data audit events: %#v", audits.events)
+	}
+}
+
 func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()

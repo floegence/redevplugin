@@ -121,6 +121,10 @@ capabilities.
   filesystem broker namespaces, quota, and usage without dumping plugin file
   contents. Host products can wrap this for diagnostics while keeping the
   storage root selection in their own adapter layer.
+- Host data export/import keeps storage archives and settings archives as
+  separate refs. Settings imports validate non-secret fields against the target
+  manifest schema and never restore secret plaintext or a bound-secret state;
+  users must rebind secret refs after moving plugin data to another environment.
 - `redevplugin dev-install <state-root> <package>` creates a persistent local
   development state root for Flower-generated plugins. The matching
   `dev-enable`, `dev-open <surface-id> [sandbox-origin]`, `dev-disable`,

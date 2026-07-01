@@ -586,12 +586,14 @@ export type PluginDataExportRequest = {
 };
 
 export type PluginDataExportResult = {
-  archive_ref: string;
+  archive_ref?: string;
+  settings_archive_ref?: string;
 };
 
 export type PluginDataImportRequest = {
   plugin_instance_id: string;
-  archive_ref: string;
+  archive_ref?: string;
+  settings_archive_ref?: string;
   delete_existing?: boolean;
 };
 

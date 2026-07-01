@@ -107,6 +107,126 @@ func TestMemoryStoreDeleteRetainLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreExportImportSettingsData(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	spec := settingsSpec()
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec, Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(ctx, PatchRequest{
+		PluginInstanceID: "plugini_source",
+		Values:           map[string]any{"engine": "podman", "retry_count": 4},
+		Now:              now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkSecret(ctx, MarkSecretRequest{
+		PluginInstanceID: "plugini_source",
+		SecretRef:        "api_key",
+		Set:              true,
+		LastTestStatus:   "passed",
+		Now:              now.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveRef, err := store.Export(ctx, ExportRequest{
+		PluginInstanceID: "plugini_source",
+		IncludeSecrets:   true,
+		Now:              now.Add(3 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	if archiveRef == "" {
+		t.Fatal("Export() returned empty archive ref")
+	}
+	store.mu.Lock()
+	if got := store.archives[archiveRef].Secrets["api_key"]; !got.Set || got.LastTestStatus != "passed" {
+		store.mu.Unlock()
+		t.Fatalf("include_secrets export should retain redacted secret metadata: %#v", got)
+	}
+	store.mu.Unlock()
+
+	imported, err := store.Import(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		Spec:             &spec,
+		Now:              now.Add(4 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if imported.Values["engine"] != "podman" || imported.Values["retry_count"] != int64(4) {
+		t.Fatalf("imported values mismatch: %#v", imported.Values)
+	}
+	secret, ok := imported.Values["api_key"].(SecretValue)
+	if !ok {
+		t.Fatalf("imported secret should be redacted metadata: %#v", imported.Values["api_key"])
+	}
+	if secret.Set || secret.UpdatedAt != nil || secret.LastTestStatus != "" {
+		t.Fatalf("import should not restore secret binding state: %#v", secret)
+	}
+}
+
+func TestMemoryStoreExportOmitsSecretMetadataByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	spec := settingsSpec()
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkSecret(ctx, MarkSecretRequest{
+		PluginInstanceID: "plugini_source",
+		SecretRef:        "api_key",
+		Set:              true,
+		LastTestStatus:   "passed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_source"})
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.archives[archiveRef].Secrets) != 0 {
+		t.Fatalf("default export should omit secret metadata: %#v", store.archives[archiveRef].Secrets)
+	}
+}
+
+func TestMemoryStoreImportRejectsInvalidArchiveSetting(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	spec := settingsSpec()
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(ctx, PatchRequest{
+		PluginInstanceID: "plugini_source",
+		Values:           map[string]any{"engine": "podman"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetSpec := settingsSpec()
+	targetSpec.Fields[0].Options = []string{"docker"}
+	if _, err := store.Import(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		Spec:             &targetSpec,
+	}); !errors.Is(err, ErrInvalidSetting) {
+		t.Fatalf("Import(incompatible option) error = %v, want ErrInvalidSetting", err)
+	}
+}
+
 func settingsSpec() manifest.SettingsSpec {
 	return manifest.SettingsSpec{
 		SchemaVersion: 1,
