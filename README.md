@@ -104,13 +104,13 @@ capabilities.
   `redevplugin.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32`,
   `redevplugin.storage/kv(req_ptr, req_len, out_ptr, out_len) -> i32`,
   `redevplugin.storage/sqlite(req_ptr, req_len, out_ptr, out_len) -> i32`, and
-  `redevplugin.network/http_request(req_ptr, req_len, out_ptr, out_len) -> i32`.
+  `redevplugin.network/execute(req_ptr, req_len, out_ptr, out_len) -> i32`.
   The worker writes bounded JSON broker requests into WASM memory, the Rust
   runtime injects Host-owned identity, policy, grant, and revoke context,
   executes the requests through the `storage_file`, `storage_kv`,
   `storage_sqlite`, and `network_execute` IPC paths, and writes JSON responses
   back into worker-provided output buffers. The earlier fixed
-  `*_demo` imports remain covered only as legacy runtime compatibility fixtures,
+  `*_demo` imports and `redevplugin.network/http_request` alias remain covered only as legacy runtime compatibility fixtures,
   not as the scaffolded plugin backend contract. Host integration tests build
   and exercise the real Rust runtime whenever a local Cargo toolchain is
   available, including FileBroker file writes, KV writes, SQLite DDL through the

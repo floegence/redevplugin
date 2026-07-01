@@ -198,12 +198,12 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"files"`, `"kv"`, `"sqlite"`, `"http_request"`, `(memory (export "memory") 1)`} {
+	for _, want := range []string{`"files"`, `"kv"`, `"sqlite"`, `"execute"`, `(memory (export "memory") 1)`} {
 		if !bytes.Contains(brokerWATRaw, []byte(want)) {
 			t.Fatalf("scaffold broker wat missing %q: %s", want, brokerWATRaw)
 		}
 	}
-	for _, legacy := range []string{"files_write_demo", "kv_put_demo", "sqlite_exec_demo", "http_request_demo"} {
+	for _, legacy := range []string{"files_write_demo", "kv_put_demo", "sqlite_exec_demo", "http_request_demo", `"http_request"`} {
 		if bytes.Contains(brokerWATRaw, []byte(legacy)) || bytes.Contains(brokerWASMRaw, []byte(legacy)) {
 			t.Fatalf("scaffold broker worker still references legacy hostcall %q", legacy)
 		}

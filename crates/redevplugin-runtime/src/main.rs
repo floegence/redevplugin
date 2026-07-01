@@ -183,7 +183,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 line,
                 &request_json,
             ),
-            WorkerHostcallRequest::NetworkHTTP(request_json) => perform_network_http_request(
+            WorkerHostcallRequest::NetworkExecute(request_json) => perform_network_execute_request(
                 reader,
                 stdout,
                 request_id,
@@ -206,8 +206,8 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             }
         };
     let mut memory_network_results = Vec::new();
-    if execution.network_http_request_requested {
-        for result in execution.network_http_request_results {
+    if execution.network_execute_requested {
+        for result in execution.network_execute_results {
             match result {
                 Ok(result) => {
                     memory_network_results.push(result);
@@ -469,15 +469,15 @@ struct WorkerExecution {
     storage_sqlite_requested: bool,
     storage_sqlite_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
-    network_http_request_requested: bool,
-    network_http_request_results: Vec<Result<String, String>>,
+    network_execute_requested: bool,
+    network_execute_results: Vec<Result<String, String>>,
 }
 
 enum WorkerHostcallRequest {
     StorageFile(String),
     StorageKV(String),
     StorageSQLite(String),
-    NetworkHTTP(String),
+    NetworkExecute(String),
 }
 
 type WorkerBrokerHostcall<'a> = dyn FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a;
@@ -493,8 +493,8 @@ struct WorkerHostState<'a> {
     storage_sqlite_requested: bool,
     storage_sqlite_result: Option<Result<String, String>>,
     network_http_request_demo_requested: bool,
-    network_http_request_requested: bool,
-    network_http_request_results: Vec<Result<String, String>>,
+    network_execute_requested: bool,
+    network_execute_results: Vec<Result<String, String>>,
     broker_hostcall: Box<WorkerBrokerHostcall<'a>>,
 }
 
@@ -513,8 +513,8 @@ impl<'a> WorkerHostState<'a> {
             storage_sqlite_requested: false,
             storage_sqlite_result: None,
             network_http_request_demo_requested: false,
-            network_http_request_requested: false,
-            network_http_request_results: Vec::new(),
+            network_execute_requested: false,
+            network_execute_results: Vec::new(),
             broker_hostcall: Box::new(broker_hostcall),
         }
     }
@@ -629,6 +629,26 @@ fn execute_worker_module<'a>(
     linker
         .func_wrap(
             "redevplugin.network",
+            "execute",
+            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
+             request_ptr: i32,
+             request_len: i32,
+             response_ptr: i32,
+             response_len: i32|
+             -> i32 {
+                perform_network_execute_request_hostcall(
+                    &mut caller,
+                    request_ptr,
+                    request_len,
+                    response_ptr,
+                    response_len,
+                )
+            },
+        )
+        .map_err(|err| format!("define network execute memory hostcall import: {err}"))?;
+    linker
+        .func_wrap(
+            "redevplugin.network",
             "http_request",
             |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
              request_ptr: i32,
@@ -636,7 +656,7 @@ fn execute_worker_module<'a>(
              response_ptr: i32,
              response_len: i32|
              -> i32 {
-                perform_network_http_request_hostcall(
+                perform_network_execute_request_hostcall(
                     &mut caller,
                     request_ptr,
                     request_len,
@@ -666,8 +686,8 @@ fn execute_worker_module<'a>(
     let storage_sqlite_requested = store.data().storage_sqlite_requested;
     let storage_sqlite_result = store.data().storage_sqlite_result.clone();
     let network_http_request_demo_requested = store.data().network_http_request_demo_requested;
-    let network_http_request_requested = store.data().network_http_request_requested;
-    let network_http_request_results = store.data().network_http_request_results.clone();
+    let network_execute_requested = store.data().network_execute_requested;
+    let network_execute_results = store.data().network_execute_results.clone();
     Ok(WorkerExecution {
         validated,
         storage_file_write_demo_requested,
@@ -680,8 +700,8 @@ fn execute_worker_module<'a>(
         storage_sqlite_requested,
         storage_sqlite_result,
         network_http_request_demo_requested,
-        network_http_request_requested,
-        network_http_request_results,
+        network_execute_requested,
+        network_execute_results,
     })
 }
 
@@ -948,14 +968,14 @@ fn record_storage_sqlite_hostcall_error(
     code
 }
 
-fn perform_network_http_request_hostcall(
+fn perform_network_execute_request_hostcall(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     request_ptr: i32,
     request_len: i32,
     response_ptr: i32,
     response_len: i32,
 ) -> i32 {
-    caller.data_mut().network_http_request_requested = true;
+    caller.data_mut().network_execute_requested = true;
     let request_ptr = match usize::try_from(request_ptr) {
         Ok(value) => value,
         Err(_) => return record_network_hostcall_error(caller, -1),
@@ -995,22 +1015,21 @@ fn perform_network_http_request_hostcall(
     };
     let response_json = {
         let state = caller.data_mut();
-        (state.broker_hostcall)(WorkerHostcallRequest::NetworkHTTP(request_json.to_string()))
+        (state.broker_hostcall)(WorkerHostcallRequest::NetworkExecute(
+            request_json.to_string(),
+        ))
     };
     let response_json = match response_json {
         Ok(value) => value,
         Err(err) => {
-            caller
-                .data_mut()
-                .network_http_request_results
-                .push(Err(err));
+            caller.data_mut().network_execute_results.push(Err(err));
             return -6;
         }
     };
     let response = response_json.as_bytes();
     if response.len() > response_len {
-        caller.data_mut().network_http_request_results.push(Err(
-            "network http_request response does not fit in the output buffer".to_string(),
+        caller.data_mut().network_execute_results.push(Err(
+            "network execute response does not fit in the output buffer".to_string(),
         ));
         return -7;
     }
@@ -1026,7 +1045,7 @@ fn perform_network_http_request_hostcall(
     };
     caller
         .data_mut()
-        .network_http_request_results
+        .network_execute_results
         .push(Ok(response_json));
     written
 }
@@ -1035,12 +1054,9 @@ fn record_network_hostcall_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     code: i32,
 ) -> i32 {
-    caller
-        .data_mut()
-        .network_http_request_results
-        .push(Err(format!(
-            "network http_request hostcall failed with ABI code {code}"
-        )));
+    caller.data_mut().network_execute_results.push(Err(format!(
+        "network execute hostcall failed with ABI code {code}"
+    )));
     code
 }
 
@@ -1535,7 +1551,7 @@ fn perform_network_http_request_demo<R: BufRead, W: Write>(
     redevplugin_ipc::network_execute_payload_json(&response)
 }
 
-fn perform_network_http_request<R: BufRead, W: Write>(
+fn perform_network_execute_request<R: BufRead, W: Write>(
     reader: &mut R,
     stdout: &mut W,
     request_id: &str,
@@ -1543,8 +1559,8 @@ fn perform_network_http_request<R: BufRead, W: Write>(
     invocation_frame: &str,
     request_json: &str,
 ) -> Result<String, String> {
-    let req = network_http_request(invocation_frame, runtime_generation_id, request_json)?;
-    let network_request_id = format!("{request_id}:network_http_request");
+    let req = network_execute_request(invocation_frame, runtime_generation_id, request_json)?;
+    let network_request_id = format!("{request_id}:network_execute");
     let frame =
         redevplugin_ipc::network_execute_frame(&network_request_id, runtime_generation_id, &req);
     stdout
@@ -1573,7 +1589,7 @@ fn perform_network_http_request<R: BufRead, W: Write>(
     redevplugin_ipc::network_execute_payload_json(&response)
 }
 
-fn network_http_request(
+fn network_execute_request(
     invocation_frame: &str,
     runtime_generation_id: &str,
     request_json: &str,
@@ -1803,7 +1819,7 @@ mod tests {
         assert!(!execution.storage_file_write_demo_requested);
         assert!(!execution.storage_file_requested);
         assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_http_request_requested);
+        assert!(!execution.network_execute_requested);
     }
 
     #[test]
@@ -1817,7 +1833,7 @@ mod tests {
         assert!(execution.storage_file_write_demo_requested);
         assert!(!execution.storage_file_requested);
         assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_http_request_requested);
+        assert!(!execution.network_execute_requested);
     }
 
     #[test]
@@ -1835,7 +1851,7 @@ mod tests {
         assert!(!execution.storage_file_write_demo_requested);
         assert!(!execution.storage_file_requested);
         assert!(execution.network_http_request_demo_requested);
-        assert!(!execution.network_http_request_requested);
+        assert!(!execution.network_execute_requested);
     }
 
     #[test]
@@ -1860,14 +1876,14 @@ mod tests {
             ))
         );
         assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_http_request_requested);
+        assert!(!execution.network_execute_requested);
     }
 
     #[test]
     fn executes_network_memory_hostcall_wasm_worker_export() {
         let module = network_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
         let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            let WorkerHostcallRequest::NetworkHTTP(request) = request else {
+            let WorkerHostcallRequest::NetworkExecute(request) = request else {
                 panic!("expected network hostcall request");
             };
             assert!(request.contains(r#""connector_id":"api""#), "{request}");
@@ -1879,11 +1895,41 @@ mod tests {
         assert!(!execution.storage_file_write_demo_requested);
         assert!(!execution.storage_file_requested);
         assert!(!execution.network_http_request_demo_requested);
-        assert!(execution.network_http_request_requested);
+        assert!(execution.network_execute_requested);
         assert_eq!(
-            execution.network_http_request_results,
+            execution.network_execute_results,
             vec![Ok(
                 r#"{"ok":true,"transport":"http","status_code":202}"#.to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn executes_legacy_network_http_request_memory_hostcall_wasm_worker_export() {
+        let request = br#"{"connector_id":"stream","transport":"websocket","destination":"wss://stream.example.com","operation":"websocket_round_trip","message_type":"text","payload_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}"#;
+        let module = imported_memory_hostcall_worker_wasm(
+            "redevplugin.network",
+            "http_request",
+            "redevplugin_worker_invoke",
+            request,
+        );
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
+            let WorkerHostcallRequest::NetworkExecute(request) = request else {
+                panic!("expected network execute hostcall request");
+            };
+            assert!(request.contains(r#""transport":"websocket""#), "{request}");
+            assert!(
+                request.contains(r#""operation":"websocket_round_trip""#),
+                "{request}"
+            );
+            Ok(r#"{"ok":true,"transport":"websocket","message_type":"text"}"#.to_string())
+        })
+        .expect("legacy network hostcall worker executes");
+        assert!(execution.network_execute_requested);
+        assert_eq!(
+            execution.network_execute_results,
+            vec![Ok(
+                r#"{"ok":true,"transport":"websocket","message_type":"text"}"#.to_string()
             )]
         );
     }
@@ -1911,7 +1957,7 @@ mod tests {
             ))
         );
         assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_http_request_requested);
+        assert!(!execution.network_execute_requested);
     }
 
     #[test]
@@ -1931,7 +1977,7 @@ mod tests {
             WorkerHostcallRequest::StorageSQLite(_) => {
                 Err("unexpected storage sqlite call".to_string())
             }
-            WorkerHostcallRequest::NetworkHTTP(_) => Err("unexpected network call".to_string()),
+            WorkerHostcallRequest::NetworkExecute(_) => Err("unexpected network call".to_string()),
         }
     }
 
@@ -1961,12 +2007,7 @@ mod tests {
 
     fn network_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
         let request = br#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}"#;
-        imported_memory_hostcall_worker_wasm(
-            "redevplugin.network",
-            "http_request",
-            export_name,
-            request,
-        )
+        imported_memory_hostcall_worker_wasm("redevplugin.network", "execute", export_name, request)
     }
 
     fn storage_sqlite_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {

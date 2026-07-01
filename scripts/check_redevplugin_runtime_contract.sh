@@ -99,8 +99,9 @@ fi
   grep -q 'perform_storage_sqlite_request_hostcall' crates/redevplugin-runtime/src/main.rs
   grep -q 'storage_sqlite_frame' crates/redevplugin-runtime/src/main.rs
   grep -q 'http_request_demo' crates/redevplugin-runtime/src/main.rs
+  grep -q '"execute"' crates/redevplugin-runtime/src/main.rs
   grep -q '"http_request"' crates/redevplugin-runtime/src/main.rs
-  grep -q 'perform_network_http_request_hostcall' crates/redevplugin-runtime/src/main.rs
+  grep -q 'perform_network_execute_request_hostcall' crates/redevplugin-runtime/src/main.rs
   grep -q 'network_execute_frame' crates/redevplugin-runtime/src/main.rs
   grep -q 'storageMemoryHostcallWorkerWASMForTest' pkg/host/host_test.go
   grep -q 'networkMemoryHostcallWorkerWASMForTest' pkg/host/host_test.go

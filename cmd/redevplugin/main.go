@@ -1159,7 +1159,7 @@ func scaffoldBrokerWorkerWAT() string {
 		"  (import \"redevplugin.storage\" \"files\" (func $storage_files (param i32 i32 i32 i32) (result i32)))\n" +
 		"  (import \"redevplugin.storage\" \"kv\" (func $storage_kv (param i32 i32 i32 i32) (result i32)))\n" +
 		"  (import \"redevplugin.storage\" \"sqlite\" (func $storage_sqlite (param i32 i32 i32 i32) (result i32)))\n" +
-		"  (import \"redevplugin.network\" \"http_request\" (func $network_http_request (param i32 i32 i32 i32) (result i32)))\n" +
+		"  (import \"redevplugin.network\" \"execute\" (func $network_execute (param i32 i32 i32 i32) (result i32)))\n" +
 		"  (memory (export \"memory\") 1)\n" +
 		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
 		"    ;; Each call passes request_ptr, request_len, response_ptr, response_len.\n")
@@ -1235,25 +1235,25 @@ func scaffoldBrokerHostcalls() []memoryHostcallSpec {
 		},
 		{
 			Module:  "redevplugin.network",
-			Name:    "http_request",
+			Name:    "execute",
 			Request: mustJSONBytes(map[string]any{"connector_id": "api", "transport": "http", "destination": "https://api.example.com", "operation": "http", "method": "POST", "path": "/v1/worker", "headers": map[string]any{"Content-Type": []string{"text/plain"}}, "body_base64": "Z2VuZXJhdGVkIGJyb2tlcmVkIGh0dHAgcmVxdWVzdA==", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
 			OutLen:  8192,
 		},
 		{
 			Module:  "redevplugin.network",
-			Name:    "http_request",
+			Name:    "execute",
 			Request: mustJSONBytes(map[string]any{"connector_id": "stream", "transport": "websocket", "destination": "wss://stream.example.com", "operation": "websocket_round_trip", "message_type": "text", "payload_base64": "Z2VuZXJhdGVkIHdlYnNvY2tldCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
 			OutLen:  8192,
 		},
 		{
 			Module:  "redevplugin.network",
-			Name:    "http_request",
+			Name:    "execute",
 			Request: mustJSONBytes(map[string]any{"connector_id": "mysql", "transport": "tcp", "destination": "db.example.com:3306", "operation": "tcp_round_trip", "payload_base64": "Z2VuZXJhdGVkIHRjcCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
 			OutLen:  8192,
 		},
 		{
 			Module:  "redevplugin.network",
-			Name:    "http_request",
+			Name:    "execute",
 			Request: mustJSONBytes(map[string]any{"connector_id": "metrics", "transport": "udp", "destination": "metrics.example.com:8125", "operation": "udp_round_trip", "payload_base64": "Z2VuZXJhdGVkIHVkcCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
 			OutLen:  8192,
 		},

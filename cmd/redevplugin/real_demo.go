@@ -576,7 +576,7 @@ func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {
 		connectors = mergeNetworkConnector(connectors, connector)
 	}
 	for _, call := range scaffoldBrokerHostcalls() {
-		if call.Module != "redevplugin.network" || call.Name != "http_request" {
+		if call.Module != "redevplugin.network" || call.Name != "execute" {
 			continue
 		}
 		var request struct {
@@ -665,7 +665,7 @@ func realDemoNetworkWorkerWASM(networkCase realDemoNetworkCase) []byte {
 	if err != nil {
 		return realDemoMinimalWorkerWASM("redevplugin_worker_invoke")
 	}
-	return importedMemoryHostcallWorkerWASM("redevplugin.network", "http_request", "redevplugin_worker_invoke", raw)
+	return importedMemoryHostcallWorkerWASM("redevplugin.network", "execute", "redevplugin_worker_invoke", raw)
 }
 
 func realDemoMinimalWorkerWASM(exportName string) []byte {

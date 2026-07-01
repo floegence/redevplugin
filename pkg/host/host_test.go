@@ -2862,7 +2862,7 @@ func importedHostcallWorkerWASMForTest(importModule string, importName string, e
 
 func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "http_request", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", exportName, request)
 }
 
 func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transport connectivity.Transport) []byte {
@@ -2877,7 +2877,7 @@ func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transpor
 	default:
 		request = []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
 	}
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "http_request", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", exportName, request)
 }
 
 func storageMemoryHostcallWorkerWASMForTest(exportName string) []byte {
