@@ -190,6 +190,21 @@ func run(ctx context.Context, args []string) error {
 			sandboxOrigin = args[3]
 		}
 		return devOpen(ctx, args[1], args[2], sandboxOrigin)
+	case "dev-secret-bind":
+		if len(args) != 3 && len(args) != 4 {
+			return usage()
+		}
+		return devSecretBind(ctx, args[1], args[2], optionalSecretScope(args))
+	case "dev-secret-test":
+		if len(args) != 3 && len(args) != 4 {
+			return usage()
+		}
+		return devSecretTest(ctx, args[1], args[2], optionalSecretScope(args))
+	case "dev-secret-delete":
+		if len(args) != 3 && len(args) != 4 {
+			return usage()
+		}
+		return devSecretDelete(ctx, args[1], args[2], optionalSecretScope(args))
 	case "dev-disable":
 		if len(args) != 2 {
 			return usage()
@@ -683,6 +698,13 @@ func packageSignatureSummary(pkg pluginpkg.Package) (bool, string, string) {
 	return true, pkg.PackageSignature.KeyID, pkg.PackageSignature.Algorithm
 }
 
+func optionalSecretScope(args []string) string {
+	if len(args) == 4 {
+		return args[3]
+	}
+	return "user"
+}
+
 func writeJSON(v any) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
@@ -712,7 +734,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {

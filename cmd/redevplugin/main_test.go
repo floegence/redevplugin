@@ -717,6 +717,89 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 		t.Fatalf("settings defaults mismatch after enable: %#v", record)
 	}
 
+	bindOutput, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, " api_token ")
+	if err != nil {
+		t.Fatalf("dev-secret-bind error = %v", err)
+	}
+	var bindSummary devSecretSummary
+	if err := json.Unmarshal(bindOutput, &bindSummary); err != nil {
+		t.Fatalf("dev-secret-bind output decode error = %v: %s", err, bindOutput)
+	}
+	if !bindSummary.OK ||
+		bindSummary.PluginInstanceID != installSummary.PluginInstanceID ||
+		bindSummary.SecretRef != "api_token" ||
+		bindSummary.Scope != "user" ||
+		!bindSummary.Bound {
+		t.Fatalf("dev-secret-bind summary mismatch: %#v", bindSummary)
+	}
+	boundState := loadDevStateForTest(t, stateRoot)
+	boundSecret := boundState.Secrets.Records[devSecretKey(host.SecretBindRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		SecretRef:        "api_token",
+		Scope:            "user",
+	})]
+	if !boundSecret.Bound || boundSecret.BoundAt == nil || boundSecret.LastTestStatus != "" {
+		t.Fatalf("secret state not bound: %#v", boundSecret)
+	}
+	boundSettings := boundState.Settings.Records[installSummary.PluginInstanceID].Secrets["api_token"]
+	if !boundSettings.Set || boundSettings.LastTestStatus != "" {
+		t.Fatalf("settings secret state not marked bound: %#v", boundSettings)
+	}
+	if raw, err := os.ReadFile(filepath.Join(stateRoot, devStateFile)); err != nil {
+		t.Fatal(err)
+	} else if bytes.Contains(raw, []byte("plaintext")) || bytes.Contains(raw, []byte("token_value")) {
+		t.Fatalf("dev secret state leaked a secret value: %s", raw)
+	}
+
+	testOutput, err := captureCLIOutput(t, "dev-secret-test", stateRoot, "api_token")
+	if err != nil {
+		t.Fatalf("dev-secret-test error = %v", err)
+	}
+	var testSummary devSecretSummary
+	if err := json.Unmarshal(testOutput, &testSummary); err != nil {
+		t.Fatalf("dev-secret-test output decode error = %v: %s", err, testOutput)
+	}
+	if !testSummary.Bound || testSummary.LastTestStatus != "passed" {
+		t.Fatalf("dev-secret-test summary mismatch: %#v", testSummary)
+	}
+	testedSettings := loadDevStateForTest(t, stateRoot).Settings.Records[installSummary.PluginInstanceID].Secrets["api_token"]
+	if !testedSettings.Set || testedSettings.LastTestStatus != "passed" {
+		t.Fatalf("settings secret state not marked tested: %#v", testedSettings)
+	}
+
+	deleteOutput, err := captureCLIOutput(t, "dev-secret-delete", stateRoot, "api_token")
+	if err != nil {
+		t.Fatalf("dev-secret-delete error = %v", err)
+	}
+	var deleteSummary devSecretSummary
+	if err := json.Unmarshal(deleteOutput, &deleteSummary); err != nil {
+		t.Fatalf("dev-secret-delete output decode error = %v: %s", err, deleteOutput)
+	}
+	if deleteSummary.Bound || deleteSummary.LastTestStatus != "" {
+		t.Fatalf("dev-secret-delete summary mismatch: %#v", deleteSummary)
+	}
+	deletedState := loadDevStateForTest(t, stateRoot)
+	deletedSecret := deletedState.Secrets.Records[devSecretKey(host.SecretBindRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		SecretRef:        "api_token",
+		Scope:            "user",
+	})]
+	if deletedSecret.Bound || deletedSecret.DeletedAt == nil {
+		t.Fatalf("secret state not deleted: %#v", deletedSecret)
+	}
+	deletedSettings := deletedState.Settings.Records[installSummary.PluginInstanceID].Secrets["api_token"]
+	if deletedSettings.Set || deletedSettings.LastTestStatus != "" {
+		t.Fatalf("settings secret state not cleared: %#v", deletedSettings)
+	}
+
+	if _, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, "api_token", "environment"); err != nil {
+		t.Fatalf("dev-secret-bind environment error = %v", err)
+	}
+	if _, err := captureCLIOutput(t, "dev-secret-bind", stateRoot, "undeclared_token"); err == nil || !strings.Contains(err.Error(), "secret_ref") {
+		t.Fatalf("dev-secret-bind undeclared error = %v, want invalid secret_ref", err)
+	}
+
+	state = loadDevStateForTest(t, stateRoot)
 	restoredSettings := settings.NewMemoryStoreFromState(state.Settings)
 	patched, err := restoredSettings.Patch(context.Background(), settings.PatchRequest{
 		PluginInstanceID: installSummary.PluginInstanceID,
@@ -764,9 +847,13 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-uninstall", stateRoot, "--keep-data"); err != nil {
 		t.Fatalf("dev-uninstall keep data error = %v", err)
 	}
-	retainedRecord := loadDevStateForTest(t, stateRoot).Settings.Records[installSummary.PluginInstanceID]
+	retainedState := loadDevStateForTest(t, stateRoot)
+	retainedRecord := retainedState.Settings.Records[installSummary.PluginInstanceID]
 	if retainedRecord.State != settings.StateRetained || retainedRecord.Values["accent_mode"] != "amber" {
 		t.Fatalf("settings should be retained after keep-data uninstall: %#v", retainedRecord)
+	}
+	if len(retainedState.Secrets.Records) != 2 {
+		t.Fatalf("secret refs should be retained after keep-data uninstall: %#v", retainedState.Secrets.Records)
 	}
 
 	secondStateRoot := filepath.Join(dir, "state-delete")
@@ -781,14 +868,24 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-enable", secondStateRoot); err != nil {
 		t.Fatalf("second dev-enable error = %v", err)
 	}
+	if _, err := captureCLIOutput(t, "dev-secret-test", secondStateRoot, "api_token"); err == nil || !strings.Contains(err.Error(), "must be bound") {
+		t.Fatalf("second dev-secret-test before bind error = %v, want must be bound", err)
+	}
+	if _, err := captureCLIOutput(t, "dev-secret-bind", secondStateRoot, "api_token"); err != nil {
+		t.Fatalf("second dev-secret-bind error = %v", err)
+	}
 	if len(loadDevStateForTest(t, secondStateRoot).Settings.Records) != 1 {
 		t.Fatal("second dev-enable should create settings")
 	}
 	if _, err := captureCLIOutput(t, "dev-uninstall", secondStateRoot, "--delete-data"); err != nil {
 		t.Fatalf("second dev-uninstall delete data error = %v", err)
 	}
-	if _, ok := loadDevStateForTest(t, secondStateRoot).Settings.Records[secondInstallSummary.PluginInstanceID]; ok {
-		t.Fatalf("settings remained after delete-data uninstall: %#v", loadDevStateForTest(t, secondStateRoot).Settings.Records)
+	secondDeletedState := loadDevStateForTest(t, secondStateRoot)
+	if _, ok := secondDeletedState.Settings.Records[secondInstallSummary.PluginInstanceID]; ok {
+		t.Fatalf("settings remained after delete-data uninstall: %#v", secondDeletedState.Settings.Records)
+	}
+	if len(secondDeletedState.Secrets.Records) != 0 {
+		t.Fatalf("secret refs remained after delete-data uninstall: %#v", secondDeletedState.Secrets.Records)
 	}
 }
 

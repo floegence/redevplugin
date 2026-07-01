@@ -128,14 +128,22 @@ capabilities.
 - `redevplugin dev-install <state-root> <package>` creates a persistent local
   development state root for Flower-generated plugins. The matching
   `dev-enable`, `dev-open <surface-id> [sandbox-origin]`, `dev-disable`,
+  `dev-secret-bind <secret-ref> [user|environment]`,
+  `dev-secret-test <secret-ref> [user|environment]`,
+  `dev-secret-delete <secret-ref> [user|environment]`,
   `dev-uninstall [--delete-data|--keep-data]`, and `dev-status` commands replay
   the saved package through the real Host lifecycle APIs while keeping the
-  copied package, filesystem storage root, and sandbox browser-origin records
-  under the same state root. This gives generated plugins a local, auditable
+  copied package, filesystem storage root, manifest-level settings, redacted
+  secret-ref binding/test state, and sandbox browser-origin records under the
+  same state root. Dev secret commands never store secret plaintext; they only
+  persist the declared `secret_ref`, scope, bound flag, and test status that the
+  Host settings API can expose as redacted state. This gives generated plugins a local, auditable
   install -> enable -> open -> disable -> uninstall flow without importing any
   host-product internals. Uninstall removes the copied package; `--delete-data`
-  also removes plugin storage namespaces and marks browser-origin data cleanup
-  complete, while `--keep-data` marks declared plugin data retained.
+  also removes plugin storage namespaces, manifest settings, dev secret-ref
+  state, and marks browser-origin data cleanup complete, while `--keep-data`
+  marks declared plugin data retained and preserves redacted dev secret-ref
+  state for the local developer profile.
 - The browser demo under `demo/browser/` runs a real host page plus sandboxed
   iframe plugin page using the built `@floegence/redevplugin-ui` bridge package.
   Start it with `npm run demo:browser`, open the printed host URL, then exercise

@@ -38,6 +38,7 @@ type devLifecycleState struct {
 	Record         registry.PluginRecord      `json:"record"`
 	BrowserOrigins []browsersite.OriginRecord `json:"browser_origins,omitempty"`
 	Settings       settings.MemoryState       `json:"settings,omitempty"`
+	Secrets        devSecretState             `json:"secrets,omitempty"`
 	UpdatedAt      time.Time                  `json:"updated_at"`
 }
 
@@ -65,6 +66,19 @@ type devOpenSurfaceSummary struct {
 	BrowserOriginCount int       `json:"browser_origin_count"`
 	IssuedAt           time.Time `json:"issued_at"`
 	ExpiresAt          time.Time `json:"expires_at"`
+}
+
+type devSecretSummary struct {
+	OK               bool      `json:"ok"`
+	Action           string    `json:"action"`
+	StateRoot        string    `json:"state_root"`
+	PluginInstanceID string    `json:"plugin_instance_id"`
+	PluginID         string    `json:"plugin_id"`
+	SecretRef        string    `json:"secret_ref"`
+	Scope            string    `json:"scope"`
+	Bound            bool      `json:"bound"`
+	LastTestStatus   string    `json:"last_test_status,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 func devInstall(ctx context.Context, stateRoot string, packageFile string) error {
@@ -127,6 +141,7 @@ func devEnable(ctx context.Context, stateRoot string) error {
 	state.UpdatedAt = time.Now().UTC()
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
@@ -165,6 +180,7 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string, sandboxOri
 	}
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
@@ -203,6 +219,7 @@ func devDisable(ctx context.Context, stateRoot string) error {
 	state.Record = record
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
 	state.UpdatedAt = time.Now().UTC()
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
@@ -215,16 +232,21 @@ func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error 
 	if err != nil {
 		return err
 	}
+	pluginInstanceID := state.Record.PluginInstanceID
 	record, err := harness.host.UninstallPlugin(ctx, host.UninstallRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginInstanceID: pluginInstanceID,
 		DeleteData:       deleteData,
 	})
 	if err != nil {
 		return err
 	}
+	if deleteData {
+		harness.secretStore.DeletePlugin(pluginInstanceID)
+	}
 	state.Record = record
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
 	state.PackageFile = ""
 	state.UpdatedAt = time.Now().UTC()
 	if err := os.Remove(filepath.Join(harness.stateRoot, devPackageFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -234,6 +256,54 @@ func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error 
 		return err
 	}
 	return writeDevLifecycle("dev-uninstall", harness.stateRoot, state)
+}
+
+func devSecretBind(ctx context.Context, stateRoot string, secretRef string, scope string) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	req := host.SecretBindRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		SecretRef:        secretRef,
+		Scope:            scope,
+	}
+	if err := harness.host.BindSecretRef(ctx, req); err != nil {
+		return err
+	}
+	return saveAndWriteDevSecret(harness, state, "dev-secret-bind", req)
+}
+
+func devSecretTest(ctx context.Context, stateRoot string, secretRef string, scope string) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	req := host.SecretBindRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		SecretRef:        secretRef,
+		Scope:            scope,
+	}
+	if err := harness.host.TestSecretRef(ctx, host.SecretTestRequest(req)); err != nil {
+		return err
+	}
+	return saveAndWriteDevSecret(harness, state, "dev-secret-test", req)
+}
+
+func devSecretDelete(ctx context.Context, stateRoot string, secretRef string, scope string) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	req := host.SecretBindRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		SecretRef:        secretRef,
+		Scope:            scope,
+	}
+	if err := harness.host.DeleteSecretRef(ctx, host.SecretDeleteRequest(req)); err != nil {
+		return err
+	}
+	return saveAndWriteDevSecret(harness, state, "dev-secret-delete", req)
 }
 
 func devStatus(stateRoot string) error {
@@ -246,6 +316,16 @@ func devStatus(stateRoot string) error {
 		return err
 	}
 	return writeDevLifecycle("dev-status", stateRoot, state)
+}
+
+func saveAndWriteDevSecret(harness devHarness, state devLifecycleState, action string, req host.SecretBindRequest) error {
+	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
+	state.UpdatedAt = time.Now().UTC()
+	if err := saveDevState(harness.stateRoot, state); err != nil {
+		return err
+	}
+	return writeDevSecret(action, harness.stateRoot, state, harness.secretStore.recordFor(req, state.UpdatedAt))
 }
 
 func writeDevLifecycle(action string, stateRoot string, state devLifecycleState) error {
@@ -271,11 +351,27 @@ func writeDevLifecycle(action string, stateRoot string, state devLifecycleState)
 	})
 }
 
+func writeDevSecret(action string, stateRoot string, state devLifecycleState, secret devSecretRecord) error {
+	return writeJSON(devSecretSummary{
+		OK:               true,
+		Action:           action,
+		StateRoot:        stateRoot,
+		PluginInstanceID: state.Record.PluginInstanceID,
+		PluginID:         state.Record.PluginID,
+		SecretRef:        secret.SecretRef,
+		Scope:            secret.Scope,
+		Bound:            secret.Bound,
+		LastTestStatus:   secret.LastTestStatus,
+		UpdatedAt:        secret.UpdatedAt,
+	})
+}
+
 type devHarness struct {
 	stateRoot     string
 	host          *host.Host
 	browserSite   *devBrowserSiteStore
 	settingsStore *settings.MemoryStore
+	secretStore   *devSecretStore
 }
 
 func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifecycleState, error) {
@@ -308,6 +404,7 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 	}
 	browserSite := newDevBrowserSiteStore(state.BrowserOrigins)
 	settingsStore := settings.NewMemoryStoreFromState(state.Settings)
+	secretStore := newDevSecretStore(state.Secrets)
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
@@ -316,11 +413,12 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 		Storage:         storageBroker,
 		BrowserSite:     browserSite,
 		Settings:        settingsStore,
+		Secrets:         secretStore,
 	})
 	if err != nil {
 		return devHarness{}, devLifecycleState{}, err
 	}
-	return devHarness{stateRoot: stateRoot, host: h, browserSite: browserSite, settingsStore: settingsStore}, state, nil
+	return devHarness{stateRoot: stateRoot, host: h, browserSite: browserSite, settingsStore: settingsStore, secretStore: secretStore}, state, nil
 }
 
 func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, error) {
@@ -335,6 +433,7 @@ func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, erro
 		Storage:         storageBroker,
 		BrowserSite:     browserSite,
 		Settings:        settings.NewMemoryStore(),
+		Secrets:         newDevSecretStore(devSecretState{}),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -756,5 +855,188 @@ func sortDevBrowserOrigins(records []browsersite.OriginRecord) {
 	})
 }
 
+type devSecretState struct {
+	Records map[string]devSecretRecord `json:"records,omitempty"`
+}
+
+type devSecretRecord struct {
+	PluginInstanceID string     `json:"plugin_instance_id"`
+	SecretRef        string     `json:"secret_ref"`
+	Scope            string     `json:"scope"`
+	Bound            bool       `json:"bound"`
+	LastTestStatus   string     `json:"last_test_status,omitempty"`
+	BoundAt          *time.Time `json:"bound_at,omitempty"`
+	TestedAt         *time.Time `json:"tested_at,omitempty"`
+	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type devSecretStore struct {
+	mu      sync.Mutex
+	records map[string]devSecretRecord
+}
+
+func newDevSecretStore(state devSecretState) *devSecretStore {
+	records := cloneDevSecretRecords(state.Records)
+	if records == nil {
+		records = map[string]devSecretRecord{}
+	}
+	return &devSecretStore{records: records}
+}
+
+func (s *devSecretStore) BindSecretRef(_ context.Context, req host.SecretBindRequest) error {
+	normalized, err := normalizeDevSecretRequest(req)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	record := devSecretRecord{
+		PluginInstanceID: normalized.PluginInstanceID,
+		SecretRef:        normalized.SecretRef,
+		Scope:            normalized.Scope,
+		Bound:            true,
+		BoundAt:          &now,
+		UpdatedAt:        now,
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[devSecretKey(normalized)] = record
+	return nil
+}
+
+func (s *devSecretStore) TestSecretRef(_ context.Context, req host.SecretTestRequest) error {
+	normalized, err := normalizeDevSecretRequest(host.SecretBindRequest(req))
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[devSecretKey(normalized)]
+	if !ok || !record.Bound {
+		return fmt.Errorf("%w: secret_ref must be bound before testing", host.ErrInvalidSecretRef)
+	}
+	record.PluginInstanceID = normalized.PluginInstanceID
+	record.SecretRef = normalized.SecretRef
+	record.Scope = normalized.Scope
+	record.Bound = true
+	if record.BoundAt == nil {
+		record.BoundAt = &now
+	}
+	record.LastTestStatus = "passed"
+	record.TestedAt = &now
+	record.DeletedAt = nil
+	record.UpdatedAt = now
+	s.records[devSecretKey(normalized)] = record
+	return nil
+}
+
+func (s *devSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
+	normalized, err := normalizeDevSecretRequest(host.SecretBindRequest(req))
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := s.records[devSecretKey(normalized)]
+	record.PluginInstanceID = normalized.PluginInstanceID
+	record.SecretRef = normalized.SecretRef
+	record.Scope = normalized.Scope
+	record.Bound = false
+	record.LastTestStatus = ""
+	record.DeletedAt = &now
+	record.UpdatedAt = now
+	s.records[devSecretKey(normalized)] = record
+	return nil
+}
+
+func (s *devSecretStore) DeletePlugin(pluginInstanceID string) {
+	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
+	if pluginInstanceID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, record := range s.records {
+		if record.PluginInstanceID == pluginInstanceID {
+			delete(s.records, key)
+		}
+	}
+}
+
+func (s *devSecretStore) State() devSecretState {
+	if s == nil {
+		return devSecretState{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return devSecretState{Records: cloneDevSecretRecords(s.records)}
+}
+
+func (s *devSecretStore) recordFor(req host.SecretBindRequest, fallback time.Time) devSecretRecord {
+	normalized, err := normalizeDevSecretRequest(req)
+	if err != nil {
+		return devSecretRecord{UpdatedAt: fallback}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record, ok := s.records[devSecretKey(normalized)]; ok {
+		return cloneDevSecretRecord(record)
+	}
+	return devSecretRecord{
+		PluginInstanceID: normalized.PluginInstanceID,
+		SecretRef:        normalized.SecretRef,
+		Scope:            normalized.Scope,
+		UpdatedAt:        fallback,
+	}
+}
+
+func normalizeDevSecretRequest(req host.SecretBindRequest) (host.SecretBindRequest, error) {
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	req.SecretRef = strings.TrimSpace(req.SecretRef)
+	req.Scope = strings.TrimSpace(req.Scope)
+	if req.PluginInstanceID == "" || req.SecretRef == "" || req.Scope == "" {
+		return host.SecretBindRequest{}, host.ErrInvalidSecretRef
+	}
+	return req, nil
+}
+
+func devSecretKey(req host.SecretBindRequest) string {
+	return req.PluginInstanceID + "\x00" + req.Scope + "\x00" + req.SecretRef
+}
+
+func cloneDevSecretRecords(records map[string]devSecretRecord) map[string]devSecretRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	cloned := make(map[string]devSecretRecord, len(records))
+	keys := make([]string, 0, len(records))
+	for key := range records {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		cloned[key] = cloneDevSecretRecord(records[key])
+	}
+	return cloned
+}
+
+func cloneDevSecretRecord(record devSecretRecord) devSecretRecord {
+	record.BoundAt = cloneTimePointer(record.BoundAt)
+	record.TestedAt = cloneTimePointer(record.TestedAt)
+	record.DeletedAt = cloneTimePointer(record.DeletedAt)
+	return record
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 var _ registry.Store = (*devRegistryStore)(nil)
 var _ browsersite.Store = (*devBrowserSiteStore)(nil)
+var _ host.SecretStoreAdapter = (*devSecretStore)(nil)
