@@ -119,6 +119,62 @@ func TestVerifyCompatibilityManifestRejectsPathTraversalEvenIfExpected(t *testin
 	}
 }
 
+func TestCurrentMatrixUsesInjectedReleaseVersions(t *testing.T) {
+	restore := replaceReleaseVersions("1.2.3", "1.2.4", "1.2.5")
+	defer restore()
+	restoreDetector := replaceBuildInfoDetector("9.9.9")
+	defer restoreDetector()
+
+	matrix := CurrentMatrix()
+	if matrix.GoModuleVersion != "1.2.3" || matrix.UIPackageVersion != "1.2.4" || matrix.RuntimeVersion != "1.2.5" {
+		t.Fatalf("matrix versions = %#v", matrix)
+	}
+}
+
+func TestCurrentMatrixFallsBackToBuildInfoVersion(t *testing.T) {
+	restore := replaceReleaseVersions(devVersion, devVersion, devVersion)
+	defer restore()
+	restoreDetector := replaceBuildInfoDetector("0.7.0")
+	defer restoreDetector()
+
+	matrix := CurrentMatrix()
+	if matrix.GoModuleVersion != "0.7.0" || matrix.UIPackageVersion != "0.7.0" || matrix.RuntimeVersion != "0.7.0" {
+		t.Fatalf("matrix versions = %#v", matrix)
+	}
+}
+
+func TestCurrentMatrixFallsBackToDevVersionWhenUnstamped(t *testing.T) {
+	restore := replaceReleaseVersions("", "", "")
+	defer restore()
+	restoreDetector := replaceBuildInfoDetector("")
+	defer restoreDetector()
+
+	matrix := CurrentMatrix()
+	if matrix.GoModuleVersion != devVersion || matrix.UIPackageVersion != devVersion || matrix.RuntimeVersion != devVersion {
+		t.Fatalf("matrix versions = %#v", matrix)
+	}
+}
+
+func TestNormalizeModuleVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "tag", in: "v1.2.3", want: "1.2.3"},
+		{name: "prerelease", in: "v1.2.3-rc.1", want: "1.2.3-rc.1"},
+		{name: "plain", in: "1.2.3", want: "1.2.3"},
+		{name: "devel", in: "(devel)", want: ""},
+		{name: "empty", in: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeModuleVersion(tc.in); got != tc.want {
+				t.Fatalf("normalizeModuleVersion(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func mustMarshalCompatibilityManifest(t *testing.T, manifest CompatibilityManifest) []byte {
 	t.Helper()
 	raw, err := json.Marshal(manifest)
@@ -135,4 +191,28 @@ func repoRoot(t *testing.T) string {
 		t.Fatal("runtime.Caller failed")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+func replaceReleaseVersions(goVersion string, uiVersion string, runtimeVersion string) func() {
+	oldGo := GoModuleVersion
+	oldUI := UIPackageVersion
+	oldRuntime := RuntimeVersion
+	GoModuleVersion = goVersion
+	UIPackageVersion = uiVersion
+	RuntimeVersion = runtimeVersion
+	return func() {
+		GoModuleVersion = oldGo
+		UIPackageVersion = oldUI
+		RuntimeVersion = oldRuntime
+	}
+}
+
+func replaceBuildInfoDetector(version string) func() {
+	old := buildInfoModuleVersion
+	buildInfoModuleVersion = func() string {
+		return version
+	}
+	return func() {
+		buildInfoModuleVersion = old
+	}
 }

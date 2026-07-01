@@ -8,13 +8,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 )
 
+const (
+	modulePath = "github.com/floegence/redevplugin"
+	devVersion = "0.0.0-dev"
+)
+
 var (
-	GoModuleVersion  = "0.0.0-dev"
-	UIPackageVersion = "0.0.0-dev"
-	RuntimeVersion   = "0.0.0-dev"
+	GoModuleVersion  = devVersion
+	UIPackageVersion = devVersion
+	RuntimeVersion   = devVersion
+
+	buildInfoModuleVersion = detectBuildInfoModuleVersion
 )
 
 const (
@@ -71,9 +79,9 @@ var (
 
 func CurrentMatrix() Matrix {
 	return Matrix{
-		GoModuleVersion:               GoModuleVersion,
-		UIPackageVersion:              UIPackageVersion,
-		RuntimeVersion:                RuntimeVersion,
+		GoModuleVersion:               resolvedReleaseVersion(GoModuleVersion),
+		UIPackageVersion:              resolvedReleaseVersion(UIPackageVersion),
+		RuntimeVersion:                resolvedReleaseVersion(RuntimeVersion),
 		PluginHostProtocolVersion:     PluginHostProtocolVersion,
 		RustIPCVersion:                RustIPCVersion,
 		WASMABIVersion:                WASMABIVersion,
@@ -86,6 +94,47 @@ func CurrentMatrix() Matrix {
 		CompatibilitySchemaVersion:    CompatibilitySchemaVersion,
 		WorkerInvocationSchemaVersion: WorkerInvocationSchemaVersion,
 	}
+}
+
+func resolvedReleaseVersion(configured string) string {
+	if configured != "" && configured != devVersion {
+		return configured
+	}
+	if detected := buildInfoModuleVersion(); detected != "" {
+		return detected
+	}
+	if configured == "" {
+		return devVersion
+	}
+	return configured
+}
+
+func detectBuildInfoModuleVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	if info.Main.Path == modulePath {
+		if version := normalizeModuleVersion(info.Main.Version); version != "" {
+			return version
+		}
+	}
+	for _, dep := range info.Deps {
+		if dep.Path != modulePath {
+			continue
+		}
+		if version := normalizeModuleVersion(dep.Version); version != "" {
+			return version
+		}
+	}
+	return ""
+}
+
+func normalizeModuleVersion(version string) string {
+	if version == "" || version == "(devel)" {
+		return ""
+	}
+	return strings.TrimPrefix(version, "v")
 }
 
 func CurrentCompatibilityManifest() CompatibilityManifest {
