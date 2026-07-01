@@ -890,6 +890,144 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	}
 }
 
+func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	stateRoot := filepath.Join(dir, "state")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.data", "Generated Data Plugin", scaffoldDir); err != nil {
+		t.Fatalf("scaffold command error = %v", err)
+	}
+	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
+	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatalf("package command error = %v", err)
+	}
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
+	if err != nil {
+		t.Fatalf("dev-install error = %v", err)
+	}
+	var installSummary devLifecycleSummary
+	if err := json.Unmarshal(installOutput, &installSummary); err != nil {
+		t.Fatalf("dev-install output decode error = %v: %s", err, installOutput)
+	}
+	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); err != nil {
+		t.Fatalf("dev-enable error = %v", err)
+	}
+
+	broker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	if _, err := broker.WriteFile(context.Background(), storage.FileWriteRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		StoreID:          "workspace",
+		Path:             "notes/exported.txt",
+		Data:             []byte("original data"),
+	}); err != nil {
+		t.Fatalf("WriteFile(original) error = %v", err)
+	}
+	state := loadDevStateForTest(t, stateRoot)
+	store := settings.NewMemoryStoreFromState(state.Settings)
+	exportedSettings, err := store.Patch(context.Background(), settings.PatchRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		Values:           map[string]any{"accent_mode": "amber", "sync_enabled": false},
+	})
+	if err != nil {
+		t.Fatalf("Patch(exported settings) error = %v", err)
+	}
+	state.Settings = store.State()
+	saveDevStateForTest(t, stateRoot, state)
+
+	exportOutput, err := captureCLIOutput(t, "dev-export-data", stateRoot)
+	if err != nil {
+		t.Fatalf("dev-export-data error = %v", err)
+	}
+	var exportSummary devDataSummary
+	if err := json.Unmarshal(exportOutput, &exportSummary); err != nil {
+		t.Fatalf("dev-export-data output decode error = %v: %s", err, exportOutput)
+	}
+	if !exportSummary.OK ||
+		exportSummary.PluginInstanceID != installSummary.PluginInstanceID ||
+		exportSummary.ArchiveRef == "" ||
+		exportSummary.SettingsArchiveRef == "" ||
+		exportSummary.IncludeSecrets {
+		t.Fatalf("dev-export-data summary mismatch: %#v", exportSummary)
+	}
+	afterExport := loadDevStateForTest(t, stateRoot)
+	if _, ok := afterExport.Settings.Archives[exportSummary.SettingsArchiveRef]; !ok {
+		t.Fatalf("settings archive was not persisted in dev state: %#v", afterExport.Settings.Archives)
+	}
+
+	if _, err := broker.WriteFile(context.Background(), storage.FileWriteRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		StoreID:          "workspace",
+		Path:             "notes/exported.txt",
+		Data:             []byte("mutated data"),
+	}); err != nil {
+		t.Fatalf("WriteFile(mutated) error = %v", err)
+	}
+	state = loadDevStateForTest(t, stateRoot)
+	store = settings.NewMemoryStoreFromState(state.Settings)
+	if _, err := store.Patch(context.Background(), settings.PatchRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		Values:           map[string]any{"accent_mode": "indigo", "sync_enabled": true},
+	}); err != nil {
+		t.Fatalf("Patch(mutated settings) error = %v", err)
+	}
+	state.Settings = store.State()
+	saveDevStateForTest(t, stateRoot, state)
+
+	importOutput, err := captureCLIOutput(
+		t,
+		"dev-import-data",
+		stateRoot,
+		"--archive-ref",
+		exportSummary.ArchiveRef,
+		"--settings-archive-ref",
+		exportSummary.SettingsArchiveRef,
+		"--delete-existing",
+	)
+	if err != nil {
+		t.Fatalf("dev-import-data error = %v", err)
+	}
+	var importSummary devDataSummary
+	if err := json.Unmarshal(importOutput, &importSummary); err != nil {
+		t.Fatalf("dev-import-data output decode error = %v: %s", err, importOutput)
+	}
+	if !importSummary.Imported ||
+		!importSummary.DeleteExisting ||
+		importSummary.ArchiveRef != exportSummary.ArchiveRef ||
+		importSummary.SettingsArchiveRef != exportSummary.SettingsArchiveRef {
+		t.Fatalf("dev-import-data summary mismatch: %#v export=%#v", importSummary, exportSummary)
+	}
+	read, err := broker.ReadFile(context.Background(), storage.FileReadRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+		StoreID:          "workspace",
+		Path:             "notes/exported.txt",
+		MaxBytes:         1024,
+	})
+	if err != nil {
+		t.Fatalf("ReadFile(restored) error = %v", err)
+	}
+	if string(read.Data) != "original data" {
+		t.Fatalf("import did not restore storage data: %q", read.Data)
+	}
+	importedSettings, err := settings.NewMemoryStoreFromState(loadDevStateForTest(t, stateRoot).Settings).Get(context.Background(), settings.GetRequest{
+		PluginInstanceID: installSummary.PluginInstanceID,
+	})
+	if err != nil {
+		t.Fatalf("Get(imported settings) error = %v", err)
+	}
+	if importedSettings.Values["accent_mode"] != exportedSettings.Values["accent_mode"] ||
+		importedSettings.Values["sync_enabled"] != exportedSettings.Values["sync_enabled"] {
+		t.Fatalf("import did not restore settings: %#v want %#v", importedSettings, exportedSettings)
+	}
+	if _, err := captureCLIOutput(t, "dev-import-data", stateRoot); err == nil {
+		t.Fatal("dev-import-data accepted missing archive refs")
+	}
+}
+
 func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")

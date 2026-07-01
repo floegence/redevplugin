@@ -95,6 +95,20 @@ type devPermissionSummary struct {
 	UpdatedAt        time.Time            `json:"updated_at"`
 }
 
+type devDataSummary struct {
+	OK                 bool      `json:"ok"`
+	Action             string    `json:"action"`
+	StateRoot          string    `json:"state_root"`
+	PluginInstanceID   string    `json:"plugin_instance_id"`
+	PluginID           string    `json:"plugin_id"`
+	ArchiveRef         string    `json:"archive_ref,omitempty"`
+	SettingsArchiveRef string    `json:"settings_archive_ref,omitempty"`
+	IncludeSecrets     bool      `json:"include_secrets,omitempty"`
+	DeleteExisting     bool      `json:"delete_existing,omitempty"`
+	Imported           bool      `json:"imported,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
 func devInstall(ctx context.Context, stateRoot string, packageFile string) error {
 	stateRoot, err := prepareDevStateRoot(stateRoot)
 	if err != nil {
@@ -393,6 +407,74 @@ func devPermissionList(ctx context.Context, stateRoot string, activeOnly bool) e
 		Permissions:      records,
 		ActiveOnly:       activeOnly,
 		UpdatedAt:        state.UpdatedAt,
+	})
+}
+
+func devExportData(ctx context.Context, stateRoot string, includeSecrets bool) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	result, err := harness.host.ExportPluginData(ctx, host.ExportDataRequest{
+		PluginInstanceID: state.Record.PluginInstanceID,
+		IncludeSecrets:   includeSecrets,
+	})
+	if err != nil {
+		return err
+	}
+	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
+	state.UpdatedAt = time.Now().UTC()
+	if err := saveDevState(harness.stateRoot, state); err != nil {
+		return err
+	}
+	return writeJSON(devDataSummary{
+		OK:                 true,
+		Action:             "dev-export-data",
+		StateRoot:          harness.stateRoot,
+		PluginInstanceID:   state.Record.PluginInstanceID,
+		PluginID:           state.Record.PluginID,
+		ArchiveRef:         result.ArchiveRef,
+		SettingsArchiveRef: result.SettingsArchiveRef,
+		IncludeSecrets:     includeSecrets,
+		UpdatedAt:          state.UpdatedAt,
+	})
+}
+
+func devImportData(ctx context.Context, stateRoot string, archiveRef string, settingsArchiveRef string, deleteExisting bool) error {
+	harness, state, err := loadDevHarness(ctx, stateRoot)
+	if err != nil {
+		return err
+	}
+	archiveRef = strings.TrimSpace(archiveRef)
+	settingsArchiveRef = strings.TrimSpace(settingsArchiveRef)
+	if err := harness.host.ImportPluginData(ctx, host.ImportDataRequest{
+		PluginInstanceID:   state.Record.PluginInstanceID,
+		ArchiveRef:         archiveRef,
+		SettingsArchiveRef: settingsArchiveRef,
+		DeleteExisting:     deleteExisting,
+	}); err != nil {
+		return err
+	}
+	state.Settings = harness.settingsStore.State()
+	state.Secrets = harness.secretStore.State()
+	state.Permissions = harness.permissionStore.State()
+	state.UpdatedAt = time.Now().UTC()
+	if err := saveDevState(harness.stateRoot, state); err != nil {
+		return err
+	}
+	return writeJSON(devDataSummary{
+		OK:                 true,
+		Action:             "dev-import-data",
+		StateRoot:          harness.stateRoot,
+		PluginInstanceID:   state.Record.PluginInstanceID,
+		PluginID:           state.Record.PluginID,
+		ArchiveRef:         archiveRef,
+		SettingsArchiveRef: settingsArchiveRef,
+		DeleteExisting:     deleteExisting,
+		Imported:           true,
+		UpdatedAt:          state.UpdatedAt,
 	})
 }
 

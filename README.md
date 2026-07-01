@@ -134,6 +134,8 @@ capabilities.
   `dev-permission-grant <permission-id> [granted-by]`,
   `dev-permission-revoke <permission-id> [reason]`,
   `dev-permission-list [--active-only]`,
+  `dev-export-data [--include-secrets]`,
+  `dev-import-data [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge]`,
   `dev-uninstall [--delete-data|--keep-data]`, and `dev-status` commands replay
   the saved package through the real Host lifecycle APIs while keeping the
   copied package, filesystem storage root, manifest-level settings, redacted
@@ -143,7 +145,10 @@ capabilities.
   bound flag, and test status that the Host settings API can expose as redacted
   state. Dev permission commands call the Host permission APIs, so policy
   revisions and revoke epochs move exactly as they do in an embedded host
-  product. This gives generated plugins a local, auditable
+  product. Dev data export/import commands call the Host data lifecycle APIs and
+  persist returned storage/settings archive refs under the same state root;
+  settings archives never restore secret plaintext, so secret refs must still be
+  rebound after moving data between environments. This gives generated plugins a local, auditable
   install -> enable -> open -> disable -> uninstall flow without importing any
   host-product internals. Uninstall removes the copied package; `--delete-data`
   also removes plugin storage namespaces, manifest settings, dev secret-ref
