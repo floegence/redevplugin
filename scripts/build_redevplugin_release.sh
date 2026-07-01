@@ -156,4 +156,6 @@ const sums = files.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\
 writeFileSync(join(outDir, "SHA256SUMS"), sums);
 NODE
 
+node "$ROOT_DIR/scripts/verify_redevplugin_release_bundle.mjs" "$OUT_DIR" "$VERSION"
+
 echo "redevplugin release bundle created at $OUT_DIR"
