@@ -1411,6 +1411,10 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "asset path is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
+	if err := validatePluginAssetFetchMetadata(r); err != nil {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrAssetSessionInvalid)})
+		return
+	}
 	cookie, err := r.Cookie(assetSessionCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "asset session is required", ErrorCode: string(security.ErrAssetSessionInvalid)})
@@ -1435,6 +1439,14 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 	h.writeSandboxAssetSecurityHeaders(w, assetSessionID, assetPath)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(result.Content)
+}
+
+func validatePluginAssetFetchMetadata(r *http.Request) error {
+	fetchSite := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Site")))
+	if fetchSite == "cross-site" {
+		return errors.New("asset request fetch site is invalid")
+	}
+	return nil
 }
 
 func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {

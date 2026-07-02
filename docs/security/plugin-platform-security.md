@@ -66,6 +66,8 @@ ticket/session, and bridge protocols.
 Sandbox asset responses include `Cache-Control: no-store`, restrictive CSP,
 reporting, permissions, referrer, CORP, nosniff, and service-worker scope
 headers. The Host supplies exact frame ancestors when embedding plugin surfaces.
+Asset requests reject browser Fetch Metadata that explicitly marks the request
+as cross-site.
 
 Sandbox UI must not receive parent-only credentials such as asset tickets,
 plugin gateway tokens, confirmation tokens, storage grants, network grants,

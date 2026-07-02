@@ -790,6 +790,26 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, assetURL, nil)
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.AddCookie(cookies[0])
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site asset fetch status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrAssetSessionInvalid) {
+		t.Fatalf("cross-site asset fetch error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cross-site asset fetch cache-control = %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, assetURL, nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -846,7 +866,6 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("missing asset session status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	var envelope Envelope
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
