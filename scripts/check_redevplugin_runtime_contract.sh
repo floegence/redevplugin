@@ -7,6 +7,32 @@ if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
   PATH="$HOME/.cargo/bin:$PATH"
 fi
 
+usage() {
+  cat <<'USAGE'
+Usage: scripts/check_redevplugin_runtime_contract.sh [--ci]
+
+Runs the ReDevPlugin runtime contract gate. --ci is accepted as an explicit
+no-op so documentation, local runs, and CI can share the same command shape.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ci)
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
 export GOWORK=off
 
 (
