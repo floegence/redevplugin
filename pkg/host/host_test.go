@@ -3581,10 +3581,13 @@ func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
 	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
 		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
 	}
+	if secrets.deletePluginID != installed.PluginInstanceID {
+		t.Fatalf("secret bindings were not deleted on uninstall delete data: %#v", secrets)
+	}
 	if _, err := h.adapters.Settings.Get(ctx, settings.GetRequest{PluginInstanceID: installed.PluginInstanceID}); !errors.Is(err, settings.ErrNotDeclared) {
 		t.Fatalf("settings should be deleted after uninstall delete data: %v", err)
 	}
-	if !audits.hasEvent("plugin.settings.updated") || !audits.hasEvent("plugin.settings.deleted") {
+	if !audits.hasEvent("plugin.settings.updated") || !audits.hasEvent("plugin.settings.deleted") || !audits.hasEvent("plugin.secrets.deleted") {
 		t.Fatalf("missing settings audit events: %#v", audits.events)
 	}
 }
@@ -3625,6 +3628,31 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 		Scope:            "user",
 	}); !errors.Is(err, ErrInvalidSecretRef) {
 		t.Fatalf("BindSecretRef(undeclared) error = %v, want ErrInvalidSecretRef", err)
+	}
+}
+
+func TestUninstallDeleteDataRequiresSecretPluginCleanup(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		secrets:        &secretStoreWithoutPluginCleanup{},
+	})
+	installed, err := InstallPackageBytes(context.Background(), h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.BindSecretRef(context.Background(), SecretBindRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		SecretRef:        "api_token",
+		Scope:            "user",
+	}); err != nil {
+		t.Fatalf("BindSecretRef() error = %v", err)
+	}
+	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err == nil || !strings.Contains(err.Error(), "secret store does not support plugin cleanup") {
+		t.Fatalf("UninstallPlugin(delete data) error = %v, want secret cleanup support error", err)
+	}
+	if _, err := h.adapters.Settings.Get(context.Background(), settings.GetRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("settings should not be deleted when secret cleanup preflight fails: %v", err)
 	}
 }
 
@@ -5131,9 +5159,10 @@ type recordingCoreActionAdapter struct {
 }
 
 type recordingSecretStore struct {
-	bind   SecretBindRequest
-	test   SecretTestRequest
-	delete SecretDeleteRequest
+	bind           SecretBindRequest
+	test           SecretTestRequest
+	delete         SecretDeleteRequest
+	deletePluginID string
 }
 
 type recordingRuntimeSupervisor struct {
@@ -5222,6 +5251,25 @@ func (s *recordingSecretStore) TestSecretRef(_ context.Context, req SecretTestRe
 
 func (s *recordingSecretStore) DeleteSecretRef(_ context.Context, req SecretDeleteRequest) error {
 	s.delete = req
+	return nil
+}
+
+func (s *recordingSecretStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
+	s.deletePluginID = pluginInstanceID
+	return nil
+}
+
+type secretStoreWithoutPluginCleanup struct{}
+
+func (s *secretStoreWithoutPluginCleanup) BindSecretRef(context.Context, SecretBindRequest) error {
+	return nil
+}
+
+func (s *secretStoreWithoutPluginCleanup) TestSecretRef(context.Context, SecretTestRequest) error {
+	return nil
+}
+
+func (s *secretStoreWithoutPluginCleanup) DeleteSecretRef(context.Context, SecretDeleteRequest) error {
 	return nil
 }
 

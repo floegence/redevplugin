@@ -2228,6 +2228,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := h.ensureSecretCleanupSupported(req.DeleteData); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	cleanupPlan, err := h.adapters.Cleanup.PlanUninstall(ctx, record.PluginInstanceID, req.DeleteData)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -2237,6 +2240,9 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.cleanup.executed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	retainedSummary := retainedDataSummary{}
+	if err := h.deleteSecretBindingsIfNeeded(ctx, record, req.DeleteData); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	storageRetained, storageUsage, err := h.deleteOrRetainStorage(ctx, record, req.DeleteData)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -3576,6 +3582,31 @@ func (h *Host) deleteOrRetainSettings(ctx context.Context, record registry.Plugi
 	}
 	h.audit(ctx, AuditEvent{Type: eventType, PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return !deleteData, nil
+}
+
+func (h *Host) ensureSecretCleanupSupported(deleteData bool) error {
+	if !deleteData || h.adapters.Secrets == nil {
+		return nil
+	}
+	if _, ok := h.adapters.Secrets.(secrets.PluginDeleter); !ok {
+		return errors.New("secret store does not support plugin cleanup")
+	}
+	return nil
+}
+
+func (h *Host) deleteSecretBindingsIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool) error {
+	if !deleteData || h.adapters.Secrets == nil {
+		return nil
+	}
+	deleter, ok := h.adapters.Secrets.(secrets.PluginDeleter)
+	if !ok {
+		return errors.New("secret store does not support plugin cleanup")
+	}
+	if err := deleter.DeletePlugin(ctx, record.PluginInstanceID); err != nil {
+		return err
+	}
+	h.audit(ctx, AuditEvent{Type: "plugin.secrets.deleted", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	return nil
 }
 
 func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) (bool, error) {

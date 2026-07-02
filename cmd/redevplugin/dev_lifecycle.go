@@ -271,9 +271,6 @@ func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error 
 	if err != nil {
 		return err
 	}
-	if deleteData {
-		harness.secretStore.DeletePlugin(pluginInstanceID)
-	}
 	state.Record = record
 	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
@@ -1166,10 +1163,10 @@ func (s *devSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDelet
 	return nil
 }
 
-func (s *devSecretStore) DeletePlugin(pluginInstanceID string) {
+func (s *devSecretStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
 	if pluginInstanceID == "" {
-		return
+		return host.ErrInvalidSecretRef
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1178,6 +1175,7 @@ func (s *devSecretStore) DeletePlugin(pluginInstanceID string) {
 			delete(s.records, key)
 		}
 	}
+	return nil
 }
 
 func (s *devSecretStore) State() devSecretState {
