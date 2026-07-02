@@ -49,6 +49,7 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"token-ticket-schema",
 		"iframe-bridge-schema",
 		"compatibility-manifest-schema",
+		"release-manifest-schema",
 		"worker-invocation-schema",
 		"error-codes-schema",
 		"rust-ipc-schema",

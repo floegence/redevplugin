@@ -95,6 +95,7 @@ JSON
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "release-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"network_grant_schema_version": "network-grant-v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "network-grant-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'

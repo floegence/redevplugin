@@ -38,6 +38,7 @@ const (
 	PluginPlatformOpenAPIVersion  = "plugin-platform-v1"
 	CompatibilityManifestVersion  = "redevplugin.compatibility.v1"
 	CompatibilitySchemaVersion    = "compatibility-manifest-v1"
+	ReleaseManifestSchemaVersion  = "release-manifest-v1"
 	WorkerInvocationSchemaVersion = "worker-invocation-v1"
 	ErrorCodesSchemaVersion       = "error-codes-v1"
 )
@@ -183,6 +184,12 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
 				Version: CompatibilitySchemaVersion,
 				SHA256:  "db9907e927238cc0710054e7fafb6c9f816d90723c266472510a70e5b3e94e76",
+			},
+			{
+				ID:      "release-manifest-schema",
+				Path:    "spec/plugin/release-manifest-v1.schema.json",
+				Version: ReleaseManifestSchemaVersion,
+				SHA256:  "19b02f226322c21db8e891c5d4a0a18b7e5375cb0b22f3469a96c0baa0cf94fd",
 			},
 			{
 				ID:      "worker-invocation-schema",

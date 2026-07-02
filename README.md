@@ -138,10 +138,12 @@ capabilities.
   credentials to the sandboxed iframe.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
-  manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
-  worker invocation, error-code, and target-classifier contracts. Network grant
-  schema and target-classifier fixture versions are tracked independently so
-  hosts can distinguish grant envelope drift from classifier rule drift.
+  manifest, signature, token/ticket, bridge, compatibility, release-manifest,
+  IPC, WASM, network-grant, worker invocation, error-code, and
+  target-classifier contracts. Network grant schema, release manifest schema,
+  and target-classifier fixture versions are tracked independently so hosts can
+  distinguish grant envelope drift, bundle manifest drift, and classifier rule
+  drift.
 - Release-manifest schema tests keep `release-manifest-v1.schema.json` aligned
   with the release bundle build script and verifier: `release-manifest.json`
   excludes itself and `SHA256SUMS`, records a sorted file list, stores lowercase
