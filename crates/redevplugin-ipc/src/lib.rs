@@ -104,18 +104,20 @@ pub fn escape_json_string(input: &str) -> String {
 pub fn hello_ack_frame(
     request_id: &str,
     runtime_generation_id: &str,
+    channel_nonce: &str,
     runtime_version: &str,
     wasm_abi_version: &str,
 ) -> String {
     format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"runtime_version\":\"{}\",\"rust_ipc_version\":\"{}\",\"wasm_abi_version\":\"{}\"}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"runtime_version\":\"{}\",\"rust_ipc_version\":\"{}\",\"wasm_abi_version\":\"{}\",\"channel_nonce\":\"{}\"}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_HELLO_ACK,
         escape_json_string(request_id),
         escape_json_string(runtime_generation_id),
         escape_json_string(runtime_version),
         RUST_IPC_VERSION,
-        escape_json_string(wasm_abi_version)
+        escape_json_string(wasm_abi_version),
+        escape_json_string(channel_nonce)
     )
 }
 
@@ -905,7 +907,7 @@ pub fn validate_network_execute_response(
     Ok(())
 }
 
-pub fn validate_hello_frame(input: &str) -> Result<(String, String), &'static str> {
+pub fn validate_hello_frame(input: &str) -> Result<(String, String, String), &'static str> {
     let ipc_version = extract_json_string(input, "ipc_version").ok_or("missing ipc_version")?;
     if ipc_version != RUST_IPC_VERSION {
         return Err("unsupported ipc_version");
@@ -923,7 +925,12 @@ pub fn validate_hello_frame(input: &str) -> Result<(String, String), &'static st
     if runtime_generation_id.trim().is_empty() {
         return Err("empty runtime_generation_id");
     }
-    Ok((request_id, runtime_generation_id))
+    let channel_nonce =
+        extract_json_string(input, "channel_nonce").ok_or("missing channel_nonce")?;
+    if channel_nonce.trim().is_empty() {
+        return Err("empty channel_nonce");
+    }
+    Ok((request_id, runtime_generation_id, channel_nonce))
 }
 
 pub fn parse_frame_identity(input: &str) -> Result<(String, String, String), &'static str> {
@@ -1045,19 +1052,28 @@ mod tests {
 
     #[test]
     fn validates_hello_frame() {
-        let input = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{}}"#;
-        let (request_id, generation_id) = validate_hello_frame(input).expect("valid hello");
+        let input = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{"channel_nonce":"nonce_1"}}"#;
+        let (request_id, generation_id, channel_nonce) =
+            validate_hello_frame(input).expect("valid hello");
         assert_eq!(request_id, "r1");
         assert_eq!(generation_id, "g1");
+        assert_eq!(channel_nonce, "nonce_1");
+    }
+
+    #[test]
+    fn rejects_hello_frame_without_channel_nonce() {
+        let input = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{}}"#;
+        assert_eq!(validate_hello_frame(input), Err("missing channel_nonce"));
     }
 
     #[test]
     fn renders_hello_ack_frame() {
-        let frame = hello_ack_frame("r1", "g1", "0.0.0-dev", WASM_ABI_VERSION);
+        let frame = hello_ack_frame("r1", "g1", "nonce_1", "0.0.0-dev", WASM_ABI_VERSION);
         assert!(frame.contains(r#""frame_type":"hello_ack""#));
         assert!(frame.contains(r#""request_id":"r1""#));
         assert!(frame.contains(r#""runtime_generation_id":"g1""#));
         assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v1""#));
+        assert!(frame.contains(r#""channel_nonce":"nonce_1""#));
     }
 
     #[test]

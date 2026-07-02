@@ -43,6 +43,56 @@ func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 	t.Fatal("ipc schema missing invoke_worker invocation reference")
 }
 
+func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	assertPayload := func(frameType string) {
+		t.Helper()
+		for _, item := range allOf {
+			block, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			ifBlock := requireNestedObject(t, block, "if", "properties", "frame_type")
+			if ifBlock["const"] != frameType {
+				continue
+			}
+			payload := requireNestedObject(t, block, "then", "properties", "payload")
+			required := requireStringSlice(t, payload["required"], frameType+" payload required")
+			hasChannelNonce := false
+			for _, name := range required {
+				if name == "channel_nonce" {
+					hasChannelNonce = true
+					break
+				}
+			}
+			if !hasChannelNonce {
+				t.Fatalf("%s payload required missing channel_nonce: %#v", frameType, required)
+			}
+			props := requireNestedObject(t, payload, "properties")
+			channelNonce := requireNestedObject(t, props, "channel_nonce")
+			if channelNonce["type"] != "string" || channelNonce["minLength"] != float64(16) {
+				t.Fatalf("%s channel_nonce schema = %#v", frameType, channelNonce)
+			}
+			return
+		}
+		t.Fatalf("ipc schema missing %s block", frameType)
+	}
+	assertPayload("hello")
+	assertPayload("hello_ack")
+}
+
 func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))

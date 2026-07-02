@@ -120,6 +120,9 @@ capabilities.
   the Go package validator, Go compatibility version, Rust ABI crate constants,
   Rust IPC worker export validation, Rust runtime linked hostcall modules, and
   the worker invocation schema export enum.
+- Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
+  Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
+  version.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.

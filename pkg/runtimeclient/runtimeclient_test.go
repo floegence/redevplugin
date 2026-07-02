@@ -1177,6 +1177,29 @@ func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
 	}
 }
 
+func TestProcessSupervisorFailsClosedOnHandshakeNonceMismatch(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:      os.Args[0],
+		Args:             []string{"-test.run=TestMain"},
+		Env:              append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE=1"),
+		HandshakeTimeout: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"})
+	if !errors.Is(err, ErrRuntimeHandshake) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeHandshake", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Ready {
+		t.Fatalf("nonce mismatch left runtime ready: %#v", health)
+	}
+}
+
 func runRuntimeClientHelper() {
 	reader := bufio.NewReader(os.Stdin)
 	line, err := reader.ReadBytes('\n')
@@ -1190,10 +1213,22 @@ func runRuntimeClientHelper() {
 	if frame.FrameType != ipcFrameTypeHello || frame.IPCVersion != version.RustIPCVersion || strings.TrimSpace(frame.RequestID) == "" {
 		os.Exit(4)
 	}
+	var hello helloRequestPayload
+	if err := json.Unmarshal(frame.Payload, &hello); err != nil {
+		os.Exit(5)
+	}
+	channelNonce := hello.ChannelNonce
+	if strings.TrimSpace(channelNonce) == "" {
+		os.Exit(6)
+	}
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE") == "1" {
+		channelNonce = "wrong_channel_nonce"
+	}
 	payload, _ := json.Marshal(helloAckPayload{
 		RuntimeVersion: version.RuntimeVersion,
 		RustIPCVersion: version.RustIPCVersion,
 		WASMABIVersion: version.WASMABIVersion,
+		ChannelNonce:   channelNonce,
 	})
 	_ = json.NewEncoder(os.Stdout).Encode(ipcFrame{
 		IPCVersion:          version.RustIPCVersion,

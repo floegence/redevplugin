@@ -1015,6 +1015,11 @@ type hostRuntimeHelloAckPayload struct {
 	RuntimeVersion string `json:"runtime_version"`
 	RustIPCVersion string `json:"rust_ipc_version"`
 	WASMABIVersion string `json:"wasm_abi_version"`
+	ChannelNonce   string `json:"channel_nonce"`
+}
+
+type hostRuntimeHelloPayload struct {
+	ChannelNonce string `json:"channel_nonce"`
 }
 
 type hostRuntimeResponsePayload struct {
@@ -1074,10 +1079,15 @@ func runHostRuntimeProcessHelper() {
 		}
 		switch frame.FrameType {
 		case "hello":
+			var hello hostRuntimeHelloPayload
+			if err := json.Unmarshal(frame.Payload, &hello); err != nil || hello.ChannelNonce == "" {
+				os.Exit(21)
+			}
 			raw, _ := json.Marshal(hostRuntimeHelloAckPayload{
 				RuntimeVersion: version.RuntimeVersion,
 				RustIPCVersion: version.RustIPCVersion,
 				WASMABIVersion: version.WASMABIVersion,
+				ChannelNonce:   hello.ChannelNonce,
 			})
 			_ = encoder.Encode(hostRuntimeIPCFrame{
 				IPCVersion:          version.RustIPCVersion,

@@ -3,6 +3,7 @@ package runtimeclient
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -511,12 +512,14 @@ type helloRequestPayload struct {
 	HostIPCVersion  string `json:"host_ipc_version"`
 	HostWASMABI     string `json:"host_wasm_abi"`
 	StartedUnixNano int64  `json:"started_unix_nano"`
+	ChannelNonce    string `json:"channel_nonce"`
 }
 
 type helloAckPayload struct {
 	RuntimeVersion string `json:"runtime_version"`
 	RustIPCVersion string `json:"rust_ipc_version"`
 	WASMABIVersion string `json:"wasm_abi_version"`
+	ChannelNonce   string `json:"channel_nonce"`
 }
 
 type invokeWorkerRequestPayload struct {
@@ -766,12 +769,17 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 	handshakeCtx, cancel := context.WithTimeout(ctx, s.handshakeTimeout)
 	defer cancel()
 	requestID := health.RuntimeGenerationID + ":hello"
+	channelNonce, err := randomIPCChannelNonce()
+	if err != nil {
+		return helloAckPayload{}, err
+	}
 	payload, err := json.Marshal(helloRequestPayload{
 		Target:          target,
 		HostProcessID:   os.Getpid(),
 		HostIPCVersion:  version.RustIPCVersion,
 		HostWASMABI:     version.WASMABIVersion,
 		StartedUnixNano: s.now().UnixNano(),
+		ChannelNonce:    channelNonce,
 	})
 	if err != nil {
 		return helloAckPayload{}, err
@@ -805,8 +813,16 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 		if got.err != nil {
 			return helloAckPayload{}, fmt.Errorf("%w: read hello ack: %v", ErrRuntimeHandshake, got.err)
 		}
-		return validateHelloAck(requestID, health.RuntimeGenerationID, got.frame)
+		return validateHelloAck(requestID, health.RuntimeGenerationID, channelNonce, got.frame)
 	}
+}
+
+func randomIPCChannelNonce() (string, error) {
+	var nonce [24]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("generate ipc channel nonce: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(nonce[:]), nil
 }
 
 func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedArtifact *ArtifactRequest) (ipcFrame, error) {
@@ -2304,7 +2320,7 @@ func decodeRuntimeResponse(frame ipcFrame) (runtimeResponsePayload, error) {
 	return payload, nil
 }
 
-func validateHelloAck(requestID string, runtimeGenerationID string, frame ipcFrame) (helloAckPayload, error) {
+func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce string, frame ipcFrame) (helloAckPayload, error) {
 	if frame.IPCVersion != version.RustIPCVersion {
 		return helloAckPayload{}, fmt.Errorf("%w: ipc_version %q", ErrRuntimeHandshake, frame.IPCVersion)
 	}
@@ -2323,6 +2339,9 @@ func validateHelloAck(requestID string, runtimeGenerationID string, frame ipcFra
 	}
 	if ack.RuntimeVersion == "" || ack.RustIPCVersion != version.RustIPCVersion || ack.WASMABIVersion != version.WASMABIVersion {
 		return helloAckPayload{}, fmt.Errorf("%w: incompatible versions runtime=%q ipc=%q wasm=%q", ErrRuntimeHandshake, ack.RuntimeVersion, ack.RustIPCVersion, ack.WASMABIVersion)
+	}
+	if ack.ChannelNonce != channelNonce {
+		return helloAckPayload{}, fmt.Errorf("%w: channel_nonce mismatch", ErrRuntimeHandshake)
 	}
 	return ack, nil
 }

@@ -23,7 +23,7 @@
           "payload": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["target", "host_process_id", "host_ipc_version", "host_wasm_abi", "started_unix_nano"],
+            "required": ["target", "host_process_id", "host_ipc_version", "host_wasm_abi", "started_unix_nano", "channel_nonce"],
             "properties": {
               "target": {
                 "type": "object",
@@ -37,7 +37,8 @@
               "host_process_id": { "type": "integer", "minimum": 1 },
               "host_ipc_version": { "const": "rust-ipc-v1" },
               "host_wasm_abi": { "const": "redevplugin-wasm-worker-v1" },
-              "started_unix_nano": { "type": "integer", "minimum": 1 }
+              "started_unix_nano": { "type": "integer", "minimum": 1 },
+              "channel_nonce": { "type": "string", "minLength": 16 }
             }
           }
         }
@@ -51,11 +52,12 @@
           "payload": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["runtime_version", "rust_ipc_version", "wasm_abi_version"],
+            "required": ["runtime_version", "rust_ipc_version", "wasm_abi_version", "channel_nonce"],
             "properties": {
               "runtime_version": { "type": "string", "minLength": 1 },
               "rust_ipc_version": { "const": "rust-ipc-v1" },
-              "wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" }
+              "wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" },
+              "channel_nonce": { "type": "string", "minLength": 16 }
             }
           }
         }

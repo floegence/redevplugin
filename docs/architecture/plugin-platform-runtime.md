@@ -84,7 +84,7 @@ The runtime contract is versioned by:
 - `plugin_host_protocol_version`;
 - `rust_ipc_version`;
 - `wasm_abi_version`;
-- `runtime_generation_id` and revoke epoch state;
+- `runtime_generation_id`, Host-issued IPC channel nonce, and revoke epoch state;
 - compatibility manifest contract hashes.
 
 Any incompatible Host/runtime combination must fail closed with a diagnostic
@@ -159,4 +159,3 @@ A host product should:
 Local sibling path wiring, `go.work`, `replace`, `file:`, `link:`,
 `workspace:`, `portal:`, Rust path overrides, copied source trees, or hidden
 build aliases are not supported integration paths.
-

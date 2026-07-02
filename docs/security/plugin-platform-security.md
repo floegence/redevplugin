@@ -149,9 +149,11 @@ unbounded one-shot network execution.
 ## Runtime Revocation
 
 Rust runtime execution is mediated by Host-owned runtime generation IDs,
-runtime leases, revoke epochs, and worker invocation payloads. The runtime must
-reject stale or invalid invocation context before opening artifacts or executing
-workers.
+Host-issued IPC channel nonces, runtime leases, revoke epochs, and worker
+invocation payloads. The runtime must reject stale or invalid invocation context
+before opening artifacts or executing workers. Startup `hello` and `hello_ack`
+frames bind a fresh channel nonce so a stale runtime process cannot complete the
+handshake by replaying only the generation and version fields.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
 compatibility manifests are versioned contracts. Drift must fail closed through

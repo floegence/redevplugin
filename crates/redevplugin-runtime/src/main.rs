@@ -18,13 +18,14 @@ fn run() -> Result<(), String> {
     reader
         .read_line(&mut line)
         .map_err(|err| format!("read hello frame: {err}"))?;
-    let (request_id, runtime_generation_id) =
+    let (request_id, runtime_generation_id, channel_nonce) =
         redevplugin_ipc::validate_hello_frame(&line).map_err(|err| err.to_string())?;
     let runtime_version =
         option_env!("REDEVPLUGIN_RUNTIME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let ack = redevplugin_ipc::hello_ack_frame(
         &request_id,
         &runtime_generation_id,
+        &channel_nonce,
         runtime_version,
         redevplugin_ipc::WASM_ABI_VERSION,
     );
