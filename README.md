@@ -300,6 +300,13 @@ capabilities.
 ReDevPlugin intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
 
+## Documentation
+
+- [Runtime architecture](docs/architecture/plugin-platform-runtime.md)
+- [Security model](docs/security/plugin-platform-security.md)
+- [Plugin surface SDK](docs/ui/plugin-surface-sdk.md)
+- [CI and release gates](docs/release/ci-and-release-gates.md)
+
 ## Release Integrity
 
 Tagged GitHub releases build a platform-specific release bundle for each
