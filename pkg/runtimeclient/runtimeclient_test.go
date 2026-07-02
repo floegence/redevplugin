@@ -674,6 +674,60 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorRejectsNetworkGrantClassifierVersionMismatch(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	broker := &recordingConnectivityBroker{
+		grant: connectivity.ConnectionGrant{
+			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
+			PluginInstanceID:        "plugini_1",
+			ActiveFingerprint:       "sha256:active",
+			PolicyRevision:          1,
+			ManagementRevision:      2,
+			RevokeEpoch:             3,
+			ConnectorID:             "api",
+			Transport:               connectivity.TransportHTTP,
+			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
+			RuntimeGenerationID:     "runtime_gen_test",
+			TargetClassifierVersion: "target-classifier-v0",
+			ExpiresAt:               now.Add(30 * time.Second),
+		},
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+		Connectivity: broker,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
+	_, err = supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "NETWORK_GRANT_VALIDATION_FAILED") {
+		t.Fatalf("InvokeWorker() error = %v, want NETWORK_GRANT_VALIDATION_FAILED runtime request", err)
+	}
+	if broker.calls != 1 {
+		t.Fatalf("connectivity broker calls = %d, want 1", broker.calls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
 	broker := &recordingConnectivityBroker{

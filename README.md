@@ -184,11 +184,12 @@ capabilities.
   timeout, request-size, and response-size limits. It revalidates grant expiry,
   transport, destination, and the target classifier at execution time so UI
   bridge calls and backend worker hostcalls can share the same fail-closed
-  network boundary. IPv4-mapped IPv6 literals and resolved addresses are
-  unmapped before blocked-range checks so mapped loopback/private/link-local
-  targets cannot bypass IPv4 CIDR policy. Long-lived WebSocket subscriptions
-  remain tied to the streaming envelope contract instead of the one-shot round
-  trip API.
+  network boundary. Grants whose `target_classifier_version` does not match the
+  current compatibility matrix are rejected before any dial or broker dispatch.
+  IPv4-mapped IPv6 literals and resolved addresses are unmapped before
+  blocked-range checks so mapped loopback/private/link-local targets cannot
+  bypass IPv4 CIDR policy. Long-lived WebSocket subscriptions remain tied to
+  the streaming envelope contract instead of the one-shot round trip API.
 - Host tests include a black-box runtime subprocess path that invokes a worker
   method, has the helper runtime request `network_execute` over IPC, mints the
   grant through the Host connectivity broker, and records HTTP, WebSocket, TCP,
@@ -374,8 +375,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-`check_redevplugin_runtime_contract.sh` also runs the Rust target-classifier
-fixture test so the Go classifier, Rust crate, and JSON contract cannot drift.
+`check_redevplugin_runtime_contract.sh` also runs connectivity and runtimeclient
+Go tests plus the Rust target-classifier fixture test so grant validation, the
+Go classifier, Rust crate, and JSON contract cannot drift.
 
 `check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
 field records structured counters from `pkg/stress`, including stream

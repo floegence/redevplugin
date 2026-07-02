@@ -699,6 +699,69 @@ func TestExecutorRejectsExpiredAndMismatchedGrants(t *testing.T) {
 	}
 }
 
+func TestExecutorRejectsGrantClassifierVersionMismatchBeforeDial(t *testing.T) {
+	cases := []struct {
+		name      string
+		transport Transport
+		raw       string
+		execute   func(*Executor, ConnectionGrant) error
+	}{
+		{
+			name:      "http",
+			transport: TransportHTTP,
+			raw:       "https://api.example.com",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+				return err
+			},
+		},
+		{
+			name:      "websocket",
+			transport: TransportWebSocket,
+			raw:       "wss://stream.example.com",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{Grant: grant})
+				return err
+			},
+		},
+		{
+			name:      "tcp",
+			transport: TransportTCP,
+			raw:       "db.example.com:443",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: grant})
+				return err
+			},
+		},
+		{
+			name:      "udp",
+			transport: TransportUDP,
+			raw:       "metrics.example.com:8125",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.UDPRoundTrip(context.Background(), UDPRoundTripRequest{Grant: grant, MaxReadBytes: 32})
+				return err
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dialed := false
+			grant := testGrant(t, tc.transport, tc.raw, time.Minute)
+			grant.TargetClassifierVersion = "target-classifier-v0"
+			executor := NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+				dialed = true
+				return nil, errors.New("dial should not run for classifier mismatch")
+			}})
+			if err := tc.execute(executor, grant); !errors.Is(err, ErrConnectorDenied) {
+				t.Fatalf("execute() error = %v, want ErrConnectorDenied", err)
+			}
+			if dialed {
+				t.Fatal("executor dialed before rejecting classifier version mismatch")
+			}
+		})
+	}
+}
+
 func TestExecutorDefaultDialerRejectsBlockedResolvedAddress(t *testing.T) {
 	grant := testGrant(t, TransportTCP, "db.example.com:443", time.Minute)
 	executor := NewExecutor(ExecutorOptions{

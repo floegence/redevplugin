@@ -37,7 +37,7 @@ export GOWORK=off
 
 (
   cd "$ROOT_DIR"
-  go test ./pkg/protocol ./pkg/httpadapter ./pkg/connectivity
+  go test ./pkg/protocol ./pkg/httpadapter ./pkg/connectivity ./pkg/runtimeclient
   cargo test -p redevplugin-target-classifier
   grep -q '"target_classifier_version": { "const": "target-classifier-v1" }' spec/plugin/network-grant-v1.schema.json
   grep -q '"fixtures":' spec/plugin/target-classifier-v1.json

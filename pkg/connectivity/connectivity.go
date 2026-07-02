@@ -869,6 +869,9 @@ func validateGrantForTransport(grant ConnectionGrant, transport Transport, now t
 		strings.TrimSpace(grant.ConnectorID) == "" {
 		return fmt.Errorf("%w: grant identity is incomplete", ErrConnectorDenied)
 	}
+	if strings.TrimSpace(grant.TargetClassifierVersion) != version.TargetClassifierVersion {
+		return fmt.Errorf("%w: target classifier version mismatch", ErrConnectorDenied)
+	}
 	if grant.Transport != transport || grant.Destination.Transport != transport {
 		return fmt.Errorf("%w: grant transport mismatch", ErrConnectorDenied)
 	}

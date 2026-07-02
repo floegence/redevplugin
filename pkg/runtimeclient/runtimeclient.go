@@ -2233,7 +2233,7 @@ func validateNetworkGrantResult(req networkGrantRequestPayload, grant connectivi
 		strings.TrimSpace(grant.ConnectorID) != strings.TrimSpace(req.ConnectorID) ||
 		grant.Transport != req.Transport ||
 		strings.TrimSpace(grant.RuntimeGenerationID) != runtimeGenerationID ||
-		strings.TrimSpace(grant.TargetClassifierVersion) == "" {
+		strings.TrimSpace(grant.TargetClassifierVersion) != version.TargetClassifierVersion {
 		return errors.New("network grant result did not match request audience")
 	}
 	requested, err := connectivity.ParseDestination(req.Transport, req.Destination)
