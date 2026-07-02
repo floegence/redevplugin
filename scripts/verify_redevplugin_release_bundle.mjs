@@ -147,10 +147,27 @@ function verifyNpmTarball(bundleDir, expectedVersion) {
 
 function verifyNoticeEvidence(bundleDir) {
   const notice = readFileSync(join(bundleDir, "THIRD_PARTY_NOTICES.md"), "utf8");
-  for (const expected of ["notices/go.sum", "notices/package-lock.json", "notices/Cargo.lock", "cargo deny check"]) {
+  for (const expected of [
+    "scripts/generate_third_party_notices.mjs",
+    "notices/go.sum",
+    "notices/package-lock.json",
+    "notices/Cargo.lock",
+    "cargo deny check",
+    "## Rust Crates",
+    "## npm Packages",
+    "## Go Modules",
+    "| wasmi |",
+    "| typescript |",
+    "| modernc.org/sqlite |",
+    "Apache-2.0",
+    "MIT",
+  ]) {
     if (!notice.includes(expected)) {
       fail(`THIRD_PARTY_NOTICES.md must mention ${expected}`);
     }
+  }
+  if (notice.includes("UNKNOWN")) {
+    fail("THIRD_PARTY_NOTICES.md must not contain UNKNOWN license evidence");
   }
   const cargoLock = readFileSync(join(bundleDir, "notices/Cargo.lock"), "utf8");
   for (const crate of ["wasmi", "redevplugin-runtime", "redevplugin-ipc"]) {

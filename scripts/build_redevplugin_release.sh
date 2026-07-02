@@ -97,21 +97,7 @@ NODE
   cp "$ROOT_DIR/package-lock.json" "$OUT_DIR/notices/package-lock.json"
 )
 
-cat >"$OUT_DIR/THIRD_PARTY_NOTICES.md" <<'NOTICE'
-# Third-Party Notices
-
-This release bundle carries the dependency lockfiles used to build and audit
-the ReDevPlugin Go, TypeScript, and Rust artifacts:
-
-- `notices/go.sum`
-- `notices/package-lock.json`
-- `notices/Cargo.lock`
-
-The Rust dependency license allowlist is defined in `deny.toml` in the source
-repository and is enforced by CI with `cargo deny check` when the tool is
-available. Host products should treat these lockfiles and the compatibility
-manifest as part of the consumed release evidence.
-NOTICE
+node "$ROOT_DIR/scripts/generate_third_party_notices.mjs" "$ROOT_DIR" "$OUT_DIR/THIRD_PARTY_NOTICES.md"
 
 node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" <<'NODE'
 import { createHash } from "node:crypto";
