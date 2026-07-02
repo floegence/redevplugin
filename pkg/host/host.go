@@ -1631,6 +1631,25 @@ func (h *Host) ListPlugins(ctx context.Context) ([]registry.PluginRecord, error)
 	return h.adapters.Registry.ListPlugins(ctx)
 }
 
+func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]registry.PluginRecord, error) {
+	records, err := h.adapters.Registry.ListPlugins(ctx)
+	if err != nil {
+		return nil, err
+	}
+	refreshed := make([]registry.PluginRecord, 0, len(records))
+	for _, record := range records {
+		if record.EnableState != registry.EnableEnabled {
+			continue
+		}
+		if err := h.refreshEnabledRuntimeState(ctx, record); err != nil {
+			return nil, err
+		}
+		refreshed = append(refreshed, record)
+		h.audit(ctx, AuditEvent{Type: "plugin.runtime_state.refreshed", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	}
+	return refreshed, nil
+}
+
 func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) (permissions.Record, error) {
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {

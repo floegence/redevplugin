@@ -49,6 +49,10 @@ capabilities.
   state, and test/delete metadata, never secret plaintext, so hosts can keep the
   actual vault implementation product-owned while reusing common lifecycle
   state, filtering, cleanup, and newer-schema fail-closed behavior.
+- Host lifecycle APIs include `RefreshEnabledPlugins`, which lets an embedding
+  product restore enabled plugin runtime state after restart by replaying
+  storage/settings initialization, connectivity policy installation, and
+  surface publication from the durable registry without re-enabling plugins.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset

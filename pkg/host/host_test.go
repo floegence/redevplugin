@@ -2096,6 +2096,93 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	}
 }
 
+func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
+	ctx := context.Background()
+	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		storageBroker:      storage.NewMemoryBroker(),
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, err := InstallPackageBytes(ctx, h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	if len(surfaces.snapshots) == 0 {
+		t.Fatal("EnablePlugin() did not publish surfaces")
+	}
+
+	restartedBroker := connectivity.NewMemoryBroker()
+	restartedSurfaces := &surfaceSink{}
+	restartedAudits := &auditSink{}
+	restartedDiagnostics := &diagnosticSink{}
+	restarted, err := New(Adapters{
+		SessionResolver: fakeSessionResolver{},
+		Policy: policyAdapter{
+			developerMode:  true,
+			localGenerated: true,
+			decision:       PolicyAllow,
+		},
+		PackageTrustVerifier: &recordingPackageTrustVerifier{},
+		Registry:             h.adapters.Registry,
+		Audit:                restartedAudits,
+		Diagnostics:          restartedDiagnostics,
+		SurfaceCatalog:       restartedSurfaces,
+		Storage:              storage.NewMemoryBroker(),
+		Connectivity:         restartedBroker,
+		Settings:             settings.NewMemoryStore(),
+		Assets:               h.adapters.Assets,
+		InstallStages:        h.adapters.InstallStages,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := restarted.MintConnectionGrant(ctx, MintConnectionGrantRequest{
+		PluginInstanceID:    enabled.PluginInstanceID,
+		ConnectorID:         "mysql",
+		Transport:           connectivity.TransportTCP,
+		Destination:         "db.example.com:3306",
+		RuntimeGenerationID: "runtime_gen_1",
+		TTL:                 time.Minute,
+	}); !errors.Is(err, connectivity.ErrConnectorDenied) {
+		t.Fatalf("MintConnectionGrant(before refresh) error = %v, want ErrConnectorDenied", err)
+	}
+
+	refreshed, err := restarted.RefreshEnabledPlugins(ctx)
+	if err != nil {
+		t.Fatalf("RefreshEnabledPlugins() error = %v", err)
+	}
+	if len(refreshed) != 1 || refreshed[0].PluginInstanceID != enabled.PluginInstanceID {
+		t.Fatalf("refreshed plugins mismatch: %#v", refreshed)
+	}
+	if len(restartedSurfaces.snapshots) != 1 || restartedSurfaces.snapshots[0].PluginInstanceID != enabled.PluginInstanceID || len(restartedSurfaces.snapshots[0].Surfaces) == 0 {
+		t.Fatalf("surface refresh mismatch: %#v", restartedSurfaces.snapshots)
+	}
+	if !restartedAudits.hasEvent("plugin.runtime_state.refreshed") {
+		t.Fatalf("missing runtime refresh audit: %#v", restartedAudits.events)
+	}
+
+	grant, err := restarted.MintConnectionGrant(ctx, MintConnectionGrantRequest{
+		PluginInstanceID:    enabled.PluginInstanceID,
+		ConnectorID:         "mysql",
+		Transport:           connectivity.TransportTCP,
+		Destination:         "db.example.com:3306",
+		RuntimeGenerationID: "runtime_gen_1",
+		TTL:                 time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("MintConnectionGrant(after refresh) error = %v", err)
+	}
+	if grant.PluginInstanceID != enabled.PluginInstanceID || grant.PolicyRevision != enabled.PolicyRevision {
+		t.Fatalf("grant after refresh mismatch: %#v", grant)
+	}
+}
+
 func TestEnableRejectsBlockedNetworkTargetBeforeStorageSideEffects(t *testing.T) {
 	ctx := context.Background()
 	storageBroker := storage.NewMemoryBroker()
