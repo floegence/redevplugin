@@ -101,7 +101,8 @@ export GOWORK=off
     {"category":"stream_backpressure","counters":{"backpressure_denials":1}},
     {"category":"connectivity_classifier","counters":{"stale_grant_denials":1}},
     {"category":"runtime_revoke_ack","counters":{"p95_ms":1,"threshold_ms":500}},
-    {"category":"storage_quota","counters":{"quota_denials":1}}
+    {"category":"storage_quota","counters":{"quota_denials":1}},
+    {"category":"csp_report_flood","counters":{"rate_limited_reports":1,"diagnostic_events":1}}
   ],
   "steps": [{"name":"release_bundle","status":0,"duration_ms":1}]
 }

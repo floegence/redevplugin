@@ -110,9 +110,9 @@ write_summary() {
   else
     ok=false
   fi
-  categories='["go_race","stream_backpressure","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
+  categories='["go_race","stream_backpressure","connectivity_classifier","runtime_revoke_ack","storage_quota","csp_report_flood"]'
   if [[ "$MODE" != "fast" ]]; then
-    categories='["go_race","stream_backpressure","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle"]'
+    categories='["go_race","stream_backpressure","connectivity_classifier","runtime_revoke_ack","storage_quota","csp_report_flood","browser_demo","runtime_contract","release_bundle"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)

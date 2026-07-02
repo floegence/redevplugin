@@ -144,6 +144,7 @@ verify_stress_summary() {
   grep -q '"category":"connectivity_classifier"' "$STRESS_FILE"
   grep -q '"category":"runtime_revoke_ack"' "$STRESS_FILE"
   grep -q '"category":"storage_quota"' "$STRESS_FILE"
+  grep -q '"category":"csp_report_flood"' "$STRESS_FILE"
   grep -q '"release_bundle"' "$STRESS_FILE"
 }
 

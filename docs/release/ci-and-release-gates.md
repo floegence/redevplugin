@@ -68,9 +68,10 @@ and `--summary PATH`.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
 counters for stream backpressure, connectivity classifier/grant denials, runtime
-revoke ACK p95 latency, and storage quota pressure. CI uploads summaries as
-artifacts, and tagged release workflows include release-mode stress evidence in
-the published checksum and signature evidence chain.
+revoke ACK p95 latency, storage quota pressure, and CSP report flood rate
+limiting. CI uploads summaries as artifacts, and tagged release workflows include
+release-mode stress evidence in the published checksum and signature evidence
+chain.
 
 ## Release Bundle
 

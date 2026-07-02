@@ -2,10 +2,13 @@ package stress_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"sort"
@@ -16,9 +19,14 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/httpadapter"
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/security"
+	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
@@ -410,6 +418,113 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	})
 }
 
+func TestStressGateCSPReportFloodRateLimitsWithoutManagementSideEffects(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events := observability.NewMemoryStore()
+	pluginHost, err := host.New(host.Adapters{
+		SessionResolver: stressSessionResolver{},
+		Policy:          stressPolicy{},
+		Audit:           events,
+		Diagnostics:     events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := httpadapter.Handler{
+		Host:             pluginHost,
+		CSPReportLimiter: httpadapter.NewMemoryCSPReportLimiter(3, time.Minute),
+	}
+	body := []byte(`{
+		"plugin_id": "com.example.stress.csp",
+		"plugin_instance_id": "plugini_csp_flood",
+		"surface_id": "stress.activity",
+		"surface_instance_id": "surface_csp_flood",
+		"sandbox_origin": "https://plg-csp-flood.sandbox.redevplugin.local",
+		"active_fingerprint": "sha256:csp-flood",
+		"csp-report": {
+			"document-uri": "https://plg-csp-flood.sandbox.redevplugin.local/ui/index.html",
+			"blocked-uri": "inline",
+			"effective-directive": "script-src",
+			"violated-directive": "script-src",
+			"source-file": "https://plg-csp-flood.sandbox.redevplugin.local/ui/index.html",
+			"line-number": 7
+		}
+	}`)
+
+	const attempts = 64
+	var accepted int
+	var rateLimited int
+	for i := 0; i < attempts; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/_redevplugin/csp-report", bytes.NewReader(body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/csp-report")
+		req.RemoteAddr = fmt.Sprintf("203.0.113.7:%d", 51000+i)
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		switch rec.Code {
+		case http.StatusOK:
+			accepted++
+		case http.StatusTooManyRequests:
+			rateLimited++
+			var envelope httpadapter.Envelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.ErrorCode != string(security.ErrNetworkRateLimited) {
+				t.Fatalf("rate limit envelope mismatch: %#v", envelope)
+			}
+		default:
+			t.Fatalf("CSP flood attempt %d status = %d body = %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if accepted != 3 || rateLimited != attempts-3 {
+		t.Fatalf("CSP flood counters accepted=%d rate_limited=%d", accepted, rateLimited)
+	}
+	diagnostics, err := events.ListPluginDiagnostics(ctx, observability.ListDiagnosticRequest{
+		PluginInstanceID: "plugini_csp_flood",
+		Type:             "plugin.csp.violation",
+		Limit:            attempts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != accepted {
+		t.Fatalf("diagnostic events = %d, want %d", len(diagnostics), accepted)
+	}
+	for _, event := range diagnostics {
+		if event.PluginID != "com.example.stress.csp" ||
+			event.SurfaceInstanceID != "surface_csp_flood" ||
+			event.ActiveFingerprint != "sha256:csp-flood" ||
+			event.Details["sandbox_origin"] != "https://plg-csp-flood.sandbox.redevplugin.local" ||
+			event.Details["blocked_uri"] != "inline" ||
+			event.Details["source_ip"] != nil {
+			t.Fatalf("diagnostic event carries unexpected CSP flood fields: %#v", event)
+		}
+	}
+	auditEvents, err := events.ListPluginAudit(ctx, observability.ListAuditRequest{Limit: attempts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auditEvents) != 0 {
+		t.Fatalf("CSP report flood wrote audit events: %#v", auditEvents)
+	}
+	logStressSummary(t, stressSummary{
+		Category: "csp_report_flood",
+		Counters: map[string]int{
+			"attempts":                   attempts,
+			"accepted_reports":           accepted,
+			"rate_limited_reports":       rateLimited,
+			"diagnostic_events":          len(diagnostics),
+			"audit_events":               len(auditEvents),
+			"unique_sandbox_origins":     1,
+			"unique_active_fingerprints": 1,
+		},
+	})
+}
+
 func percentileDuration(sorted []time.Duration, percentile int) time.Duration {
 	if len(sorted) == 0 {
 		return 0
@@ -444,6 +559,26 @@ func grantRequest(connectorID string, transport connectivity.Transport, destinat
 		RuntimeGenerationID: "runtime_gen_stress",
 		TTL:                 30 * time.Second,
 	}
+}
+
+type stressSessionResolver struct{}
+
+func (stressSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
+	return sessionctx.Context{}, nil
+}
+
+type stressPolicy struct{}
+
+func (stressPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
+	return host.PolicyAllow, nil
+}
+
+func (stressPolicy) DeveloperModeEnabled(context.Context, sessionctx.Context) (bool, error) {
+	return true, nil
+}
+
+func (stressPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.Context) (bool, error) {
+	return true, nil
 }
 
 type stressIPCFrame struct {
