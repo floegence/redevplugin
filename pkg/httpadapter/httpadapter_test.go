@@ -1,6 +1,7 @@
 package httpadapter
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -512,6 +513,79 @@ func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) 
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("untrusted enable status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	tests := []struct {
+		name        string
+		entries     map[string][]byte
+		wantStatus  int
+		wantCode    security.ErrorCode
+		wantReason  string
+		wantPath    string
+		wantPointer string
+	}{
+		{
+			name: "manifest invalid",
+			entries: map[string][]byte{
+				"manifest.json": []byte(httpVersionedFixtureManifestJSON("", "HTTP")),
+				"ui/index.html": []byte("<!doctype html><title>HTTP</title>"),
+			},
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    security.ErrManifestInvalid,
+			wantReason:  "manifest_field",
+			wantPath:    "manifest.json",
+			wantPointer: "/plugin/version",
+		},
+		{
+			name: "path forbidden",
+			entries: map[string][]byte{
+				"../manifest.json": []byte("{}"),
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   security.ErrPackagePathForbidden,
+			wantReason: "path_traversal",
+			wantPath:   "../manifest.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"package_base64": base64.StdEncoding.EncodeToString(buildHTTPRawPackage(t, tt.entries)),
+				"trust_state":    "verified",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install", bytes.NewReader(raw))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("install status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope Envelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.ErrorCode != string(tt.wantCode) {
+				t.Fatalf("install envelope = %#v, want code %s", envelope, tt.wantCode)
+			}
+			if got := envelope.ErrorDetails["reason"]; got != tt.wantReason {
+				t.Fatalf("error_details.reason = %#v, want %q body = %s", got, tt.wantReason, rec.Body.String())
+			}
+			if got := envelope.ErrorDetails["path"]; got != tt.wantPath {
+				t.Fatalf("error_details.path = %#v, want %q body = %s", got, tt.wantPath, rec.Body.String())
+			}
+			if tt.wantPointer != "" {
+				if got := envelope.ErrorDetails["pointer"]; got != tt.wantPointer {
+					t.Fatalf("error_details.pointer = %#v, want %q body = %s", got, tt.wantPointer, rec.Body.String())
+				}
+			}
+		})
 	}
 }
 
@@ -2083,6 +2157,25 @@ func buildHTTPFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP</title>")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildHTTPRawPackage(t *testing.T, entries map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for entryPath, content := range entries {
+		writer, err := zw.Create(entryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()

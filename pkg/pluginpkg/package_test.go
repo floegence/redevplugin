@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,6 +269,60 @@ func TestReadRejectsDuplicateEntry(t *testing.T) {
 
 	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
 		t.Fatal("Read() expected duplicate entry error")
+	}
+}
+
+func TestReadClassifiesPackageValidationErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries map[string][]byte
+		opts    ReadOptions
+		want    ValidationErrorCode
+		reason  string
+		path    string
+		pointer string
+	}{
+		{
+			name: "path traversal",
+			entries: map[string][]byte{
+				"../manifest.json": []byte("{}"),
+			},
+			want:   ValidationCodePackagePathForbidden,
+			reason: "path_traversal",
+			path:   "../manifest.json",
+		},
+		{
+			name: "package too large",
+			entries: map[string][]byte{
+				"manifest.json": []byte(validManifestJSON()),
+				"ui/index.html": []byte("<!doctype html><title>Plugin</title>"),
+			},
+			opts:   ReadOptions{MaxUncompressedBytes: 1, MaxFiles: 16, MaxEntryBytes: 1 << 20, MaxCompressionRatio: 100},
+			want:   ValidationCodePackageTooLarge,
+			reason: "total_uncompressed_bytes",
+		},
+		{
+			name: "manifest field",
+			entries: map[string][]byte{
+				"manifest.json": []byte(strings.ReplaceAll(validManifestJSON(), `"version": "1.0.0"`, `"version": ""`)),
+				"ui/index.html": []byte("<!doctype html><title>Plugin</title>"),
+			},
+			want:    ValidationCodeManifestInvalid,
+			reason:  "manifest_field",
+			path:    "manifest.json",
+			pointer: "/plugin/version",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := packageZipBytes(t, tc.entries)
+			opts := tc.opts
+			if opts == (ReadOptions{}) {
+				opts = DefaultReadOptions()
+			}
+			_, err := Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), opts)
+			requireValidationError(t, err, tc.want, tc.reason, tc.path, tc.pointer)
+		})
 	}
 }
 
@@ -890,6 +945,39 @@ func mustWriteBytes(t *testing.T, filename string, content []byte) {
 	}
 	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func packageZipBytes(t *testing.T, entries map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for entryPath, content := range entries {
+		writer, err := zw.Create(entryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func requireValidationError(t *testing.T, err error, code ValidationErrorCode, reason string, entryPath string, pointer string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("error = nil, want %s", code)
+	}
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("error = %v, want ValidationError", err)
+	}
+	if validationErr.Code != code || validationErr.Reason != reason || validationErr.Path != entryPath || validationErr.Pointer != pointer {
+		t.Fatalf("validation error = %#v, want code=%s reason=%s path=%s pointer=%s", validationErr, code, reason, entryPath, pointer)
 	}
 }
 

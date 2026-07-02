@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/permissions"
+	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
@@ -543,6 +544,15 @@ func writeInvalidRequestError(w http.ResponseWriter, err error) {
 	WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
 }
 
+func writeManagementError(w http.ResponseWriter, err error) {
+	WriteJSON(w, httpStatusForManagementError(err), Envelope{
+		OK:           false,
+		Error:        err.Error(),
+		ErrorCode:    string(errorCodeForManagementError(err)),
+		ErrorDetails: errorDetailsForManagementError(err),
+	})
+}
+
 func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -565,7 +575,7 @@ func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
 		PluginInstanceID: req.PluginInstanceID,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		writeManagementError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -583,7 +593,7 @@ func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := h.Host.EnablePlugin(r.Context(), host.EnableRequest{PluginInstanceID: req.PluginInstanceID})
 	if err != nil {
-		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		writeManagementError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -601,7 +611,7 @@ func (h Handler) handleDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := h.Host.DisablePlugin(r.Context(), host.DisableRequest{PluginInstanceID: req.PluginInstanceID, Reason: req.Reason})
 	if err != nil {
-		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		writeManagementError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -619,7 +629,7 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := h.Host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, DeleteData: req.DeleteData})
 	if err != nil {
-		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		writeManagementError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -647,7 +657,7 @@ func (h Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		TrustState:       req.TrustState,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		writeManagementError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -669,7 +679,7 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 		PackageHash:      req.PackageHash,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForManagementError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForManagementError(err))})
+		writeManagementError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
@@ -1960,6 +1970,19 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 }
 
 func errorCodeForManagementError(err error) security.ErrorCode {
+	var packageValidationErr *pluginpkg.ValidationError
+	if errors.As(err, &packageValidationErr) {
+		switch packageValidationErr.Code {
+		case pluginpkg.ValidationCodeManifestInvalid:
+			return security.ErrManifestInvalid
+		case pluginpkg.ValidationCodePackageInvalid:
+			return security.ErrPackageInvalid
+		case pluginpkg.ValidationCodePackageTooLarge:
+			return security.ErrPackageTooLarge
+		case pluginpkg.ValidationCodePackagePathForbidden:
+			return security.ErrPackagePathForbidden
+		}
+	}
 	switch {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
@@ -1978,7 +2001,22 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	}
 }
 
+func errorDetailsForManagementError(err error) map[string]any {
+	var packageValidationErr *pluginpkg.ValidationError
+	if errors.As(err, &packageValidationErr) {
+		return packageValidationErr.Details()
+	}
+	return nil
+}
+
 func httpStatusForManagementError(err error) int {
+	var packageValidationErr *pluginpkg.ValidationError
+	if errors.As(err, &packageValidationErr) {
+		if packageValidationErr.Code == pluginpkg.ValidationCodePackageTooLarge {
+			return http.StatusRequestEntityTooLarge
+		}
+		return http.StatusBadRequest
+	}
 	switch {
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest

@@ -68,7 +68,11 @@ capabilities.
   to inline or sanitize plugin-provided SVG markup. The same validation path rejects
   shell/shebang scripts, native executable or dynamic-library artifacts, and
   package-manager install lifecycle scripts so third-party packages cannot smuggle
-  a native backend beside the sandbox UI and WASM workers.
+  a native backend beside the sandbox UI and WASM workers. Validation failures
+  use stable platform error codes (`PLUGIN_MANIFEST_INVALID`,
+  `PLUGIN_PACKAGE_INVALID`, `PLUGIN_PACKAGE_TOO_LARGE`, or
+  `PLUGIN_PACKAGE_PATH_FORBIDDEN`) and expose structured `error_details` such as
+  `reason`, package `path`, and manifest JSON `pointer` through the HTTP adapter.
 - Install and update flows treat `trust_state` in management requests as a
   requested outcome, not as proof. Runnable verified/bundled trust states require
   a host-provided `PackageTrustVerifier`, while unsigned local and review states

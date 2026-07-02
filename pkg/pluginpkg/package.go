@@ -261,10 +261,10 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 	}
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
-		return Package{}, err
+		return Package{}, wrapValidationError(ValidationCodePackageInvalid, "zip_invalid", "", "", err)
 	}
 	if opts.MaxFiles > 0 && len(zr.File) > opts.MaxFiles {
-		return Package{}, fmt.Errorf("too many files: %d > %d", len(zr.File), opts.MaxFiles)
+		return Package{}, validationErrorf(ValidationCodePackageTooLarge, "file_count", "", "", "too many files: %d > %d", len(zr.File), opts.MaxFiles)
 	}
 
 	files := map[string][]byte{}
@@ -281,42 +281,42 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 			return Package{}, err
 		}
 		if _, ok := files[entryPath]; ok {
-			return Package{}, fmt.Errorf("duplicate entry %q", entryPath)
+			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "duplicate_entry", entryPath, "", "duplicate entry %q", entryPath)
 		}
 		if file.FileInfo().Mode()&fs.ModeSymlink != 0 {
-			return Package{}, fmt.Errorf("symlink entry %q is not allowed", entryPath)
+			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "symlink_entry", entryPath, "", "symlink entry %q is not allowed", entryPath)
 		}
 		if strings.HasSuffix(entryPath, "/") {
-			return Package{}, fmt.Errorf("directory entry %q is not allowed", entryPath)
+			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "directory_entry", entryPath, "", "directory entry %q is not allowed", entryPath)
 		}
 		if opts.MaxEntryBytes > 0 && int64(file.UncompressedSize64) > opts.MaxEntryBytes {
-			return Package{}, fmt.Errorf("entry %q too large", entryPath)
+			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entryPath, "", "entry %q too large", entryPath)
 		}
 		if opts.MaxCompressionRatio > 0 && file.CompressedSize64 > 0 && int64(file.UncompressedSize64/file.CompressedSize64) > opts.MaxCompressionRatio {
-			return Package{}, fmt.Errorf("entry %q compression ratio exceeds limit", entryPath)
+			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "compression_ratio", entryPath, "", "entry %q compression ratio exceeds limit", entryPath)
 		}
 		total += int64(file.UncompressedSize64)
 		if opts.MaxUncompressedBytes > 0 && total > opts.MaxUncompressedBytes {
-			return Package{}, fmt.Errorf("package too large")
+			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "total_uncompressed_bytes", "", "", "package too large")
 		}
 		rc, err := file.Open()
 		if err != nil {
-			return Package{}, err
+			return Package{}, wrapValidationError(ValidationCodePackageInvalid, "entry_open_failed", entryPath, "", err)
 		}
 		content, readErr := io.ReadAll(io.LimitReader(rc, int64(file.UncompressedSize64)+1))
 		closeErr := rc.Close()
 		if readErr != nil {
-			return Package{}, readErr
+			return Package{}, wrapValidationError(ValidationCodePackageInvalid, "entry_read_failed", entryPath, "", readErr)
 		}
 		if closeErr != nil {
-			return Package{}, closeErr
+			return Package{}, wrapValidationError(ValidationCodePackageInvalid, "entry_close_failed", entryPath, "", closeErr)
 		}
 		if uint64(len(content)) != file.UncompressedSize64 {
-			return Package{}, fmt.Errorf("entry %q size mismatch", entryPath)
+			return Package{}, validationErrorf(ValidationCodePackageInvalid, "entry_size_mismatch", entryPath, "", "entry %q size mismatch", entryPath)
 		}
 		if strings.HasPrefix(entryPath, "signatures/") {
 			if entryPath != PackageSignaturePath {
-				return Package{}, fmt.Errorf("unsupported signature entry %q", entryPath)
+				return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "unsupported_signature_entry", entryPath, "", "unsupported signature entry %q", entryPath)
 			}
 			signatureFiles[entryPath] = content
 			continue
@@ -343,42 +343,42 @@ func ReadFile(ctx context.Context, filename string, opts ReadOptions) (Package, 
 func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
 	manifestBytes, ok := files["manifest.json"]
 	if !ok {
-		return Package{}, errors.New("manifest.json is required")
+		return Package{}, validationErrorf(ValidationCodeManifestInvalid, "manifest_missing", "manifest.json", "", "manifest.json is required")
 	}
 	decodedManifest, err := manifest.Decode(bytes.NewReader(manifestBytes))
 	if err != nil {
-		return Package{}, fmt.Errorf("manifest.json: %w", err)
+		return Package{}, manifestDecodeValidationError(err)
 	}
 	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
-		return Package{}, err
+		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "manifest_artifact")
 	}
 	if err := validatePackageAssetSecurity(decodedManifest, files); err != nil {
-		return Package{}, err
+		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_asset_security")
 	}
 	if err := validatePackageArtifactBoundary(files); err != nil {
-		return Package{}, err
+		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_artifact_boundary")
 	}
 	entries := make([]Entry, 0, len(files))
 	for entryPath, content := range files {
 		entry, err := makeEntry(entryPath, content)
 		if err != nil {
-			return Package{}, err
+			return Package{}, ensurePackageValidationError(err, ValidationCodePackagePathForbidden, "entry_path")
 		}
 		entries = append(entries, entry)
 	}
 	sortEntries(entries)
 	canonicalManifest, err := canonicalJSON(decodedManifest)
 	if err != nil {
-		return Package{}, err
+		return Package{}, wrapValidationError(ValidationCodeManifestInvalid, "manifest_canonical_json", "manifest.json", "", err)
 	}
 	manifestHash := sha256String(canonicalManifest)
 	entriesHash, packageHash, err := canonicalHashes(entries, manifestHash)
 	if err != nil {
-		return Package{}, err
+		return Package{}, wrapValidationError(ValidationCodePackageInvalid, "canonical_hash", "", "", err)
 	}
 	packageSignature, err := parsePackageSignature(signatureFiles, decodedManifest, manifestHash, entriesHash, packageHash)
 	if err != nil {
-		return Package{}, err
+		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_signature")
 	}
 	return Package{
 		Manifest:          decodedManifest,
@@ -417,20 +417,20 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 			return err
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("symlink entry %q is not allowed", entryPath)
+			return validationErrorf(ValidationCodePackagePathForbidden, "symlink_entry", entryPath, "", "symlink entry %q is not allowed", entryPath)
 		}
 		if d.IsDir() {
 			return nil
 		}
 		if opts.MaxFiles > 0 && len(files)+1 > opts.MaxFiles {
-			return fmt.Errorf("too many files")
+			return validationErrorf(ValidationCodePackageTooLarge, "file_count", "", "", "too many files")
 		}
 		if opts.MaxEntryBytes > 0 && info.Size() > opts.MaxEntryBytes {
-			return fmt.Errorf("entry %q too large", entryPath)
+			return validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entryPath, "", "entry %q too large", entryPath)
 		}
 		total += info.Size()
 		if opts.MaxUncompressedBytes > 0 && total > opts.MaxUncompressedBytes {
-			return fmt.Errorf("package too large")
+			return validationErrorf(ValidationCodePackageTooLarge, "total_uncompressed_bytes", "", "", "package too large")
 		}
 		content, err := os.ReadFile(filename)
 		if err != nil {
@@ -438,7 +438,7 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 		}
 		if strings.HasPrefix(entryPath, "signatures/") {
 			if entryPath != PackageSignaturePath {
-				return fmt.Errorf("unsupported signature entry %q", entryPath)
+				return validationErrorf(ValidationCodePackagePathForbidden, "unsupported_signature_entry", entryPath, "", "unsupported signature entry %q", entryPath)
 			}
 			signatureFiles[entryPath] = content
 			return nil
@@ -451,22 +451,84 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 
 func validateEntryPath(entryPath string) (string, error) {
 	if entryPath == "" {
-		return "", errors.New("empty entry path")
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "empty_path", "", "", "empty entry path")
 	}
 	if strings.Contains(entryPath, "\\") {
-		return "", fmt.Errorf("entry %q must use slash separators", entryPath)
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "slash_separator", entryPath, "", "entry %q must use slash separators", entryPath)
 	}
 	clean := path.Clean(entryPath)
 	if clean == "." || clean != entryPath {
-		return "", fmt.Errorf("entry %q is not canonical", entryPath)
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "non_canonical_path", entryPath, "", "entry %q is not canonical", entryPath)
 	}
 	if path.IsAbs(entryPath) || strings.HasPrefix(entryPath, "../") || strings.Contains(entryPath, "/../") || entryPath == ".." {
-		return "", fmt.Errorf("entry %q escapes package root", entryPath)
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "path_traversal", entryPath, "", "entry %q escapes package root", entryPath)
 	}
 	if strings.HasPrefix(entryPath, ".") || strings.Contains(entryPath, "/.") {
-		return "", fmt.Errorf("hidden entry %q is not allowed", entryPath)
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "hidden_path", entryPath, "", "hidden entry %q is not allowed", entryPath)
 	}
 	return entryPath, nil
+}
+
+func manifestDecodeValidationError(err error) error {
+	var validationErr manifest.ValidationError
+	if errors.As(err, &validationErr) {
+		return validationErrorf(
+			ValidationCodeManifestInvalid,
+			"manifest_field",
+			"manifest.json",
+			jsonPointerFromManifestField(validationErr.Field),
+			"manifest.json: %s",
+			validationErr.Error(),
+		)
+	}
+	return wrapValidationError(ValidationCodeManifestInvalid, "manifest_decode", "manifest.json", "", fmt.Errorf("manifest.json: %w", err))
+}
+
+func ensurePackageValidationError(err error, code ValidationErrorCode, reason string) error {
+	var validationErr *ValidationError
+	if errors.As(err, &validationErr) {
+		return err
+	}
+	return wrapValidationError(code, reason, "", "", err)
+}
+
+func jsonPointerFromManifestField(field string) string {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return ""
+	}
+	var tokens []string
+	for _, segment := range strings.Split(field, ".") {
+		for segment != "" {
+			bracket := strings.Index(segment, "[")
+			if bracket < 0 {
+				tokens = append(tokens, segment)
+				break
+			}
+			if bracket > 0 {
+				tokens = append(tokens, segment[:bracket])
+			}
+			closeBracket := strings.Index(segment[bracket:], "]")
+			if closeBracket < 0 {
+				tokens = append(tokens, segment[bracket:])
+				break
+			}
+			index := segment[bracket+1 : bracket+closeBracket]
+			if index != "" {
+				tokens = append(tokens, index)
+			}
+			segment = segment[bracket+closeBracket+1:]
+		}
+	}
+	if len(tokens) == 0 {
+		return ""
+	}
+	for i, token := range tokens {
+		token = strings.ReplaceAll(token, "~", "~0")
+		token = strings.ReplaceAll(token, "/", "~1")
+		tokens[i] = token
+	}
+	return "/" + strings.Join(tokens, "/")
 }
 
 func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) error {
@@ -629,7 +691,7 @@ func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) 
 func validateSurfaceIconAsset(surfaceIndex int, iconPath string, files map[string][]byte) error {
 	iconValue := strings.TrimSpace(iconPath)
 	if strings.Contains(iconValue, "://") || strings.HasPrefix(iconValue, "//") || strings.HasPrefix(iconValue, "/") {
-		return fmt.Errorf("surfaces[%d].icon %q must reference a package-local relative raster image asset", surfaceIndex, iconPath)
+		return validationErrorf(ValidationCodePackagePathForbidden, "external_icon_path", iconPath, fmt.Sprintf("/surfaces/%d/icon", surfaceIndex), "surfaces[%d].icon %q must reference a package-local relative raster image asset", surfaceIndex, iconPath)
 	}
 	icon, err := validatePackageAssetPath(iconPath)
 	if err != nil {
@@ -637,14 +699,14 @@ func validateSurfaceIconAsset(surfaceIndex int, iconPath string, files map[strin
 	}
 	ext := strings.ToLower(path.Ext(icon))
 	if _, ok := allowedSurfaceIconExtensions[ext]; !ok {
-		return fmt.Errorf("surfaces[%d].icon %q must be a packaged raster image asset; SVG icons are not allowed", surfaceIndex, icon)
+		return validationErrorf(ValidationCodePackageInvalid, "unsupported_icon_format", icon, fmt.Sprintf("/surfaces/%d/icon", surfaceIndex), "surfaces[%d].icon %q must be a packaged raster image asset; SVG icons are not allowed", surfaceIndex, icon)
 	}
 	content, ok := files[icon]
 	if !ok {
-		return fmt.Errorf("surfaces[%d].icon %q is not present in package", surfaceIndex, icon)
+		return validationErrorf(ValidationCodePackageInvalid, "missing_icon_asset", icon, fmt.Sprintf("/surfaces/%d/icon", surfaceIndex), "surfaces[%d].icon %q is not present in package", surfaceIndex, icon)
 	}
 	if !hasRasterIconMagic(ext, content) {
-		return fmt.Errorf("surfaces[%d].icon %q content does not match a supported raster image format", surfaceIndex, icon)
+		return validationErrorf(ValidationCodePackageInvalid, "icon_magic_mismatch", icon, fmt.Sprintf("/surfaces/%d/icon", surfaceIndex), "surfaces[%d].icon %q content does not match a supported raster image format", surfaceIndex, icon)
 	}
 	return nil
 }
@@ -782,7 +844,7 @@ func resolvePackageRelativeAssetPath(baseDir string, rawPath string) (string, er
 
 func validatePackageAssetPath(entryPath string) (string, error) {
 	if strings.ContainsAny(entryPath, "?#") {
-		return "", fmt.Errorf("entry %q must not include query or fragment", entryPath)
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "query_or_fragment", entryPath, "", "entry %q must not include query or fragment", entryPath)
 	}
 	return validateEntryPath(entryPath)
 }
