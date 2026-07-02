@@ -142,6 +142,11 @@ capabilities.
   worker invocation, error-code, and target-classifier contracts. Network grant
   schema and target-classifier fixture versions are tracked independently so
   hosts can distinguish grant envelope drift from classifier rule drift.
+- Release-manifest schema tests keep `release-manifest-v1.schema.json` aligned
+  with the release bundle build script and verifier: `release-manifest.json`
+  excludes itself and `SHA256SUMS`, records a sorted file list, stores lowercase
+  hex SHA-256 and byte sizes, rejects unsafe paths, and drives the generated
+  `SHA256SUMS` content.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
   verify the loaded platform artifact set without shelling out to the CLI; the
