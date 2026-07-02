@@ -781,6 +781,14 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatalf("sandbox bootstrap body leaked asset session token: %s", rec.Body.String())
 	}
 
+	assetTicketReplay := postJSONError(t, handler, "/_redevplugin/bootstrap", map[string]any{
+		"surface_instance_id": openResp.SurfaceInstanceID,
+		"asset_ticket":        openResp.AssetTicket,
+	}, http.StatusForbidden)
+	if assetTicketReplay.ErrorCode != string(security.ErrAssetTicketInvalid) {
+		t.Fatalf("asset ticket replay error_code = %s body = %#v", assetTicketReplay.ErrorCode, assetTicketReplay)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, assetURL, nil)
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
@@ -829,12 +837,32 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatalf("service-worker-allowed = %q", got)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, assetURL, nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing asset session status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrAssetSessionInvalid) {
+		t.Fatalf("missing asset session error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/asset_session_other/ui/index.html", nil)
 	req.AddCookie(cookies[0])
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("mismatched asset session id status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrAssetSessionInvalid) {
+		t.Fatalf("mismatched asset session error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/"+bootstrapEnvelope.Data.AssetSessionID+"/manifest.json", nil)
@@ -1404,6 +1432,13 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("stream without ticket status = %d body = %s", rec.Code, rec.Body.String())
 	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
+		t.Fatalf("stream without ticket error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
 	rec = httptest.NewRecorder()
@@ -1431,6 +1466,12 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("stream replay status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
+		t.Fatalf("stream replay error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
 }
 

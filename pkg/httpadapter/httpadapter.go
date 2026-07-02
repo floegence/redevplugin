@@ -1381,7 +1381,7 @@ func (h Handler) handleSandboxBootstrap(w http.ResponseWriter, r *http.Request) 
 		AssetTicket:       req.AssetTicket,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetTicketError(err))})
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -1413,7 +1413,7 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	cookie, err := r.Cookie(assetSessionCookieName)
 	if err != nil || strings.TrimSpace(cookie.Value) == "" {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "asset session is required", ErrorCode: string(security.ErrPermissionDenied)})
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "asset session is required", ErrorCode: string(security.ErrAssetSessionInvalid)})
 		return
 	}
 	result, err := h.Host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
@@ -1449,7 +1449,7 @@ func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
 	}
 	streamTicket := strings.TrimSpace(r.URL.Query().Get("ticket"))
 	if streamTicket == "" {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "stream ticket is required", ErrorCode: string(security.ErrPermissionDenied)})
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "stream ticket is required", ErrorCode: string(security.ErrStreamTicketInvalid)})
 		return
 	}
 	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
@@ -1937,6 +1937,15 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 	}
 }
 
+func errorCodeForAssetTicketError(err error) security.ErrorCode {
+	switch {
+	case isSandboxTokenValidationError(err), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
+		return security.ErrAssetTicketInvalid
+	default:
+		return security.ErrPermissionDenied
+	}
+}
+
 func httpStatusForBridgeError(err error) int {
 	switch {
 	case errors.Is(err, bridge.ErrTokenExpired), errors.Is(err, bridge.ErrTokenReplay), errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
@@ -2077,6 +2086,8 @@ func errorCodeForStreamError(err error) security.ErrorCode {
 		return security.ErrInvalidRequest
 	case errors.Is(err, stream.ErrBackpressure):
 		return security.ErrOperationBlocked
+	case errors.Is(err, host.ErrStreamTicketRequired), isSandboxTokenValidationError(err):
+		return security.ErrStreamTicketInvalid
 	default:
 		return security.ErrPermissionDenied
 	}
@@ -2201,17 +2212,22 @@ func httpStatusForSecretError(err error) int {
 
 func errorCodeForAssetError(err error) security.ErrorCode {
 	switch {
-	case errors.Is(err, bridge.ErrTokenExpired):
-		return security.ErrTokenExpired
-	case errors.Is(err, bridge.ErrTokenReplay):
-		return security.ErrTokenReplay
-	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
-		return security.ErrPermissionDenied
+	case isSandboxTokenValidationError(err), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
+		return security.ErrAssetSessionInvalid
 	case errors.Is(err, registry.ErrNotFound):
 		return security.ErrInvalidRequest
 	default:
 		return security.ErrPermissionDenied
 	}
+}
+
+func isSandboxTokenValidationError(err error) bool {
+	return errors.Is(err, bridge.ErrTokenExpired) ||
+		errors.Is(err, bridge.ErrTokenReplay) ||
+		errors.Is(err, bridge.ErrTokenInvalid) ||
+		errors.Is(err, bridge.ErrTokenAudience) ||
+		errors.Is(err, bridge.ErrTokenRevoked) ||
+		errors.Is(err, bridge.ErrTokenKind)
 }
 
 func httpStatusForAssetError(err error) int {
