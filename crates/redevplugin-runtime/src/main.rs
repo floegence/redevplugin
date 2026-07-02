@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wasmi::{AsContext, AsContextMut, Config};
 
 const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
+const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
+const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
 
 fn main() {
     if let Err(err) = run() {
@@ -39,6 +41,7 @@ fn run() -> Result<(), String> {
 
     let mut revocations = RuntimeRevocations::default();
     let mut lease_replays = RuntimeLeaseReplayCache::default();
+    let mut control = ControlChannelState::new();
     loop {
         line.clear();
         let read = reader
@@ -54,20 +57,27 @@ fn run() -> Result<(), String> {
         }
         let response = match frame_type.as_str() {
             redevplugin_ipc::FRAME_TYPE_HEARTBEAT => {
-                handle_heartbeat(&request_id, &runtime_generation_id, &line)
+                handle_heartbeat(&mut control, &request_id, &runtime_generation_id, &line)
             }
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => handle_worker_invocation(
                 &mut reader,
                 &mut stdout,
-                &revocations,
-                &mut lease_replays,
+                &mut WorkerInvocationState {
+                    revocations: &revocations,
+                    lease_replays: &mut lease_replays,
+                    control: &control,
+                },
                 &request_id,
                 &runtime_generation_id,
                 &line,
             )?,
-            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
-                handle_revoke_epoch(&mut revocations, &request_id, &runtime_generation_id, &line)
-            }
+            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => handle_revoke_epoch(
+                &mut revocations,
+                &mut control,
+                &request_id,
+                &runtime_generation_id,
+                &line,
+            ),
             _ => redevplugin_ipc::response_frame(
                 "diagnostic",
                 &request_id,
@@ -87,7 +97,12 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn handle_heartbeat(request_id: &str, runtime_generation_id: &str, line: &str) -> String {
+fn handle_heartbeat(
+    control: &mut ControlChannelState,
+    request_id: &str,
+    runtime_generation_id: &str,
+    line: &str,
+) -> String {
     let host_sent_unix_nano = match required_json_number(line, "sent_unix_nano") {
         Ok(value) => value,
         Err(err) => {
@@ -127,6 +142,7 @@ fn handle_heartbeat(request_id: &str, runtime_generation_id: &str, line: &str) -
             );
         }
     };
+    control.refresh(Duration::from_millis(max_staleness_ms));
     let runtime_unix_nano = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
@@ -148,15 +164,117 @@ fn handle_heartbeat(request_id: &str, runtime_generation_id: &str, line: &str) -
     )
 }
 
+#[derive(Debug)]
+struct ControlChannelState {
+    last_refresh: Instant,
+    max_staleness: Duration,
+}
+
+impl ControlChannelState {
+    fn new() -> Self {
+        Self {
+            last_refresh: Instant::now(),
+            max_staleness: DEFAULT_CONTROL_MAX_STALENESS,
+        }
+    }
+
+    fn refresh(&mut self, max_staleness: Duration) {
+        self.max_staleness = max_staleness.max(Duration::from_millis(1));
+        self.refresh_without_staleness_change();
+    }
+
+    fn refresh_without_staleness_change(&mut self) {
+        self.last_refresh = Instant::now();
+    }
+
+    fn validate_fresh(&self) -> Result<(), RuntimeControlError> {
+        let elapsed = self.last_refresh.elapsed();
+        if elapsed > self.max_staleness {
+            return Err(RuntimeControlError::Stale {
+                elapsed_ms: duration_millis_u64(elapsed),
+                max_staleness_ms: duration_millis_u64(self.max_staleness),
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn force_stale_for_test(&mut self) {
+        let stale_by = self.max_staleness + Duration::from_millis(1);
+        self.last_refresh = Instant::now()
+            .checked_sub(stale_by)
+            .unwrap_or_else(Instant::now);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeControlError {
+    Stale {
+        elapsed_ms: u64,
+        max_staleness_ms: u64,
+    },
+}
+
+impl RuntimeControlError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Stale { .. } => redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale {
+                elapsed_ms,
+                max_staleness_ms,
+            } => write!(
+                formatter,
+                "{RUNTIME_CONTROL_STALE_MESSAGE_PREFIX} after {elapsed_ms}ms; max staleness is {max_staleness_ms}ms"
+            ),
+        }
+    }
+}
+
+fn worker_hostcall_error_code(message: &str) -> &'static str {
+    if message.starts_with(RUNTIME_CONTROL_STALE_MESSAGE_PREFIX) {
+        return redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE;
+    }
+    redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+struct WorkerInvocationState<'a> {
+    revocations: &'a RuntimeRevocations,
+    lease_replays: &'a mut RuntimeLeaseReplayCache,
+    control: &'a ControlChannelState,
+}
+
 fn handle_worker_invocation<R: BufRead, W: Write>(
     reader: &mut R,
     stdout: &mut W,
-    revocations: &RuntimeRevocations,
-    lease_replays: &mut RuntimeLeaseReplayCache,
+    state: &mut WorkerInvocationState<'_>,
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
 ) -> Result<String, String> {
+    if let Err(err) = state.control.validate_fresh() {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
     let identity = match redevplugin_ipc::parse_worker_invocation_identity(line) {
         Ok(identity) => identity,
         Err(err) => {
@@ -171,7 +289,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    if let Err(err) = revocations.validate_invocation_frame(line) {
+    if let Err(err) = state.revocations.validate_invocation_frame(line) {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -184,7 +302,20 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             Some(message.as_str()),
         ));
     }
-    if let Err(err) = lease_replays.consume_invocation_frame(line) {
+    if let Err(err) = state.lease_replays.consume_invocation_frame(line) {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
+    if let Err(err) = state.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -240,6 +371,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
+    if let Err(err) = state.control.validate_fresh() {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
     let wasm_bytes = match decode_base64(&content_base64) {
         Ok(wasm_bytes) => wasm_bytes,
         Err(err) => {
@@ -256,38 +400,62 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     };
     let execution =
         match execute_worker_module(&wasm_bytes, &identity.export, |request| match request {
-            WorkerHostcallRequest::StorageFile(request_json) => perform_storage_file_request(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                &request_json,
-            ),
-            WorkerHostcallRequest::StorageKV(request_json) => perform_storage_kv_request(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                &request_json,
-            ),
-            WorkerHostcallRequest::StorageSQLite(request_json) => perform_storage_sqlite_request(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                &request_json,
-            ),
-            WorkerHostcallRequest::NetworkExecute(request_json) => perform_network_execute_request(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                &request_json,
-            ),
+            WorkerHostcallRequest::StorageFile(request_json) => {
+                state
+                    .control
+                    .validate_fresh()
+                    .map_err(|err| err.to_string())?;
+                perform_storage_file_request(
+                    reader,
+                    stdout,
+                    request_id,
+                    runtime_generation_id,
+                    line,
+                    &request_json,
+                )
+            }
+            WorkerHostcallRequest::StorageKV(request_json) => {
+                state
+                    .control
+                    .validate_fresh()
+                    .map_err(|err| err.to_string())?;
+                perform_storage_kv_request(
+                    reader,
+                    stdout,
+                    request_id,
+                    runtime_generation_id,
+                    line,
+                    &request_json,
+                )
+            }
+            WorkerHostcallRequest::StorageSQLite(request_json) => {
+                state
+                    .control
+                    .validate_fresh()
+                    .map_err(|err| err.to_string())?;
+                perform_storage_sqlite_request(
+                    reader,
+                    stdout,
+                    request_id,
+                    runtime_generation_id,
+                    line,
+                    &request_json,
+                )
+            }
+            WorkerHostcallRequest::NetworkExecute(request_json) => {
+                state
+                    .control
+                    .validate_fresh()
+                    .map_err(|err| err.to_string())?;
+                perform_network_execute_request(
+                    reader,
+                    stdout,
+                    request_id,
+                    runtime_generation_id,
+                    line,
+                    &request_json,
+                )
+            }
         }) {
             Ok(execution) => execution,
             Err(err) => {
@@ -316,7 +484,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                         runtime_generation_id,
                         false,
                         None,
-                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                        Some(worker_hostcall_error_code(err.as_str())),
                         Some(err.as_str()),
                     ));
                 }
@@ -347,7 +515,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     false,
                     None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(worker_hostcall_error_code(err.as_str())),
                     Some(err.as_str()),
                 ));
             }
@@ -377,7 +545,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     false,
                     None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(worker_hostcall_error_code(err.as_str())),
                     Some(err.as_str()),
                 ));
             }
@@ -407,7 +575,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     false,
                     None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
+                    Some(worker_hostcall_error_code(err.as_str())),
                     Some(err.as_str()),
                 ));
             }
@@ -427,6 +595,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     let storage_file_result = match memory_storage_file_result {
         Some(result) => Some(result),
         None if execution.storage_file_write_demo_requested => {
+            if let Err(err) = state.control.validate_fresh() {
+                let code = err.code();
+                let message = err.to_string();
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(code),
+                    Some(message.as_str()),
+                ));
+            }
             match perform_storage_file_write_demo(
                 reader,
                 stdout,
@@ -453,6 +634,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     let storage_kv_result = match memory_storage_kv_result {
         Some(result) => Some(result),
         None if execution.storage_kv_put_demo_requested => {
+            if let Err(err) = state.control.validate_fresh() {
+                let code = err.code();
+                let message = err.to_string();
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(code),
+                    Some(message.as_str()),
+                ));
+            }
             match perform_storage_kv_put_demo(
                 reader,
                 stdout,
@@ -479,6 +673,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     let storage_sqlite_result = match memory_storage_sqlite_result {
         Some(result) => Some(result),
         None if execution.storage_sqlite_exec_demo_requested => {
+            if let Err(err) = state.control.validate_fresh() {
+                let code = err.code();
+                let message = err.to_string();
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(code),
+                    Some(message.as_str()),
+                ));
+            }
             match perform_storage_sqlite_exec_demo(
                 reader,
                 stdout,
@@ -504,6 +711,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     };
     let network_execute_result =
         if memory_network_results.is_empty() && execution.network_http_request_demo_requested {
+            if let Err(err) = state.control.validate_fresh() {
+                let code = err.code();
+                let message = err.to_string();
+                return Ok(redevplugin_ipc::response_frame(
+                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                    request_id,
+                    runtime_generation_id,
+                    false,
+                    None,
+                    Some(code),
+                    Some(message.as_str()),
+                ));
+            }
             match perform_network_http_request_demo(
                 reader,
                 stdout,
@@ -677,6 +897,7 @@ impl std::fmt::Display for RuntimeRevocationError {
 
 fn handle_revoke_epoch(
     revocations: &mut RuntimeRevocations,
+    control: &mut ControlChannelState,
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
@@ -710,6 +931,7 @@ fn handle_revoke_epoch(
         }
     };
     revocations.revoke_plugin(&plugin_instance_id, revoke_epoch);
+    control.refresh_without_staleness_change();
     let result_json = redevplugin_ipc::revoke_epoch_ack_result_json(
         &plugin_instance_id,
         revoke_epoch,
@@ -2094,6 +2316,18 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    fn worker_invocation_state<'a>(
+        revocations: &'a RuntimeRevocations,
+        lease_replays: &'a mut RuntimeLeaseReplayCache,
+        control: &'a ControlChannelState,
+    ) -> WorkerInvocationState<'a> {
+        WorkerInvocationState {
+            revocations,
+            lease_replays,
+            control,
+        }
+    }
+
     #[test]
     fn decodes_standard_base64() {
         assert_eq!(decode_base64("aGVsbG8=").expect("base64"), b"hello");
@@ -2178,10 +2412,32 @@ mod tests {
     }
 
     #[test]
+    fn control_channel_state_fails_closed_when_stale_and_recovers_on_refresh() {
+        let mut control = ControlChannelState::new();
+        control.refresh(Duration::from_millis(1));
+        control.force_stale_for_test();
+        let err = control
+            .validate_fresh()
+            .expect_err("stale control channel should fail closed");
+        assert_eq!(
+            err.code(),
+            redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE
+        );
+
+        control.refresh(Duration::from_millis(5_000));
+        control
+            .validate_fresh()
+            .expect("fresh heartbeat should restore control freshness");
+    }
+
+    #[test]
     fn handle_revoke_epoch_updates_runtime_revocation_state() {
         let mut revocations = RuntimeRevocations::default();
+        let mut control = ControlChannelState::new();
+        control.force_stale_for_test();
         let response = handle_revoke_epoch(
             &mut revocations,
+            &mut control,
             "r1",
             "g1",
             r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
@@ -2198,11 +2454,17 @@ mod tests {
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 6))
             .expect_err("old invocation should be revoked");
         assert_eq!(err.code(), redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED);
+        control
+            .validate_fresh()
+            .expect("valid revoke control frame should refresh control freshness");
     }
 
     #[test]
     fn handle_heartbeat_returns_structured_ack() {
+        let mut control = ControlChannelState::new();
+        control.force_stale_for_test();
         let response = handle_heartbeat(
+            &mut control,
             "r1",
             "g1",
             r#"{"ipc_version":"rust-ipc-v1","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
@@ -2212,11 +2474,16 @@ mod tests {
         assert!(response.contains(r#""runtime_generation_id":"g1""#));
         assert!(response.contains(r#""max_staleness_ms":5000"#));
         assert!(response.contains(r#""host_sent_unix_nano":100"#));
+        control
+            .validate_fresh()
+            .expect("valid heartbeat should refresh control freshness");
     }
 
     #[test]
     fn handle_heartbeat_fails_closed_for_invalid_frame() {
+        let mut control = ControlChannelState::new();
         let response = handle_heartbeat(
+            &mut control,
             "r1",
             "g1",
             r#"{"ipc_version":"rust-ipc-v1","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
@@ -2228,8 +2495,10 @@ mod tests {
     #[test]
     fn handle_revoke_epoch_fails_closed_for_invalid_frame() {
         let mut revocations = RuntimeRevocations::default();
+        let mut control = ControlChannelState::new();
         let response = handle_revoke_epoch(
             &mut revocations,
+            &mut control,
             "r1",
             "g1",
             r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
@@ -2247,14 +2516,14 @@ mod tests {
         let mut revocations = RuntimeRevocations::default();
         revocations.revoke_plugin("plugini_1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &revocations,
-            &mut lease_replays,
+            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 4),
@@ -2271,18 +2540,46 @@ mod tests {
     }
 
     #[test]
-    fn worker_invocation_allows_current_epoch_to_open_artifact() {
-        let mut revocations = RuntimeRevocations::default();
-        revocations.revoke_plugin("plugini_1", 5);
+    fn worker_invocation_rejects_stale_control_before_opening_artifact() {
+        let revocations = RuntimeRevocations::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut control = ControlChannelState::new();
+        control.force_stale_for_test();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &revocations,
-            &mut lease_replays,
+            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
+            "r1",
+            "g1",
+            &worker_invocation_frame("plugini_1", 1),
+        )
+        .expect("worker invocation response");
+
+        assert!(
+            output.is_empty(),
+            "stale control channel must not request an artifact"
+        );
+        assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
+        assert!(response.contains(r#""ok":false"#));
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE));
+    }
+
+    #[test]
+    fn worker_invocation_allows_current_epoch_to_open_artifact() {
+        let mut revocations = RuntimeRevocations::default();
+        revocations.revoke_plugin("plugini_1", 5);
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let control = ControlChannelState::new();
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 5),
@@ -2301,6 +2598,7 @@ mod tests {
     fn worker_invocation_rejects_replayed_lease_before_opening_artifact() {
         let revocations = RuntimeRevocations::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
         let frame = worker_invocation_frame("plugini_1", 1);
@@ -2308,8 +2606,7 @@ mod tests {
         let first = handle_worker_invocation(
             &mut input,
             &mut output,
-            &revocations,
-            &mut lease_replays,
+            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
             "r1",
             "g1",
             &frame,
@@ -2326,8 +2623,7 @@ mod tests {
         let replay = handle_worker_invocation(
             &mut replay_input,
             &mut replay_output,
-            &revocations,
-            &mut lease_replays,
+            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
             "r2",
             "g1",
             &frame,
@@ -2412,6 +2708,34 @@ mod tests {
         );
         assert!(!execution.network_http_request_demo_requested);
         assert!(!execution.network_execute_requested);
+    }
+
+    #[test]
+    fn stale_control_rejects_memory_hostcall_before_broker_dispatch() {
+        let module = storage_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
+        let mut control = ControlChannelState::new();
+        control.force_stale_for_test();
+        let mut broker_called = false;
+        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
+            control.validate_fresh().map_err(|err| err.to_string())?;
+            broker_called = true;
+            unexpected_hostcall(request)
+        })
+        .expect("stale control still produces a worker execution result");
+
+        assert!(execution.storage_file_requested);
+        assert!(
+            !broker_called,
+            "stale control channel must stop new broker IO before dispatch"
+        );
+        let err = execution
+            .storage_file_result
+            .expect("storage hostcall result")
+            .expect_err("stale control should reject the hostcall");
+        assert_eq!(
+            worker_hostcall_error_code(err.as_str()),
+            redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE
+        );
     }
 
     #[test]

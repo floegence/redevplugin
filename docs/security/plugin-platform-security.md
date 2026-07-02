@@ -168,6 +168,11 @@ The Go supervisor also maintains a default 2s heartbeat over the same runtime
 control channel. If the runtime cannot return a structured heartbeat ACK before
 the 5s max-staleness window expires, the supervisor marks that generation not
 ready, kills the process, and records an invalidation diagnostic.
+The Rust runtime keeps its own control freshness state. If the latest valid
+heartbeat or revocation control frame is older than the configured
+max-staleness window, it rejects new worker invocations and broker hostcalls
+with `RUNTIME_CONTROL_CHANNEL_STALE` before opening artifacts or dispatching
+Host IO.
 Successful runtime revocation ACKs include structured close counters so the
 audit trail can distinguish a control-plane revoke from the runtime resources
 that were actually closed.

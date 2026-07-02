@@ -201,7 +201,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "error-codes-schema",
 				Path:    "spec/plugin/error-codes-v1.schema.json",
 				Version: ErrorCodesSchemaVersion,
-				SHA256:  "6b15c661ba862e1bd48cb65856a756c644b88a879e70f2951179d7093cfa85df",
+				SHA256:  "a3b674bba0875f1025b7cc970aee1632e470755305bee1d2c68dc62d3a00fd6a",
 			},
 			{
 				ID:      "rust-ipc-schema",

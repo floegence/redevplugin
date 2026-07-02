@@ -126,6 +126,10 @@ capabilities.
   replay rejection, require structured heartbeat ACK results for control-channel
   liveness, and require `revoke_epoch_ack` results to report the plugin
   instance, revoke epoch, and closed actor/socket/stream/storage-handle counters.
+- Rust runtime control-channel freshness is enforced inside the runtime as well
+  as by the Go supervisor. After the heartbeat max-staleness window expires, the
+  Rust runtime rejects new worker invocations before opening artifacts and
+  rejects new storage/network broker hostcalls before dispatching Host IO.
 - The Go runtime supervisor gives every runtime-origin hostcall a bounded
   context before invoking host adapters. Storage and network calls that carry
   `timeout_ms` use that value with a platform cap; artifact, handle-grant,
@@ -198,10 +202,12 @@ capabilities.
   runtime injects Host-owned identity, policy, grant, and revoke context,
   executes the requests through the `storage_file`, `storage_kv`,
   `storage_sqlite`, and `network_execute` IPC paths, and writes JSON responses
-  back into worker-provided output buffers. Runtime revoke ACKs now return a
-  structured result with closed actor/socket/stream/storage-handle counters;
-  the current runtime reports zero for resource classes that are not yet owned
-  by the Rust hot path. The earlier fixed
+  back into worker-provided output buffers. Before each broker dispatch the
+  runtime verifies control-channel freshness and fails closed with
+  `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
+  stale. Runtime revoke ACKs now return a structured result with closed
+  actor/socket/stream/storage-handle counters; the current runtime reports zero
+  for resource classes that are not yet owned by the Rust hot path. The earlier fixed
   `*_demo` imports and `redevplugin.network/http_request` alias remain covered only as legacy runtime compatibility fixtures,
   not as the scaffolded plugin backend contract. Host integration tests build
   and exercise the real Rust runtime whenever a local Cargo toolchain is

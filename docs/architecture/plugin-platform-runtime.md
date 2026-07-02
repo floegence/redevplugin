@@ -89,6 +89,10 @@ default interval is 2 seconds and the default max-staleness window is 5 seconds.
 Heartbeat ACKs return the runtime generation, runtime timestamp, host timestamp
 echo, and max-staleness window. If the runtime cannot acknowledge within the
 window, the supervisor invalidates and kills that runtime generation.
+The Rust runtime also tracks the last valid heartbeat or revocation control
+frame. Once that max-staleness window is exceeded, it rejects new worker
+invocations before opening artifacts and rejects new storage/network hostcalls
+before dispatching Host IO.
 
 Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
 payloads return a structured result containing the plugin instance, revoke
@@ -102,7 +106,8 @@ The runtime contract is versioned by:
 - `rust_ipc_version`;
 - `wasm_abi_version`;
 - `runtime_generation_id`, Host-issued IPC channel nonce, runtime lease nonce
-  replay cache, heartbeat max-staleness, and revoke epoch state;
+  replay cache, runtime-enforced heartbeat max-staleness, and revoke epoch
+  state;
 - compatibility manifest contract hashes.
 
 Any incompatible Host/runtime combination must fail closed with a diagnostic
