@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -140,5 +141,167 @@ func TestMemoryStoreTrimsOldestEvents(t *testing.T) {
 	}
 	if len(diagnostics) != 1 || diagnostics[0].Type != "d2" {
 		t.Fatalf("trimmed diagnostics mismatch: %#v", diagnostics)
+	}
+}
+
+func TestSQLiteStorePersistsAuditAndDiagnosticsAcrossOpen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observability.sqlite")
+	now := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	store, err := NewSQLiteStore(ctx, path, MemoryStoreOptions{Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendPluginAudit(ctx, AuditEvent{
+		Type:             " plugin.installed ",
+		PluginID:         " com.example.plugin ",
+		PluginInstanceID: " plugin_1 ",
+		SurfaceID:        " activity ",
+		RequestID:        " request_1 ",
+		Actor:            " user_admin ",
+		Details:          map[string]any{"phase": "install"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+		Type:              "plugin.csp.violation",
+		PluginID:          "com.example.plugin",
+		PluginInstanceID:  "plugin_1",
+		SurfaceInstanceID: "surface_1",
+		ActiveFingerprint: "sha256:demo",
+		Details:           map[string]any{"blocked_uri": "inline"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	audits, err := reopened.ListPluginAudit(ctx, ListAuditRequest{PluginInstanceID: "plugin_1", Type: "plugin.installed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].EventID != "audit_000000000001" || audits[0].PluginID != "com.example.plugin" || audits[0].OccurredAt != now || audits[0].Details["phase"] != "install" {
+		t.Fatalf("persisted audit events mismatch: %#v", audits)
+	}
+	audits[0].Details["phase"] = "mutated"
+	again, err := reopened.ListPluginAudit(ctx, ListAuditRequest{PluginInstanceID: "plugin_1", Type: "plugin.installed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].Details["phase"] != "install" {
+		t.Fatalf("persisted audit details were mutable: %#v", again[0].Details)
+	}
+
+	diagnostics, err := reopened.ListPluginDiagnostics(ctx, ListDiagnosticRequest{PluginInstanceID: "plugin_1", SurfaceInstanceID: "surface_1", Severity: "info"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 || diagnostics[0].EventID != "diagnostic_000000000001" || diagnostics[0].Message != "plugin.csp.violation" || diagnostics[0].Details["blocked_uri"] != "inline" {
+		t.Fatalf("persisted diagnostic events mismatch: %#v", diagnostics)
+	}
+
+	if err := reopened.AppendPluginAudit(ctx, AuditEvent{Type: "plugin.enabled"}); err != nil {
+		t.Fatal(err)
+	}
+	audits, err = reopened.ListPluginAudit(ctx, ListAuditRequest{Type: "plugin.enabled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 1 || audits[0].EventID != "audit_000000000002" {
+		t.Fatalf("persisted audit sequence mismatch: %#v", audits)
+	}
+}
+
+func TestSQLiteStoreTrimsOldestEvents(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "observability.sqlite"), MemoryStoreOptions{
+		MaxAuditEvents:      2,
+		MaxDiagnosticEvents: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	base := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	for index, eventType := range []string{"a", "b", "c"} {
+		if err := store.AppendPluginAudit(ctx, AuditEvent{Type: eventType, OccurredAt: base.Add(time.Duration(index) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	audits, err := store.ListPluginAudit(ctx, ListAuditRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audits) != 2 || audits[0].Type != "c" || audits[1].Type != "b" {
+		t.Fatalf("trimmed sqlite audits mismatch: %#v", audits)
+	}
+
+	for index, eventType := range []string{"d1", "d2"} {
+		if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{Type: eventType, OccurredAt: base.Add(time.Duration(index) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diagnostics, err := store.ListPluginDiagnostics(ctx, ListDiagnosticRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 || diagnostics[0].Type != "d2" {
+		t.Fatalf("trimmed sqlite diagnostics mismatch: %#v", diagnostics)
+	}
+}
+
+func TestSQLiteStoreRejectsInvalidEvent(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "observability.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if err := store.AppendPluginAudit(ctx, AuditEvent{}); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("AppendPluginAudit() error = %v, want ErrInvalidEvent", err)
+	}
+	if err := store.AppendPluginDiagnostic(ctx, DiagnosticEvent{}); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("AppendPluginDiagnostic() error = %v, want ErrInvalidEvent", err)
+	}
+}
+
+func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "observability.sqlite")
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_observability_schema_migrations(version, applied_at) VALUES(?, ?)`, sqliteSchemaVersion+1, time.Now().UTC().UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteStore(ctx, path)
+	if err == nil {
+		_ = reopened.Close()
+		t.Fatal("NewSQLiteStore() accepted newer schema version")
 	}
 }
