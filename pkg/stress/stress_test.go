@@ -167,6 +167,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 		Manifest: manifest.Manifest{
 			NetworkAccess: &manifest.NetworkAccessSpec{Connectors: []manifest.NetworkConnectorSpec{
 				{ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"}},
+				{ConnectorID: "api_plain", Transport: "http", Scope: "user", Destinations: []string{"http://api.example.com"}},
 				{ConnectorID: "stream", Transport: "websocket", Scope: "user", Destinations: []string{"wss://stream.example.com"}},
 				{ConnectorID: "mysql", Transport: "tcp", Scope: "environment", Destinations: []string{"db.example.com:3306"}},
 				{ConnectorID: "metrics", Transport: "udp", Scope: "environment", Destinations: []string{"metrics.example.com:8125"}},
@@ -183,6 +184,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 
 	requests := []connectivity.GrantRequest{
 		grantRequest("api", connectivity.TransportHTTP, "https://api.example.com"),
+		grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"),
 		grantRequest("stream", connectivity.TransportWebSocket, "wss://stream.example.com"),
 		grantRequest("mysql", connectivity.TransportTCP, "db.example.com:3306"),
 		grantRequest("metrics", connectivity.TransportUDP, "metrics.example.com:8125"),
@@ -239,6 +241,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 		t.Fatalf("unexpected grant/classifier counters: minted=%d denied=%d blocked=%d", minted.Load(), denied.Load(), blocked.Load())
 	}
 	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
+	httpCounters := stressHTTPProxyDefenseCounters(t, ctx, broker)
 	logStressSummary(t, stressSummary{
 		Category: "connectivity_classifier",
 		Counters: map[string]int{
@@ -246,10 +249,97 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 			"stale_grant_denials":         int(denied.Load()),
 			"blocked_resolved_ips":        int(blocked.Load()),
 			"connector_policy_count":      len(policy.Connectors),
+			"http_proxy_env_ignored":      httpCounters.proxyEnvIgnored,
+			"http_connect_denials":        httpCounters.connectDenials,
+			"alt_svc_headers_dropped":     httpCounters.altSvcHeadersDropped,
+			"proxy_auth_headers_dropped":  httpCounters.proxyAuthHeadersDropped,
 			"udp_round_trips":             udpCounters.roundTrips,
 			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
 		},
 	})
+}
+
+type httpProxyDefenseCounters struct {
+	proxyEnvIgnored         int
+	connectDenials          int
+	altSvcHeadersDropped    int
+	proxyAuthHeadersDropped int
+}
+
+func stressHTTPProxyDefenseCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) httpProxyDefenseCounters {
+	t.Helper()
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type observation struct {
+		proxyEnvIgnored         bool
+		altSvcHeadersDropped    bool
+		proxyAuthHeadersDropped bool
+	}
+	observed := make(chan observation, 1)
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- observation{
+			proxyEnvIgnored:         r.RequestURI == "/proxy-check" && !r.URL.IsAbs(),
+			altSvcHeadersDropped:    r.Header.Get("Alt-Svc") == "",
+			proxyAuthHeadersDropped: r.Header.Get("Proxy-Authorization") == "" && r.Header.Get("Proxy-Authenticate") == "",
+		}
+		_, _ = w.Write([]byte("ok"))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+	grant, err := broker.MintConnectionGrant(ctx, grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(listener.Addr().String()),
+	}).DoHTTP(ctx, connectivity.HTTPRequest{
+		Grant: grant,
+		Path:  "/proxy-check",
+		Headers: http.Header{
+			"Alt-Svc":             []string{`h3=":443"`},
+			"Connection":          []string{"keep-alive"},
+			"Proxy-Authorization": []string{"Bearer secret"},
+			"Proxy-Authenticate":  []string{"Basic realm=test"},
+			"X-Test":              []string{"ok"},
+		},
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("DoHTTP(proxy defense) error = %v", err)
+	}
+	if string(response.Body) != "ok" {
+		t.Fatalf("DoHTTP(proxy defense) body = %q", response.Body)
+	}
+	var result httpProxyDefenseCounters
+	select {
+	case got := <-observed:
+		if !got.proxyEnvIgnored || !got.altSvcHeadersDropped || !got.proxyAuthHeadersDropped {
+			t.Fatalf("proxy defense observation mismatch: %#v", got)
+		}
+		result.proxyEnvIgnored = 1
+		result.altSvcHeadersDropped = 1
+		result.proxyAuthHeadersDropped = 1
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	dialed := false
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("dial should not be called for CONNECT")
+	}}).DoHTTP(ctx, connectivity.HTTPRequest{Grant: grant, Method: http.MethodConnect})
+	if !errors.Is(err, connectivity.ErrInvalidConnector) {
+		t.Fatalf("DoHTTP(CONNECT) error = %v, want ErrInvalidConnector", err)
+	}
+	if dialed {
+		t.Fatal("DoHTTP(CONNECT) dialed before rejecting method")
+	}
+	result.connectDenials = 1
+	return result
 }
 
 type udpSourcePinCounters struct {

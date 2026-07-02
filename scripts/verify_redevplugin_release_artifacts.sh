@@ -253,6 +253,10 @@ requireAtLeast(evidenceByCategory, "connectivity_classifier", "minted_grants", 1
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "stale_grant_denials", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "blocked_resolved_ips", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "connector_policy_count", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "http_proxy_env_ignored", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "http_connect_denials", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "alt_svc_headers_dropped", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "proxy_auth_headers_dropped", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_round_trips", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_source_mismatch_dropped", 1);
 

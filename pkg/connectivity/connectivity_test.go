@@ -244,6 +244,60 @@ func TestExecutorHTTPHostHeaderIncludesNonDefaultPort(t *testing.T) {
 	}
 }
 
+func TestExecutorHTTPDisablesProxyConnectAndHopHeaders(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI != "/proxy-check" || r.URL.IsAbs() {
+			t.Errorf("request URI = %q absolute=%v; environment proxy may have been used", r.RequestURI, r.URL.IsAbs())
+		}
+		if r.Header.Get("Alt-Svc") != "" || r.Header.Get("Proxy-Authorization") != "" || r.Header.Get("Proxy-Authenticate") != "" {
+			t.Errorf("proxy/alt-svc headers leaked: %#v", r.Header)
+		}
+		if r.Header.Get("X-Test") != "ok" {
+			t.Errorf("X-Test header = %q, want forwarded safe header", r.Header.Get("X-Test"))
+		}
+		_, _ = w.Write([]byte("ok"))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{
+		Grant: grant,
+		Path:  "/proxy-check",
+		Headers: http.Header{
+			"Alt-Svc":             []string{`h3=":443"`},
+			"Connection":          []string{"keep-alive"},
+			"Proxy-Authorization": []string{"Bearer secret"},
+			"Proxy-Authenticate":  []string{"Basic realm=test"},
+			"X-Test":              []string{"ok"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoHTTP(proxy/header check) error = %v", err)
+	}
+	if string(response.Body) != "ok" {
+		t.Fatalf("DoHTTP(proxy/header check) body = %q", response.Body)
+	}
+
+	dialed := false
+	_, err = NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("dial should not be called for CONNECT")
+	}}).DoHTTP(context.Background(), HTTPRequest{Grant: grant, Method: http.MethodConnect})
+	if !errors.Is(err, ErrInvalidConnector) {
+		t.Fatalf("DoHTTP(CONNECT) error = %v, want ErrInvalidConnector", err)
+	}
+	if dialed {
+		t.Fatal("DoHTTP(CONNECT) dialed before rejecting method")
+	}
+}
+
 func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	redirectListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
