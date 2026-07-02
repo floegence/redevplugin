@@ -1,12 +1,15 @@
 package stress_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,8 +18,10 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 type stressSummary struct {
@@ -25,6 +30,14 @@ type stressSummary struct {
 }
 
 var stressEvidenceMu sync.Mutex
+
+func TestMain(m *testing.M) {
+	if os.Getenv("REDEVPLUGIN_STRESS_RUNTIME_HELPER") == "1" {
+		runStressRuntimeHelper()
+		return
+	}
+	os.Exit(m.Run())
+}
 
 func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -226,6 +239,78 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	})
 }
 
+func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_STRESS_RUNTIME_HELPER=1"),
+		HeartbeatInterval:     250 * time.Millisecond,
+		MaxHeartbeatStaleness: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "stress-os", Arch: "stress-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+		defer stopCancel()
+		if err := supervisor.Stop(stopCtx); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	}()
+
+	const iterations = 64
+	const p95Threshold = 500 * time.Millisecond
+	const hardTimeout = 2 * time.Second
+	durations := make([]time.Duration, 0, iterations)
+	for i := 0; i < iterations; i++ {
+		revokeCtx, revokeCancel := context.WithTimeout(ctx, hardTimeout)
+		start := time.Now()
+		result, err := supervisor.Revoke(revokeCtx, "plugini_stress_runtime", uint64(i+1))
+		elapsed := time.Since(start)
+		revokeCancel()
+		if err != nil {
+			t.Fatalf("Revoke(%d) error = %v", i+1, err)
+		}
+		if result.PluginInstanceID != "plugini_stress_runtime" ||
+			result.RevokeEpoch != uint64(i+1) ||
+			result.ClosedActorCount != 1 ||
+			result.ClosedSocketCount != 2 ||
+			result.ClosedStreamCount != 3 ||
+			result.ClosedStorageHandleCount != 4 {
+			t.Fatalf("Revoke(%d) result mismatch: %#v", i+1, result)
+		}
+		if elapsed >= hardTimeout {
+			t.Fatalf("Revoke(%d) elapsed = %s, exceeded hard timeout %s", i+1, elapsed, hardTimeout)
+		}
+		durations = append(durations, elapsed)
+	}
+	sort.Slice(durations, func(i int, j int) bool { return durations[i] < durations[j] })
+	p95 := percentileDuration(durations, 95)
+	if p95 > p95Threshold {
+		t.Fatalf("runtime revoke ACK p95 = %s, want <= %s", p95, p95Threshold)
+	}
+	logStressSummary(t, stressSummary{
+		Category: "runtime_revoke_ack",
+		Counters: map[string]int{
+			"attempts":        iterations,
+			"p95_ms":          durationMillisCeil(p95),
+			"max_ms":          durationMillisCeil(durations[len(durations)-1]),
+			"threshold_ms":    durationMillisCeil(p95Threshold),
+			"hard_timeout_ms": durationMillisCeil(hardTimeout),
+			"closed_actor":    1,
+			"closed_socket":   2,
+			"closed_stream":   3,
+			"closed_storage":  4,
+		},
+	})
+}
+
 func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -325,6 +410,27 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	})
 }
 
+func percentileDuration(sorted []time.Duration, percentile int) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	index := (len(sorted)*percentile + 99) / 100
+	if index <= 0 {
+		index = 1
+	}
+	if index > len(sorted) {
+		index = len(sorted)
+	}
+	return sorted[index-1]
+}
+
+func durationMillisCeil(duration time.Duration) int {
+	if duration <= 0 {
+		return 0
+	}
+	return int((duration + time.Millisecond - 1) / time.Millisecond)
+}
+
 func grantRequest(connectorID string, transport connectivity.Transport, destination string) connectivity.GrantRequest {
 	return connectivity.GrantRequest{
 		PluginInstanceID:    "plugini_stress_net",
@@ -338,6 +444,136 @@ func grantRequest(connectorID string, transport connectivity.Transport, destinat
 		RuntimeGenerationID: "runtime_gen_stress",
 		TTL:                 30 * time.Second,
 	}
+}
+
+type stressIPCFrame struct {
+	IPCVersion          string          `json:"ipc_version"`
+	FrameType           string          `json:"frame_type"`
+	RequestID           string          `json:"request_id"`
+	RuntimeGenerationID string          `json:"runtime_generation_id,omitempty"`
+	Payload             json.RawMessage `json:"payload,omitempty"`
+}
+
+type stressHelloPayload struct {
+	ChannelNonce string `json:"channel_nonce"`
+}
+
+type stressHeartbeatPayload struct {
+	SentUnixNano       int64 `json:"sent_unix_nano"`
+	MaxStalenessMillis int64 `json:"max_staleness_ms"`
+}
+
+type stressRevokePayload struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	RevokeEpoch      uint64 `json:"revoke_epoch"`
+}
+
+type stressRuntimeResponsePayload struct {
+	OK     bool            `json:"ok"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Code   string          `json:"code,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
+func runStressRuntimeHelper() {
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		os.Exit(2)
+	}
+	var frame stressIPCFrame
+	if err := json.Unmarshal(line, &frame); err != nil {
+		os.Exit(3)
+	}
+	if frame.IPCVersion != version.RustIPCVersion ||
+		frame.FrameType != "hello" ||
+		strings.TrimSpace(frame.RequestID) == "" ||
+		strings.TrimSpace(frame.RuntimeGenerationID) == "" {
+		os.Exit(4)
+	}
+	var hello stressHelloPayload
+	if err := json.Unmarshal(frame.Payload, &hello); err != nil || strings.TrimSpace(hello.ChannelNonce) == "" {
+		os.Exit(5)
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	if err := encoder.Encode(stressIPCFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           "hello_ack",
+		RequestID:           frame.RequestID,
+		RuntimeGenerationID: frame.RuntimeGenerationID,
+		Payload: stressRawJSON(map[string]any{
+			"runtime_version":  version.RuntimeVersion,
+			"rust_ipc_version": version.RustIPCVersion,
+			"wasm_abi_version": version.WASMABIVersion,
+			"channel_nonce":    hello.ChannelNonce,
+		}),
+	}); err != nil {
+		os.Exit(6)
+	}
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var request stressIPCFrame
+		if err := json.Unmarshal(line, &request); err != nil {
+			os.Exit(7)
+		}
+		switch request.FrameType {
+		case "heartbeat":
+			var heartbeat stressHeartbeatPayload
+			_ = json.Unmarshal(request.Payload, &heartbeat)
+			respondStressRuntime(encoder, request, "heartbeat", stressRawJSON(stressRuntimeResponsePayload{
+				OK: true,
+				Result: stressRawJSON(map[string]any{
+					"runtime_generation_id": request.RuntimeGenerationID,
+					"runtime_unix_nano":     time.Now().UnixNano(),
+					"max_staleness_ms":      heartbeat.MaxStalenessMillis,
+					"host_sent_unix_nano":   heartbeat.SentUnixNano,
+				}),
+			}))
+		case "revoke_epoch":
+			var revoke stressRevokePayload
+			_ = json.Unmarshal(request.Payload, &revoke)
+			respondStressRuntime(encoder, request, "revoke_epoch_ack", stressRawJSON(stressRuntimeResponsePayload{
+				OK: true,
+				Result: stressRawJSON(map[string]any{
+					"plugin_instance_id":          revoke.PluginInstanceID,
+					"revoke_epoch":                revoke.RevokeEpoch,
+					"closed_actor_count":          1,
+					"closed_socket_count":         2,
+					"closed_stream_count":         3,
+					"closed_storage_handle_count": 4,
+				}),
+			}))
+		default:
+			respondStressRuntime(encoder, request, "diagnostic", stressRawJSON(stressRuntimeResponsePayload{
+				OK:    false,
+				Code:  "UNSUPPORTED_FRAME",
+				Error: "unsupported stress runtime frame",
+			}))
+		}
+	}
+}
+
+func respondStressRuntime(encoder *json.Encoder, request stressIPCFrame, frameType string, payload json.RawMessage) {
+	if err := encoder.Encode(stressIPCFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           frameType,
+		RequestID:           request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             payload,
+	}); err != nil {
+		os.Exit(8)
+	}
+}
+
+func stressRawJSON(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		os.Exit(9)
+	}
+	return raw
 }
 
 func logStressSummary(t *testing.T, summary stressSummary) {

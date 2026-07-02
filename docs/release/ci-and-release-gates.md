@@ -67,10 +67,10 @@ and `--summary PATH`.
 - `--release` aliases full mode for release-blocking use.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
-counters for stream backpressure, connectivity classifier/grant denials, and
-storage quota pressure. CI uploads summaries as artifacts, and tagged release
-workflows include release-mode stress evidence in the published checksum and
-signature evidence chain.
+counters for stream backpressure, connectivity classifier/grant denials, runtime
+revoke ACK p95 latency, and storage quota pressure. CI uploads summaries as
+artifacts, and tagged release workflows include release-mode stress evidence in
+the published checksum and signature evidence chain.
 
 ## Release Bundle
 
@@ -147,4 +147,3 @@ consume local path dependencies. A release-ready host integration should:
 4. verify compatibility manifest hashes against the selected contracts;
 5. bundle the runtime artifact into the host's installer or desktop package;
 6. keep host-side release gates aligned with the consumed ReDevPlugin version.
-

@@ -97,7 +97,12 @@ export GOWORK=off
 {
   "ok": true,
   "mode": "release",
-  "stress_evidence": [{"category":"stream_backpressure","counters":{"backpressure_denials":1}}],
+  "stress_evidence": [
+    {"category":"stream_backpressure","counters":{"backpressure_denials":1}},
+    {"category":"connectivity_classifier","counters":{"stale_grant_denials":1}},
+    {"category":"runtime_revoke_ack","counters":{"p95_ms":1,"threshold_ms":500}},
+    {"category":"storage_quota","counters":{"quota_denials":1}}
+  ],
   "steps": [{"name":"release_bundle","status":0,"duration_ms":1}]
 }
 JSON

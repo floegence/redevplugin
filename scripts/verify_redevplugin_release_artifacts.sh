@@ -140,6 +140,10 @@ verify_stress_summary() {
   grep -q '"ok": true' "$STRESS_FILE"
   grep -q '"mode": "release"' "$STRESS_FILE"
   grep -q '"stress_evidence"' "$STRESS_FILE"
+  grep -q '"category":"stream_backpressure"' "$STRESS_FILE"
+  grep -q '"category":"connectivity_classifier"' "$STRESS_FILE"
+  grep -q '"category":"runtime_revoke_ack"' "$STRESS_FILE"
+  grep -q '"category":"storage_quota"' "$STRESS_FILE"
   grep -q '"release_bundle"' "$STRESS_FILE"
 }
 

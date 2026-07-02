@@ -372,6 +372,6 @@ the Go/OpenAPI route contracts and reports that the Rust portion was skipped.
 
 `check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
 field records structured counters from `pkg/stress`, including stream
-backpressure denials, connectivity grant/classifier denials, and storage quota
-pressure. CI uploads that summary as release evidence for host-neutral
-broker/backpressure behavior.
+backpressure denials, connectivity grant/classifier denials, runtime revoke ACK
+p95 latency, and storage quota pressure. CI uploads that summary as release
+evidence for host-neutral broker/backpressure and runtime-control behavior.
