@@ -805,6 +805,9 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("asset nosniff = %q", got)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("asset cache-control = %q", got)
+	}
 	csp := rec.Header().Get("Content-Security-Policy")
 	for _, snippet := range []string{
 		"default-src 'none'",
@@ -849,6 +852,9 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	}
 	if envelope.ErrorCode != string(security.ErrAssetSessionInvalid) {
 		t.Fatalf("missing asset session error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("missing asset session cache-control = %q", got)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/asset_session_other/ui/index.html", nil)
