@@ -429,6 +429,7 @@ func (c Classifier) EvaluateResolvedAddress(destination Destination, addr netip.
 	if !addr.IsValid() {
 		return fmt.Errorf("%w: resolved address is invalid", ErrInvalidConnector)
 	}
+	addr = addr.Unmap()
 	for _, prefix := range c.blockedRanges {
 		if prefix.Contains(addr) {
 			return fmt.Errorf("%w: host %q resolved to blocked address %s in range %s", ErrTargetDenied, destination.Host, addr, prefix)

@@ -37,8 +37,11 @@ export GOWORK=off
 
 (
   cd "$ROOT_DIR"
-  go test ./pkg/protocol ./pkg/httpadapter
+  go test ./pkg/protocol ./pkg/httpadapter ./pkg/connectivity
+  cargo test -p redevplugin-target-classifier
   grep -q '"target_classifier_version": { "const": "target-classifier-v1" }' spec/plugin/network-grant-v1.schema.json
+  grep -q '"fixtures":' spec/plugin/target-classifier-v1.json
+  grep -q '"ipv4-mapped-private-resolved"' spec/plugin/target-classifier-v1.json
   grep -q '"transport": { "enum": \["http", "websocket", "tcp", "udp"\] }' spec/plugin/network-grant-v1.schema.json
   grep -q 'package-signature-v1.schema.json' spec/plugin/package-signature-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.package_signature.v1" }' spec/plugin/package-signature-v1.schema.json

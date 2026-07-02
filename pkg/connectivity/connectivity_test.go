@@ -5,12 +5,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -70,7 +74,10 @@ func TestCompilePolicyRejectsBlockedTargets(t *testing.T) {
 		{name: "private-ip", transport: "tcp", destination: "10.0.0.1:5432"},
 		{name: "link-local-metadata", transport: "udp", destination: "169.254.169.254:53"},
 		{name: "ipv6-localhost", transport: "tcp", destination: "[::1]:443"},
+		{name: "ipv6-ula", transport: "tcp", destination: "[fd00::10]:443"},
+		{name: "ipv4-mapped-loopback", transport: "tcp", destination: "[::ffff:127.0.0.1]:443"},
 		{name: "metadata-host", transport: "websocket", destination: "wss://metadata.google.internal"},
+		{name: "metadata-host-trailing-dot", transport: "websocket", destination: "wss://metadata.google.internal."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +91,62 @@ func TestCompilePolicyRejectsBlockedTargets(t *testing.T) {
 			}})
 			if !errors.Is(err, ErrTargetDenied) {
 				t.Fatalf("CompilePolicy() error = %v, want ErrTargetDenied", err)
+			}
+		})
+	}
+}
+
+func TestTargetClassifierFixtureContract(t *testing.T) {
+	contract := readTargetClassifierContract(t)
+	if contract.Version != version.TargetClassifierVersion {
+		t.Fatalf("fixture version = %q, want %q", contract.Version, version.TargetClassifierVersion)
+	}
+
+	classifier := DefaultClassifier()
+	gotRanges := make([]string, 0, len(classifier.blockedRanges))
+	for _, prefix := range classifier.blockedRanges {
+		gotRanges = append(gotRanges, prefix.String())
+	}
+	if !sameStrings(gotRanges, contract.BlockedIPRanges) {
+		t.Fatalf("blocked ranges = %#v, want %#v", gotRanges, contract.BlockedIPRanges)
+	}
+
+	gotHosts := make([]string, 0, len(classifier.specialHosts))
+	for host := range classifier.specialHosts {
+		gotHosts = append(gotHosts, host)
+	}
+	if !sameStrings(gotHosts, contract.SpecialHosts) {
+		t.Fatalf("special hosts = %#v, want %#v", gotHosts, contract.SpecialHosts)
+	}
+	if len(contract.Fixtures) == 0 {
+		t.Fatal("target classifier fixture contract must include decision fixtures")
+	}
+
+	for _, fixture := range contract.Fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			destination, err := ParseDestination(Transport(fixture.Transport), fixture.Destination)
+			if err != nil {
+				t.Fatalf("ParseDestination(%q) error = %v", fixture.Destination, err)
+			}
+			err = classifier.Evaluate(destination)
+			if fixture.ResolvedAddress != "" && err == nil {
+				addr, parseErr := netip.ParseAddr(fixture.ResolvedAddress)
+				if parseErr != nil {
+					t.Fatalf("fixture resolved_address %q parse error = %v", fixture.ResolvedAddress, parseErr)
+				}
+				err = classifier.EvaluateResolvedAddress(destination, addr)
+			}
+			switch fixture.Decision {
+			case "allow":
+				if err != nil {
+					t.Fatalf("classifier denied fixture %#v: %v", fixture, err)
+				}
+			case "deny":
+				if !errors.Is(err, ErrTargetDenied) {
+					t.Fatalf("classifier error for fixture %#v = %v, want ErrTargetDenied", fixture, err)
+				}
+			default:
+				t.Fatalf("unsupported fixture decision %q", fixture.Decision)
 			}
 		})
 	}
@@ -104,9 +167,56 @@ func TestClassifierEvaluatesResolvedAddress(t *testing.T) {
 	if err := classifier.EvaluateResolvedAddress(destination, netip.MustParseAddr("10.0.0.10")); !errors.Is(err, ErrTargetDenied) {
 		t.Fatalf("EvaluateResolvedAddress(private) error = %v, want ErrTargetDenied", err)
 	}
+	if err := classifier.EvaluateResolvedAddress(destination, netip.MustParseAddr("::ffff:10.0.0.10")); !errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("EvaluateResolvedAddress(ipv4-mapped private) error = %v, want ErrTargetDenied", err)
+	}
 	if err := classifier.EvaluateResolvedAddress(destination, netip.MustParseAddr("8.8.8.8")); err != nil {
 		t.Fatalf("EvaluateResolvedAddress(public) error = %v", err)
 	}
+}
+
+type targetClassifierContract struct {
+	Version         string                    `json:"version"`
+	BlockedIPRanges []string                  `json:"blocked_ip_ranges"`
+	SpecialHosts    []string                  `json:"special_hosts"`
+	Fixtures        []targetClassifierFixture `json:"fixtures"`
+}
+
+type targetClassifierFixture struct {
+	Name            string `json:"name"`
+	Transport       string `json:"transport"`
+	Destination     string `json:"destination"`
+	ResolvedAddress string `json:"resolved_address,omitempty"`
+	Decision        string `json:"decision"`
+}
+
+func readTargetClassifierContract(t *testing.T) targetClassifierContract {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "spec", "plugin", "target-classifier-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract targetClassifierContract
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		t.Fatal(err)
+	}
+	return contract
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left := append([]string(nil), a...)
+	right := append([]string(nil), b...)
+	sort.Strings(left)
+	sort.Strings(right)
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestMemoryBrokerMintsBoundedConnectionGrant(t *testing.T) {

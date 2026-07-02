@@ -1,6 +1,10 @@
 {
   "version": "target-classifier-v1",
   "default_policy": "deny",
+  "normalization": {
+    "dns_names": "ASCII lowercase with one trailing dot stripped before special-host checks",
+    "ip_literals": "netip canonical form; IPv4-mapped IPv6 addresses are unmapped before blocked-range checks"
+  },
   "blocked_ip_ranges": [
     "0.0.0.0/8",
     "10.0.0.0/8",
@@ -16,6 +20,73 @@
     "localhost",
     "metadata.google.internal",
     "169.254.169.254"
+  ],
+  "fixtures": [
+    {
+      "name": "public-http-origin",
+      "transport": "http",
+      "destination": "https://api.example.com",
+      "resolved_address": "203.0.113.10",
+      "decision": "allow"
+    },
+    {
+      "name": "punycode-public-host",
+      "transport": "http",
+      "destination": "https://xn--bcher-kva.example",
+      "resolved_address": "203.0.113.11",
+      "decision": "allow"
+    },
+    {
+      "name": "localhost-special-host",
+      "transport": "http",
+      "destination": "http://localhost",
+      "decision": "deny"
+    },
+    {
+      "name": "metadata-special-host-trailing-dot",
+      "transport": "websocket",
+      "destination": "wss://metadata.google.internal.",
+      "decision": "deny"
+    },
+    {
+      "name": "metadata-link-local-ip-literal",
+      "transport": "udp",
+      "destination": "169.254.169.254:53",
+      "decision": "deny"
+    },
+    {
+      "name": "ipv4-mapped-loopback-literal",
+      "transport": "tcp",
+      "destination": "[::ffff:127.0.0.1]:443",
+      "decision": "deny"
+    },
+    {
+      "name": "ipv4-mapped-private-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "::ffff:10.0.0.10",
+      "decision": "deny"
+    },
+    {
+      "name": "ula-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "fd00::10",
+      "decision": "deny"
+    },
+    {
+      "name": "ipv6-link-local-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "fe80::1",
+      "decision": "deny"
+    },
+    {
+      "name": "public-ipv6-resolved",
+      "transport": "tcp",
+      "destination": "db.example.com:5432",
+      "resolved_address": "2001:4860:4860::8888",
+      "decision": "allow"
+    }
   ]
 }
-

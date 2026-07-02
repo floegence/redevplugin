@@ -225,7 +225,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "target-classifier-fixture",
 				Path:    "spec/plugin/target-classifier-v1.json",
 				Version: TargetClassifierVersion,
-				SHA256:  "cf5b02acaf59ccd578df7c8281c392b2721ee594d908d85f1aac39ccf9ebd079",
+				SHA256:  "7e9367d624c22d575ae5c118063c1cb0f0de6b5b0081eabcfc51c0357e4d14d7",
 			},
 		},
 	}

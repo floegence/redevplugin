@@ -159,7 +159,10 @@ capabilities.
   target-classifier contracts. Network grant schema, release manifest schema,
   and target-classifier fixture versions are tracked independently so hosts can
   distinguish grant envelope drift, bundle manifest drift, and classifier rule
-  drift.
+  drift. The target-classifier fixture now carries executable allow/deny cases
+  for public DNS, punycode hostnames, metadata hosts, RFC1918/ULA/link-local
+  addresses, and IPv4-mapped IPv6 private addresses, with Go and Rust tests
+  reading the same JSON contract.
 - Release-manifest schema tests keep `release-manifest-v1.schema.json` aligned
   with the release bundle build script and verifier: `release-manifest.json`
   excludes itself and `SHA256SUMS`, records a sorted file list, stores lowercase
@@ -181,8 +184,11 @@ capabilities.
   timeout, request-size, and response-size limits. It revalidates grant expiry,
   transport, destination, and the target classifier at execution time so UI
   bridge calls and backend worker hostcalls can share the same fail-closed
-  network boundary. Long-lived WebSocket subscriptions remain tied to the
-  streaming envelope contract instead of the one-shot round trip API.
+  network boundary. IPv4-mapped IPv6 literals and resolved addresses are
+  unmapped before blocked-range checks so mapped loopback/private/link-local
+  targets cannot bypass IPv4 CIDR policy. Long-lived WebSocket subscriptions
+  remain tied to the streaming envelope contract instead of the one-shot round
+  trip API.
 - Host tests include a black-box runtime subprocess path that invokes a worker
   method, has the helper runtime request `network_execute` over IPC, mints the
   grant through the Host connectivity broker, and records HTTP, WebSocket, TCP,
@@ -368,8 +374,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-When Rust is unavailable, `check_redevplugin_runtime_contract.sh` still validates
-the Go/OpenAPI route contracts and reports that the Rust portion was skipped.
+`check_redevplugin_runtime_contract.sh` also runs the Rust target-classifier
+fixture test so the Go classifier, Rust crate, and JSON contract cannot drift.
 
 `check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
 field records structured counters from `pkg/stress`, including stream
