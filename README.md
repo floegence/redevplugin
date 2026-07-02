@@ -63,7 +63,10 @@ capabilities.
 - Package validation requires surface entries to be packaged HTML assets and
   rejects external, root-absolute, missing, inline-script/style, event-handler,
   `srcdoc`, `base`, and Service Worker registration dependencies in sandbox UI
-  assets before Host install can persist them.
+  assets before Host install can persist them. The same validation path rejects
+  shell/shebang scripts, native executable or dynamic-library artifacts, and
+  package-manager install lifecycle scripts so third-party packages cannot smuggle
+  a native backend beside the sandbox UI and WASM workers.
 - Install and update flows treat `trust_state` in management requests as a
   requested outcome, not as proof. Runnable verified/bundled trust states require
   a host-provided `PackageTrustVerifier`, while unsigned local and review states

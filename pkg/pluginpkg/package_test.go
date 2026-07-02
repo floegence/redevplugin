@@ -415,6 +415,92 @@ func TestBuildRejectsServiceWorkerRegistrationDependency(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsForbiddenExecutablePackageArtifacts(t *testing.T) {
+	tests := []struct {
+		name      string
+		entryPath string
+		content   []byte
+		wantErr   string
+	}{
+		{
+			name:      "shell extension",
+			entryPath: "scripts/install.sh",
+			content:   []byte("echo install\n"),
+			wantErr:   "shell script artifacts are not allowed",
+		},
+		{
+			name:      "shebang script",
+			entryPath: "ui/assets/tool.js",
+			content:   []byte("#!/usr/bin/env node\nconsole.log('tool');\n"),
+			wantErr:   "executable shebang scripts are not allowed",
+		},
+		{
+			name:      "node native addon",
+			entryPath: "ui/assets/addon.node",
+			content:   []byte("addon"),
+			wantErr:   "native executable or dynamic library artifacts are not allowed",
+		},
+		{
+			name:      "versioned shared library",
+			entryPath: "lib/libplugin.so.1",
+			content:   []byte("shared-library"),
+			wantErr:   "native executable or dynamic library artifacts are not allowed",
+		},
+		{
+			name:      "elf magic",
+			entryPath: "assets/plugin.dat",
+			content:   []byte{0x7f, 'E', 'L', 'F', 0x02, 0x01},
+			wantErr:   "native executable or dynamic library artifacts are not allowed",
+		},
+		{
+			name:      "mach-o magic",
+			entryPath: "assets/plugin.payload",
+			content:   []byte{0xcf, 0xfa, 0xed, 0xfe, 0x00},
+			wantErr:   "native executable or dynamic library artifacts are not allowed",
+		},
+		{
+			name:      "windows executable magic",
+			entryPath: "assets/plugin.payload",
+			content:   []byte{'M', 'Z', 0x90, 0x00},
+			wantErr:   "native executable or dynamic library artifacts are not allowed",
+		},
+		{
+			name:      "postinstall package json",
+			entryPath: "package.json",
+			content:   []byte(`{"scripts":{"postinstall":"node install.js"}}`),
+			wantErr:   `package manager lifecycle script "postinstall" is not allowed`,
+		},
+		{
+			name:      "prepare package json",
+			entryPath: "package.json",
+			content:   []byte(`{"scripts":{"prepare":"node build.js"}}`),
+			wantErr:   `package manager lifecycle script "prepare" is not allowed`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			mustWriteBytes(t, filepath.Join(dir, filepath.FromSlash(tc.entryPath)), tc.content)
+
+			var buf bytes.Buffer
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildAllowsNonExecutableBinaryDataAsset(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWriteBytes(t, filepath.Join(dir, "ui", "assets", "model.bin"), []byte{0x00, 0x01, 0x02, 0x03})
+
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
+		t.Fatalf("BuildFromDir() binary data asset error = %v", err)
+	}
+}
+
 func TestBuildRejectsMissingWorkerArtifact(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())

@@ -68,6 +68,41 @@ var serviceWorkerDependencyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bServiceWorkerContainer\b`),
 }
 
+var forbiddenShellExtensions = map[string]struct{}{
+	".bash": {},
+	".bat":  {},
+	".cmd":  {},
+	".fish": {},
+	".ps1":  {},
+	".psm1": {},
+	".sh":   {},
+	".zsh":  {},
+}
+
+var forbiddenNativeExtensions = map[string]struct{}{
+	".a":     {},
+	".app":   {},
+	".deb":   {},
+	".dll":   {},
+	".dylib": {},
+	".exe":   {},
+	".lib":   {},
+	".msi":   {},
+	".node":  {},
+	".o":     {},
+	".obj":   {},
+	".rpm":   {},
+}
+
+var forbiddenPackageLifecycleScripts = map[string]struct{}{
+	"install":     {},
+	"postinstall": {},
+	"postpack":    {},
+	"preinstall":  {},
+	"prepare":     {},
+	"prepack":     {},
+}
+
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
 	Algorithm     string `json:"algorithm"`
@@ -311,6 +346,9 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 	if err := validatePackageAssetSecurity(decodedManifest, files); err != nil {
 		return Package{}, err
 	}
+	if err := validatePackageArtifactBoundary(files); err != nil {
+		return Package{}, err
+	}
 	entries := make([]Entry, 0, len(files))
 	for entryPath, content := range files {
 		entry, err := makeEntry(entryPath, content)
@@ -466,6 +504,85 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		}
 	}
 	return nil
+}
+
+func validatePackageArtifactBoundary(files map[string][]byte) error {
+	for entryPath, content := range files {
+		if err := validateNoForbiddenExecutableArtifact(entryPath, content); err != nil {
+			return err
+		}
+		if path.Base(entryPath) == "package.json" {
+			if err := validatePackageJSONLifecycleScripts(entryPath, content); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateNoForbiddenExecutableArtifact(entryPath string, content []byte) error {
+	lowerPath := strings.ToLower(entryPath)
+	ext := path.Ext(lowerPath)
+	if _, ok := forbiddenShellExtensions[ext]; ok {
+		return fmt.Errorf("%s: shell script artifacts are not allowed in plugin packages", entryPath)
+	}
+	if hasShebang(content) {
+		return fmt.Errorf("%s: executable shebang scripts are not allowed in plugin packages", entryPath)
+	}
+	if _, ok := forbiddenNativeExtensions[ext]; ok || strings.HasSuffix(lowerPath, ".so") || strings.Contains(lowerPath, ".so.") {
+		return fmt.Errorf("%s: native executable or dynamic library artifacts are not allowed in plugin packages", entryPath)
+	}
+	if hasNativeExecutableMagic(content) {
+		return fmt.Errorf("%s: native executable or dynamic library artifacts are not allowed in plugin packages", entryPath)
+	}
+	return nil
+}
+
+func validatePackageJSONLifecycleScripts(entryPath string, content []byte) error {
+	var doc struct {
+		Scripts map[string]any `json:"scripts"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	if err := decoder.Decode(&doc); err != nil {
+		return fmt.Errorf("%s: invalid package.json: %w", entryPath, err)
+	}
+	for name, value := range doc.Scripts {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		if _, ok := forbiddenPackageLifecycleScripts[normalized]; !ok {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(value)) != "" {
+			return fmt.Errorf("%s: package manager lifecycle script %q is not allowed in plugin packages", entryPath, name)
+		}
+	}
+	return nil
+}
+
+func hasShebang(content []byte) bool {
+	return len(content) >= 2 && content[0] == '#' && content[1] == '!'
+}
+
+func hasNativeExecutableMagic(content []byte) bool {
+	if len(content) >= 2 && content[0] == 'M' && content[1] == 'Z' {
+		return true
+	}
+	if len(content) >= 4 {
+		switch {
+		case bytes.Equal(content[:4], []byte{0x7f, 'E', 'L', 'F'}):
+			return true
+		case bytes.Equal(content[:4], []byte{0xfe, 0xed, 0xfa, 0xce}):
+			return true
+		case bytes.Equal(content[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}):
+			return true
+		case bytes.Equal(content[:4], []byte{0xce, 0xfa, 0xed, 0xfe}):
+			return true
+		case bytes.Equal(content[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}):
+			return true
+		case bytes.Equal(content[:4], []byte{0xca, 0xfe, 0xba, 0xbe}):
+			return true
+		}
+	}
+	return false
 }
 
 func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) error {
