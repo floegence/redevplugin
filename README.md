@@ -112,6 +112,10 @@ capabilities.
   codes, bridge response codes, TypeScript client-only fallback codes, and Rust
   IPC codes so product shells can branch on stable values without scraping
   localized messages.
+- WASM worker ABI schema tests keep `wasm-worker-v1.schema.json` aligned with
+  the Go package validator, Go compatibility version, Rust ABI crate constants,
+  Rust IPC worker export validation, Rust runtime linked hostcall modules, and
+  the worker invocation schema export enum.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.

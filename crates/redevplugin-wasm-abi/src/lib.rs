@@ -1,5 +1,13 @@
 pub const WASM_WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
+pub const EXPORT_WORKER_INVOKE: &str = "redevplugin_worker_invoke";
 pub const REQUIRED_EXPORT_INVOKE: &str = "redevplugin_worker_invoke";
+pub const EXPORT_ACTOR_START: &str = "redevplugin_actor_start";
+pub const EXPORT_ACTOR_STOP: &str = "redevplugin_actor_stop";
+pub const IMPORT_LOG: &str = "redevplugin.log";
+pub const IMPORT_STORAGE: &str = "redevplugin.storage";
+pub const IMPORT_NETWORK: &str = "redevplugin.network";
+pub const IMPORT_OPERATION: &str = "redevplugin.operation";
+pub const IMPORT_CLOCK: &str = "redevplugin.clock";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedWorkerModule {
