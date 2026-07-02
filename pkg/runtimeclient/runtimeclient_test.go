@@ -59,6 +59,16 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 		health.WASMABIVersion != version.WASMABIVersion {
 		t.Fatalf("health mismatch: %#v", health)
 	}
+	heartbeat, err := supervisor.Heartbeat(context.Background())
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if heartbeat.RuntimeGenerationID != health.RuntimeGenerationID ||
+		heartbeat.RuntimeUnixNano <= 0 ||
+		heartbeat.MaxStalenessMillis != int64(defaultRuntimeHeartbeatMaxStaleness/time.Millisecond) ||
+		heartbeat.HostSentUnixNanoEcho <= 0 {
+		t.Fatalf("heartbeat mismatch: %#v", heartbeat)
+	}
 	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
 	if err != nil {
 		t.Fatalf("InvokeWorker() error = %v", err)
@@ -204,6 +214,33 @@ func TestProcessSupervisorRevokeInvalidatesRuntimeWhenIPCLockIsBusy(t *testing.T
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
+	store := observability.NewMemoryStore()
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BLOCK_HEARTBEAT=1"),
+		Diagnostics:           store,
+		HeartbeatInterval:     10 * time.Millisecond,
+		MaxHeartbeatStaleness: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Ready {
+		t.Fatalf("runtime should be marked not ready after stale heartbeat: %#v", health)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorRevokeIsNoopWhenRuntimeIsNotReady(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],
@@ -235,6 +272,27 @@ func TestDecodeRevokeResultRequiresStructuredCounters(t *testing.T) {
 	}
 	if result.ClosedActorCount != 1 || result.ClosedSocketCount != 2 || result.ClosedStreamCount != 3 || result.ClosedStorageHandleCount != 4 {
 		t.Fatalf("decodeRevokeResult() result mismatch: %#v", result)
+	}
+}
+
+func TestDecodeHeartbeatResultRequiresStructuredTiming(t *testing.T) {
+	_, err := decodeHeartbeatResult(json.RawMessage(`{"runtime_generation_id":"gen_1","runtime_unix_nano":1}`), "gen_1")
+	if !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("decodeHeartbeatResult(missing fields) error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	_, err = decodeHeartbeatResult(json.RawMessage(`{"runtime_generation_id":"other","runtime_unix_nano":1,"max_staleness_ms":5000,"host_sent_unix_nano":1}`), "gen_1")
+	if !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("decodeHeartbeatResult(generation mismatch) error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if _, err := decodeHeartbeatResult(json.RawMessage(`{"runtime_generation_id":"gen_1","runtime_unix_nano":1,"max_staleness_ms":5000,"host_sent_unix_nano":1,"extra":true}`), "gen_1"); err == nil {
+		t.Fatal("decodeHeartbeatResult(extra field) expected fail-closed error")
+	}
+	result, err := decodeHeartbeatResult(json.RawMessage(`{"runtime_generation_id":"gen_1","runtime_unix_nano":2,"max_staleness_ms":5000,"host_sent_unix_nano":1}`), "gen_1")
+	if err != nil {
+		t.Fatalf("decodeHeartbeatResult() error = %v", err)
+	}
+	if result.RuntimeGenerationID != "gen_1" || result.RuntimeUnixNano != 2 || result.MaxStalenessMillis != 5000 || result.HostSentUnixNanoEcho != 1 {
+		t.Fatalf("decodeHeartbeatResult() result mismatch: %#v", result)
 	}
 }
 
@@ -1296,6 +1354,26 @@ func runRuntimeClientHelper() {
 			os.Exit(5)
 		}
 		switch request.FrameType {
+		case ipcFrameTypeHeartbeat:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_HEARTBEAT") == "1" {
+				time.Sleep(10 * time.Second)
+				continue
+			}
+			var heartbeatReq heartbeatRequestPayload
+			_ = json.Unmarshal(request.Payload, &heartbeatReq)
+			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+				"runtime_generation_id": request.RuntimeGenerationID,
+				"runtime_unix_nano":     time.Now().UnixNano(),
+				"max_staleness_ms":      heartbeatReq.MaxStalenessMillis,
+				"host_sent_unix_nano":   heartbeatReq.SentUnixNano,
+			})})
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           ipcFrameTypeHeartbeat,
+				RequestID:           request.RequestID,
+				RuntimeGenerationID: request.RuntimeGenerationID,
+				Payload:             raw,
+			})
 		case ipcFrameTypeInvokeWorker:
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE") == "1" {
 				time.Sleep(10 * time.Second)

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 use wasmi::{AsContext, AsContextMut, Config};
 
 const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
@@ -52,6 +53,9 @@ fn run() -> Result<(), String> {
             return Err("runtime_generation_id mismatch".to_string());
         }
         let response = match frame_type.as_str() {
+            redevplugin_ipc::FRAME_TYPE_HEARTBEAT => {
+                handle_heartbeat(&request_id, &runtime_generation_id, &line)
+            }
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => handle_worker_invocation(
                 &mut reader,
                 &mut stdout,
@@ -81,6 +85,67 @@ fn run() -> Result<(), String> {
             .map_err(|err| format!("write ipc response: {err}"))?;
     }
     Ok(())
+}
+
+fn handle_heartbeat(request_id: &str, runtime_generation_id: &str, line: &str) -> String {
+    let host_sent_unix_nano = match required_json_number(line, "sent_unix_nano") {
+        Ok(value) => value,
+        Err(err) => {
+            return redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                None,
+                Some(err.as_str()),
+            );
+        }
+    };
+    let max_staleness_ms = match required_json_number(line, "max_staleness_ms") {
+        Ok(value) if value > 0 => value,
+        Ok(_) => {
+            return redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                None,
+                Some("max_staleness_ms must be positive"),
+            );
+        }
+        Err(err) => {
+            return redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                None,
+                Some(err.as_str()),
+            );
+        }
+    };
+    let runtime_unix_nano = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(1);
+    let result_json = redevplugin_ipc::heartbeat_ack_result_json(
+        runtime_generation_id,
+        runtime_unix_nano.max(1),
+        max_staleness_ms,
+        host_sent_unix_nano,
+    );
+    redevplugin_ipc::response_frame(
+        redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
+        request_id,
+        runtime_generation_id,
+        true,
+        Some(&result_json),
+        None,
+        None,
+    )
 }
 
 fn handle_worker_invocation<R: BufRead, W: Write>(
@@ -2133,6 +2198,31 @@ mod tests {
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 6))
             .expect_err("old invocation should be revoked");
         assert_eq!(err.code(), redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED);
+    }
+
+    #[test]
+    fn handle_heartbeat_returns_structured_ack() {
+        let response = handle_heartbeat(
+            "r1",
+            "g1",
+            r#"{"ipc_version":"rust-ipc-v1","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
+        );
+        assert!(response.contains(r#""frame_type":"heartbeat""#));
+        assert!(response.contains(r#""ok":true"#));
+        assert!(response.contains(r#""runtime_generation_id":"g1""#));
+        assert!(response.contains(r#""max_staleness_ms":5000"#));
+        assert!(response.contains(r#""host_sent_unix_nano":100"#));
+    }
+
+    #[test]
+    fn handle_heartbeat_fails_closed_for_invalid_frame() {
+        let response = handle_heartbeat(
+            "r1",
+            "g1",
+            r#"{"ipc_version":"rust-ipc-v1","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
+        );
+        assert!(response.contains(r#""frame_type":"heartbeat""#));
+        assert!(response.contains(r#""ok":false"#));
     }
 
     #[test]

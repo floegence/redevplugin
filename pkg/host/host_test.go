@@ -5428,6 +5428,21 @@ func (r *recordingRuntimeSupervisor) Health(context.Context) (runtimeclient.Heal
 	return r.health, nil
 }
 
+func (r *recordingRuntimeSupervisor) Heartbeat(context.Context) (runtimeclient.HeartbeatResult, error) {
+	if r.err != nil {
+		return runtimeclient.HeartbeatResult{}, r.err
+	}
+	if r.health == (runtimeclient.Health{}) {
+		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", Ready: true}
+	}
+	return runtimeclient.HeartbeatResult{
+		RuntimeGenerationID:  r.health.RuntimeGenerationID,
+		RuntimeUnixNano:      time.Now().UnixNano(),
+		MaxStalenessMillis:   5000,
+		HostSentUnixNanoEcho: time.Now().UnixNano(),
+	}, nil
+}
+
 func (r *recordingRuntimeSupervisor) InvokeWorker(_ context.Context, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
 	r.calls++
 	r.lastLease = lease

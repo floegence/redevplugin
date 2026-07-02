@@ -123,13 +123,15 @@ capabilities.
 - Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
   Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
   version, keep worker invocation leases bound to `lease_nonce` for runtime
-  replay rejection, and require `revoke_epoch_ack` results to report the
-  plugin instance, revoke epoch, and closed actor/socket/stream/storage-handle
-  counters.
+  replay rejection, require structured heartbeat ACK results for control-channel
+  liveness, and require `revoke_epoch_ack` results to report the plugin
+  instance, revoke epoch, and closed actor/socket/stream/storage-handle counters.
 - The Go runtime supervisor gives every runtime-origin hostcall a bounded
   context before invoking host adapters. Storage and network calls that carry
   `timeout_ms` use that value with a platform cap; artifact, handle-grant,
-  storage file/KV, and network-grant calls use the default hostcall cap.
+  storage file/KV, and network-grant calls use the default hostcall cap. The
+  supervisor also sends default 2s heartbeat frames and invalidates the runtime
+  when a heartbeat cannot be acknowledged within the 5s max-staleness window.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.

@@ -3167,6 +3167,18 @@ func (s *httpRecordingRuntimeSupervisor) Health(context.Context) (runtimeclient.
 	return s.health, nil
 }
 
+func (s *httpRecordingRuntimeSupervisor) Heartbeat(context.Context) (runtimeclient.HeartbeatResult, error) {
+	if s.err != nil {
+		return runtimeclient.HeartbeatResult{}, s.err
+	}
+	return runtimeclient.HeartbeatResult{
+		RuntimeGenerationID:  s.health.RuntimeGenerationID,
+		RuntimeUnixNano:      time.Now().UnixNano(),
+		MaxStalenessMillis:   5000,
+		HostSentUnixNanoEcho: time.Now().UnixNano(),
+	}, nil
+}
+
 func (s *httpRecordingRuntimeSupervisor) InvokeWorker(context.Context, runtimeclient.Lease, string, []byte) ([]byte, error) {
 	if s.err != nil {
 		return nil, s.err

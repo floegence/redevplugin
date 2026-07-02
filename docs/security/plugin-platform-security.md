@@ -164,6 +164,10 @@ storage, or network hostcalls, the supervisor derives a bounded context before
 calling host adapters. Request-level `timeout_ms` controls storage SQLite and
 network execution within a platform cap; hostcalls without an explicit timeout
 use the default hostcall cap.
+The Go supervisor also maintains a default 2s heartbeat over the same runtime
+control channel. If the runtime cannot return a structured heartbeat ACK before
+the 5s max-staleness window expires, the supervisor marks that generation not
+ready, kills the process, and records an invalidation diagnostic.
 Successful runtime revocation ACKs include structured close counters so the
 audit trail can distinguish a control-plane revoke from the runtime resources
 that were actually closed.

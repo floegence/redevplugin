@@ -26,6 +26,10 @@ func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 		if !ok {
 			continue
 		}
+		ifBlock := requireNestedObject(t, block, "if", "properties", "frame_type")
+		if ifBlock["const"] != "invoke_worker" {
+			continue
+		}
 		thenBlock, ok := block["then"].(map[string]any)
 		if !ok {
 			continue
@@ -91,6 +95,49 @@ func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 	}
 	assertPayload("hello")
 	assertPayload("hello_ack")
+}
+
+func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	frameType := requireNestedObject(t, schema, "properties", "frame_type")
+	frameEnum, ok := frameType["enum"].([]any)
+	if !ok || !containsString(frameEnum, "heartbeat") {
+		t.Fatalf("frame_type enum missing heartbeat: %#v", frameType["enum"])
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	request := requireNestedObject(t, defs, "heartbeat_request_payload")
+	requestRequired := requireStringSlice(t, request["required"], "heartbeat request required")
+	for _, name := range []string{"sent_unix_nano", "max_staleness_ms"} {
+		if !containsRequiredString(requestRequired, name) {
+			t.Fatalf("heartbeat request required missing %s: %#v", name, requestRequired)
+		}
+		field := requireNestedObject(t, request, "properties", name)
+		if field["type"] != "integer" || field["minimum"] != float64(1) {
+			t.Fatalf("heartbeat request %s schema = %#v", name, field)
+		}
+	}
+	response := requireNestedObject(t, defs, "heartbeat_response_payload")
+	responseProps := requireNestedObject(t, response, "properties")
+	for _, name := range []string{"ok", "result", "code", "message"} {
+		if _, ok := responseProps[name].(map[string]any); !ok {
+			t.Fatalf("heartbeat response missing %s", name)
+		}
+	}
+	result := requireNestedObject(t, defs, "heartbeat_ack_result")
+	resultRequired := requireStringSlice(t, result["required"], "heartbeat result required")
+	for _, name := range []string{"runtime_generation_id", "runtime_unix_nano", "max_staleness_ms", "host_sent_unix_nano"} {
+		if !containsRequiredString(resultRequired, name) {
+			t.Fatalf("heartbeat result required missing %s: %#v", name, resultRequired)
+		}
+	}
 }
 
 func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {

@@ -2,6 +2,7 @@ pub const RUST_IPC_VERSION: &str = "rust-ipc-v1";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
+pub const FRAME_TYPE_HEARTBEAT: &str = "heartbeat";
 pub const FRAME_TYPE_INVOKE_WORKER: &str = "invoke_worker";
 pub const FRAME_TYPE_INVOKE_WORKER_RESULT: &str = "invoke_worker_result";
 pub const FRAME_TYPE_OPEN_HANDLE: &str = "open_handle";
@@ -169,6 +170,21 @@ pub fn revoke_epoch_ack_result_json(
         closed_socket_count,
         closed_stream_count,
         closed_storage_handle_count
+    )
+}
+
+pub fn heartbeat_ack_result_json(
+    runtime_generation_id: &str,
+    runtime_unix_nano: u64,
+    max_staleness_ms: u64,
+    host_sent_unix_nano: u64,
+) -> String {
+    format!(
+        "{{\"runtime_generation_id\":\"{}\",\"runtime_unix_nano\":{},\"max_staleness_ms\":{},\"host_sent_unix_nano\":{}}}",
+        escape_json_string(runtime_generation_id),
+        runtime_unix_nano,
+        max_staleness_ms,
+        host_sent_unix_nano
     )
 }
 
@@ -1142,6 +1158,15 @@ mod tests {
         assert!(result.contains(r#""closed_socket_count":2"#));
         assert!(result.contains(r#""closed_stream_count":3"#));
         assert!(result.contains(r#""closed_storage_handle_count":4"#));
+    }
+
+    #[test]
+    fn renders_heartbeat_ack_result_json() {
+        let result = heartbeat_ack_result_json("runtime_gen_1", 101, 5000, 100);
+        assert!(result.contains(r#""runtime_generation_id":"runtime_gen_1""#));
+        assert!(result.contains(r#""runtime_unix_nano":101"#));
+        assert!(result.contains(r#""max_staleness_ms":5000"#));
+        assert!(result.contains(r#""host_sent_unix_nano":100"#));
     }
 
     #[test]

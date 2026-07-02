@@ -1034,6 +1034,11 @@ type hostRuntimeRevokePayload struct {
 	RevokeEpoch      uint64 `json:"revoke_epoch"`
 }
 
+type hostRuntimeHeartbeatPayload struct {
+	SentUnixNano       int64 `json:"sent_unix_nano"`
+	MaxStalenessMillis int64 `json:"max_staleness_ms"`
+}
+
 type hostRuntimeInvokePayload struct {
 	Lease      runtimeclient.Lease     `json:"lease"`
 	Method     string                  `json:"method"`
@@ -1097,6 +1102,23 @@ func runHostRuntimeProcessHelper() {
 			_ = encoder.Encode(hostRuntimeIPCFrame{
 				IPCVersion:          version.RustIPCVersion,
 				FrameType:           "hello_ack",
+				RequestID:           frame.RequestID,
+				RuntimeGenerationID: frame.RuntimeGenerationID,
+				Payload:             raw,
+			})
+		case "heartbeat":
+			var heartbeat hostRuntimeHeartbeatPayload
+			_ = json.Unmarshal(frame.Payload, &heartbeat)
+			result, _ := json.Marshal(map[string]any{
+				"runtime_generation_id": frame.RuntimeGenerationID,
+				"runtime_unix_nano":     time.Now().UnixNano(),
+				"max_staleness_ms":      heartbeat.MaxStalenessMillis,
+				"host_sent_unix_nano":   heartbeat.SentUnixNano,
+			})
+			raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: true, Result: result})
+			_ = encoder.Encode(hostRuntimeIPCFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           "heartbeat",
 				RequestID:           frame.RequestID,
 				RuntimeGenerationID: frame.RuntimeGenerationID,
 				Payload:             raw,

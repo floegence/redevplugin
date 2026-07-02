@@ -64,6 +64,20 @@
       }
     },
     {
+      "if": { "properties": { "frame_type": { "const": "heartbeat" } }, "required": ["frame_type"] },
+      "then": {
+        "required": ["runtime_generation_id", "payload"],
+        "properties": {
+          "payload": {
+            "oneOf": [
+              { "$ref": "#/$defs/heartbeat_request_payload" },
+              { "$ref": "#/$defs/heartbeat_response_payload" }
+            ]
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "frame_type": { "const": "invoke_worker" } }, "required": ["frame_type"] },
       "then": {
         "required": ["runtime_generation_id", "payload"],
@@ -235,6 +249,59 @@
     "worker_artifact_path": {
       "type": "string",
       "pattern": "^workers/(?!.*(?:^|/)\\.)(?!.*//)(?!.*\\\\).+\\.wasm$"
+    },
+    "heartbeat_request_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sent_unix_nano", "max_staleness_ms"],
+      "properties": {
+        "sent_unix_nano": { "type": "integer", "minimum": 1 },
+        "max_staleness_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "heartbeat_response_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "$ref": "#/$defs/heartbeat_ack_result" },
+        "error": { "type": "string" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "ok": { "const": true } },
+            "required": ["ok"]
+          },
+          "then": { "required": ["result"] }
+        },
+        {
+          "if": {
+            "properties": { "ok": { "const": false } },
+            "required": ["ok"]
+          },
+          "then": { "required": ["code", "message"] }
+        }
+      ]
+    },
+    "heartbeat_ack_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_generation_id",
+        "runtime_unix_nano",
+        "max_staleness_ms",
+        "host_sent_unix_nano"
+      ],
+      "properties": {
+        "runtime_generation_id": { "type": "string", "minLength": 1 },
+        "runtime_unix_nano": { "type": "integer", "minimum": 1 },
+        "max_staleness_ms": { "type": "integer", "minimum": 1 },
+        "host_sent_unix_nano": { "type": "integer", "minimum": 1 }
+      }
     },
     "open_handle_request_payload": {
       "type": "object",

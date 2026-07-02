@@ -59,10 +59,18 @@ type RevokeResult struct {
 	ClosedStorageHandleCount int    `json:"closed_storage_handle_count"`
 }
 
+type HeartbeatResult struct {
+	RuntimeGenerationID  string `json:"runtime_generation_id"`
+	RuntimeUnixNano      int64  `json:"runtime_unix_nano"`
+	MaxStalenessMillis   int64  `json:"max_staleness_ms"`
+	HostSentUnixNanoEcho int64  `json:"host_sent_unix_nano"`
+}
+
 type Supervisor interface {
 	Start(ctx context.Context, target Target) error
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (Health, error)
+	Heartbeat(ctx context.Context) (HeartbeatResult, error)
 	InvokeWorker(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error)
 	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error)
 }
@@ -118,42 +126,46 @@ var (
 )
 
 type ProcessSupervisorOptions struct {
-	RuntimePath      string
-	Args             []string
-	Env              []string
-	Dir              string
-	Diagnostics      observability.DiagnosticsSink
-	Artifacts        ArtifactProvider
-	HandleGrants     HandleGrantValidator
-	StorageFiles     storage.FilesBroker
-	StorageKV        storage.KVBroker
-	StorageSQLite    storage.SQLiteBroker
-	Connectivity     connectivity.Broker
-	NetworkExecutor  connectivity.NetworkExecutor
-	Now              func() time.Time
-	HandshakeTimeout time.Duration
+	RuntimePath           string
+	Args                  []string
+	Env                   []string
+	Dir                   string
+	Diagnostics           observability.DiagnosticsSink
+	Artifacts             ArtifactProvider
+	HandleGrants          HandleGrantValidator
+	StorageFiles          storage.FilesBroker
+	StorageKV             storage.KVBroker
+	StorageSQLite         storage.SQLiteBroker
+	Connectivity          connectivity.Broker
+	NetworkExecutor       connectivity.NetworkExecutor
+	Now                   func() time.Time
+	HandshakeTimeout      time.Duration
+	HeartbeatInterval     time.Duration
+	MaxHeartbeatStaleness time.Duration
 }
 
 type ProcessSupervisor struct {
-	startMu          sync.Mutex
-	ipcMu            sync.Mutex
-	mu               sync.Mutex
-	path             string
-	args             []string
-	env              []string
-	dir              string
-	diagnostics      observability.DiagnosticsSink
-	artifacts        ArtifactProvider
-	handleGrants     HandleGrantValidator
-	storageFiles     storage.FilesBroker
-	storageKV        storage.KVBroker
-	storageSQLite    storage.SQLiteBroker
-	connectivity     connectivity.Broker
-	networkExecutor  connectivity.NetworkExecutor
-	now              func() time.Time
-	handshakeTimeout time.Duration
-	seq              uint64
-	requestSeq       uint64
+	startMu               sync.Mutex
+	ipcMu                 sync.Mutex
+	mu                    sync.Mutex
+	path                  string
+	args                  []string
+	env                   []string
+	dir                   string
+	diagnostics           observability.DiagnosticsSink
+	artifacts             ArtifactProvider
+	handleGrants          HandleGrantValidator
+	storageFiles          storage.FilesBroker
+	storageKV             storage.KVBroker
+	storageSQLite         storage.SQLiteBroker
+	connectivity          connectivity.Broker
+	networkExecutor       connectivity.NetworkExecutor
+	now                   func() time.Time
+	handshakeTimeout      time.Duration
+	heartbeatInterval     time.Duration
+	maxHeartbeatStaleness time.Duration
+	seq                   uint64
+	requestSeq            uint64
 
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
@@ -177,21 +189,34 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	if handshakeTimeout <= 0 {
 		handshakeTimeout = 5 * time.Second
 	}
+	heartbeatInterval := options.HeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = defaultRuntimeHeartbeatInterval
+	}
+	maxHeartbeatStaleness := options.MaxHeartbeatStaleness
+	if maxHeartbeatStaleness <= 0 {
+		maxHeartbeatStaleness = defaultRuntimeHeartbeatMaxStaleness
+	}
+	if maxHeartbeatStaleness < heartbeatInterval {
+		maxHeartbeatStaleness = heartbeatInterval
+	}
 	return &ProcessSupervisor{
-		path:             path,
-		args:             append([]string(nil), options.Args...),
-		env:              append([]string(nil), options.Env...),
-		dir:              strings.TrimSpace(options.Dir),
-		diagnostics:      options.Diagnostics,
-		artifacts:        options.Artifacts,
-		handleGrants:     options.HandleGrants,
-		storageFiles:     options.StorageFiles,
-		storageKV:        options.StorageKV,
-		storageSQLite:    options.StorageSQLite,
-		connectivity:     options.Connectivity,
-		networkExecutor:  options.NetworkExecutor,
-		now:              now,
-		handshakeTimeout: handshakeTimeout,
+		path:                  path,
+		args:                  append([]string(nil), options.Args...),
+		env:                   append([]string(nil), options.Env...),
+		dir:                   strings.TrimSpace(options.Dir),
+		diagnostics:           options.Diagnostics,
+		artifacts:             options.Artifacts,
+		handleGrants:          options.HandleGrants,
+		storageFiles:          options.StorageFiles,
+		storageKV:             options.StorageKV,
+		storageSQLite:         options.StorageSQLite,
+		connectivity:          options.Connectivity,
+		networkExecutor:       options.NetworkExecutor,
+		now:                   now,
+		handshakeTimeout:      handshakeTimeout,
+		heartbeatInterval:     heartbeatInterval,
+		maxHeartbeatStaleness: maxHeartbeatStaleness,
 	}, nil
 }
 
@@ -307,6 +332,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		"rust_ipc_version":      health.RustIPCVersion,
 		"wasm_abi_version":      health.WASMABIVersion,
 	})
+	go s.heartbeatLoop(runtimeCtx, health)
 	return nil
 }
 
@@ -352,6 +378,64 @@ func (s *ProcessSupervisor) Health(context.Context) (Health, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.health, nil
+}
+
+func (s *ProcessSupervisor) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
+	if err := ctx.Err(); err != nil {
+		return HeartbeatResult{}, err
+	}
+	if s == nil || !s.isReady() {
+		return HeartbeatResult{}, ErrRuntimeNotReady
+	}
+	rawPayload, err := json.Marshal(heartbeatRequestPayload{
+		SentUnixNano:       s.now().UnixNano(),
+		MaxStalenessMillis: int64(s.maxHeartbeatStaleness / time.Millisecond),
+	})
+	if err != nil {
+		return HeartbeatResult{}, err
+	}
+	frame, err := s.callIPC(ctx, ipcFrameTypeHeartbeat, ipcFrameTypeHeartbeat, rawPayload, nil)
+	if err != nil {
+		return HeartbeatResult{}, err
+	}
+	response, err := decodeRuntimeResponse(frame)
+	if err != nil {
+		return HeartbeatResult{}, err
+	}
+	if !response.OK {
+		return HeartbeatResult{}, response.err()
+	}
+	if len(response.Result) == 0 {
+		return HeartbeatResult{}, fmt.Errorf("%w: heartbeat missing result", ErrRuntimeRequestFailed)
+	}
+	return decodeHeartbeatResult(response.Result, frame.RuntimeGenerationID)
+}
+
+func decodeHeartbeatResult(raw json.RawMessage, runtimeGenerationID string) (HeartbeatResult, error) {
+	var payload heartbeatResultPayload
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return HeartbeatResult{}, err
+	}
+	if payload.RuntimeGenerationID == "" ||
+		payload.RuntimeUnixNano == nil ||
+		payload.MaxStalenessMillis == nil ||
+		payload.HostSentUnixNanoEcho == nil {
+		return HeartbeatResult{}, fmt.Errorf("%w: heartbeat result missing required field", ErrRuntimeRequestFailed)
+	}
+	if payload.RuntimeGenerationID != runtimeGenerationID {
+		return HeartbeatResult{}, fmt.Errorf("%w: heartbeat runtime_generation_id mismatch", ErrRuntimeRequestFailed)
+	}
+	if *payload.RuntimeUnixNano <= 0 || *payload.MaxStalenessMillis <= 0 || *payload.HostSentUnixNanoEcho <= 0 {
+		return HeartbeatResult{}, fmt.Errorf("%w: heartbeat result contains non-positive timing field", ErrRuntimeRequestFailed)
+	}
+	return HeartbeatResult{
+		RuntimeGenerationID:  payload.RuntimeGenerationID,
+		RuntimeUnixNano:      *payload.RuntimeUnixNano,
+		MaxStalenessMillis:   *payload.MaxStalenessMillis,
+		HostSentUnixNanoEcho: *payload.HostSentUnixNanoEcho,
+	}, nil
 }
 
 func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {
@@ -519,6 +603,41 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel contex
 	done <- err
 }
 
+func (s *ProcessSupervisor) heartbeatLoop(ctx context.Context, health Health) {
+	ticker := time.NewTicker(s.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !s.runtimeGenerationReady(health) {
+			return
+		}
+		heartbeatCtx, cancel := context.WithTimeout(ctx, s.maxHeartbeatStaleness)
+		_, err := s.Heartbeat(heartbeatCtx)
+		cancel()
+		if err == nil {
+			continue
+		}
+		if ctx.Err() != nil || !s.runtimeGenerationReady(health) {
+			return
+		}
+		s.invalidateRuntimeAfterIPCFailure(health, "runtime heartbeat failed", err)
+		return
+	}
+}
+
+func (s *ProcessSupervisor) runtimeGenerationReady(health Health) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readyLocked() && s.health.RuntimeGenerationID == health.RuntimeGenerationID
+}
+
 func (s *ProcessSupervisor) scanPipe(reader io.Reader, streamName string) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
@@ -554,6 +673,7 @@ func (s *ProcessSupervisor) emit(eventType string, severity string, message stri
 const (
 	ipcFrameTypeHello               = "hello"
 	ipcFrameTypeHelloAck            = "hello_ack"
+	ipcFrameTypeHeartbeat           = "heartbeat"
 	ipcFrameTypeInvokeWorker        = "invoke_worker"
 	ipcFrameTypeInvokeWorkerResult  = "invoke_worker_result"
 	ipcFrameTypeOpenHandle          = "open_handle"
@@ -568,8 +688,10 @@ const (
 )
 
 const (
-	defaultRuntimeHostcallTimeout = 30 * time.Second
-	maxRuntimeHostcallTimeout     = 30 * time.Second
+	defaultRuntimeHostcallTimeout       = 30 * time.Second
+	maxRuntimeHostcallTimeout           = 30 * time.Second
+	defaultRuntimeHeartbeatInterval     = 2 * time.Second
+	defaultRuntimeHeartbeatMaxStaleness = 5 * time.Second
 )
 
 type ipcFrame struct {
@@ -594,6 +716,18 @@ type helloAckPayload struct {
 	RustIPCVersion string `json:"rust_ipc_version"`
 	WASMABIVersion string `json:"wasm_abi_version"`
 	ChannelNonce   string `json:"channel_nonce"`
+}
+
+type heartbeatRequestPayload struct {
+	SentUnixNano       int64 `json:"sent_unix_nano"`
+	MaxStalenessMillis int64 `json:"max_staleness_ms"`
+}
+
+type heartbeatResultPayload struct {
+	RuntimeGenerationID  string `json:"runtime_generation_id"`
+	RuntimeUnixNano      *int64 `json:"runtime_unix_nano"`
+	MaxStalenessMillis   *int64 `json:"max_staleness_ms"`
+	HostSentUnixNanoEcho *int64 `json:"host_sent_unix_nano"`
 }
 
 type invokeWorkerRequestPayload struct {
