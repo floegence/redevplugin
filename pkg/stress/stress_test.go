@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -237,15 +238,84 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	if minted.Load() == 0 || denied.Load() == 0 || blocked.Load() != 128 {
 		t.Fatalf("unexpected grant/classifier counters: minted=%d denied=%d blocked=%d", minted.Load(), denied.Load(), blocked.Load())
 	}
+	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
 	logStressSummary(t, stressSummary{
 		Category: "connectivity_classifier",
 		Counters: map[string]int{
-			"minted_grants":          int(minted.Load()),
-			"stale_grant_denials":    int(denied.Load()),
-			"blocked_resolved_ips":   int(blocked.Load()),
-			"connector_policy_count": len(policy.Connectors),
+			"minted_grants":               int(minted.Load()),
+			"stale_grant_denials":         int(denied.Load()),
+			"blocked_resolved_ips":        int(blocked.Load()),
+			"connector_policy_count":      len(policy.Connectors),
+			"udp_round_trips":             udpCounters.roundTrips,
+			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
 		},
 	})
+}
+
+type udpSourcePinCounters struct {
+	roundTrips            int
+	sourceMismatchDropped int
+}
+
+func stressUDPSourcePinCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) udpSourcePinCounters {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(buf[:n]) != "hello" {
+			done <- fmt.Errorf("udp source-pin request payload = %q", buf[:n])
+			return
+		}
+		attacker, err := net.Dial("udp", addr.String())
+		if err != nil {
+			done <- err
+			return
+		}
+		if _, err := attacker.Write([]byte("udp:spoofed")); err != nil {
+			_ = attacker.Close()
+			done <- err
+			return
+		}
+		_ = attacker.Close()
+		time.Sleep(20 * time.Millisecond)
+		if _, err := conn.WriteTo([]byte("udp:pinned"), addr); err != nil {
+			done <- err
+			return
+		}
+		done <- nil
+	}()
+	grant, err := broker.MintConnectionGrant(ctx, grantRequest("metrics", connectivity.TransportUDP, "metrics.example.com:8125"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(conn.LocalAddr().String()),
+	}).UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
+		Grant:        grant,
+		Payload:      []byte("hello"),
+		MaxReadBytes: 32,
+		Timeout:      time.Second,
+	})
+	if err != nil {
+		t.Fatalf("UDPRoundTrip(source-pin) error = %v", err)
+	}
+	if string(response.Payload) != "udp:pinned" {
+		t.Fatalf("UDPRoundTrip(source-pin) payload = %q, want pinned source response", response.Payload)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	return udpSourcePinCounters{roundTrips: 1, sourceMismatchDropped: 1}
 }
 
 func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
@@ -692,6 +762,13 @@ func grantRequest(connectorID string, transport connectivity.Transport, destinat
 		Destination:         destination,
 		RuntimeGenerationID: "runtime_gen_stress",
 		TTL:                 30 * time.Second,
+	}
+}
+
+func stressMappedDialer(target string) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{}
+	return func(ctx context.Context, network string, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, target)
 	}
 }
 

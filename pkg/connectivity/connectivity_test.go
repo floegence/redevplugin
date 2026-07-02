@@ -448,6 +448,60 @@ func TestExecutorUDPRoundTripUsesConnectedDestination(t *testing.T) {
 	<-done
 }
 
+func TestExecutorUDPRoundTripIgnoresMismatchedSource(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(buf[:n]) != "hello" {
+			done <- fmt.Errorf("request payload = %q", buf[:n])
+			return
+		}
+		attacker, err := net.Dial("udp", addr.String())
+		if err != nil {
+			done <- err
+			return
+		}
+		if _, err := attacker.Write([]byte("udp:spoofed")); err != nil {
+			_ = attacker.Close()
+			done <- err
+			return
+		}
+		_ = attacker.Close()
+		time.Sleep(20 * time.Millisecond)
+		if _, err := conn.WriteTo([]byte("udp:pinned"), addr); err != nil {
+			done <- err
+			return
+		}
+		done <- nil
+	}()
+	grant := testGrant(t, TransportUDP, "udp://metrics.example.com:8125", time.Minute)
+	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(conn.LocalAddr().String())}).UDPRoundTrip(context.Background(), UDPRoundTripRequest{
+		Grant:        grant,
+		Payload:      []byte("hello"),
+		MaxReadBytes: 32,
+		Timeout:      time.Second,
+	})
+	if err != nil {
+		t.Fatalf("UDPRoundTrip() error = %v", err)
+	}
+	if string(response.Payload) != "udp:pinned" {
+		t.Fatalf("UDP payload = %q, want pinned source response", response.Payload)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExecutorRejectsExpiredAndMismatchedGrants(t *testing.T) {
 	grant := testGrant(t, TransportTCP, "127.0.0.1:443", -time.Second)
 	if _, err := NewExecutor(ExecutorOptions{}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: grant}); !errors.Is(err, ErrGrantExpired) {
