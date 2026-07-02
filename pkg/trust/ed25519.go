@@ -165,7 +165,7 @@ func SignatureForPackage(pkg pluginpkg.Package, keyID string, publisherID string
 		pluginID = pkg.Manifest.PluginID()
 	}
 	sig := pluginpkg.PackageSignature{
-		SchemaVersion: "redevplugin.package_signature.v1",
+		SchemaVersion: pluginpkg.PackageSignatureSchemaVersion,
 		Algorithm:     AlgorithmEd25519,
 		KeyID:         keyID,
 		PublisherID:   publisherID,

@@ -82,6 +82,10 @@ capabilities.
   interface for package signatures. Hosts still decide which keys, publishers,
   registries, or enterprise policies are trusted, but they can reuse the common
   canonical signature payload and verification checks.
+- Package-signature schema tests keep `package-signature-v1.schema.json`
+  aligned with the Go `pluginpkg.PackageSignature` envelope, Ed25519 algorithm
+  constant, required hash fields, signature fields, and optional publisher,
+  plugin, and signed-at metadata.
 - The CLI can generate local Ed25519 signing keys and produce signed package
   artifacts without placing private keys in shell arguments. Start with
   `redevplugin scaffold <plugin-id> <display-name> <out-dir>`, package the

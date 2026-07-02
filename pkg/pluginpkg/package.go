@@ -58,6 +58,7 @@ type ReadOptions struct {
 }
 
 const PackageSignaturePath = "signatures/package.sig"
+const PackageSignatureSchemaVersion = "redevplugin.package_signature.v1"
 const PackageSignatureAlgorithmEd25519 = "ed25519"
 const workerABIPath = "workers/abi.json"
 
@@ -1140,7 +1141,7 @@ func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest
 	if err := decoder.Decode(&sig); err != nil {
 		return nil, fmt.Errorf("%s: %w", PackageSignaturePath, err)
 	}
-	if sig.SchemaVersion != "redevplugin.package_signature.v1" {
+	if sig.SchemaVersion != PackageSignatureSchemaVersion {
 		return nil, fmt.Errorf("%s: unsupported schema_version %q", PackageSignaturePath, sig.SchemaVersion)
 	}
 	if sig.Algorithm != PackageSignatureAlgorithmEd25519 {
@@ -1172,7 +1173,7 @@ func parsePackageSignature(signatureFiles map[string][]byte, m manifest.Manifest
 
 func marshalPackageSignature(sig PackageSignature) ([]byte, error) {
 	if sig.SchemaVersion == "" {
-		sig.SchemaVersion = "redevplugin.package_signature.v1"
+		sig.SchemaVersion = PackageSignatureSchemaVersion
 	}
 	return json.Marshal(sig)
 }
