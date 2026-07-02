@@ -171,7 +171,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "token-ticket-schema",
 				Path:    "spec/plugin/token-ticket-v1.schema.json",
 				Version: TokenTicketSchemaVersion,
-				SHA256:  "84f5e20e0108193852843f5d078ddb89921986a781b8a5a67cb9dd150adc0af7",
+				SHA256:  "d83a698319262daa4d4bdaf9930b4b930717147376192f7160688910aaa9a2b0",
 			},
 			{
 				ID:      "iframe-bridge-schema",

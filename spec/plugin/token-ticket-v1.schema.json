@@ -16,7 +16,7 @@
   ],
   "properties": {
     "token_kind": { "$ref": "#/$defs/token_kind" },
-    "token_id": { "type": "string", "minLength": 1 },
+    "token_id": { "$ref": "#/$defs/token_id" },
     "token_hash": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -53,6 +53,11 @@
         "handle_grant",
         "stream_ticket"
       ]
+    },
+    "token_id": {
+      "type": "string",
+      "description": "Opaque token or ticket identifier. Prefixes are stable namespaces: at_ asset tickets, as_ asset sessions, pgt_ plugin gateway tokens, ct_ confirmation tokens, rel_ runtime execution leases, hg_ handle grants, and st_ stream tickets.",
+      "pattern": "^(at|as|pgt|ct|rel|hg|st)_[A-Za-z0-9_-]+$"
     },
     "audience": {
       "type": "object",
@@ -96,6 +101,7 @@
       "if": { "properties": { "token_kind": { "const": "asset_ticket" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^at_[A-Za-z0-9_-]+$" },
           "use": { "const": "single_use" },
           "audience": {
             "required": [
@@ -112,6 +118,7 @@
       "if": { "properties": { "token_kind": { "const": "asset_session" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^as_[A-Za-z0-9_-]+$" },
           "use": { "const": "reusable" },
           "audience": {
             "required": [
@@ -128,6 +135,7 @@
       "if": { "properties": { "token_kind": { "const": "plugin_gateway_token" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^pgt_[A-Za-z0-9_-]+$" },
           "use": { "const": "reusable" },
           "audience": {
             "required": [
@@ -145,6 +153,7 @@
       "if": { "properties": { "token_kind": { "const": "confirmation_token" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^ct_[A-Za-z0-9_-]+$" },
           "use": { "const": "single_use" },
           "audience": {
             "required": [
@@ -165,6 +174,7 @@
       "if": { "properties": { "token_kind": { "const": "runtime_execution_lease" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^rel_[A-Za-z0-9_-]+$" },
           "use": { "const": "reusable" },
           "audience": {
             "required": [
@@ -182,6 +192,7 @@
       "if": { "properties": { "token_kind": { "const": "handle_grant" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^hg_[A-Za-z0-9_-]+$" },
           "use": { "const": "reusable" },
           "audience": {
             "required": [
@@ -200,6 +211,7 @@
       "if": { "properties": { "token_kind": { "const": "stream_ticket" } }, "required": ["token_kind"] },
       "then": {
         "properties": {
+          "token_id": { "pattern": "^st_[A-Za-z0-9_-]+$" },
           "use": { "const": "single_use" },
           "audience": {
             "required": [

@@ -126,6 +126,65 @@ func TestGatewayTokenBindsSingleBridgeChannel(t *testing.T) {
 	}
 }
 
+func TestMintUsesKindSpecificTokenIDNamespaces(t *testing.T) {
+	cases := []struct {
+		kind   TokenKind
+		prefix string
+		use    TokenUse
+	}{
+		{kind: TokenKindAssetTicket, prefix: "at_", use: TokenUseSingleUse},
+		{kind: TokenKindAssetSession, prefix: "as_", use: TokenUseReusable},
+		{kind: TokenKindPluginGatewayToken, prefix: "pgt_", use: TokenUseReusable},
+		{kind: TokenKindConfirmationToken, prefix: "ct_", use: TokenUseSingleUse},
+		{kind: TokenKindRuntimeExecutionLease, prefix: "rel_", use: TokenUseReusable},
+		{kind: TokenKindHandleGrant, prefix: "hg_", use: TokenUseReusable},
+		{kind: TokenKindStreamTicket, prefix: "st_", use: TokenUseSingleUse},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			manager := NewTokenManager()
+			now := testNow()
+			minted, err := manager.Mint(MintRequest{
+				Kind:      tc.kind,
+				Audience:  testAudienceForTokenKind(tc.kind),
+				Revision:  testRevision(8),
+				ExpiresAt: now.Add(time.Minute),
+				Now:       now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(minted.TokenID, tc.prefix) {
+				t.Fatalf("TokenID = %q, want prefix %q", minted.TokenID, tc.prefix)
+			}
+			if wantPrefix := string(tc.kind) + "." + minted.TokenID + "."; !strings.HasPrefix(minted.Token, wantPrefix) {
+				t.Fatalf("Token = %q, want prefix %q", minted.Token, wantPrefix)
+			}
+			if minted.Use != tc.use {
+				t.Fatalf("Use = %q, want %q", minted.Use, tc.use)
+			}
+
+			record, err := manager.Validate(ValidateRequest{
+				Kind:     tc.kind,
+				Token:    minted.Token,
+				Audience: minted.Audience,
+				Revision: minted.Revision,
+				Now:      now.Add(time.Second),
+				Consume:  tc.use == TokenUseSingleUse,
+			})
+			if err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if record.TokenID != minted.TokenID {
+				t.Fatalf("record TokenID = %q, want %q", record.TokenID, minted.TokenID)
+			}
+			if record.Use != tc.use {
+				t.Fatalf("record Use = %q, want %q", record.Use, tc.use)
+			}
+		})
+	}
+}
+
 func TestAudienceAndRevisionMismatchFailClosed(t *testing.T) {
 	manager := NewTokenManager()
 	now := testNow()
@@ -255,6 +314,34 @@ func testAudience() Audience {
 		OwnerUserHash:        "user_hash",
 		SessionChannelIDHash: "channel_hash",
 	}
+}
+
+func testAudienceForTokenKind(kind TokenKind) Audience {
+	audience := testAudience()
+	switch kind {
+	case TokenKindPluginGatewayToken:
+		audience.BridgeChannelID = "bridge_test"
+	case TokenKindConfirmationToken:
+		audience.BridgeChannelID = "bridge_test"
+		audience.ConfirmationID = "confirm_test"
+		audience.Method = "plugin.confirm"
+		audience.RequestHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	case TokenKindRuntimeExecutionLease:
+		audience.SurfaceInstanceID = ""
+		audience.RuntimeGenerationID = "generation_test"
+		audience.Method = "runtime.execute"
+	case TokenKindHandleGrant:
+		audience.SurfaceInstanceID = ""
+		audience.RuntimeGenerationID = "generation_test"
+		audience.HandleID = "handle_test"
+		audience.Method = "handle.read"
+	case TokenKindStreamTicket:
+		audience.BridgeChannelID = "bridge_test"
+		audience.StreamID = "stream_test"
+		audience.StreamDirection = "duplex"
+		audience.Method = "stream.open"
+	}
+	return audience
 }
 
 func testRevision(revokeEpoch uint64) RevisionBinding {
