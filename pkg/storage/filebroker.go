@@ -79,12 +79,12 @@ func (b *FileBroker) EnsureNamespace(ctx context.Context, ns Namespace) error {
 	if err := os.MkdirAll(dataPath, 0o700); err != nil {
 		return err
 	}
-	usage, err := directoryUsage(dataPath)
+	stats, err := directoryUsageStats(dataPath)
 	if err != nil {
 		return err
 	}
-	if usage > normalized.QuotaBytes {
-		return fmt.Errorf("%w: current usage %d exceeds quota %d", ErrQuotaExceeded, usage, normalized.QuotaBytes)
+	if err := enforceNamespaceQuota(normalized, stats, "current"); err != nil {
+		return err
 	}
 
 	now := b.now()
@@ -97,7 +97,8 @@ func (b *FileBroker) EnsureNamespace(ctx context.Context, ns Namespace) error {
 	}
 	record.Namespace = normalized
 	record.State = NamespaceActive
-	record.UsageBytes = usage
+	record.UsageBytes = stats.Bytes
+	record.UsageFiles = stats.Files
 	record.UpdatedAt = now
 	record.RetainedAt = nil
 	return b.writeNamespaceRecordLocked(record)
@@ -268,11 +269,12 @@ func (b *FileBroker) ExportData(ctx context.Context, req ExportRequest) (string,
 	exported := make([]NamespaceRecord, 0, len(namespaces))
 	for _, record := range namespaces {
 		dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
-		usage, err := directoryUsage(dataPath)
+		stats, err := directoryUsageStats(dataPath)
 		if err != nil {
 			return "", err
 		}
-		record.UsageBytes = usage
+		record.UsageBytes = stats.Bytes
+		record.UsageFiles = stats.Files
 		record.UpdatedAt = now
 		exported = append(exported, record)
 
@@ -329,12 +331,12 @@ func (b *FileBroker) bindRetainedPlansLocked(sourcePluginInstanceID string, targ
 			return nil, fmt.Errorf("%w: retained store %q schema_version %d does not match target schema_version %d", ErrInvalidNamespace, record.StoreID, record.SchemaVersion, target.SchemaVersion)
 		}
 		dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
-		usage, err := directoryUsage(dataPath)
+		stats, err := directoryUsageStats(dataPath)
 		if err != nil {
 			return nil, err
 		}
-		if usage > target.QuotaBytes {
-			return nil, fmt.Errorf("%w: retained store %q usage %d exceeds target quota %d", ErrQuotaExceeded, record.StoreID, usage, target.QuotaBytes)
+		if err := enforceNamespaceQuota(target, stats, fmt.Sprintf("retained store %q", record.StoreID)); err != nil {
+			return nil, err
 		}
 		sourceBase := b.namespaceBasePath(sourcePluginInstanceID, record.StoreID)
 		targetBase := b.namespaceBasePath(targetPluginInstanceID, record.StoreID)
@@ -353,7 +355,8 @@ func (b *FileBroker) bindRetainedPlansLocked(sourcePluginInstanceID string, targ
 		}
 		record.Namespace = target
 		record.State = NamespaceActive
-		record.UsageBytes = usage
+		record.UsageBytes = stats.Bytes
+		record.UsageFiles = stats.Files
 		record.UpdatedAt = now
 		record.RetainedAt = nil
 		plans = append(plans, fileBindRetainedPlan{
@@ -405,7 +408,7 @@ func (b *FileBroker) ImportData(ctx context.Context, req ImportRequest) error {
 	type importPlan struct {
 		record NamespaceRecord
 		src    string
-		usage  int64
+		stats  storageUsageStats
 	}
 	plans := make([]importPlan, 0, len(archive.Namespaces))
 	now := b.now()
@@ -426,15 +429,16 @@ func (b *FileBroker) ImportData(ctx context.Context, req ImportRequest) error {
 		record.RetainedAt = nil
 
 		src := filepath.Join(archivePath, fileBrokerNamespacesDir, pathSegment(archived.StoreID), fileBrokerDataDir)
-		usage, err := directoryUsage(src)
+		stats, err := directoryUsageStats(src)
 		if err != nil {
 			return err
 		}
-		if usage > record.QuotaBytes {
-			return fmt.Errorf("%w: archive store %q usage %d exceeds target quota %d", ErrQuotaExceeded, archived.StoreID, usage, record.QuotaBytes)
+		if err := enforceNamespaceQuota(record.Namespace, stats, fmt.Sprintf("archive store %q", archived.StoreID)); err != nil {
+			return err
 		}
-		record.UsageBytes = usage
-		plans = append(plans, importPlan{record: record, src: src, usage: usage})
+		record.UsageBytes = stats.Bytes
+		record.UsageFiles = stats.Files
+		plans = append(plans, importPlan{record: record, src: src, stats: stats})
 	}
 
 	if req.DeleteExisting {
@@ -451,7 +455,8 @@ func (b *FileBroker) ImportData(ctx context.Context, req ImportRequest) error {
 		if err := copyDir(plan.src, dataPath); err != nil {
 			return err
 		}
-		plan.record.UsageBytes = plan.usage
+		plan.record.UsageBytes = plan.stats.Bytes
+		plan.record.UsageFiles = plan.stats.Files
 		if err := b.writeNamespaceRecordLocked(plan.record); err != nil {
 			return err
 		}
@@ -488,14 +493,15 @@ func (b *FileBroker) Usage(ctx context.Context, pluginInstanceID string, storeID
 	if err != nil {
 		return Usage{}, err
 	}
-	usage, err := directoryUsage(b.namespaceDataPath(record.PluginInstanceID, record.StoreID))
+	stats, err := directoryUsageStats(b.namespaceDataPath(record.PluginInstanceID, record.StoreID))
 	if err != nil {
 		return Usage{}, err
 	}
-	if usage > record.QuotaBytes {
-		return Usage{}, fmt.Errorf("%w: current usage %d exceeds quota %d", ErrQuotaExceeded, usage, record.QuotaBytes)
+	if err := enforceNamespaceQuota(record.Namespace, stats, "current"); err != nil {
+		return Usage{}, err
 	}
-	record.UsageBytes = usage
+	record.UsageBytes = stats.Bytes
+	record.UsageFiles = stats.Files
 	record.UpdatedAt = b.now()
 	if err := b.writeNamespaceRecordLocked(record); err != nil {
 		return Usage{}, err
@@ -503,8 +509,10 @@ func (b *FileBroker) Usage(ctx context.Context, pluginInstanceID string, storeID
 	return Usage{
 		PluginInstanceID: record.PluginInstanceID,
 		StoreID:          record.StoreID,
-		UsageBytes:       usage,
+		UsageBytes:       stats.Bytes,
 		QuotaBytes:       record.QuotaBytes,
+		UsageFiles:       stats.Files,
+		QuotaFiles:       record.QuotaFiles,
 	}, nil
 }
 
@@ -613,17 +621,29 @@ func (b *FileBroker) WriteFile(ctx context.Context, req FileWriteRequest) (FileW
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return FileWriteResult{}, err
 	}
-	usageBefore, err := directoryUsage(dataPath)
+	statsBefore, err := directoryUsageStats(dataPath)
 	if err != nil {
 		return FileWriteResult{}, err
 	}
 	oldSize := int64(0)
+	targetExists := false
 	if info, err := os.Lstat(target); err == nil && info.Mode().IsRegular() {
 		oldSize = info.Size()
+		targetExists = true
 	}
-	projected := usageBefore - oldSize + int64(len(req.Data))
-	if projected > record.QuotaBytes {
-		return FileWriteResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
+	projected := storageUsageStats{
+		Bytes: statsBefore.Bytes - oldSize + int64(len(req.Data)),
+		Files: statsBefore.Files,
+	}
+	if !targetExists {
+		missingDirs, err := missingDirectoryEntries(dataPath, filepath.Dir(target))
+		if err != nil {
+			return FileWriteResult{}, err
+		}
+		projected.Files += missingDirs + 1
+	}
+	if err := enforceNamespaceQuota(record.Namespace, projected, "projected"); err != nil {
+		return FileWriteResult{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return FileWriteResult{}, err
@@ -851,17 +871,29 @@ func (b *FileBroker) PutKV(ctx context.Context, req KVPutRequest) (KVPutResult, 
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return KVPutResult{}, err
 	}
-	usageBefore, err := directoryUsage(dataPath)
+	statsBefore, err := directoryUsageStats(dataPath)
 	if err != nil {
 		return KVPutResult{}, err
 	}
 	oldSize := int64(0)
+	targetExists := false
 	if info, err := os.Lstat(target); err == nil && info.Mode().IsRegular() {
 		oldSize = info.Size()
+		targetExists = true
 	}
-	projected := usageBefore - oldSize + int64(len(req.Value))
-	if projected > record.QuotaBytes {
-		return KVPutResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
+	projected := storageUsageStats{
+		Bytes: statsBefore.Bytes - oldSize + int64(len(req.Value)),
+		Files: statsBefore.Files,
+	}
+	if !targetExists {
+		missingDirs, err := missingDirectoryEntries(dataPath, kvPath)
+		if err != nil {
+			return KVPutResult{}, err
+		}
+		projected.Files += missingDirs + 1
+	}
+	if err := enforceNamespaceQuota(record.Namespace, projected, "projected"); err != nil {
+		return KVPutResult{}, err
 	}
 	if err := os.MkdirAll(kvPath, 0o700); err != nil {
 		return KVPutResult{}, err
@@ -1065,11 +1097,12 @@ func (b *FileBroker) listNamespacesLocked(pluginInstanceID string) ([]NamespaceR
 			if err != nil {
 				return nil, err
 			}
-			usage, err := directoryUsage(filepath.Join(root, entry.Name(), fileBrokerDataDir))
+			stats, err := directoryUsageStats(filepath.Join(root, entry.Name(), fileBrokerDataDir))
 			if err != nil {
 				return nil, err
 			}
-			record.UsageBytes = usage
+			record.UsageBytes = stats.Bytes
+			record.UsageFiles = stats.Files
 			records = append(records, record)
 		}
 	}
@@ -1145,7 +1178,7 @@ func (b *FileBroker) activeKVNamespaceLocked(pluginInstanceID string, storeID st
 		return NamespaceRecord{}, "", fmt.Errorf("%w: store %q is %s, not kv", ErrInvalidNamespace, record.StoreID, record.Kind)
 	}
 	dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
-	if err := os.MkdirAll(filepath.Join(dataPath, fileBrokerKVDir), 0o700); err != nil {
+	if err := os.MkdirAll(dataPath, 0o700); err != nil {
 		return NamespaceRecord{}, "", err
 	}
 	return record, dataPath, nil
@@ -1153,14 +1186,15 @@ func (b *FileBroker) activeKVNamespaceLocked(pluginInstanceID string, storeID st
 
 func (b *FileBroker) refreshUsageLocked(record NamespaceRecord) (Usage, error) {
 	dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
-	usageBytes, err := directoryUsage(dataPath)
+	stats, err := directoryUsageStats(dataPath)
 	if err != nil {
 		return Usage{}, err
 	}
-	if usageBytes > record.QuotaBytes {
-		return Usage{}, fmt.Errorf("%w: current usage %d exceeds quota %d", ErrQuotaExceeded, usageBytes, record.QuotaBytes)
+	if err := enforceNamespaceQuota(record.Namespace, stats, "current"); err != nil {
+		return Usage{}, err
 	}
-	record.UsageBytes = usageBytes
+	record.UsageBytes = stats.Bytes
+	record.UsageFiles = stats.Files
 	record.UpdatedAt = b.now()
 	if err := b.writeNamespaceRecordLocked(record); err != nil {
 		return Usage{}, err
@@ -1168,8 +1202,10 @@ func (b *FileBroker) refreshUsageLocked(record NamespaceRecord) (Usage, error) {
 	return Usage{
 		PluginInstanceID: record.PluginInstanceID,
 		StoreID:          record.StoreID,
-		UsageBytes:       usageBytes,
+		UsageBytes:       stats.Bytes,
 		QuotaBytes:       record.QuotaBytes,
+		UsageFiles:       stats.Files,
+		QuotaFiles:       record.QuotaFiles,
 	}, nil
 }
 
@@ -1423,8 +1459,13 @@ func writeJSONFile(path string, value any) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-func directoryUsage(root string) (int64, error) {
-	var total int64
+type storageUsageStats struct {
+	Bytes int64
+	Files int64
+}
+
+func directoryUsageStats(root string) (storageUsageStats, error) {
+	var stats storageUsageStats
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1436,15 +1477,64 @@ func directoryUsage(root string) (int64, error) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("%w: symlink is not allowed in storage namespace: %s", ErrInvalidNamespace, path)
 		}
+		if path != root {
+			stats.Files++
+		}
 		if info.Mode().IsRegular() {
-			total += info.Size()
+			stats.Bytes += info.Size()
 		}
 		return nil
 	})
 	if errors.Is(err, os.ErrNotExist) {
+		return storageUsageStats{}, nil
+	}
+	return stats, err
+}
+
+func missingDirectoryEntries(root string, dir string) (int64, error) {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return 0, err
+	}
+	if rel == "." {
 		return 0, nil
 	}
-	return total, err
+	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return 0, fmt.Errorf("%w: path escapes namespace", ErrInvalidFilePath)
+	}
+	current := root
+	var missing int64
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			missing++
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return 0, fmt.Errorf("%w: symlink ancestor is not allowed", ErrInvalidFilePath)
+		}
+		if !info.IsDir() {
+			return 0, fmt.Errorf("%w: path ancestor is not a directory", ErrInvalidFilePath)
+		}
+	}
+	return missing, nil
+}
+
+func enforceNamespaceQuota(ns Namespace, stats storageUsageStats, label string) error {
+	if stats.Bytes > ns.QuotaBytes {
+		return fmt.Errorf("%w: %s usage %d exceeds quota %d", ErrQuotaExceeded, label, stats.Bytes, ns.QuotaBytes)
+	}
+	if ns.QuotaFiles > 0 && stats.Files > ns.QuotaFiles {
+		return fmt.Errorf("%w: %s file usage %d exceeds quota %d", ErrQuotaExceeded, label, stats.Files, ns.QuotaFiles)
+	}
+	return nil
 }
 
 func copyDir(src string, dst string) error {

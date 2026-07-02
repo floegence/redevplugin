@@ -589,7 +589,9 @@
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "store_id": { "type": "string", "minLength": 1 },
         "usage_bytes": { "type": "integer", "minimum": 0 },
-        "quota_bytes": { "type": "integer", "minimum": 0 }
+        "quota_bytes": { "type": "integer", "minimum": 0 },
+        "usage_files": { "type": "integer", "minimum": 0 },
+        "quota_files": { "type": "integer", "minimum": 0 }
       }
     },
     "network_grant_request_payload": {

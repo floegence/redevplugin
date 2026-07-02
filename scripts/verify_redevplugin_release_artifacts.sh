@@ -285,6 +285,9 @@ if (imported !== storageWrites) {
   fail(`storage_quota imported ${imported} must equal writes ${storageWrites}`);
 }
 requireAtLeast(evidenceByCategory, "storage_quota", "usage_bytes", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "file_quota_denials", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "file_usage_files", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "file_quota_files", 1);
 requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_quota_denials", 2);
 requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_rollback_checks", 1);
 requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_page_count", 1);

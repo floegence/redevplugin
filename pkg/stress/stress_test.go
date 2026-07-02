@@ -619,6 +619,7 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	if len(imported.Entries) != int(writes.Load()) {
 		t.Fatalf("imported entries = %d, want %d", len(imported.Entries), writes.Load())
 	}
+	fileCounters := stressFileCountQuotaCounters(t, ctx)
 	sqliteCounters := stressSQLiteQuotaBypassCounters(t, ctx)
 	logStressSummary(t, stressSummary{
 		Category: "storage_quota",
@@ -627,6 +628,9 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 			"quota_denials":               int(quotaDenials.Load()),
 			"imported":                    len(imported.Entries),
 			"usage_bytes":                 int(usage.UsageBytes),
+			"file_quota_denials":          fileCounters.quotaDenials,
+			"file_usage_files":            fileCounters.usageFiles,
+			"file_quota_files":            fileCounters.quotaFiles,
 			"sqlite_quota_denials":        sqliteCounters.quotaDenials,
 			"sqlite_rollback_checks":      sqliteCounters.rollbackChecks,
 			"sqlite_page_count":           sqliteCounters.pageCount,
@@ -635,6 +639,62 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 			"sqlite_sparse_logical_bytes": sqliteCounters.sparseLogicalBytes,
 		},
 	})
+}
+
+type fileCountQuotaCounters struct {
+	quotaDenials int
+	usageFiles   int
+	quotaFiles   int
+}
+
+func stressFileCountQuotaCounters(t *testing.T, ctx context.Context) fileCountQuotaCounters {
+	t.Helper()
+
+	broker, err := storage.NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := storage.Namespace{
+		PluginInstanceID: "plugini_stress_files",
+		StoreID:          "workspace",
+		Kind:             storage.StoreFiles,
+		QuotaBytes:       1024,
+		QuotaFiles:       1,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "one.txt",
+		Data:             []byte("one"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	quotaDenials := 0
+	if _, err := broker.WriteFile(ctx, storage.FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "two.txt",
+		Data:             []byte("two"),
+	}); errors.Is(err, storage.ErrQuotaExceeded) {
+		quotaDenials++
+	} else {
+		t.Fatalf("WriteFile(file count quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.UsageFiles != ns.QuotaFiles {
+		t.Fatalf("file quota usage = %#v, want usage_files=%d", usage, ns.QuotaFiles)
+	}
+	return fileCountQuotaCounters{
+		quotaDenials: quotaDenials,
+		usageFiles:   int(usage.UsageFiles),
+		quotaFiles:   int(usage.QuotaFiles),
+	}
 }
 
 type sqliteQuotaBypassCounters struct {

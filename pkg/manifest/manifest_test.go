@@ -106,6 +106,34 @@ func TestValidateNetworkConnectors(t *testing.T) {
 	}
 }
 
+func TestValidateStorageQuotaFiles(t *testing.T) {
+	m := validManifest()
+	m.Storage = &StorageSpec{Stores: []StoreSpec{{
+		StoreID:       "cache",
+		Kind:          "kv",
+		Scope:         "user",
+		QuotaBytes:    1024,
+		SchemaVersion: 1,
+		Migration:     noopMigration(),
+	}}}
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() without quota_files error = %v", err)
+	}
+
+	quotaFiles := int64(1)
+	m.Storage.Stores[0].QuotaFiles = &quotaFiles
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() with quota_files error = %v", err)
+	}
+
+	for _, value := range []int64{0, -1} {
+		m.Storage.Stores[0].QuotaFiles = &value
+		if err := Validate(m); err == nil {
+			t.Fatalf("Validate() with quota_files=%d expected error", value)
+		}
+	}
+}
+
 func TestValidateWorkers(t *testing.T) {
 	m := validManifest()
 	m.Workers = []WorkerSpec{{

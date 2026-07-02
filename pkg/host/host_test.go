@@ -1833,10 +1833,10 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	if len(namespaces) != 2 {
 		t.Fatalf("namespace count = %d, want 2: %#v", len(namespaces), namespaces)
 	}
-	if namespaces[0].StoreID != "cache" || namespaces[0].Kind != storage.StoreKV || namespaces[0].Scope != "user" {
+	if namespaces[0].StoreID != "cache" || namespaces[0].Kind != storage.StoreKV || namespaces[0].Scope != "user" || namespaces[0].QuotaFiles != 16 {
 		t.Fatalf("first namespace mismatch: %#v", namespaces[0])
 	}
-	if namespaces[1].StoreID != "db" || namespaces[1].Kind != storage.StoreSQLite || namespaces[1].Scope != "environment" {
+	if namespaces[1].StoreID != "db" || namespaces[1].Kind != storage.StoreSQLite || namespaces[1].Scope != "environment" || namespaces[1].QuotaFiles != 32 {
 		t.Fatalf("second namespace mismatch: %#v", namespaces[1])
 	}
 
@@ -4477,6 +4477,7 @@ func storageFixtureManifestJSON() string {
 					"kind": "kv",
 					"scope": "user",
 					"quota_bytes": 4096,
+					"quota_files": 16,
 					"schema_version": 1,
 					"migration": {
 						"from_version": 1,
@@ -4494,6 +4495,7 @@ func storageFixtureManifestJSON() string {
 					"kind": "sqlite",
 					"scope": "environment",
 					"quota_bytes": 8192,
+					"quota_files": 32,
 					"schema_version": 2,
 					"migration": {
 						"from_version": 1,

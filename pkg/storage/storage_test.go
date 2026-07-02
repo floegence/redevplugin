@@ -40,6 +40,59 @@ func TestMemoryBrokerNamespaceLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryBrokerKVStoreEnforcesFileQuota(t *testing.T) {
+	broker := NewMemoryBroker()
+	ctx := context.Background()
+	ns := Namespace{
+		PluginInstanceID: "plugini_memory_files",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       1024,
+		QuotaFiles:       1,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatalf("EnsureNamespace() error = %v", err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "theme",
+		Value:            []byte("dark"),
+	}); err != nil {
+		t.Fatalf("PutKV(first) error = %v", err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "layout",
+		Value:            []byte("dense"),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("PutKV(second) error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "theme",
+		Value:            []byte("light"),
+	}); err != nil {
+		t.Fatalf("PutKV(overwrite) error = %v", err)
+	}
+	if err := broker.DeleteKV(ctx, KVDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "theme",
+	}); err != nil {
+		t.Fatalf("DeleteKV() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if usage.UsageFiles != 0 || usage.QuotaFiles != 1 {
+		t.Fatalf("usage file quota mismatch after delete: %#v", usage)
+	}
+}
+
 func TestMemoryBrokerRetainsAndDeletesNamespaces(t *testing.T) {
 	broker := NewMemoryBroker()
 	ctx := context.Background()
@@ -593,6 +646,62 @@ func TestFileBrokerBindsRetainedNamespaceDirectory(t *testing.T) {
 	}
 }
 
+func TestFileBrokerBindRetainedNamespaceEnforcesFileQuota(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	source := Namespace{
+		PluginInstanceID: "plugini_file_source",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		QuotaBytes:       1024,
+		QuotaFiles:       2,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatalf("EnsureNamespace(source) error = %v", err)
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if _, err := broker.WriteFile(ctx, FileWriteRequest{
+			PluginInstanceID: source.PluginInstanceID,
+			StoreID:          source.StoreID,
+			Path:             name,
+			Data:             []byte(name),
+		}); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	if err := broker.DeleteNamespace(ctx, source.PluginInstanceID, false); err != nil {
+		t.Fatalf("DeleteNamespace(retain) error = %v", err)
+	}
+	target := source
+	target.PluginInstanceID = "plugini_file_target"
+	target.QuotaFiles = 1
+	if err := broker.BindRetainedNamespace(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: source.PluginInstanceID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+		TargetNamespaces:       []Namespace{target},
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("BindRetainedNamespace(file quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	target.QuotaFiles = 2
+	if err := broker.BindRetainedNamespace(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: source.PluginInstanceID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+		TargetNamespaces:       []Namespace{target},
+	}); err != nil {
+		t.Fatalf("BindRetainedNamespace() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, target.PluginInstanceID, target.StoreID)
+	if err != nil {
+		t.Fatalf("Usage(bound target) error = %v", err)
+	}
+	if usage.UsageFiles != 2 || usage.QuotaFiles != 2 {
+		t.Fatalf("bound target usage files mismatch: %#v", usage)
+	}
+}
+
 func TestFileBrokerExportImportCopiesData(t *testing.T) {
 	ctx := context.Background()
 	broker, err := NewFileBroker(t.TempDir())
@@ -652,6 +761,68 @@ func TestFileBrokerExportImportCopiesData(t *testing.T) {
 	}
 	if usage.UsageBytes != int64(len("sqlite bytes")) {
 		t.Fatalf("imported usage = %d", usage.UsageBytes)
+	}
+}
+
+func TestFileBrokerImportDataEnforcesFileQuota(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	source := Namespace{
+		PluginInstanceID: "plugini_import_source",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		QuotaBytes:       1024,
+		QuotaFiles:       2,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatalf("EnsureNamespace(source) error = %v", err)
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if _, err := broker.WriteFile(ctx, FileWriteRequest{
+			PluginInstanceID: source.PluginInstanceID,
+			StoreID:          source.StoreID,
+			Path:             name,
+			Data:             []byte(name),
+		}); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	archiveRef, err := broker.ExportData(ctx, ExportRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("ExportData() error = %v", err)
+	}
+	target := Namespace{
+		StoreID:    source.StoreID,
+		Kind:       source.Kind,
+		QuotaBytes: 1024,
+		QuotaFiles: 1,
+	}
+	if err := broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_import_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		TargetNamespaces: []Namespace{target},
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("ImportData(file quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	target.QuotaFiles = 2
+	if err := broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_import_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		TargetNamespaces: []Namespace{target},
+	}); err != nil {
+		t.Fatalf("ImportData() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, "plugini_import_target", source.StoreID)
+	if err != nil {
+		t.Fatalf("Usage(import target) error = %v", err)
+	}
+	if usage.UsageFiles != 2 || usage.QuotaFiles != 2 {
+		t.Fatalf("imported usage files mismatch: %#v", usage)
 	}
 }
 
@@ -717,6 +888,66 @@ func TestFileBrokerFilesStoreReadWriteListDelete(t *testing.T) {
 	}
 	if usage.UsageBytes != 0 {
 		t.Fatalf("usage after delete = %d, want 0", usage.UsageBytes)
+	}
+}
+
+func TestFileBrokerFilesStoreEnforcesFileQuota(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_files_quota",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		QuotaBytes:       1024,
+		QuotaFiles:       1,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatalf("EnsureNamespace() error = %v", err)
+	}
+	written, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "one.txt",
+		Data:             []byte("one"),
+	})
+	if err != nil {
+		t.Fatalf("WriteFile(first) error = %v", err)
+	}
+	if written.Usage.UsageFiles != 1 || written.Usage.QuotaFiles != 1 {
+		t.Fatalf("write usage file quota mismatch: %#v", written.Usage)
+	}
+	if _, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "two.txt",
+		Data:             []byte("two"),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("WriteFile(second) error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := broker.WriteFile(ctx, FileWriteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "one.txt",
+		Data:             []byte("updated"),
+	}); err != nil {
+		t.Fatalf("WriteFile(overwrite) error = %v", err)
+	}
+	if err := broker.DeleteFile(ctx, FileDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Path:             "one.txt",
+	}); err != nil {
+		t.Fatalf("DeleteFile() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if usage.UsageFiles != 0 {
+		t.Fatalf("usage files after delete = %d, want 0", usage.UsageFiles)
 	}
 }
 
@@ -790,6 +1021,106 @@ func TestFileBrokerKVStoreReadWriteListDelete(t *testing.T) {
 		Key:              "weather.location",
 	}); !errors.Is(err, ErrKVKeyNotFound) {
 		t.Fatalf("GetKV(deleted) error = %v, want ErrKVKeyNotFound", err)
+	}
+}
+
+func TestFileBrokerKVStoreEnforcesFileQuota(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_kv_file_quota",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       1024,
+		QuotaFiles:       2,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatalf("EnsureNamespace() error = %v", err)
+	}
+	written, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+		Value:            []byte("London"),
+	})
+	if err != nil {
+		t.Fatalf("PutKV(first) error = %v", err)
+	}
+	if written.Usage.UsageFiles != 2 || written.Usage.QuotaFiles != 2 {
+		t.Fatalf("PutKV usage file quota mismatch: %#v", written.Usage)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.units",
+		Value:            []byte("metric"),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("PutKV(second) error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+		Value:            []byte("Paris"),
+	}); err != nil {
+		t.Fatalf("PutKV(overwrite) error = %v", err)
+	}
+	if err := broker.DeleteKV(ctx, KVDeleteRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+	}); err != nil {
+		t.Fatalf("DeleteKV() error = %v", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if usage.UsageFiles != 1 {
+		t.Fatalf("usage files after DeleteKV = %d, want 1 for kv directory", usage.UsageFiles)
+	}
+}
+
+func TestFileBrokerKVStoreCountsDirectoryInFileQuotaPreflight(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_kv_dir_quota",
+		StoreID:          "prefs",
+		Kind:             StoreKV,
+		QuotaBytes:       1024,
+		QuotaFiles:       1,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatalf("EnsureNamespace() error = %v", err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "weather.location",
+		Value:            []byte("London"),
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("PutKV(first) error = %v, want ErrQuotaExceeded", err)
+	}
+	usage, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("Usage() error = %v", err)
+	}
+	if usage.UsageFiles != 0 {
+		t.Fatalf("usage files after rejected PutKV = %d, want 0", usage.UsageFiles)
+	}
+	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("NamespacePath() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataPath, fileBrokerKVDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("kv dir stat error = %v, want not exist", err)
 	}
 }
 
@@ -1165,6 +1496,60 @@ func TestFileBrokerSQLiteQuotaRollback(t *testing.T) {
 	}
 	if query.Rows[0][0].Int == nil || *query.Rows[0][0].Int != 0 {
 		t.Fatalf("row count after rollback mismatch: %#v", query.Rows)
+	}
+}
+
+func TestFileBrokerSQLiteFileQuotaRollback(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_sqlite_file_quota",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       1024 * 1024,
+		QuotaFiles:       1,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatalf("EnsureNamespace() error = %v", err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE items (body TEXT)",
+	}); err != nil {
+		t.Fatalf("ExecSQLite(create primary) error = %v", err)
+	}
+	before, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("Usage(before) error = %v", err)
+	}
+	if before.UsageFiles != 1 || before.QuotaFiles != 1 {
+		t.Fatalf("before usage files mismatch: %#v", before)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Database:         "other.sqlite",
+		SQL:              "CREATE TABLE other_items (body TEXT)",
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("ExecSQLite(file quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	after, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("Usage(after) error = %v", err)
+	}
+	if after.UsageFiles != before.UsageFiles || after.UsageBytes != before.UsageBytes {
+		t.Fatalf("usage after failed sqlite file quota = %#v, want %#v", after, before)
+	}
+	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatalf("NamespacePath() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataPath, "other.sqlite")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("other sqlite stat error = %v, want not exist", err)
 	}
 }
 

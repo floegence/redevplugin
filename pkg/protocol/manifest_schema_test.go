@@ -89,6 +89,9 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	storageProps := requireNestedObject(t, props, "storage", "properties", "stores", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, storageProps, "kind")["enum"], "storage kind", []string{"kv", "files", "sqlite"})
 	assertStringEnum(t, requireNestedObject(t, storageProps, "scope")["enum"], "storage scope", []string{"user", "environment"})
+	if _, ok := storageProps["quota_files"].(map[string]any); !ok {
+		t.Fatal("storage store schema missing quota_files")
+	}
 	migration := requireNestedObject(t, schema, "$defs", "migration")
 	if migration["additionalProperties"] != false {
 		t.Fatalf("migration additionalProperties = %#v, want false", migration["additionalProperties"])

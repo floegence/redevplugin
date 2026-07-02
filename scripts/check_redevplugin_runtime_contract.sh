@@ -105,7 +105,7 @@ export GOWORK=off
     {"category":"stream_backpressure","counters":{"workers":1,"backpressure_denials":1,"core_operation_checks":1}},
     {"category":"connectivity_classifier","counters":{"minted_grants":1,"stale_grant_denials":1,"blocked_resolved_ips":1,"connector_policy_count":1,"http_redirects_not_followed":1,"dns_rebinding_denials":1,"http_proxy_env_ignored":1,"http_connect_denials":1,"alt_svc_headers_dropped":1,"proxy_auth_headers_dropped":1,"udp_round_trips":1,"udp_source_mismatch_dropped":1}},
     {"category":"runtime_revoke_ack","counters":{"attempts":1,"p95_ms":1,"max_ms":1,"threshold_ms":500,"hard_timeout_ms":2000,"closed_actor":1,"closed_socket":1,"closed_stream":1,"closed_storage":1}},
-    {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}},
+    {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"file_quota_denials":1,"file_usage_files":1,"file_quota_files":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}},
     {"category":"csp_report_flood","counters":{"attempts":2,"accepted_reports":1,"rate_limited_reports":1,"diagnostic_events":1,"audit_events":0,"unique_sandbox_origins":1,"unique_active_fingerprints":1}}
   ],
   "steps": [{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1}]
@@ -168,6 +168,8 @@ JSON
   grep -q '"validate_handle_grant_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"storage_file_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"storage_file_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"usage_files": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v1.schema.json
+  grep -q '"quota_files": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v1.schema.json
   grep -q '"method": { "const": "storage.files" }' spec/plugin/ipc-v1.schema.json
   grep -q '"storage_kv_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"storage_kv_response_payload"' spec/plugin/ipc-v1.schema.json

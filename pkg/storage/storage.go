@@ -48,6 +48,7 @@ type Namespace struct {
 	Kind             StoreKind `json:"kind"`
 	Scope            string    `json:"scope,omitempty"`
 	QuotaBytes       int64     `json:"quota_bytes"`
+	QuotaFiles       int64     `json:"quota_files,omitempty"`
 	SchemaVersion    int       `json:"schema_version,omitempty"`
 }
 
@@ -55,6 +56,7 @@ type NamespaceRecord struct {
 	Namespace
 	State      NamespaceState `json:"state"`
 	UsageBytes int64          `json:"usage_bytes"`
+	UsageFiles int64          `json:"usage_files,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
 	RetainedAt *time.Time     `json:"retained_at,omitempty"`
@@ -65,6 +67,8 @@ type Usage struct {
 	StoreID          string `json:"store_id"`
 	UsageBytes       int64  `json:"usage_bytes"`
 	QuotaBytes       int64  `json:"quota_bytes"`
+	UsageFiles       int64  `json:"usage_files"`
+	QuotaFiles       int64  `json:"quota_files"`
 }
 
 type ExportRequest struct {
@@ -327,6 +331,9 @@ func (b *MemoryBroker) EnsureNamespace(_ context.Context, ns Namespace) error {
 		if existing.UsageBytes > normalized.QuotaBytes {
 			return fmt.Errorf("%w: current usage %d exceeds quota %d", ErrQuotaExceeded, existing.UsageBytes, normalized.QuotaBytes)
 		}
+		if normalized.QuotaFiles > 0 && existing.UsageFiles > normalized.QuotaFiles {
+			return fmt.Errorf("%w: current file usage %d exceeds quota %d", ErrQuotaExceeded, existing.UsageFiles, normalized.QuotaFiles)
+		}
 		existing.Namespace = normalized
 		existing.State = NamespaceActive
 		existing.UpdatedAt = now
@@ -512,6 +519,9 @@ func (b *MemoryBroker) bindRetainedPlansLocked(sourcePluginInstanceID string, ta
 		if record.UsageBytes > target.QuotaBytes {
 			return nil, fmt.Errorf("%w: retained store %q usage %d exceeds target quota %d", ErrQuotaExceeded, record.StoreID, record.UsageBytes, target.QuotaBytes)
 		}
+		if target.QuotaFiles > 0 && record.UsageFiles > target.QuotaFiles {
+			return nil, fmt.Errorf("%w: retained store %q file usage %d exceeds target quota %d", ErrQuotaExceeded, record.StoreID, record.UsageFiles, target.QuotaFiles)
+		}
 		targetKey := makeKey(targetPluginInstanceID, record.StoreID)
 		if existing, exists := b.namespaces[targetKey]; exists && targetKey != key {
 			return nil, fmt.Errorf("%w: %s/%s is %s", ErrNamespaceAlreadyExists, existing.PluginInstanceID, existing.StoreID, existing.State)
@@ -574,6 +584,9 @@ func (b *MemoryBroker) ImportData(_ context.Context, req ImportRequest) error {
 			if record.UsageBytes > target.QuotaBytes {
 				return fmt.Errorf("%w: archive store %q usage %d exceeds target quota %d", ErrQuotaExceeded, archived.StoreID, record.UsageBytes, target.QuotaBytes)
 			}
+			if target.QuotaFiles > 0 && record.UsageFiles > target.QuotaFiles {
+				return fmt.Errorf("%w: archive store %q file usage %d exceeds target quota %d", ErrQuotaExceeded, archived.StoreID, record.UsageFiles, target.QuotaFiles)
+			}
 		} else {
 			record.PluginInstanceID = pluginInstanceID
 		}
@@ -615,6 +628,8 @@ func (b *MemoryBroker) Usage(_ context.Context, pluginInstanceID string, storeID
 		StoreID:          record.StoreID,
 		UsageBytes:       record.UsageBytes,
 		QuotaBytes:       record.QuotaBytes,
+		UsageFiles:       record.UsageFiles,
+		QuotaFiles:       record.QuotaFiles,
 	}, nil
 }
 
@@ -685,18 +700,28 @@ func (b *MemoryBroker) PutKV(_ context.Context, req KVPutRequest) (KVPutResult, 
 		return KVPutResult{}, err
 	}
 	oldSize := int64(0)
+	oldExists := false
 	if old, ok := b.kv[nsKey][key]; ok {
 		oldSize = int64(len(old))
+		oldExists = true
 	}
 	projected := record.UsageBytes - oldSize + int64(len(req.Value))
 	if projected > record.QuotaBytes {
 		return KVPutResult{}, fmt.Errorf("%w: projected usage %d exceeds quota %d", ErrQuotaExceeded, projected, record.QuotaBytes)
+	}
+	projectedFiles := record.UsageFiles
+	if !oldExists {
+		projectedFiles++
+	}
+	if record.QuotaFiles > 0 && projectedFiles > record.QuotaFiles {
+		return KVPutResult{}, fmt.Errorf("%w: projected file usage %d exceeds quota %d", ErrQuotaExceeded, projectedFiles, record.QuotaFiles)
 	}
 	if b.kv[nsKey] == nil {
 		b.kv[nsKey] = map[string][]byte{}
 	}
 	b.kv[nsKey][key] = append([]byte(nil), req.Value...)
 	record.UsageBytes = projected
+	record.UsageFiles = projectedFiles
 	record.UpdatedAt = b.now()
 	b.namespaces[nsKey] = record
 	return KVPutResult{
@@ -725,6 +750,10 @@ func (b *MemoryBroker) DeleteKV(_ context.Context, req KVDeleteRequest) error {
 		record.UsageBytes -= int64(len(old))
 		if record.UsageBytes < 0 {
 			record.UsageBytes = 0
+		}
+		record.UsageFiles--
+		if record.UsageFiles < 0 {
+			record.UsageFiles = 0
 		}
 		record.UpdatedAt = b.now()
 		b.namespaces[nsKey] = record
@@ -824,6 +853,9 @@ func normalizeNamespace(ns Namespace) (Namespace, error) {
 	if ns.QuotaBytes <= 0 {
 		return Namespace{}, fmt.Errorf("%w: quota_bytes must be positive", ErrInvalidNamespace)
 	}
+	if ns.QuotaFiles < 0 {
+		return Namespace{}, fmt.Errorf("%w: quota_files must be non-negative", ErrInvalidNamespace)
+	}
 	if ns.SchemaVersion <= 0 {
 		ns.SchemaVersion = 1
 	}
@@ -887,5 +919,7 @@ func usageFromRecord(record NamespaceRecord) Usage {
 		StoreID:          record.StoreID,
 		UsageBytes:       record.UsageBytes,
 		QuotaBytes:       record.QuotaBytes,
+		UsageFiles:       record.UsageFiles,
+		QuotaFiles:       record.QuotaFiles,
 	}
 }

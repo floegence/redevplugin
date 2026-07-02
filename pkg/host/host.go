@@ -4011,10 +4011,18 @@ func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Name
 			Kind:             storage.StoreKind(store.Kind),
 			Scope:            store.Scope,
 			QuotaBytes:       store.QuotaBytes,
+			QuotaFiles:       storageQuotaFilesFromManifest(store.QuotaFiles),
 			SchemaVersion:    store.SchemaVersion,
 		})
 	}
 	return namespaces, nil
+}
+
+func storageQuotaFilesFromManifest(quotaFiles *int64) int64 {
+	if quotaFiles == nil {
+		return 0
+	}
+	return *quotaFiles
 }
 
 func storageNamespaceByStoreID(record registry.PluginRecord, storeID string) (storage.Namespace, bool, error) {

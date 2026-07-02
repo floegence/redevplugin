@@ -186,6 +186,7 @@ type StoreSpec struct {
 	Kind          string        `json:"kind"`
 	Scope         string        `json:"scope"`
 	QuotaBytes    int64         `json:"quota_bytes"`
+	QuotaFiles    *int64        `json:"quota_files,omitempty"`
 	SchemaVersion int           `json:"schema_version"`
 	Migration     MigrationSpec `json:"migration"`
 }
@@ -403,6 +404,9 @@ func Validate(m Manifest) error {
 	}
 	if m.Storage != nil {
 		for i, store := range m.Storage.Stores {
+			if store.QuotaFiles != nil && *store.QuotaFiles <= 0 {
+				return ValidationError{Field: fmt.Sprintf("storage.stores[%d].quota_files", i), Message: "must be positive"}
+			}
 			if store.SchemaVersion <= 0 {
 				return ValidationError{Field: fmt.Sprintf("storage.stores[%d].schema_version", i), Message: "must be positive"}
 			}

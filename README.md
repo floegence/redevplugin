@@ -22,9 +22,9 @@ capabilities.
   capability adapters, HTTP routes, session context, and web security.
 - Storage brokers include both an in-memory test broker and a filesystem-backed
   broker that creates per-plugin-instance namespace directories under a
-  host-selected state root, enforces quota accounting, rejects symlink escape
-  attempts, supports export/import archives, and makes uninstall data deletion
-  or retention observable on disk.
+  host-selected state root, enforces byte and file-count quota accounting,
+  rejects symlink escape attempts, supports export/import archives, and makes
+  uninstall data deletion or retention observable on disk.
 - Stream stores include both in-memory and SQLite-backed implementations. The
   SQLite store persists stream records and buffered events, enforces the same
   backpressure behavior, drains read events from the buffer, marks streams
@@ -223,9 +223,9 @@ capabilities.
   ABI, HTTP/WebSocket/TCP/UDP network memory hostcalls, and linear-memory HTTP
   executor paths.
 - `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
-  filesystem broker namespaces, quota, and usage without dumping plugin file
-  contents. Host products can wrap this for diagnostics while keeping the
-  storage root selection in their own adapter layer.
+  filesystem broker namespaces plus byte and file-count quota/usage without
+  dumping plugin file contents. Host products can wrap this for diagnostics
+  while keeping the storage root selection in their own adapter layer.
 - Host data export/import keeps storage archives and settings archives as
   separate refs. Settings imports validate non-secret fields against the target
   manifest schema and never restore secret plaintext or a bound-secret state;
@@ -383,7 +383,7 @@ Go classifier, Rust crate, and JSON contract cannot drift.
 field records structured counters from `pkg/stress`, including stream
 backpressure denials, connectivity grant/classifier denials, runtime revoke ACK
 p95 latency, redirect/DNS rebinding denials, HTTP proxy/CONNECT/header
-hardening, UDP source-pin mismatch drops, KV and SQLite storage quota pressure,
-SQLite sidecar/sparse bypass checks, and CSP report flood rate limiting. CI
-uploads that summary as release evidence for host-neutral broker/backpressure,
-runtime-control, storage, and sandbox telemetry behavior.
+hardening, UDP source-pin mismatch drops, KV byte quota pressure, file-count
+quota pressure, SQLite sidecar/sparse bypass checks, and CSP report flood rate
+limiting. CI uploads that summary as release evidence for host-neutral
+broker/backpressure, runtime-control, storage, and sandbox telemetry behavior.

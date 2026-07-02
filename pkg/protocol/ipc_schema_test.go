@@ -352,6 +352,25 @@ func TestIPCSchemaDefinesStorageSQLitePayloads(t *testing.T) {
 	}
 }
 
+func TestIPCSchemaDefinesStorageUsageFileQuotaFields(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	usage := requireNestedObject(t, requireNestedObject(t, schema, "$defs"), "storage_usage")
+	props := requireNestedObject(t, usage, "properties")
+	for _, name := range []string{"plugin_instance_id", "store_id", "usage_bytes", "quota_bytes", "usage_files", "quota_files"} {
+		if _, ok := props[name].(map[string]any); !ok {
+			t.Fatalf("storage_usage missing %s", name)
+		}
+	}
+}
+
 func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))

@@ -83,6 +83,7 @@ type storageInspectSummary struct {
 	PluginInstanceID string                    `json:"plugin_instance_id,omitempty"`
 	NamespaceCount   int                       `json:"namespace_count"`
 	TotalUsageBytes  int64                     `json:"total_usage_bytes"`
+	TotalUsageFiles  int64                     `json:"total_usage_files"`
 	Namespaces       []storage.NamespaceRecord `json:"namespaces"`
 	VersionMatrix    version.Matrix            `json:"version_matrix"`
 }
@@ -347,6 +348,7 @@ func inspectStorage(ctx context.Context, root string, pluginInstanceID string) e
 		return err
 	}
 	totalUsage := int64(0)
+	totalUsageFiles := int64(0)
 	for i := range records {
 		usage, err := broker.Usage(ctx, records[i].PluginInstanceID, records[i].StoreID)
 		if err != nil {
@@ -354,7 +356,10 @@ func inspectStorage(ctx context.Context, root string, pluginInstanceID string) e
 		}
 		records[i].UsageBytes = usage.UsageBytes
 		records[i].QuotaBytes = usage.QuotaBytes
+		records[i].UsageFiles = usage.UsageFiles
+		records[i].QuotaFiles = usage.QuotaFiles
 		totalUsage += usage.UsageBytes
+		totalUsageFiles += usage.UsageFiles
 	}
 	return writeJSON(storageInspectSummary{
 		OK:               true,
@@ -362,6 +367,7 @@ func inspectStorage(ctx context.Context, root string, pluginInstanceID string) e
 		PluginInstanceID: pluginInstanceID,
 		NamespaceCount:   len(records),
 		TotalUsageBytes:  totalUsage,
+		TotalUsageFiles:  totalUsageFiles,
 		Namespaces:       records,
 		VersionMatrix:    version.CurrentMatrix(),
 	})
