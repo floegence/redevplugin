@@ -75,6 +75,7 @@ jobs:
           bash -n scripts/check_redevplugin_platform.sh
           bash -n scripts/check_redevplugin_runtime_contract.sh
           bash -n scripts/check_redevplugin_release_audit.sh
+          bash -n scripts/verify_redevplugin_release_artifacts.sh
           bash -n scripts/check_redevplugin_stress.sh
           bash -n scripts/check_redevplugin_ui_bridge.sh
           bash -n scripts/build_redevplugin_release.sh

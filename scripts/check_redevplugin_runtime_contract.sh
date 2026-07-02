@@ -47,6 +47,8 @@ fi
   grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
   grep -q 'cosign sign-blob --yes' .github/workflows/release.yml
   grep -q 'redevplugin-release-stress.json SHA256SUMS' .github/workflows/release.yml
+  grep -q './scripts/verify_redevplugin_release_artifacts.sh dist/artifacts' .github/workflows/release.yml
+  grep -q 'bash -n scripts/verify_redevplugin_release_artifacts.sh' .github/workflows/ci.yml
   grep -Fq 'dist/artifacts/*.tar.gz.sig' .github/workflows/release.yml
   grep -Fq 'dist/artifacts/*.tar.gz.bundle' .github/workflows/release.yml
   grep -q 'dist/artifacts/redevplugin-release-stress.json' .github/workflows/release.yml

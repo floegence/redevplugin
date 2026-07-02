@@ -228,7 +228,10 @@ stress summary, and every `.tar.gz`, the stress summary, and `SHA256SUMS` are
 signed with Sigstore keyless `cosign sign-blob`. Each signed artifact is
 uploaded with a detached `.sig` file and a `.bundle` transparency-log bundle.
 Host products should verify the checksum, the stress evidence, and the cosign
-bundle before consuming a ReDevPlugin runtime artifact.
+bundle before consuming a ReDevPlugin runtime artifact. Use
+`scripts/verify_redevplugin_release_artifacts.sh <artifact-dir>` after
+downloading a release artifact set; the GitHub Release workflow runs the same
+verifier before publishing.
 
 ## Local Checks
 
