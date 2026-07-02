@@ -7,6 +7,8 @@ if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
   PATH="$HOME/.cargo/bin:$PATH"
 fi
 
+export GOWORK=off
+
 (
   cd "$ROOT_DIR"
   go test ./pkg/protocol ./pkg/httpadapter

@@ -318,7 +318,7 @@ verifier before publishing.
 ## Local Checks
 
 ```bash
-go test ./...
+GOWORK=off go test ./...
 npm install
 npm run check
 npx playwright install chromium
