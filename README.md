@@ -25,6 +25,11 @@ capabilities.
   host-selected state root, enforces quota accounting, rejects symlink escape
   attempts, supports export/import archives, and makes uninstall data deletion
   or retention observable on disk.
+- Stream stores include both in-memory and SQLite-backed implementations. The
+  SQLite store persists stream records and buffered events, enforces the same
+  backpressure behavior, drains read events from the buffer, marks streams
+  orphaned during plugin disable/uninstall transitions, and uses a package-local
+  schema migration marker with newer-schema fail-closed behavior.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
