@@ -7,10 +7,13 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"mime"
+	"net"
 	"net/http"
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -43,8 +46,31 @@ type Route struct {
 }
 
 type Handler struct {
-	Host        *host.Host
-	WebSecurity websecurity.Guard
+	Host             *host.Host
+	WebSecurity      websecurity.Guard
+	CSPReportLimiter CSPReportLimiter
+}
+
+type CSPReportRateLimitKey struct {
+	SandboxOrigin     string
+	ActiveFingerprint string
+	SourceIP          string
+}
+
+type CSPReportLimiter interface {
+	AllowCSPReport(key CSPReportRateLimitKey, now time.Time) bool
+}
+
+type MemoryCSPReportLimiter struct {
+	mu        sync.Mutex
+	maxEvents int
+	window    time.Duration
+	entries   map[CSPReportRateLimitKey]cspReportRateWindow
+}
+
+type cspReportRateWindow struct {
+	start time.Time
+	count int
 }
 
 type installRequest struct {
@@ -201,16 +227,20 @@ const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
 // the configured WebSecurity guard for CSRF validation.
 const OwnerSessionHashHeader = "X-ReDevPlugin-Owner-Session-Hash"
 
-const maxCSPReportBytes = 64 << 10
+const maxCSPReportBytes = 32 << 10
 const defaultStreamReadMaxEvents = 256
 const defaultStreamReadMaxBytes = 1 << 20
 const defaultJSONRequestMaxBytes = 1 << 20
 const defaultJSONMaxDepth = 64
 const cspReportJSONMaxDepth = 16
+const defaultCSPReportRateLimit = 20
+const defaultCSPReportRateWindow = time.Minute
+const maxCSPReportRateLimitKeys = 4096
 const maxJSONSafeInteger int64 = 1<<53 - 1
 const jsonNumberPrecisionBits uint = 256
 
 var maxJSONSafeFloat = new(big.Float).SetPrec(jsonNumberPrecisionBits).SetInt64(maxJSONSafeInteger)
+var defaultCSPReportLimiter = NewMemoryCSPReportLimiter(defaultCSPReportRateLimit, defaultCSPReportRateWindow)
 
 type jsonLimitReason string
 
@@ -245,6 +275,56 @@ func (e *jsonLimitError) status() int {
 		return http.StatusRequestEntityTooLarge
 	}
 	return http.StatusBadRequest
+}
+
+func NewMemoryCSPReportLimiter(maxEvents int, window time.Duration) *MemoryCSPReportLimiter {
+	if maxEvents <= 0 {
+		maxEvents = defaultCSPReportRateLimit
+	}
+	if window <= 0 {
+		window = defaultCSPReportRateWindow
+	}
+	return &MemoryCSPReportLimiter{
+		maxEvents: maxEvents,
+		window:    window,
+		entries:   map[CSPReportRateLimitKey]cspReportRateWindow{},
+	}
+}
+
+func (l *MemoryCSPReportLimiter) AllowCSPReport(key CSPReportRateLimitKey, now time.Time) bool {
+	if l == nil {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	window, ok := l.entries[key]
+	if !ok && len(l.entries) >= maxCSPReportRateLimitKeys {
+		l.pruneExpiredLocked(now)
+		if len(l.entries) >= maxCSPReportRateLimitKeys {
+			return false
+		}
+	}
+	if !ok || now.Sub(window.start) >= l.window || now.Before(window.start) {
+		l.entries[key] = cspReportRateWindow{start: now, count: 1}
+		return true
+	}
+	if window.count >= l.maxEvents {
+		return false
+	}
+	window.count++
+	l.entries[key] = window
+	return true
+}
+
+func (l *MemoryCSPReportLimiter) pruneExpiredLocked(now time.Time) {
+	for key, window := range l.entries {
+		if now.Sub(window.start) >= l.window || now.Before(window.start) {
+			delete(l.entries, key)
+		}
+	}
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -1381,6 +1461,10 @@ func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
 	}
+	if !isAllowedCSPReportContentType(r.Header.Get("Content-Type")) {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "content type is not supported", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
 	raw, err := readLimitedJSONBody(r, maxCSPReportBytes)
 	if err != nil {
 		writeInvalidRequestError(w, err)
@@ -1395,11 +1479,47 @@ func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
+	if !h.cspReportLimiter().AllowCSPReport(CSPReportRateLimitKey{
+		SandboxOrigin:     report.SandboxOrigin,
+		ActiveFingerprint: report.ActiveFingerprint,
+		SourceIP:          sourceIPFromRequest(r),
+	}, time.Now()) {
+		WriteJSON(w, http.StatusTooManyRequests, Envelope{OK: false, Error: "csp report rate limit exceeded", ErrorCode: string(security.ErrNetworkRateLimited)})
+		return
+	}
 	if err := h.Host.ReportCSPViolation(r.Context(), report); err != nil {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"reported": true}})
+}
+
+func (h Handler) cspReportLimiter() CSPReportLimiter {
+	if h.CSPReportLimiter != nil {
+		return h.CSPReportLimiter
+	}
+	return defaultCSPReportLimiter
+}
+
+func isAllowedCSPReportContentType(header string) bool {
+	mediaType, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(mediaType) {
+	case "application/csp-report", "application/json", "application/reports+json":
+		return true
+	default:
+		return false
+	}
+}
+
+func sourceIPFromRequest(r *http.Request) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func decodeJSON(r *http.Request, dst any) error {
@@ -1635,6 +1755,7 @@ func parseCSPReport(raw []byte) (host.CSPViolationReport, error) {
 		PluginInstanceID:   stringFromAny(envelope["plugin_instance_id"]),
 		SurfaceID:          stringFromAny(envelope["surface_id"]),
 		SurfaceInstanceID:  stringFromAny(envelope["surface_instance_id"]),
+		SandboxOrigin:      stringFromAny(envelope["sandbox_origin"]),
 		ActiveFingerprint:  stringFromAny(envelope["active_fingerprint"]),
 		BlockedURI:         stringFromAny(firstAny(body, "blocked-uri", "blockedURL", "blocked_uri")),
 		DocumentURI:        stringFromAny(firstAny(body, "document-uri", "documentURL", "document_uri")),
@@ -1659,6 +1780,9 @@ func parseCSPReport(raw []byte) (host.CSPViolationReport, error) {
 	}
 	if report.SurfaceInstanceID == "" {
 		report.SurfaceInstanceID = stringFromAny(body["surface_instance_id"])
+	}
+	if report.SandboxOrigin == "" {
+		report.SandboxOrigin = stringFromAny(body["sandbox_origin"])
 	}
 	if report.ActiveFingerprint == "" {
 		report.ActiveFingerprint = stringFromAny(body["active_fingerprint"])

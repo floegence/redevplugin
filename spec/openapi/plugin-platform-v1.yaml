@@ -600,10 +600,12 @@ components:
     CSPReportRequest:
       required: true
       content:
+        application/csp-report:
+          schema:
+            $ref: "#/components/schemas/CSPReportPayload"
         application/json:
           schema:
-            type: object
-            additionalProperties: true
+            $ref: "#/components/schemas/CSPReportPayload"
   schemas:
     Envelope:
       type: object
@@ -623,6 +625,10 @@ components:
         reason:
           type: string
           enum: [payload_bytes, json_depth, prototype_key, number_precision]
+    CSPReportPayload:
+      type: object
+      additionalProperties: true
+      description: CSP violation report payload. The host accepts at most 32 KiB, maximum JSON depth 16, and applies per sandbox_origin plus active_fingerprint plus source IP rate limiting.
     ErrorCode:
       type: string
       enum:

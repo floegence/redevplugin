@@ -82,6 +82,10 @@ capabilities.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
   host product.
+- The CSP report endpoint accepts only CSP/browser JSON content types, limits
+  report bodies to 32 KiB and JSON depth 16, and applies a host-replaceable
+  per sandbox origin, active fingerprint, and source IP rate limiter before
+  appending diagnostics.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   and TypeScript SDK route coverage aligned. Browser-owned protocol endpoints
   such as asset bootstrap, asset fetches, and CSP reports must be explicitly

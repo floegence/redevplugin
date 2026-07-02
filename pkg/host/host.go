@@ -379,6 +379,7 @@ type CSPViolationReport struct {
 	PluginInstanceID   string         `json:"plugin_instance_id,omitempty"`
 	SurfaceID          string         `json:"surface_id,omitempty"`
 	SurfaceInstanceID  string         `json:"surface_instance_id,omitempty"`
+	SandboxOrigin      string         `json:"sandbox_origin,omitempty"`
 	ActiveFingerprint  string         `json:"active_fingerprint,omitempty"`
 	BlockedURI         string         `json:"blocked_uri,omitempty"`
 	DocumentURI        string         `json:"document_uri,omitempty"`
@@ -2692,6 +2693,7 @@ func (h *Host) ReportCSPViolation(ctx context.Context, report CSPViolationReport
 	details := map[string]any{}
 	addStringDetail(details, "blocked_uri", report.BlockedURI)
 	addStringDetail(details, "document_uri", report.DocumentURI)
+	addStringDetail(details, "sandbox_origin", report.SandboxOrigin)
 	addStringDetail(details, "effective_directive", report.EffectiveDirective)
 	addStringDetail(details, "violated_directive", report.ViolatedDirective)
 	addStringDetail(details, "original_policy", report.OriginalPolicy)

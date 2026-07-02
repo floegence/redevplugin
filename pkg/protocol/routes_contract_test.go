@@ -163,6 +163,8 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"PLUGIN_RETAINED_DATA_BIND_FAILED",
 		"error_details:",
 		"enum: [payload_bytes, json_depth, prototype_key, number_precision]",
+		"application/csp-report:",
+		"per sandbox_origin plus active_fingerprint plus source IP rate limiting",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)

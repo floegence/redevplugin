@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/browsersite"
@@ -1668,6 +1669,7 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 		"plugin_instance_id":  "plugin_http",
 		"surface_id":          "http.activity",
 		"surface_instance_id": "surface_http",
+		"sandbox_origin":      "https://plg-http.sandbox.redevplugin.local",
 		"active_fingerprint":  "sha256:fingerprint",
 		"csp-report": map[string]any{
 			"document-uri":        "https://plugin.example/ui/index.html",
@@ -1684,8 +1686,92 @@ func TestHandlerCSPReportFlow(t *testing.T) {
 		t.Fatalf("diagnostic events = %#v", listed.DiagnosticEvents)
 	}
 	event := listed.DiagnosticEvents[0]
-	if event.Type != "plugin.csp.violation" || event.PluginID != "com.example.http" || event.SurfaceInstanceID != "surface_http" || event.Details["effective_directive"] != "script-src" {
+	if event.Type != "plugin.csp.violation" ||
+		event.PluginID != "com.example.http" ||
+		event.SurfaceInstanceID != "surface_http" ||
+		event.Details["effective_directive"] != "script-src" ||
+		event.Details["sandbox_origin"] != "https://plg-http.sandbox.redevplugin.local" {
 		t.Fatalf("diagnostic event mismatch: %#v", event)
+	}
+}
+
+func TestHandlerCSPReportRejectsUnsupportedContentType(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/csp-report", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing content-type status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) {
+		t.Fatalf("missing content-type envelope mismatch: %#v", envelope)
+	}
+}
+
+func TestHandlerCSPReportAppliesJSONLimitDetails(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/csp-report", strings.NewReader(strings.Repeat(" ", maxCSPReportBytes+1)))
+	req.Header.Set("Content-Type", "application/csp-report")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized report status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrJSONLimitExceeded) || envelope.ErrorDetails["reason"] != string(jsonLimitReasonPayloadBytes) {
+		t.Fatalf("oversized report envelope mismatch: %#v", envelope)
+	}
+}
+
+func TestHandlerCSPReportRateLimitsBySandboxFingerprintAndSourceIP(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h, CSPReportLimiter: NewMemoryCSPReportLimiter(1, time.Minute)}
+	body := []byte(`{
+		"plugin_id": "com.example.http",
+		"plugin_instance_id": "plugin_http",
+		"surface_id": "http.activity",
+		"surface_instance_id": "surface_http",
+		"sandbox_origin": "https://plg-http.sandbox.redevplugin.local",
+		"active_fingerprint": "sha256:fingerprint",
+		"csp-report": {
+			"blocked-uri": "inline",
+			"effective-directive": "script-src"
+		}
+	}`)
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/_redevplugin/csp-report", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/csp-report")
+		req.RemoteAddr = "203.0.113.7:51111"
+		rec := httptest.NewRecorder()
+
+		handler.ServeHTTP(rec, req)
+
+		if i == 0 && rec.Code != http.StatusOK {
+			t.Fatalf("first report status = %d body = %s", rec.Code, rec.Body.String())
+		}
+		if i == 1 {
+			if rec.Code != http.StatusTooManyRequests {
+				t.Fatalf("second report status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope Envelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.ErrorCode != string(security.ErrNetworkRateLimited) {
+				t.Fatalf("rate limit envelope mismatch: %#v", envelope)
+			}
+		}
 	}
 }
 
@@ -1768,6 +1854,7 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
