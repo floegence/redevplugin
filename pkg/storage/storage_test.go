@@ -1168,6 +1168,68 @@ func TestFileBrokerSQLiteQuotaRollback(t *testing.T) {
 	}
 }
 
+func TestFileBrokerSQLiteQuotaCountsSidecarTempAndSparseFiles(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	ns := Namespace{
+		PluginInstanceID: "plugini_sqlite_sidecars",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       64 * 1024,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE items (body TEXT)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecars := map[string]int64{
+		"plugin.sqlite-wal":  512,
+		"plugin.sqlite-shm":  512,
+		"plugin.sqlite-tmp":  512,
+		"plugin.sqlite-hole": ns.QuotaBytes - before.UsageBytes + 1,
+	}
+	for name, size := range sidecars {
+		path := filepath.Join(dataPath, name)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(size); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("Usage(sidecar quota) error = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := broker.ExecSQLite(ctx, SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "INSERT INTO items (body) VALUES ('after sidecar overflow')",
+	}); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("ExecSQLite(sidecar quota) error = %v, want ErrQuotaExceeded", err)
+	}
+}
+
 func TestFileBrokerFilesStoreEnforcesQuotaAndSafePaths(t *testing.T) {
 	ctx := context.Background()
 	broker, err := NewFileBroker(t.TempDir())

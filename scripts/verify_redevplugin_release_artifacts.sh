@@ -277,6 +277,12 @@ if (imported !== storageWrites) {
   fail(`storage_quota imported ${imported} must equal writes ${storageWrites}`);
 }
 requireAtLeast(evidenceByCategory, "storage_quota", "usage_bytes", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_quota_denials", 2);
+requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_rollback_checks", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_page_count", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_sidecar_files", 4);
+requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_sidecar_bytes", 1);
+requireAtLeast(evidenceByCategory, "storage_quota", "sqlite_sparse_logical_bytes", 1);
 
 const cspAttempts = requireAtLeast(evidenceByCategory, "csp_report_flood", "attempts", 1);
 const acceptedReports = requireAtLeast(evidenceByCategory, "csp_report_flood", "accepted_reports", 1);

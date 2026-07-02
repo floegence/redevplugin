@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -407,15 +408,148 @@ func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
 	if len(imported.Entries) != int(writes.Load()) {
 		t.Fatalf("imported entries = %d, want %d", len(imported.Entries), writes.Load())
 	}
+	sqliteCounters := stressSQLiteQuotaBypassCounters(t, ctx)
 	logStressSummary(t, stressSummary{
 		Category: "storage_quota",
 		Counters: map[string]int{
-			"writes":        int(writes.Load()),
-			"quota_denials": int(quotaDenials.Load()),
-			"imported":      len(imported.Entries),
-			"usage_bytes":   int(usage.UsageBytes),
+			"writes":                      int(writes.Load()),
+			"quota_denials":               int(quotaDenials.Load()),
+			"imported":                    len(imported.Entries),
+			"usage_bytes":                 int(usage.UsageBytes),
+			"sqlite_quota_denials":        sqliteCounters.quotaDenials,
+			"sqlite_rollback_checks":      sqliteCounters.rollbackChecks,
+			"sqlite_page_count":           sqliteCounters.pageCount,
+			"sqlite_sidecar_files":        sqliteCounters.sidecarFiles,
+			"sqlite_sidecar_bytes":        sqliteCounters.sidecarBytes,
+			"sqlite_sparse_logical_bytes": sqliteCounters.sparseLogicalBytes,
 		},
 	})
+}
+
+type sqliteQuotaBypassCounters struct {
+	quotaDenials       int
+	rollbackChecks     int
+	pageCount          int
+	sidecarFiles       int
+	sidecarBytes       int
+	sparseLogicalBytes int
+}
+
+func stressSQLiteQuotaBypassCounters(t *testing.T, ctx context.Context) sqliteQuotaBypassCounters {
+	t.Helper()
+
+	broker, err := storage.NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := storage.Namespace{
+		PluginInstanceID: "plugini_stress_sqlite",
+		StoreID:          "db",
+		Kind:             storage.StoreSQLite,
+		QuotaBytes:       16 * 1024,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "CREATE TABLE items (body TEXT)",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pageCount := sqliteSingleInt(t, broker, ctx, storage.SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "PRAGMA page_count",
+	})
+	before, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("x", 128*1024)
+	quotaDenials := 0
+	if _, err := broker.ExecSQLite(ctx, storage.SQLiteExecRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "INSERT INTO items (body) VALUES (?)",
+		Args:             []storage.SQLiteValue{{Text: &body}},
+	}); errors.Is(err, storage.ErrQuotaExceeded) {
+		quotaDenials++
+	} else {
+		t.Fatalf("ExecSQLite(quota body) error = %v, want ErrQuotaExceeded", err)
+	}
+	after, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackChecks := 0
+	if after.UsageBytes == before.UsageBytes && sqliteSingleInt(t, broker, ctx, storage.SQLiteQueryRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		SQL:              "SELECT COUNT(*) FROM items",
+	}) == 0 {
+		rollbackChecks = 1
+	}
+	if rollbackChecks != 1 {
+		t.Fatalf("sqlite quota rollback mismatch: before=%#v after=%#v", before, after)
+	}
+
+	dataPath, err := broker.NamespacePath(ctx, ns.PluginInstanceID, ns.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecars := map[string]int64{
+		"plugin.sqlite-wal": 512,
+		"plugin.sqlite-shm": 512,
+		"plugin.sqlite-tmp": 512,
+	}
+	sidecarBytes := int64(0)
+	for name, size := range sidecars {
+		if err := os.WriteFile(filepath.Join(dataPath, name), make([]byte, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sidecarBytes += size
+	}
+	sparseLogicalBytes := ns.QuotaBytes - before.UsageBytes + 1
+	sparseFile, err := os.OpenFile(filepath.Join(dataPath, "plugin.sqlite-hole"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sparseFile.Truncate(sparseLogicalBytes); err != nil {
+		_ = sparseFile.Close()
+		t.Fatal(err)
+	}
+	if err := sparseFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Usage(ctx, ns.PluginInstanceID, ns.StoreID); errors.Is(err, storage.ErrQuotaExceeded) {
+		quotaDenials++
+	} else {
+		t.Fatalf("Usage(sqlite sidecars) error = %v, want ErrQuotaExceeded", err)
+	}
+
+	return sqliteQuotaBypassCounters{
+		quotaDenials:       quotaDenials,
+		rollbackChecks:     rollbackChecks,
+		pageCount:          int(pageCount),
+		sidecarFiles:       len(sidecars) + 1,
+		sidecarBytes:       int(sidecarBytes + sparseLogicalBytes),
+		sparseLogicalBytes: int(sparseLogicalBytes),
+	}
+}
+
+func sqliteSingleInt(t *testing.T, broker storage.SQLiteBroker, ctx context.Context, req storage.SQLiteQueryRequest) int64 {
+	t.Helper()
+
+	result, err := broker.QuerySQLite(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 || len(result.Rows[0]) != 1 || result.Rows[0][0].Int == nil {
+		t.Fatalf("sqlite single int result mismatch: %#v", result.Rows)
+	}
+	return *result.Rows[0][0].Int
 }
 
 func TestStressGateCSPReportFloodRateLimitsWithoutManagementSideEffects(t *testing.T) {
