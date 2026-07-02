@@ -95,7 +95,49 @@
     {
       "if": { "properties": { "token_kind": { "const": "asset_ticket" } }, "required": ["token_kind"] },
       "then": {
-        "properties": { "use": { "const": "single_use" } },
+        "properties": {
+          "use": { "const": "single_use" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "surface_instance_id"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "asset_session" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "surface_instance_id"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "plugin_gateway_token" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "surface_instance_id",
+              "bridge_channel_id"
+            ]
+          }
+        },
         "required": ["token_kind", "audience", "revision", "use"]
       }
     },
