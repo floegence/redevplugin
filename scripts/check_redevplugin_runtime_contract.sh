@@ -30,6 +30,11 @@ fi
   grep -q '"schema_version": { "const": "redevplugin.compatibility.v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"bridge_schema_version": { "const": "bridge-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"compatibility_schema_version"' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"error_codes_schema_version": { "const": "error-codes-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"title": "ReDevPlugin stable error codes v1"' spec/plugin/error-codes-v1.schema.json
+  grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v1.schema.json
+  grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v1.schema.json
+  grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v1" }' spec/plugin/release-manifest-v1.schema.json
   grep -q '"runtime_target"' spec/plugin/release-manifest-v1.schema.json
   grep -q '"files"' spec/plugin/release-manifest-v1.schema.json
@@ -89,6 +94,7 @@ JSON
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'
   grep -q '"hello_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
   grep -q '"open_handle_request_payload"' spec/plugin/ipc-v1.schema.json

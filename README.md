@@ -15,8 +15,8 @@ capabilities.
 - Rust workspace: `redevplugin-runtime` and support crates
 - Contracts: OpenAPI, manifest schema, package-signature schema, token/ticket
   schema, iframe bridge schema, compatibility manifest schema, IPC schema,
-  WASM ABI schema, worker invocation payload schema, and target classifier
-  fixture
+  WASM ABI schema, worker invocation payload schema, stable error-code schema,
+  and target classifier fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
@@ -86,6 +86,12 @@ capabilities.
   and TypeScript SDK route coverage aligned. Browser-owned protocol endpoints
   such as asset bootstrap, asset fetches, and CSP reports must be explicitly
   classified when they intentionally do not expose a management SDK wrapper.
+- Stable error-code contract tests keep the Go `pkg/security` catalog, OpenAPI
+  envelope enum, iframe bridge schema, TypeScript SDK exports, and Rust IPC
+  runtime-origin error constants aligned. The catalog separates server platform
+  codes, bridge response codes, TypeScript client-only fallback codes, and Rust
+  IPC codes so product shells can branch on stable values without scraping
+  localized messages.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.
@@ -105,7 +111,7 @@ capabilities.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
-  worker invocation, target-classifier contracts.
+  worker invocation, error-code, and target-classifier contracts.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
   verify the loaded platform artifact set without shelling out to the CLI; the

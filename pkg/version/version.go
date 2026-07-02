@@ -38,6 +38,7 @@ const (
 	CompatibilityManifestVersion  = "redevplugin.compatibility.v1"
 	CompatibilitySchemaVersion    = "compatibility-manifest-v1"
 	WorkerInvocationSchemaVersion = "worker-invocation-v1"
+	ErrorCodesSchemaVersion       = "error-codes-v1"
 )
 
 type Matrix struct {
@@ -55,6 +56,7 @@ type Matrix struct {
 	PluginPlatformOpenAPIVersion  string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion    string `json:"compatibility_schema_version"`
 	WorkerInvocationSchemaVersion string `json:"worker_invocation_schema_version"`
+	ErrorCodesSchemaVersion       string `json:"error_codes_schema_version"`
 }
 
 type ContractArtifact struct {
@@ -93,6 +95,7 @@ func CurrentMatrix() Matrix {
 		PluginPlatformOpenAPIVersion:  PluginPlatformOpenAPIVersion,
 		CompatibilitySchemaVersion:    CompatibilitySchemaVersion,
 		WorkerInvocationSchemaVersion: WorkerInvocationSchemaVersion,
+		ErrorCodesSchemaVersion:       ErrorCodesSchemaVersion,
 	}
 }
 
@@ -146,7 +149,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "plugin-platform-openapi",
 				Path:    "spec/openapi/plugin-platform-v1.yaml",
 				Version: PluginPlatformOpenAPIVersion,
-				SHA256:  "0e4dcaffbb65f94ac554128fa4addc2ff1afb06f7dd7955522aa044d881ec487",
+				SHA256:  "97ea7ab4de2e8eae15146f3760da23dc90e9c44e1cb32da86a3aa900d656276f",
 			},
 			{
 				ID:      "manifest-schema",
@@ -170,19 +173,25 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "iframe-bridge-schema",
 				Path:    "spec/plugin/bridge-v1.schema.json",
 				Version: BridgeSchemaVersion,
-				SHA256:  "1cbd353248fe104f2745b8a1adb466461d1282ab43d1779186683c38fadd641a",
+				SHA256:  "b524192ce4cdcb956159d8226452bcfdb90c0ce4218328d6440dcf255ac67c0d",
 			},
 			{
 				ID:      "compatibility-manifest-schema",
 				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
 				Version: CompatibilitySchemaVersion,
-				SHA256:  "36634fffc351fdc6a4ef5d36aa23a2fabb9e8a85bf917e31d71703f9255cf1b6",
+				SHA256:  "152f152c184bbcfe7c0fd07feb49c74ad0c4d745f82b6429f4500d1886afafb6",
 			},
 			{
 				ID:      "worker-invocation-schema",
 				Path:    "spec/plugin/worker-invocation-v1.schema.json",
 				Version: WorkerInvocationSchemaVersion,
 				SHA256:  "913e7fbdc87ed59f0f1b7f9b16b87e88c9441cc1c26a5547a22d03f0f1c4fc03",
+			},
+			{
+				ID:      "error-codes-schema",
+				Path:    "spec/plugin/error-codes-v1.schema.json",
+				Version: ErrorCodesSchemaVersion,
+				SHA256:  "c32997d25f3330519665e693c3dd98e1aac01e192b55a9015e460165a086427f",
 			},
 			{
 				ID:      "rust-ipc-schema",

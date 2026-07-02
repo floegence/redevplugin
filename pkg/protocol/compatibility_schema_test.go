@@ -34,6 +34,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"bridge_schema_version":            "bridge-v1",
 		"compatibility_schema_version":     "compatibility-manifest-v1",
 		"worker_invocation_schema_version": "worker-invocation-v1",
+		"error_codes_schema_version":       "error-codes-v1",
 	} {
 		property := requireNestedObject(t, matrixProps, name)
 		if got := property["const"]; got != want {
@@ -45,7 +46,7 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	for _, item := range requireStringSlice(t, matrix["required"], "matrix required") {
 		required[item] = true
 	}
-	for _, name := range []string{"compatibility_schema_version", "worker_invocation_schema_version"} {
+	for _, name := range []string{"compatibility_schema_version", "worker_invocation_schema_version", "error_codes_schema_version"} {
 		if !required[name] {
 			t.Fatalf("matrix required fields missing %s", name)
 		}

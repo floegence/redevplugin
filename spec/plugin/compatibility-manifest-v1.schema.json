@@ -24,7 +24,8 @@
         "target_classifier_version",
         "plugin_platform_openapi_version",
         "compatibility_schema_version",
-        "worker_invocation_schema_version"
+        "worker_invocation_schema_version",
+        "error_codes_schema_version"
       ],
       "properties": {
         "redevplugin_go_version": { "type": "string", "minLength": 1 },
@@ -40,7 +41,8 @@
         "target_classifier_version": { "const": "target-classifier-v1" },
         "plugin_platform_openapi_version": { "const": "plugin-platform-v1" },
         "compatibility_schema_version": { "const": "compatibility-manifest-v1" },
-        "worker_invocation_schema_version": { "const": "worker-invocation-v1" }
+        "worker_invocation_schema_version": { "const": "worker-invocation-v1" },
+        "error_codes_schema_version": { "const": "error-codes-v1" }
       }
     },
     "contracts": {

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   decodePluginStreamText,
+  pluginBridgeErrorCodes,
+  pluginClientErrorCodes,
+  pluginPlatformErrorCodes,
   PluginBridgeClient,
   PluginBridgeError,
   PluginPlatformClient,
@@ -118,6 +121,14 @@ const handshake = {
   bridge_nonce: "nonce_1",
   ui_protocol_version: "plugin-ui-v1",
 } as const;
+
+test("stable error-code exports separate platform, bridge, and client-only codes", () => {
+  assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
+  assert.equal(pluginBridgeErrorCodes.includes("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"), true);
+  assert.equal(pluginClientErrorCodes.includes("PLUGIN_PLATFORM_REQUEST_FAILED"), true);
+  assert.equal((pluginPlatformErrorCodes as readonly string[]).includes("PLUGIN_PLATFORM_REQUEST_FAILED"), false);
+  assert.equal((pluginBridgeErrorCodes as readonly string[]).includes("PLUGIN_STREAM_FAILED"), false);
+});
 
 test("handshake posts exact-origin message", () => {
   const target = new FakeWindow();

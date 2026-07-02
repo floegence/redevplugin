@@ -67,7 +67,7 @@ fn run() -> Result<(), String> {
                 &runtime_generation_id,
                 false,
                 None,
-                Some("UNSUPPORTED_FRAME"),
+                Some(redevplugin_ipc::ERR_UNSUPPORTED_FRAME),
                 Some("runtime frame type is not supported"),
             ),
         };

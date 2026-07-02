@@ -82,6 +82,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/openapi/plugin-platform-v1.yaml",
     "contracts/spec/plugin/bridge-v1.schema.json",
     "contracts/spec/plugin/compatibility-manifest-v1.schema.json",
+    "contracts/spec/plugin/error-codes-v1.schema.json",
     "contracts/spec/plugin/ipc-v1.schema.json",
     "contracts/spec/plugin/manifest-v1.schema.json",
     "contracts/spec/plugin/release-manifest-v1.schema.json",
