@@ -170,6 +170,14 @@ paths:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       responses:
         "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/runtime/refresh-enabled:
+    post:
+      operationId: refreshEnabledPluginRuntimeState
+      description: Replays runtime-derived state for enabled plugins after the embedding host process restarts or reattaches adapters. The response data is `{ "refreshed_plugins": [...] }`.
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
   /_redevplugin/api/plugins/runtime/health:
     get:
       operationId: getPluginRuntimeHealth

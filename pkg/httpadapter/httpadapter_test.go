@@ -52,6 +52,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"GET /_redevplugin/api/plugins/audit":                                        false,
 		"GET /_redevplugin/api/plugins/diagnostics":                                  false,
 		"GET /_redevplugin/api/plugins/runtime/health":                               false,
+		"POST /_redevplugin/api/plugins/runtime/refresh-enabled":                     false,
 		"POST /_redevplugin/api/plugins/runtime/start":                               false,
 		"POST /_redevplugin/api/plugins/runtime/stop":                                false,
 		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":                false,
@@ -1654,6 +1655,32 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
 	if supervisor.stopCalls != 1 {
 		t.Fatalf("Stop calls = %d, want 1", supervisor.stopCalls)
+	}
+}
+
+func TestHandlerRefreshEnabledRuntimeState(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
+		"trust_state":    registry.TrustVerified,
+	})
+	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+
+	refreshed := postJSON[struct {
+		RefreshedPlugins []registry.PluginRecord `json:"refreshed_plugins"`
+	}](t, handler, "/_redevplugin/api/plugins/runtime/refresh-enabled", map[string]any{})
+	if len(refreshed.RefreshedPlugins) != 1 || refreshed.RefreshedPlugins[0].PluginInstanceID != enabled.PluginInstanceID {
+		t.Fatalf("refreshed plugins mismatch: %#v", refreshed.RefreshedPlugins)
+	}
+
+	audit := getJSON[struct {
+		AuditEvents []host.AuditEvent `json:"audit_events"`
+	}](t, handler, "/_redevplugin/api/plugins/audit?plugin_instance_id="+enabled.PluginInstanceID+"&type=plugin.runtime_state.refreshed&limit=5")
+	if len(audit.AuditEvents) != 1 {
+		t.Fatalf("runtime refresh audit events = %#v", audit.AuditEvents)
 	}
 }
 

@@ -468,6 +468,10 @@ export type PluginRuntimeStopResult = {
   stopped: boolean;
 };
 
+export type PluginRuntimeRefreshResult = {
+  refreshed_plugins: PluginRecord[];
+};
+
 export type PluginSettingsField = {
   key: string;
   type: string;
@@ -759,6 +763,10 @@ export class PluginPlatformClient {
 
   stopRuntime(): Promise<PluginRuntimeStopResult> {
     return this.#postJSON("/_redevplugin/api/plugins/runtime/stop", {});
+  }
+
+  refreshEnabledRuntimeState(): Promise<PluginRuntimeRefreshResult> {
+    return this.#postJSON("/_redevplugin/api/plugins/runtime/refresh-enabled", {});
   }
 
   runtimeHealth(): Promise<PluginRuntimeHealth> {

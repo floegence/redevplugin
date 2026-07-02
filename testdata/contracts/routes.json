@@ -18,6 +18,7 @@
   {"method": "GET", "path": "/_redevplugin/api/plugins/operations/{operation_id}"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/operations/{operation_id}/cancel"},
   {"method": "GET", "path": "/_redevplugin/api/plugins/runtime/health"},
+  {"method": "POST", "path": "/_redevplugin/api/plugins/runtime/refresh-enabled"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/runtime/start"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/runtime/stop"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/data/export"},

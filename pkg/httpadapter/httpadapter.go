@@ -248,6 +248,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleStartRuntime(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/stop":
 		h.handleStopRuntime(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/runtime/refresh-enabled":
+		h.handleRefreshEnabledRuntimeState(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/runtime/health":
 		h.handleRuntimeHealth(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/data/export":
@@ -351,6 +353,7 @@ func RouteSet() []Route {
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/operations/{operation_id}"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/operations/{operation_id}/cancel"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/runtime/health"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/refresh-enabled"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/start"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/runtime/stop"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/export"},
@@ -835,6 +838,19 @@ func (h Handler) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: health})
+}
+
+func (h Handler) handleRefreshEnabledRuntimeState(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	records, err := h.Host.RefreshEnabledPlugins(r.Context())
+	if err != nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"refreshed_plugins": records}})
 }
 
 func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {

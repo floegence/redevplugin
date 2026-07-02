@@ -53,6 +53,9 @@ capabilities.
   product restore enabled plugin runtime state after restart by replaying
   storage/settings initialization, connectivity policy installation, and
   surface publication from the durable registry without re-enabling plugins.
+  The mountable HTTP adapter exposes the same behavior at
+  `POST /_redevplugin/api/plugins/runtime/refresh-enabled`, so hosts can keep
+  route mounting thin instead of reimplementing the refresh loop.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset

@@ -851,22 +851,27 @@ test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
   fetch.push({ ok: true, data: { runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", runtime_version: "0.0.0-dev", rust_ipc_version: "rust-ipc-v1", wasm_abi_version: "redevplugin-wasm-worker-v1", ready: true } });
   fetch.push({ ok: true, data: { runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", ready: true } });
+  fetch.push({ ok: true, data: { refreshed_plugins: [{ plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "enabled" }] } });
   fetch.push({ ok: true, data: { stopped: true } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   const started = await client.startRuntime({ target: { os: "darwin", arch: "arm64" } });
   const health = await client.runtimeHealth();
+  const refreshed = await client.refreshEnabledRuntimeState();
   const stopped = await client.stopRuntime();
 
   assert.equal(started.ready, true);
   assert.equal(health.runtime_generation_id, "gen_1");
+  assert.equal(refreshed.refreshed_plugins[0]?.plugin_instance_id, "plugin_instance_1");
   assert.equal(stopped.stopped, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/runtime/start");
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { target: { os: "darwin", arch: "arm64" } });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/runtime/health");
   assert.equal(fetch.calls[1]?.init.method, "GET");
-  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/runtime/stop");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/runtime/refresh-enabled");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {});
+  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/runtime/stop");
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {});
 });
 
 test("platform client covers operation and data lifecycle routes", async () => {
