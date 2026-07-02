@@ -122,7 +122,8 @@ capabilities.
   the worker invocation schema export enum.
 - Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
   Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
-  version.
+  version, and keep worker invocation leases bound to `lease_nonce` for runtime
+  replay rejection.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.

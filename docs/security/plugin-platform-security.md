@@ -153,7 +153,10 @@ Host-issued IPC channel nonces, runtime leases, revoke epochs, and worker
 invocation payloads. The runtime must reject stale or invalid invocation context
 before opening artifacts or executing workers. Startup `hello` and `hello_ack`
 frames bind a fresh channel nonce so a stale runtime process cannot complete the
-handshake by replaying only the generation and version fields.
+handshake by replaying only the generation and version fields. Worker invocation
+frames must carry the Host-issued runtime lease nonce, and the runtime consumes
+`lease_id + lease_nonce` before opening the worker artifact. Reusing the same
+lease in a running runtime generation fails closed with `PLUGIN_LEASE_REPLAYED`.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
 compatibility manifests are versioned contracts. Drift must fail closed through

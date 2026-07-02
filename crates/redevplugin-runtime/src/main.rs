@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
 use wasmi::{AsContext, AsContextMut, Config};
 
@@ -37,6 +37,7 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("write hello ack: {err}"))?;
 
     let mut revocations = RuntimeRevocations::default();
+    let mut lease_replays = RuntimeLeaseReplayCache::default();
     loop {
         line.clear();
         let read = reader
@@ -55,6 +56,7 @@ fn run() -> Result<(), String> {
                 &mut reader,
                 &mut stdout,
                 &revocations,
+                &mut lease_replays,
                 &request_id,
                 &runtime_generation_id,
                 &line,
@@ -85,6 +87,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     reader: &mut R,
     stdout: &mut W,
     revocations: &RuntimeRevocations,
+    lease_replays: &mut RuntimeLeaseReplayCache,
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
@@ -104,6 +107,19 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         }
     };
     if let Err(err) = revocations.validate_invocation_frame(line) {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
+    if let Err(err) = lease_replays.consume_invocation_frame(line) {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -499,6 +515,59 @@ impl RuntimeRevocations {
                 })
             }
             _ => Ok(()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RuntimeLeaseReplayCache {
+    consumed_leases: HashSet<String>,
+}
+
+impl RuntimeLeaseReplayCache {
+    fn consume_invocation_frame(&mut self, frame: &str) -> Result<(), RuntimeLeaseReplayError> {
+        let key = redevplugin_ipc::parse_worker_lease_replay_key(frame)
+            .map_err(|_| RuntimeLeaseReplayError::InvalidInvocation)?;
+        let cache_key = format!("{}:{}", key.lease_id, key.lease_nonce);
+        if !self.consumed_leases.insert(cache_key) {
+            return Err(RuntimeLeaseReplayError::Replayed {
+                lease_id: key.lease_id,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RuntimeLeaseReplayError {
+    InvalidInvocation,
+    Replayed { lease_id: String },
+}
+
+impl RuntimeLeaseReplayError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidInvocation => redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+            Self::Replayed { .. } => redevplugin_ipc::ERR_LEASE_REPLAYED,
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeLeaseReplayError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInvocation => {
+                write!(
+                    formatter,
+                    "worker invocation is missing a valid lease_id or lease_nonce"
+                )
+            }
+            Self::Replayed { lease_id } => {
+                write!(
+                    formatter,
+                    "runtime execution lease {lease_id} was already consumed"
+                )
+            }
         }
     }
 }
@@ -2012,6 +2081,30 @@ mod tests {
     }
 
     #[test]
+    fn runtime_lease_replay_cache_rejects_repeated_lease() {
+        let mut cache = RuntimeLeaseReplayCache::default();
+        let frame = worker_invocation_frame("plugini_1", 1);
+        cache
+            .consume_invocation_frame(&frame)
+            .expect("first lease use should pass");
+        let err = cache
+            .consume_invocation_frame(&frame)
+            .expect_err("replayed lease should fail");
+        assert_eq!(err.code(), redevplugin_ipc::ERR_LEASE_REPLAYED);
+    }
+
+    #[test]
+    fn runtime_lease_replay_cache_requires_nonce() {
+        let mut cache = RuntimeLeaseReplayCache::default();
+        let err = cache
+            .consume_invocation_frame(
+                r#"{"payload":{"lease":{"lease_id":"lease_1","plugin_instance_id":"plugini_1","revoke_epoch":1}}}"#,
+            )
+            .expect_err("missing lease nonce should fail");
+        assert_eq!(err.code(), redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID);
+    }
+
+    #[test]
     fn handle_revoke_epoch_updates_runtime_revocation_state() {
         let mut revocations = RuntimeRevocations::default();
         let response = handle_revoke_epoch(
@@ -2049,6 +2142,7 @@ mod tests {
     fn worker_invocation_rejects_stale_epoch_before_opening_artifact() {
         let mut revocations = RuntimeRevocations::default();
         revocations.revoke_plugin("plugini_1", 5);
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
@@ -2056,6 +2150,7 @@ mod tests {
             &mut input,
             &mut output,
             &revocations,
+            &mut lease_replays,
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 4),
@@ -2075,6 +2170,7 @@ mod tests {
     fn worker_invocation_allows_current_epoch_to_open_artifact() {
         let mut revocations = RuntimeRevocations::default();
         revocations.revoke_plugin("plugini_1", 5);
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
@@ -2082,6 +2178,7 @@ mod tests {
             &mut input,
             &mut output,
             &revocations,
+            &mut lease_replays,
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 5),
@@ -2094,6 +2191,52 @@ mod tests {
             "current invocation should request the bound worker artifact: {output}"
         );
         assert!(response.contains(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED));
+    }
+
+    #[test]
+    fn worker_invocation_rejects_replayed_lease_before_opening_artifact() {
+        let revocations = RuntimeRevocations::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+        let frame = worker_invocation_frame("plugini_1", 1);
+
+        let first = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &revocations,
+            &mut lease_replays,
+            "r1",
+            "g1",
+            &frame,
+        )
+        .expect("first worker invocation response");
+        assert!(
+            !output.is_empty(),
+            "first invocation should request an artifact"
+        );
+        assert!(first.contains(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED));
+
+        let mut replay_input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut replay_output = Vec::<u8>::new();
+        let replay = handle_worker_invocation(
+            &mut replay_input,
+            &mut replay_output,
+            &revocations,
+            &mut lease_replays,
+            "r2",
+            "g1",
+            &frame,
+        )
+        .expect("replayed worker invocation response");
+
+        assert!(
+            replay_output.is_empty(),
+            "replayed invocation must not request an artifact"
+        );
+        assert!(replay.contains(r#""frame_type":"invoke_worker_result""#));
+        assert!(replay.contains(r#""ok":false"#));
+        assert!(replay.contains(redevplugin_ipc::ERR_LEASE_REPLAYED));
     }
 
     #[test]
@@ -2270,8 +2413,17 @@ mod tests {
     }
 
     fn worker_invocation_frame(plugin_instance_id: &str, revoke_epoch: u64) -> String {
+        worker_invocation_frame_with_lease(plugin_instance_id, revoke_epoch, "lease_1", "nonce_1")
+    }
+
+    fn worker_invocation_frame_with_lease(
+        plugin_instance_id: &str,
+        revoke_epoch: u64,
+        lease_id: &str,
+        lease_nonce: &str,
+    ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"lease_1","lease_token":"token_1","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
         )
     }
 

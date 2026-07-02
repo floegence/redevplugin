@@ -294,7 +294,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintRuntimeExecutionLease() error = %v", err)
 	}
-	if result.LeaseToken == "" || result.LeaseID == "" || result.RuntimeGenerationID != "runtime_gen_1" {
+	if result.LeaseToken == "" || result.LeaseID == "" || result.LeaseNonce == "" || result.RuntimeGenerationID != "runtime_gen_1" {
 		t.Fatalf("runtime lease result mismatch: %#v", result)
 	}
 
@@ -318,6 +318,9 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 	}
 	if record.Use != TokenUseReusable {
 		t.Fatalf("runtime lease use = %s, want %s", record.Use, TokenUseReusable)
+	}
+	if record.Nonce != result.LeaseNonce {
+		t.Fatalf("runtime lease nonce = %q, want minted nonce %q", result.LeaseNonce, record.Nonce)
 	}
 
 	wrongAudience := managerRecordAudience

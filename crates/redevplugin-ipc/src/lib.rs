@@ -22,6 +22,7 @@ pub const ERR_NETWORK_GRANT_FAILED: &str = "NETWORK_GRANT_FAILED";
 pub const ERR_NETWORK_EXECUTE_FAILED: &str = "NETWORK_EXECUTE_FAILED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_RUNTIME_CAPABILITY_REVOKED: &str = "RUNTIME_CAPABILITY_REVOKED";
+pub const ERR_LEASE_REPLAYED: &str = "PLUGIN_LEASE_REPLAYED";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 pub const ERR_WASM_WORKER_INVALID: &str = "WASM_WORKER_INVALID";
 pub const ERR_WASM_HOSTCALL_FAILED: &str = "WASM_HOSTCALL_FAILED";
@@ -976,6 +977,27 @@ pub struct WorkerInvocationIdentity {
     pub export: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkerLeaseReplayKey {
+    pub lease_id: String,
+    pub lease_nonce: String,
+}
+
+pub fn parse_worker_lease_replay_key(input: &str) -> Result<WorkerLeaseReplayKey, &'static str> {
+    let lease_id = extract_json_string(input, "lease_id").ok_or("missing lease_id")?;
+    if lease_id.trim().is_empty() {
+        return Err("empty lease_id");
+    }
+    let lease_nonce = extract_json_string(input, "lease_nonce").ok_or("missing lease_nonce")?;
+    if lease_nonce.trim().is_empty() {
+        return Err("empty lease_nonce");
+    }
+    Ok(WorkerLeaseReplayKey {
+        lease_id,
+        lease_nonce,
+    })
+}
+
 pub fn parse_worker_invocation_identity(
     input: &str,
 ) -> Result<WorkerInvocationIdentity, &'static str> {
@@ -1424,5 +1446,20 @@ mod tests {
         let err = parse_worker_invocation_identity(r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}"#)
             .expect_err("invalid artifact");
         assert_eq!(err, "invalid artifact");
+    }
+
+    #[test]
+    fn parses_worker_lease_replay_key() {
+        let input = r#"{"payload":{"lease":{"lease_id":"lease_1","lease_nonce":"nonce_1"}}}"#;
+        let key = parse_worker_lease_replay_key(input).expect("valid replay key");
+        assert_eq!(key.lease_id, "lease_1");
+        assert_eq!(key.lease_nonce, "nonce_1");
+    }
+
+    #[test]
+    fn rejects_worker_lease_replay_key_without_nonce() {
+        let err = parse_worker_lease_replay_key(r#"{"payload":{"lease":{"lease_id":"lease_1"}}}"#)
+            .expect_err("missing nonce should fail");
+        assert_eq!(err, "missing lease_nonce");
     }
 }

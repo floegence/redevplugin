@@ -76,10 +76,11 @@
               "lease": {
                 "type": "object",
                 "additionalProperties": true,
-                "required": ["lease_id", "lease_token", "runtime_generation_id", "plugin_instance_id"],
+                "required": ["lease_id", "lease_token", "lease_nonce", "runtime_generation_id", "plugin_instance_id"],
                 "properties": {
                   "lease_id": { "type": "string", "minLength": 1 },
                   "lease_token": { "type": "string", "minLength": 1 },
+                  "lease_nonce": { "type": "string", "minLength": 16 },
                   "runtime_generation_id": { "type": "string", "minLength": 1 },
                   "plugin_instance_id": { "type": "string", "minLength": 1 },
                   "policy_revision": { "type": "integer", "minimum": 0 },

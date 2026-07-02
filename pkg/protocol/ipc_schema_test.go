@@ -93,6 +93,50 @@ func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 	assertPayload("hello_ack")
 }
 
+func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	for _, item := range allOf {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ifBlock := requireNestedObject(t, block, "if", "properties", "frame_type")
+		if ifBlock["const"] != "invoke_worker" {
+			continue
+		}
+		lease := requireNestedObject(t, block, "then", "properties", "payload", "properties", "lease")
+		required := requireStringSlice(t, lease["required"], "invoke_worker lease required")
+		hasLeaseNonce := false
+		for _, name := range required {
+			if name == "lease_nonce" {
+				hasLeaseNonce = true
+				break
+			}
+		}
+		if !hasLeaseNonce {
+			t.Fatalf("invoke_worker lease required missing lease_nonce: %#v", required)
+		}
+		leaseNonce := requireNestedObject(t, lease, "properties", "lease_nonce")
+		if leaseNonce["type"] != "string" || leaseNonce["minLength"] != float64(16) {
+			t.Fatalf("invoke_worker lease_nonce schema = %#v", leaseNonce)
+		}
+		return
+	}
+	t.Fatal("ipc schema missing invoke_worker block")
+}
+
 func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))

@@ -84,7 +84,8 @@ The runtime contract is versioned by:
 - `plugin_host_protocol_version`;
 - `rust_ipc_version`;
 - `wasm_abi_version`;
-- `runtime_generation_id`, Host-issued IPC channel nonce, and revoke epoch state;
+- `runtime_generation_id`, Host-issued IPC channel nonce, runtime lease nonce
+  replay cache, and revoke epoch state;
 - compatibility manifest contract hashes.
 
 Any incompatible Host/runtime combination must fail closed with a diagnostic

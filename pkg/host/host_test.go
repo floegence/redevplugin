@@ -926,6 +926,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		t.Fatalf("worker result/calls mismatch: result=%#v calls=%d", result, runtime.calls)
 	}
 	if runtime.lastLease.LeaseToken == "" ||
+		runtime.lastLease.LeaseNonce == "" ||
 		runtime.lastLease.RuntimeGenerationID != "runtime_gen_1" ||
 		runtime.lastLease.PolicyRevision != installed.PolicyRevision ||
 		runtime.lastMethod != "worker.echo" {

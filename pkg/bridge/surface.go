@@ -153,6 +153,7 @@ type MintRuntimeExecutionLeaseRequest struct {
 type RuntimeExecutionLeaseResult struct {
 	LeaseToken          string    `json:"lease_token"`
 	LeaseID             string    `json:"lease_id"`
+	LeaseNonce          string    `json:"lease_nonce"`
 	RuntimeGenerationID string    `json:"runtime_generation_id"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
@@ -573,6 +574,7 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 	return RuntimeExecutionLeaseResult{
 		LeaseToken:          minted.Token,
 		LeaseID:             minted.TokenID,
+		LeaseNonce:          minted.Nonce,
 		RuntimeGenerationID: req.RuntimeGenerationID,
 		IssuedAt:            minted.IssuedAt,
 		ExpiresAt:           minted.ExpiresAt,

@@ -3012,6 +3012,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	rawResult, err := h.adapters.RuntimeSupervisor.InvokeWorker(ctx, runtimeclient.Lease{
 		LeaseID:             lease.LeaseID,
 		LeaseToken:          lease.LeaseToken,
+		LeaseNonce:          lease.LeaseNonce,
 		RuntimeGenerationID: lease.RuntimeGenerationID,
 		PluginInstanceID:    record.PluginInstanceID,
 		PolicyRevision:      record.PolicyRevision,
