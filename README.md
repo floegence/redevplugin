@@ -30,6 +30,11 @@ capabilities.
   backpressure behavior, drains read events from the buffer, marks streams
   orphaned during plugin disable/uninstall transitions, and uses a package-local
   schema migration marker with newer-schema fail-closed behavior.
+- Settings stores include both in-memory and SQLite-backed implementations. The
+  SQLite store persists setting records and export archives, reuses the shared
+  validation/default/secret-redaction lifecycle, restores settings across
+  process restarts, and keeps retained bind/import behavior durable without
+  storing secret plaintext.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset

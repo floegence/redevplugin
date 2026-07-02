@@ -2,11 +2,15 @@ package settings
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	_ "modernc.org/sqlite"
 )
 
 func TestMemoryStoreDefaultsPatchAndSecretRedaction(t *testing.T) {
@@ -332,6 +336,158 @@ func TestMemoryStoreImportRejectsInvalidArchiveSetting(t *testing.T) {
 		Spec:             &targetSpec,
 	}); !errors.Is(err, ErrInvalidSetting) {
 		t.Fatalf("Import(incompatible option) error = %v, want ErrInvalidSetting", err)
+	}
+}
+
+func TestSQLiteStorePersistsSettingsAndArchivesAcrossOpen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "settings.sqlite")
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	spec := settingsSpec()
+
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec, Now: now}); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if _, err := store.Patch(ctx, PatchRequest{
+		PluginInstanceID: "plugini_source",
+		Values:           map[string]any{"engine": "podman", "retry_count": 4},
+		Now:              now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("Patch() error = %v", err)
+	}
+	if _, err := store.MarkSecret(ctx, MarkSecretRequest{
+		PluginInstanceID: "plugini_source",
+		SecretRef:        "api_key",
+		Set:              true,
+		LastTestStatus:   "passed",
+		Now:              now.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("MarkSecret() error = %v", err)
+	}
+	archiveRef, err := store.Export(ctx, ExportRequest{
+		PluginInstanceID: "plugini_source",
+		IncludeSecrets:   true,
+		Now:              now.Add(3 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen NewSQLiteStore() error = %v", err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Fatalf("Close(reopened) error = %v", err)
+		}
+	}()
+	snapshot, err := reopened.Get(ctx, GetRequest{PluginInstanceID: "plugini_source"})
+	if err != nil {
+		t.Fatalf("Get() after reopen error = %v", err)
+	}
+	if snapshot.Values["engine"] != "podman" || snapshot.Values["retry_count"] != int64(4) {
+		t.Fatalf("reopened values mismatch: %#v", snapshot.Values)
+	}
+	secret, ok := snapshot.Values["api_key"].(SecretValue)
+	if !ok || !secret.Set || secret.LastTestStatus != "passed" || secret.UpdatedAt == nil {
+		t.Fatalf("reopened secret metadata mismatch: %#v", snapshot.Values["api_key"])
+	}
+
+	imported, err := reopened.Import(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		Spec:             &spec,
+		Now:              now.Add(4 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Import() persisted archive error = %v", err)
+	}
+	if imported.Values["engine"] != "podman" || imported.Values["retry_count"] != int64(4) {
+		t.Fatalf("imported values mismatch: %#v", imported.Values)
+	}
+	importedSecret, ok := imported.Values["api_key"].(SecretValue)
+	if !ok || importedSecret.Set || importedSecret.UpdatedAt != nil || importedSecret.LastTestStatus != "" {
+		t.Fatalf("import should not restore secret binding state: %#v", imported.Values["api_key"])
+	}
+}
+
+func TestSQLiteStoreRetainBindAndDeleteLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "settings.sqlite"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+	spec := settingsSpec()
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(ctx, PatchRequest{PluginInstanceID: "plugini_source", Values: map[string]any{"engine": "podman", "retry_count": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkSecret(ctx, MarkSecretRequest{PluginInstanceID: "plugini_source", SecretRef: "api_key", Set: true, LastTestStatus: "passed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, DeleteRequest{PluginInstanceID: "plugini_source"}); err != nil {
+		t.Fatalf("Delete(retain) error = %v", err)
+	}
+	if _, err := store.Get(ctx, GetRequest{PluginInstanceID: "plugini_source"}); !errors.Is(err, ErrNotDeclared) {
+		t.Fatalf("Get(retained) error = %v, want ErrNotDeclared", err)
+	}
+	bound, err := store.BindRetained(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: "plugini_source",
+		TargetPluginInstanceID: "plugini_target",
+		Spec:                   &spec,
+	})
+	if err != nil {
+		t.Fatalf("BindRetained() error = %v", err)
+	}
+	if bound.PluginInstanceID != "plugini_target" || bound.Values["engine"] != "podman" || bound.Values["retry_count"] != int64(3) {
+		t.Fatalf("bound settings mismatch: %#v", bound)
+	}
+	secret, ok := bound.Values["api_key"].(SecretValue)
+	if !ok || secret.Set || secret.LastTestStatus != "" || secret.UpdatedAt != nil {
+		t.Fatalf("retained bind must not restore secret state: %#v", secret)
+	}
+	if err := store.Delete(ctx, DeleteRequest{PluginInstanceID: "plugini_target", DeleteData: true}); err != nil {
+		t.Fatalf("Delete(delete data) error = %v", err)
+	}
+	if _, err := store.Get(ctx, GetRequest{PluginInstanceID: "plugini_target"}); !errors.Is(err, ErrNotDeclared) {
+		t.Fatalf("Get(deleted target) error = %v, want ErrNotDeclared", err)
+	}
+}
+
+func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE plugin_settings_schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO plugin_settings_schema_migrations(version, applied_at) VALUES(999, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewSQLiteStore(context.Background(), path)
+	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("NewSQLiteStore() error = %v, want newer schema", err)
 	}
 }
 
