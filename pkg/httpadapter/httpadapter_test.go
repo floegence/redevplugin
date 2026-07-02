@@ -1445,6 +1445,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
 		t.Fatalf("stream without ticket error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
+	assertStreamSecurityHeaders(t, rec)
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
 	rec = httptest.NewRecorder()
@@ -1455,6 +1456,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/x-ndjson" {
 		t.Fatalf("Content-Type = %q", got)
 	}
+	assertStreamSecurityHeaders(t, rec)
 	var event struct {
 		StreamID string `json:"stream_id"`
 		Sequence uint64 `json:"sequence"`
@@ -1478,6 +1480,20 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	}
 	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
 		t.Fatalf("stream replay error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	assertStreamSecurityHeaders(t, rec)
+}
+
+func assertStreamSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("stream cache-control = %q", got)
+	}
+	if got := rec.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("stream referrer-policy = %q", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("stream nosniff = %q", got)
 	}
 }
 

@@ -100,6 +100,10 @@ Sandbox bootstrap, package asset, and stream routes use token-specific stable
 error codes when their credentials fail validation: `PLUGIN_ASSET_TICKET_INVALID`,
 `PLUGIN_ASSET_SESSION_INVALID`, and `PLUGIN_STREAM_TICKET_INVALID`.
 
+Stream responses set `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer` so `stream_ticket` query credentials are not
+cached or forwarded through referrer headers.
+
 ## Permissions And Policy
 
 The Host evaluates security policy before permission grants. Policy stores can

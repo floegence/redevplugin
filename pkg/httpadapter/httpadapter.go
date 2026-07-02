@@ -1438,6 +1438,7 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
+	writePluginStreamSecurityHeaders(w)
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
@@ -1467,8 +1468,6 @@ func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/x-ndjson"
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	encoder := json.NewEncoder(w)
 	for _, event := range result.Events {
@@ -1476,6 +1475,12 @@ func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func writePluginStreamSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
