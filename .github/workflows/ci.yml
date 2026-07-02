@@ -44,6 +44,29 @@ jobs:
           cargo install cargo-deny --locked
           cargo deny check
 
+  stress-fast:
+    name: Stress Fast Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Shell syntax
+        run: |
+          bash -n scripts/check_redevplugin_platform.sh
+          bash -n scripts/check_redevplugin_runtime_contract.sh
+          bash -n scripts/check_redevplugin_stress.sh
+          bash -n scripts/check_redevplugin_ui_bridge.sh
+          bash -n scripts/build_redevplugin_release.sh
+      - run: ./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redevplugin-stress-fast
+          path: dist/redevplugin-stress-fast.json
+          if-no-files-found: ignore
+
   contracts:
     name: Platform Contracts
     runs-on: ubuntu-latest

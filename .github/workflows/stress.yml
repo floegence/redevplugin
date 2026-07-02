@@ -1,0 +1,30 @@
+name: Stress Gate
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  stress-full:
+    name: Full Stress Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: rustup show
+      - run: ./scripts/check_redevplugin_stress.sh --full --summary dist/redevplugin-stress-full.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redevplugin-stress-full
+          path: dist/redevplugin-stress-full.json
+          if-no-files-found: ignore
