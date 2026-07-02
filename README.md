@@ -221,7 +221,7 @@ provide a local sibling integration path for host products.
 ## Release Integrity
 
 Tagged GitHub releases build a platform-specific release bundle for each
-supported runtime target only after the release stress gate passes. The
+supported runtime target only after release audit and stress gates pass. The
 published evidence includes `redevplugin-release-stress.json`, `SHA256SUMS`, and
 the runtime `.tar.gz` bundles. `SHA256SUMS` covers the runtime bundles and the
 stress summary, and every `.tar.gz`, the stress summary, and `SHA256SUMS` are
@@ -242,6 +242,7 @@ npm run demo:browser:real
 npm run test:demo:browser
 ./scripts/check_redevplugin_runtime_contract.sh
 ./scripts/check_redevplugin_platform.sh
+REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
 ./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
 ```
 

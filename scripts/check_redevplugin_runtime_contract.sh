@@ -33,9 +33,15 @@ fi
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v1" }' spec/plugin/release-manifest-v1.schema.json
   grep -q '"runtime_target"' spec/plugin/release-manifest-v1.schema.json
   grep -q '"files"' spec/plugin/release-manifest-v1.schema.json
+  grep -q 'audit-release:' .github/workflows/release.yml
+  grep -q './scripts/check_redevplugin_release_audit.sh' .github/workflows/release.yml
+  grep -q 'REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"' .github/workflows/release.yml
+  grep -q 'release-audit:' .github/workflows/ci.yml
+  grep -q 'bash -n scripts/check_redevplugin_release_audit.sh' .github/workflows/ci.yml
   grep -q 'stress-release:' .github/workflows/release.yml
   grep -q './scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json' .github/workflows/release.yml
-  grep -q 'needs: stress-release' .github/workflows/release.yml
+  grep -q -- '- audit-release' .github/workflows/release.yml
+  grep -q -- '- stress-release' .github/workflows/release.yml
   grep -q 'redevplugin-release-stress.json > SHA256SUMS' .github/workflows/release.yml
   grep -q 'id-token: write' .github/workflows/release.yml
   grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
