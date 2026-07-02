@@ -645,12 +645,20 @@ fn handle_revoke_epoch(
         }
     };
     revocations.revoke_plugin(&plugin_instance_id, revoke_epoch);
+    let result_json = redevplugin_ipc::revoke_epoch_ack_result_json(
+        &plugin_instance_id,
+        revoke_epoch,
+        0,
+        0,
+        0,
+        0,
+    );
     redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
         request_id,
         runtime_generation_id,
         true,
-        None,
+        Some(&result_json),
         None,
         None,
     )
@@ -2115,6 +2123,12 @@ mod tests {
         );
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":true"#));
+        assert!(response.contains(r#""plugin_instance_id":"plugini_1""#));
+        assert!(response.contains(r#""revoke_epoch":7"#));
+        assert!(response.contains(r#""closed_actor_count":0"#));
+        assert!(response.contains(r#""closed_socket_count":0"#));
+        assert!(response.contains(r#""closed_stream_count":0"#));
+        assert!(response.contains(r#""closed_storage_handle_count":0"#));
         let err = revocations
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 6))
             .expect_err("old invocation should be revoked");

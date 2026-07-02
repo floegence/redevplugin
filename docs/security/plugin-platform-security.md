@@ -116,7 +116,9 @@ before consuming the stream ticket.
 The Host evaluates security policy before permission grants. Policy stores can
 cap allowed permission IDs and deny method execution. Policy updates bump
 revision and revoke epochs, refresh connectivity policy, and revoke runtime
-capabilities.
+capabilities. Runtime revocation ACKs are decoded as structured evidence, and
+Host audit events include the closed actor/socket/stream/storage-handle counters
+reported by the runtime.
 
 Permission grants are lifecycle-bound. Uninstall removes grants even when plugin
 data is retained, because authorization is tied to the active installed plugin
@@ -162,6 +164,9 @@ storage, or network hostcalls, the supervisor derives a bounded context before
 calling host adapters. Request-level `timeout_ms` controls storage SQLite and
 network execution within a platform cap; hostcalls without an explicit timeout
 use the default hostcall cap.
+Successful runtime revocation ACKs include structured close counters so the
+audit trail can distinguish a control-plane revoke from the runtime resources
+that were actually closed.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
 compatibility manifests are versioned contracts. Drift must fail closed through

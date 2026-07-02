@@ -84,6 +84,12 @@ entering host adapters. Storage SQLite and network execution use request
 `timeout_ms` within the platform cap; artifact reads, handle-grant validation,
 storage file/KV, and network grant minting use the default hostcall cap.
 
+Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
+payloads return a structured result containing the plugin instance, revoke
+epoch, and closed actor/socket/stream/storage-handle counters. The current Rust
+runtime reports zero for counters whose resources are still served by Host-owned
+brokers rather than Rust-owned hot-path handles.
+
 The runtime contract is versioned by:
 
 - `plugin_host_protocol_version`;

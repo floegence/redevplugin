@@ -3400,6 +3400,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	}
 	revokedConfirmations := h.deleteConfirmationIntentsForPlugin(record.PluginInstanceID)
 	runtimeRevoked := false
+	var runtimeRevokeResult runtimeclient.RevokeResult
 	if h.adapters.RuntimeSupervisor != nil {
 		revokeCtx := ctx
 		cancel := func() {}
@@ -3407,7 +3408,8 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			revokeCtx, cancel = context.WithTimeout(ctx, runtimeCapabilityRevokeTimeout)
 		}
 		defer cancel()
-		if err := h.adapters.RuntimeSupervisor.Revoke(revokeCtx, record.PluginInstanceID, record.RevokeEpoch); err != nil {
+		result, err := h.adapters.RuntimeSupervisor.Revoke(revokeCtx, record.PluginInstanceID, record.RevokeEpoch)
+		if err != nil {
 			h.diagnostic(ctx, DiagnosticEvent{
 				Type:              "plugin.runtime_capabilities.revoke_failed",
 				Severity:          "warning",
@@ -3420,20 +3422,28 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 				},
 			})
 		} else {
+			runtimeRevokeResult = result
 			runtimeRevoked = true
 		}
 	}
 	if runtimeRevoked || revokedTokens > 0 || revokedConfirmations > 0 {
+		details := map[string]any{
+			"token_count":        revokedTokens,
+			"confirmation_count": revokedConfirmations,
+			"revoke_epoch":       record.RevokeEpoch,
+			"runtime_revoked":    runtimeRevoked,
+		}
+		if runtimeRevoked {
+			details["closed_actor_count"] = runtimeRevokeResult.ClosedActorCount
+			details["closed_socket_count"] = runtimeRevokeResult.ClosedSocketCount
+			details["closed_stream_count"] = runtimeRevokeResult.ClosedStreamCount
+			details["closed_storage_handle_count"] = runtimeRevokeResult.ClosedStorageHandleCount
+		}
 		h.audit(ctx, AuditEvent{
 			Type:             "plugin.runtime_capabilities.revoked",
 			PluginID:         record.PluginID,
 			PluginInstanceID: record.PluginInstanceID,
-			Details: map[string]any{
-				"token_count":        revokedTokens,
-				"confirmation_count": revokedConfirmations,
-				"revoke_epoch":       record.RevokeEpoch,
-				"runtime_revoked":    runtimeRevoked,
-			},
+			Details:          details,
 		})
 	}
 	return nil

@@ -2,6 +2,7 @@ package runtimeclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -49,12 +50,21 @@ type Health struct {
 	Ready               bool   `json:"ready"`
 }
 
+type RevokeResult struct {
+	PluginInstanceID         string `json:"plugin_instance_id"`
+	RevokeEpoch              uint64 `json:"revoke_epoch"`
+	ClosedActorCount         int    `json:"closed_actor_count"`
+	ClosedSocketCount        int    `json:"closed_socket_count"`
+	ClosedStreamCount        int    `json:"closed_stream_count"`
+	ClosedStorageHandleCount int    `json:"closed_storage_handle_count"`
+}
+
 type Supervisor interface {
 	Start(ctx context.Context, target Target) error
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (Health, error)
 	InvokeWorker(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error)
-	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) error
+	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error)
 }
 
 type ArtifactProvider interface {
@@ -384,30 +394,88 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	return append([]byte(nil), response.Result...), nil
 }
 
-func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) error {
+func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
+	fallback := RevokeResult{
+		PluginInstanceID: pluginInstanceID,
+		RevokeEpoch:      revokeEpoch,
+	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return RevokeResult{}, err
 	}
 	if s == nil || !s.isReady() {
-		return nil
+		return fallback, nil
 	}
 	rawPayload, err := json.Marshal(revokeEpochRequestPayload{
 		PluginInstanceID: pluginInstanceID,
 		RevokeEpoch:      revokeEpoch,
 	})
 	if err != nil {
-		return err
+		return RevokeResult{}, err
 	}
 	frame, err := s.callIPC(ctx, ipcFrameTypeRevokeEpoch, ipcFrameTypeRevokeEpochAck, rawPayload, nil)
 	if err != nil {
-		return err
+		return RevokeResult{}, err
 	}
 	response, err := decodeRuntimeResponse(frame)
 	if err != nil {
-		return err
+		return RevokeResult{}, err
 	}
 	if !response.OK {
-		return response.err()
+		return RevokeResult{}, response.err()
+	}
+	if len(response.Result) == 0 {
+		return RevokeResult{}, fmt.Errorf("%w: revoke ack missing result", ErrRuntimeRequestFailed)
+	}
+	return decodeRevokeResult(response.Result, pluginInstanceID, revokeEpoch)
+}
+
+type revokeResultPayload struct {
+	PluginInstanceID         string  `json:"plugin_instance_id"`
+	RevokeEpoch              *uint64 `json:"revoke_epoch"`
+	ClosedActorCount         *int    `json:"closed_actor_count"`
+	ClosedSocketCount        *int    `json:"closed_socket_count"`
+	ClosedStreamCount        *int    `json:"closed_stream_count"`
+	ClosedStorageHandleCount *int    `json:"closed_storage_handle_count"`
+}
+
+func decodeRevokeResult(raw json.RawMessage, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
+	var payload revokeResultPayload
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return RevokeResult{}, err
+	}
+	if payload.PluginInstanceID == "" ||
+		payload.RevokeEpoch == nil ||
+		payload.ClosedActorCount == nil ||
+		payload.ClosedSocketCount == nil ||
+		payload.ClosedStreamCount == nil ||
+		payload.ClosedStorageHandleCount == nil {
+		return RevokeResult{}, fmt.Errorf("%w: revoke ack result missing required field", ErrRuntimeRequestFailed)
+	}
+	result := RevokeResult{
+		PluginInstanceID:         payload.PluginInstanceID,
+		RevokeEpoch:              *payload.RevokeEpoch,
+		ClosedActorCount:         *payload.ClosedActorCount,
+		ClosedSocketCount:        *payload.ClosedSocketCount,
+		ClosedStreamCount:        *payload.ClosedStreamCount,
+		ClosedStorageHandleCount: *payload.ClosedStorageHandleCount,
+	}
+	if err := validateRevokeResult(result, pluginInstanceID, revokeEpoch); err != nil {
+		return RevokeResult{}, err
+	}
+	return result, nil
+}
+
+func validateRevokeResult(result RevokeResult, pluginInstanceID string, revokeEpoch uint64) error {
+	if result.PluginInstanceID != pluginInstanceID {
+		return fmt.Errorf("%w: revoke ack plugin_instance_id mismatch", ErrRuntimeRequestFailed)
+	}
+	if result.RevokeEpoch != revokeEpoch {
+		return fmt.Errorf("%w: revoke ack revoke_epoch mismatch", ErrRuntimeRequestFailed)
+	}
+	if result.ClosedActorCount < 0 || result.ClosedSocketCount < 0 || result.ClosedStreamCount < 0 || result.ClosedStorageHandleCount < 0 {
+		return fmt.Errorf("%w: revoke ack close counters must be non-negative", ErrRuntimeRequestFailed)
 	}
 	return nil
 }

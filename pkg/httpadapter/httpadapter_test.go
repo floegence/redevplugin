@@ -3174,9 +3174,12 @@ func (s *httpRecordingRuntimeSupervisor) InvokeWorker(context.Context, runtimecl
 	return nil, runtimeclient.ErrRuntimeIPCUnavailable
 }
 
-func (s *httpRecordingRuntimeSupervisor) Revoke(context.Context, string, uint64) error {
+func (s *httpRecordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
 	if s.err != nil {
-		return s.err
+		return runtimeclient.RevokeResult{}, s.err
 	}
-	return runtimeclient.ErrRuntimeIPCUnavailable
+	return runtimeclient.RevokeResult{
+		PluginInstanceID: pluginInstanceID,
+		RevokeEpoch:      revokeEpoch,
+	}, runtimeclient.ErrRuntimeIPCUnavailable
 }

@@ -1029,6 +1029,11 @@ type hostRuntimeResponsePayload struct {
 	Message string          `json:"message,omitempty"`
 }
 
+type hostRuntimeRevokePayload struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	RevokeEpoch      uint64 `json:"revoke_epoch"`
+}
+
 type hostRuntimeInvokePayload struct {
 	Lease      runtimeclient.Lease     `json:"lease"`
 	Method     string                  `json:"method"`
@@ -1099,7 +1104,17 @@ func runHostRuntimeProcessHelper() {
 		case "invoke_worker":
 			hostRuntimeProcessNetworkExecute(reader, encoder, frame)
 		case "revoke_epoch":
-			raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: true})
+			var revokePayload hostRuntimeRevokePayload
+			_ = json.Unmarshal(frame.Payload, &revokePayload)
+			result, _ := json.Marshal(map[string]any{
+				"plugin_instance_id":          revokePayload.PluginInstanceID,
+				"revoke_epoch":                revokePayload.RevokeEpoch,
+				"closed_actor_count":          0,
+				"closed_socket_count":         0,
+				"closed_stream_count":         0,
+				"closed_storage_handle_count": 0,
+			})
+			raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: true, Result: result})
 			_ = encoder.Encode(hostRuntimeIPCFrame{
 				IPCVersion:          version.RustIPCVersion,
 				FrameType:           "revoke_epoch_ack",

@@ -70,8 +70,17 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if decoded["data"].(map[string]any)["from_runtime"] != true {
 		t.Fatalf("worker result mismatch: %#v", decoded)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); err != nil {
+	revokeResult, err := supervisor.Revoke(context.Background(), "plugini_1", 3)
+	if err != nil {
 		t.Fatalf("Revoke() error = %v", err)
+	}
+	if revokeResult.PluginInstanceID != "plugini_1" ||
+		revokeResult.RevokeEpoch != 3 ||
+		revokeResult.ClosedActorCount != 1 ||
+		revokeResult.ClosedSocketCount != 2 ||
+		revokeResult.ClosedStreamCount != 3 ||
+		revokeResult.ClosedStorageHandleCount != 4 {
+		t.Fatalf("Revoke() result mismatch: %#v", revokeResult)
 	}
 
 	waitForDiagnostic(t, store, "plugin.runtime.process.started")
@@ -176,7 +185,7 @@ func TestProcessSupervisorRevokeInvalidatesRuntimeWhenIPCLockIsBusy(t *testing.T
 	time.Sleep(25 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if err := supervisor.Revoke(ctx, "plugini_1", 4); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := supervisor.Revoke(ctx, "plugini_1", 4); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Revoke(busy IPC) error = %v, want %v", err, context.DeadlineExceeded)
 	}
 	select {
@@ -203,8 +212,29 @@ func TestProcessSupervisorRevokeIsNoopWhenRuntimeIsNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugini_1", 1); err != nil {
+	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 1); err != nil {
 		t.Fatalf("Revoke(not ready) error = %v", err)
+	}
+}
+
+func TestDecodeRevokeResultRequiresStructuredCounters(t *testing.T) {
+	_, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3}`), "plugini_1", 3)
+	if !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("decodeRevokeResult(missing counters) error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	_, err = decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"other","revoke_epoch":3,"closed_actor_count":0,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0}`), "plugini_1", 3)
+	if !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("decodeRevokeResult(plugin mismatch) error = %v, want ErrRuntimeRequestFailed", err)
+	}
+	if _, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_actor_count":0,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0,"extra":true}`), "plugini_1", 3); err == nil {
+		t.Fatal("decodeRevokeResult(extra field) expected fail-closed error")
+	}
+	result, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_actor_count":1,"closed_socket_count":2,"closed_stream_count":3,"closed_storage_handle_count":4}`), "plugini_1", 3)
+	if err != nil {
+		t.Fatalf("decodeRevokeResult() error = %v", err)
+	}
+	if result.ClosedActorCount != 1 || result.ClosedSocketCount != 2 || result.ClosedStreamCount != 3 || result.ClosedStorageHandleCount != 4 {
+		t.Fatalf("decodeRevokeResult() result mismatch: %#v", result)
 	}
 }
 
@@ -975,7 +1005,7 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 || files.readCalls != 0 {
@@ -1008,7 +1038,7 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 || kv.putCalls != 0 {
@@ -1031,7 +1061,7 @@ func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if broker.calls != 0 {
@@ -1053,7 +1083,7 @@ func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T)
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("Revoke() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -1339,7 +1369,16 @@ func runRuntimeClientHelper() {
 					continue
 				}
 			}
-			raw, _ := json.Marshal(runtimeResponsePayload{OK: true})
+			var revokeReq revokeEpochRequestPayload
+			_ = json.Unmarshal(request.Payload, &revokeReq)
+			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+				"plugin_instance_id":          revokeReq.PluginInstanceID,
+				"revoke_epoch":                revokeReq.RevokeEpoch,
+				"closed_actor_count":          1,
+				"closed_socket_count":         2,
+				"closed_stream_count":         3,
+				"closed_storage_handle_count": 4,
+			})})
 			_ = encoder.Encode(ipcFrame{
 				IPCVersion:          version.RustIPCVersion,
 				FrameType:           ipcFrameTypeRevokeEpochAck,

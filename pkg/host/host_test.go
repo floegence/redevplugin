@@ -706,6 +706,12 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		revokeResult: runtimeclient.RevokeResult{
+			ClosedActorCount:         2,
+			ClosedSocketCount:        3,
+			ClosedStreamCount:        4,
+			ClosedStorageHandleCount: 5,
+		},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -748,6 +754,14 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
 		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
 	}
+	event, ok := audits.lastEvent("plugin.runtime_capabilities.revoked")
+	if !ok {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
+	}
+	assertAuditDetail(t, event, "closed_actor_count", 2)
+	assertAuditDetail(t, event, "closed_socket_count", 3)
+	assertAuditDetail(t, event, "closed_stream_count", 4)
+	assertAuditDetail(t, event, "closed_storage_handle_count", 5)
 }
 
 func TestCallPluginMethodRegistersOperation(t *testing.T) {
@@ -2983,6 +2997,12 @@ func TestDeleteRetainedDataRefusesActiveStoragePayload(t *testing.T) {
 func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		revokeResult: runtimeclient.RevokeResult{
+			ClosedActorCount:         7,
+			ClosedSocketCount:        8,
+			ClosedStreamCount:        9,
+			ClosedStorageHandleCount: 10,
+		},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -3015,6 +3035,14 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
 		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
 	}
+	event, ok := audits.lastEvent("plugin.runtime_capabilities.revoked")
+	if !ok {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
+	}
+	assertAuditDetail(t, event, "closed_actor_count", 7)
+	assertAuditDetail(t, event, "closed_socket_count", 8)
+	assertAuditDetail(t, event, "closed_stream_count", 9)
+	assertAuditDetail(t, event, "closed_storage_handle_count", 10)
 }
 
 func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.T) {
@@ -5198,6 +5226,22 @@ func (s *auditSink) hasEvent(eventType string) bool {
 	return false
 }
 
+func (s *auditSink) lastEvent(eventType string) (AuditEvent, bool) {
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if s.events[i].Type == eventType {
+			return s.events[i], true
+		}
+	}
+	return AuditEvent{}, false
+}
+
+func assertAuditDetail(t *testing.T, event AuditEvent, key string, want any) {
+	t.Helper()
+	if got := event.Details[key]; got != want {
+		t.Fatalf("audit detail %s = %#v, want %#v: %#v", key, got, want, event.Details)
+	}
+}
+
 type cleanupPhaseSet map[cleanup.Phase]struct{}
 
 func cleanupPhases(records []cleanup.ExecutionRecord) cleanupPhaseSet {
@@ -5263,6 +5307,7 @@ type recordingRuntimeSupervisor struct {
 	result            capability.Result
 	err               error
 	revokeErr         error
+	revokeResult      runtimeclient.RevokeResult
 	lastLease         runtimeclient.Lease
 	lastMethod        string
 	lastPayload       []byte
@@ -5394,11 +5439,18 @@ func (r *recordingRuntimeSupervisor) InvokeWorker(_ context.Context, lease runti
 	return json.Marshal(r.result)
 }
 
-func (r *recordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) error {
+func (r *recordingRuntimeSupervisor) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
 	r.revokeCalls++
 	r.lastRevokedPlugin = pluginInstanceID
 	r.lastRevokeEpoch = revokeEpoch
-	return r.revokeErr
+	result := r.revokeResult
+	if result.PluginInstanceID == "" {
+		result.PluginInstanceID = pluginInstanceID
+	}
+	if result.RevokeEpoch == 0 {
+		result.RevokeEpoch = revokeEpoch
+	}
+	return result, r.revokeErr
 }
 
 func (r *recordingRuntimeArtifactResolver) RuntimePath(_ context.Context, target RuntimeTarget) (string, error) {

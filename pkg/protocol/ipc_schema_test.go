@@ -380,9 +380,58 @@ func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
 	}
 }
 
+func TestIPCSchemaDefinesRevokeEpochAckResult(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	payload := requireNestedObject(t, defs, "revoke_epoch_ack_response_payload")
+	payloadRequired := requireStringSlice(t, payload["required"], "revoke_epoch_ack payload required")
+	if !containsRequiredString(payloadRequired, "ok") {
+		t.Fatalf("revoke_epoch_ack payload required missing ok: %#v", payloadRequired)
+	}
+	payloadProps := requireNestedObject(t, payload, "properties")
+	if _, ok := payloadProps["result"].(map[string]any); !ok {
+		t.Fatalf("revoke_epoch_ack payload missing result: %#v", payloadProps)
+	}
+	result := requireNestedObject(t, defs, "revoke_epoch_ack_result")
+	required := requireStringSlice(t, result["required"], "revoke_epoch_ack result required")
+	for _, name := range []string{"plugin_instance_id", "revoke_epoch", "closed_actor_count", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
+		if !containsRequiredString(required, name) {
+			t.Fatalf("revoke_epoch_ack result required missing %s: %#v", name, required)
+		}
+	}
+	resultProps := requireNestedObject(t, result, "properties")
+	for _, name := range []string{"revoke_epoch", "closed_actor_count", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
+		field := requireNestedObject(t, resultProps, name)
+		if field["type"] != "integer" || field["minimum"] != float64(0) {
+			t.Fatalf("revoke_epoch_ack result %s schema = %#v", name, field)
+		}
+	}
+	pluginInstanceID := requireNestedObject(t, resultProps, "plugin_instance_id")
+	if pluginInstanceID["type"] != "string" || pluginInstanceID["minLength"] != float64(1) {
+		t.Fatalf("revoke_epoch_ack plugin_instance_id schema = %#v", pluginInstanceID)
+	}
+}
+
 func containsString(values []any, want string) bool {
 	for _, value := range values {
 		if got, ok := value.(string); ok && got == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRequiredString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

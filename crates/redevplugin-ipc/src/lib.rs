@@ -153,6 +153,25 @@ pub fn response_frame(
     )
 }
 
+pub fn revoke_epoch_ack_result_json(
+    plugin_instance_id: &str,
+    revoke_epoch: u64,
+    closed_actor_count: u64,
+    closed_socket_count: u64,
+    closed_stream_count: u64,
+    closed_storage_handle_count: u64,
+) -> String {
+    format!(
+        "{{\"plugin_instance_id\":\"{}\",\"revoke_epoch\":{},\"closed_actor_count\":{},\"closed_socket_count\":{},\"closed_stream_count\":{},\"closed_storage_handle_count\":{}}}",
+        escape_json_string(plugin_instance_id),
+        revoke_epoch,
+        closed_actor_count,
+        closed_socket_count,
+        closed_stream_count,
+        closed_storage_handle_count
+    )
+}
+
 pub fn open_handle_frame(
     request_id: &str,
     runtime_generation_id: &str,
@@ -1112,6 +1131,17 @@ mod tests {
         assert!(frame.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(frame.contains(r#""ok":false"#));
         assert!(frame.contains(r#""code":"WASM_NOT_IMPLEMENTED""#));
+    }
+
+    #[test]
+    fn renders_revoke_epoch_ack_result_json() {
+        let result = revoke_epoch_ack_result_json("plugini_1", 7, 1, 2, 3, 4);
+        assert!(result.contains(r#""plugin_instance_id":"plugini_1""#));
+        assert!(result.contains(r#""revoke_epoch":7"#));
+        assert!(result.contains(r#""closed_actor_count":1"#));
+        assert!(result.contains(r#""closed_socket_count":2"#));
+        assert!(result.contains(r#""closed_stream_count":3"#));
+        assert!(result.contains(r#""closed_storage_handle_count":4"#));
     }
 
     #[test]
