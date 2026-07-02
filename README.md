@@ -82,19 +82,22 @@ capabilities.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
   host product.
-- Contract tests that keep the Go HTTP route set, OpenAPI paths, and route
-  fixture aligned.
+- Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
+  and TypeScript SDK route coverage aligned. Browser-owned protocol endpoints
+  such as asset bootstrap, asset fetches, and CSP reports must be explicitly
+  classified when they intentionally do not expose a management SDK wrapper.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.
 - The TypeScript package includes both sandbox iframe bridge helpers and a
   host-side `PluginPlatformClient` for existing platform management routes:
   compatibility manifest read, install/update/downgrade,
-  enable/disable/uninstall, surface open, runtime start/health/stop, settings
-  schema/read/patch, operation list/get/cancel, data export/import, permission
-  grant/revoke/list, secret bind/test/delete, host-mediated intent list/invoke,
-  and audit/diagnostic event list. List helpers preserve the same data wrapper
-  fields returned by the Go HTTP adapter, such as `operations`, `permissions`,
+  enable/disable/uninstall, surface open,
+  runtime start/health/refresh-enabled/stop, settings schema/read/patch,
+  operation list/get/cancel, data export/import, permission grant/revoke/list,
+  secret bind/test/delete, host-mediated intent list/invoke, and
+  audit/diagnostic event list. List helpers preserve the same data wrapper fields
+  returned by the Go HTTP adapter, such as `operations`, `permissions`,
   `audit_events`, and `diagnostic_events`, so host products can consume the SDK
   and raw HTTP contract consistently. The browser demo uses this client from the
   host page to exercise settings management without exposing management
