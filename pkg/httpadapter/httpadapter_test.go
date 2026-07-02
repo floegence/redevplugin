@@ -134,6 +134,83 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	}
 }
 
+func TestHandlerJSONLimitErrorsExposeReason(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	deepBody := strings.Repeat("[", defaultJSONMaxDepth) + "0" + strings.Repeat("]", defaultJSONMaxDepth)
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantReason string
+	}{
+		{
+			name:       "payload bytes",
+			body:       strings.Repeat(" ", defaultJSONRequestMaxBytes+1),
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantReason: string(jsonLimitReasonPayloadBytes),
+		},
+		{
+			name:       "json depth",
+			body:       deepBody,
+			wantStatus: http.StatusBadRequest,
+			wantReason: string(jsonLimitReasonDepth),
+		},
+		{
+			name:       "prototype key",
+			body:       `{"plugin_instance_id":"plugini_test","__proto__":{}}`,
+			wantStatus: http.StatusBadRequest,
+			wantReason: string(jsonLimitReasonPrototypeKey),
+		},
+		{
+			name:       "number precision",
+			body:       `{"plugin_instance_id":9007199254740992}`,
+			wantStatus: http.StatusBadRequest,
+			wantReason: string(jsonLimitReasonNumberPrecision),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(tt.body))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+			var envelope Envelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.OK || envelope.ErrorCode != string(security.ErrJSONLimitExceeded) {
+				t.Fatalf("envelope = %#v body = %s", envelope, rec.Body.String())
+			}
+			if got := envelope.ErrorDetails["reason"]; got != tt.wantReason {
+				t.Fatalf("error_details.reason = %#v, want %q body = %s", got, tt.wantReason, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerMalformedJSONRemainsInvalidRequest(t *testing.T) {
+	handler := Handler{Host: newHTTPTestHost(t)}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewBufferString(`{"plugin_instance_id":`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) || len(envelope.ErrorDetails) != 0 {
+		t.Fatalf("envelope = %#v body = %s", envelope, rec.Body.String())
+	}
+}
+
 func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginDeny}
 	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard}

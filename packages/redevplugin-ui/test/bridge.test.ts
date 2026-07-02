@@ -676,11 +676,19 @@ test("readPluginStream maps missing ticket and endpoint errors", async () => {
   );
 
   const fetch = new FakeStreamFetch();
-  fetch.push(JSON.stringify({ ok: false, error_code: "PLUGIN_PERMISSION_DENIED", error: "stream ticket is required" }), 403);
+  fetch.push(JSON.stringify({
+    ok: false,
+    error_code: "PLUGIN_PERMISSION_DENIED",
+    error: "stream ticket is required",
+    error_details: { reason: "payload_bytes" },
+  }), 403);
 
   await assert.rejects(
     readPluginStream({ streamId: "stream_denied", streamTicket: "bad", fetch: fetch.fetch }),
-    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_PERMISSION_DENIED" && err.message === "stream ticket is required",
+    (err) => err instanceof PluginBridgeError &&
+      err.errorCode === "PLUGIN_PERMISSION_DENIED" &&
+      err.message === "stream ticket is required" &&
+      (err.details as { reason?: string }).reason === "payload_bytes",
   );
 });
 
@@ -1044,6 +1052,25 @@ test("platform client exposes retained cleanup partial result on failure", async
     (err) => err instanceof PluginBridgeError &&
       err.errorCode === "PLUGIN_RETAINED_DATA_CLEANUP_FAILED" &&
       (err.data as { failed?: Array<{ retained_id?: string }> }).failed?.[0]?.retained_id === "retained_failed",
+  );
+});
+
+test("platform client exposes host error details separately from data", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({
+    ok: false,
+    error_code: "PLUGIN_JSON_LIMIT_EXCEEDED",
+    error: "JSON payload exceeds the maximum allowed depth",
+    error_details: { reason: "json_depth" },
+  });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  await assert.rejects(
+    client.enablePlugin("plugin_instance_1"),
+    (err) => err instanceof PluginBridgeError &&
+      err.errorCode === "PLUGIN_JSON_LIMIT_EXCEEDED" &&
+      err.data === undefined &&
+      (err.details as { reason?: string }).reason === "json_depth",
   );
 });
 

@@ -127,12 +127,14 @@ export type MessageEventLike = {
 export class PluginBridgeError extends Error {
   readonly errorCode: string;
   readonly data?: unknown;
+  readonly details?: unknown;
 
-  constructor(errorCode: string, message: string, data?: unknown) {
+  constructor(errorCode: string, message: string, data?: unknown, details?: unknown) {
     super(message);
     this.name = "PluginBridgeError";
     this.errorCode = errorCode;
     this.data = data;
+    this.details = details ?? data;
   }
 }
 
@@ -990,7 +992,7 @@ export class PluginPlatformClient {
 
 type HostEnvelope<T> =
   | { ok: true; data?: T }
-  | { ok: false; data?: unknown; error?: string; error_code?: string };
+  | { ok: false; data?: unknown; error?: string; error_code?: string; error_details?: Record<string, unknown> };
 
 export class PluginSurfaceHost {
   readonly bootstrap: PluginSurfaceHostBootstrap;
@@ -1310,7 +1312,8 @@ function isHostEnvelope(value: unknown): value is HostEnvelope<unknown> {
   if (value.ok) {
     return true;
   }
-  return value.error == null || typeof value.error === "string";
+  return (value.error == null || typeof value.error === "string") &&
+    (value.error_details == null || isRecord(value.error_details));
 }
 
 async function readHostEnvelope<T>(response: FetchResponseLike, fallbackCode: string): Promise<T> {
@@ -1322,9 +1325,9 @@ async function readHostEnvelope<T>(response: FetchResponseLike, fallbackCode: st
     const errorCode = raw.error_code ?? fallbackCode;
     const message = raw.error ?? `Plugin platform endpoint failed with HTTP ${response.status}`;
     if (errorCode === "PLUGIN_CONFIRMATION_REQUIRED") {
-      throw new PluginConfirmationRequiredError(errorCode, message);
+      throw new PluginConfirmationRequiredError(errorCode, message, raw.data, raw.error_details ?? raw.data);
     }
-    throw new PluginBridgeError(errorCode, message, raw.data);
+    throw new PluginBridgeError(errorCode, message, raw.data, raw.error_details ?? raw.data);
   }
   return raw.data as T;
 }
@@ -1348,7 +1351,12 @@ function streamErrorFromBody(raw: string, status: number): PluginBridgeError {
   try {
     const body = JSON.parse(raw) as unknown;
     if (isHostEnvelope(body) && !body.ok) {
-      return new PluginBridgeError(body.error_code ?? "PLUGIN_STREAM_FAILED", body.error ?? `Plugin stream endpoint failed with HTTP ${status}`);
+      return new PluginBridgeError(
+        body.error_code ?? "PLUGIN_STREAM_FAILED",
+        body.error ?? `Plugin stream endpoint failed with HTTP ${status}`,
+        body.data,
+        body.error_details ?? body.data,
+      );
     }
   } catch {
     // Fall back to a generic error when the stream endpoint did not return JSON.

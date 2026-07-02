@@ -614,6 +614,15 @@ components:
         error: { type: string }
         error_code:
           $ref: "#/components/schemas/ErrorCode"
+        error_details:
+          $ref: "#/components/schemas/ErrorDetails"
+    ErrorDetails:
+      type: object
+      additionalProperties: true
+      properties:
+        reason:
+          type: string
+          enum: [payload_bytes, json_depth, prototype_key, number_precision]
     ErrorCode:
       type: string
       enum:

@@ -161,6 +161,8 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"RetainedDataCleanupResult:",
 		"PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
 		"PLUGIN_RETAINED_DATA_BIND_FAILED",
+		"error_details:",
+		"enum: [payload_bytes, json_depth, prototype_key, number_precision]",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)

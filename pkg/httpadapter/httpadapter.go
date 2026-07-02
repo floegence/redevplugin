@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"path"
 	"sort"
@@ -29,10 +30,11 @@ import (
 )
 
 type Envelope struct {
-	OK        bool   `json:"ok"`
-	Data      any    `json:"data,omitempty"`
-	Error     string `json:"error,omitempty"`
-	ErrorCode string `json:"error_code,omitempty"`
+	OK           bool           `json:"ok"`
+	Data         any            `json:"data,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	ErrorCode    string         `json:"error_code,omitempty"`
+	ErrorDetails map[string]any `json:"error_details,omitempty"`
 }
 
 type Route struct {
@@ -202,6 +204,48 @@ const OwnerSessionHashHeader = "X-ReDevPlugin-Owner-Session-Hash"
 const maxCSPReportBytes = 64 << 10
 const defaultStreamReadMaxEvents = 256
 const defaultStreamReadMaxBytes = 1 << 20
+const defaultJSONRequestMaxBytes = 1 << 20
+const defaultJSONMaxDepth = 64
+const cspReportJSONMaxDepth = 16
+const maxJSONSafeInteger int64 = 1<<53 - 1
+const jsonNumberPrecisionBits uint = 256
+
+var maxJSONSafeFloat = new(big.Float).SetPrec(jsonNumberPrecisionBits).SetInt64(maxJSONSafeInteger)
+
+type jsonLimitReason string
+
+const (
+	jsonLimitReasonPayloadBytes    jsonLimitReason = "payload_bytes"
+	jsonLimitReasonDepth           jsonLimitReason = "json_depth"
+	jsonLimitReasonPrototypeKey    jsonLimitReason = "prototype_key"
+	jsonLimitReasonNumberPrecision jsonLimitReason = "number_precision"
+)
+
+type jsonLimitError struct {
+	reason jsonLimitReason
+}
+
+func (e *jsonLimitError) Error() string {
+	switch e.reason {
+	case jsonLimitReasonPayloadBytes:
+		return "JSON payload exceeds the maximum allowed size"
+	case jsonLimitReasonDepth:
+		return "JSON payload exceeds the maximum allowed depth"
+	case jsonLimitReasonPrototypeKey:
+		return "JSON payload contains a forbidden prototype pollution key"
+	case jsonLimitReasonNumberPrecision:
+		return "JSON payload contains an unsafe number"
+	default:
+		return "JSON payload exceeds platform limits"
+	}
+}
+
+func (e *jsonLimitError) status() int {
+	if e.reason == jsonLimitReasonPayloadBytes {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.enforceWebSecurity(w, r) {
@@ -394,6 +438,20 @@ func WriteJSON(w http.ResponseWriter, status int, envelope Envelope) {
 	_ = json.NewEncoder(w).Encode(envelope)
 }
 
+func writeInvalidRequestError(w http.ResponseWriter, err error) {
+	var limitErr *jsonLimitError
+	if errors.As(err, &limitErr) {
+		WriteJSON(w, limitErr.status(), Envelope{
+			OK:           false,
+			Error:        limitErr.Error(),
+			ErrorCode:    string(security.ErrJSONLimitExceeded),
+			ErrorDetails: map[string]any{"reason": string(limitErr.reason)},
+		})
+		return
+	}
+	WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+}
+
 func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -401,7 +459,7 @@ func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	var req installRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
@@ -429,7 +487,7 @@ func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	var req enableRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.EnablePlugin(r.Context(), host.EnableRequest{PluginInstanceID: req.PluginInstanceID})
@@ -447,7 +505,7 @@ func (h Handler) handleDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	var req disableRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.DisablePlugin(r.Context(), host.DisableRequest{PluginInstanceID: req.PluginInstanceID, Reason: req.Reason})
@@ -465,7 +523,7 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	}
 	var req uninstallRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, DeleteData: req.DeleteData})
@@ -483,7 +541,7 @@ func (h Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	var req updateRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
@@ -511,7 +569,7 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 	}
 	var req downgradeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.DowngradePlugin(r.Context(), host.DowngradeRequest{
@@ -550,7 +608,7 @@ func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
 	}
 	var req openSurfaceRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	bootstrap, err := h.Host.OpenSurface(r.Context(), host.OpenSurfaceRequest{
@@ -581,7 +639,7 @@ func (h Handler) handleExchangeAssetTicket(w http.ResponseWriter, r *http.Reques
 	}
 	var req exchangeAssetTicketRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.Host.ExchangeAssetTicket(r.Context(), host.ExchangeAssetTicketRequest{
@@ -607,7 +665,7 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	var req bridgeTokenRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if req.Handshake.Type != "" && req.Handshake.Type != pluginBridgeHandshakeType {
@@ -647,7 +705,7 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 	var req rpcRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.Host.CallPluginMethod(r.Context(), host.CallMethodRequest{
@@ -676,7 +734,7 @@ func (h Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	var req rpcRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.Host.PrepareMethodConfirmation(r.Context(), host.ConfirmMethodRequest{
@@ -720,7 +778,7 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 	}
 	var req invokeIntentRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.Host.InvokeIntent(r.Context(), host.InvokeIntentRequest{
@@ -783,7 +841,7 @@ func (h Handler) handleCancelOperation(w http.ResponseWriter, r *http.Request) {
 	}
 	var req cancelOperationRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.CancelOperation(r.Context(), host.CancelOperationRequest{
@@ -804,7 +862,7 @@ func (h Handler) handleStartRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	var req startRuntimeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	health, err := h.Host.StartRuntime(r.Context(), host.StartRuntimeRequest{Target: req.Target})
@@ -860,7 +918,7 @@ func (h Handler) handleExportData(w http.ResponseWriter, r *http.Request) {
 	}
 	var req exportDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.Host.ExportPluginData(r.Context(), host.ExportDataRequest{
@@ -881,7 +939,7 @@ func (h Handler) handleImportData(w http.ResponseWriter, r *http.Request) {
 	}
 	var req importDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if err := h.Host.ImportPluginData(r.Context(), host.ImportDataRequest{
@@ -921,7 +979,7 @@ func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request
 	}
 	var req deleteRetainedDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.DeleteRetainedData(r.Context(), host.DeleteRetainedDataRequest{RetainedID: req.RetainedID})
@@ -943,7 +1001,7 @@ func (h Handler) handleBindRetainedData(w http.ResponseWriter, r *http.Request) 
 	}
 	var req bindRetainedDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.BindRetainedData(r.Context(), host.BindRetainedDataRequest{
@@ -968,7 +1026,7 @@ func (h Handler) handleCleanupExpiredRetainedData(w http.ResponseWriter, r *http
 	}
 	var req cleanupExpiredRetainedDataRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	maxRecords := 0
@@ -1013,7 +1071,7 @@ func (h Handler) handleGrantPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	var req grantPermissionRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.GrantPermission(r.Context(), host.GrantPermissionRequest{
@@ -1036,7 +1094,7 @@ func (h Handler) handleRevokePermission(w http.ResponseWriter, r *http.Request) 
 	}
 	var req revokePermissionRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	record, err := h.Host.RevokePermission(r.Context(), host.RevokePermissionRequest{
@@ -1064,7 +1122,7 @@ func (h Handler) handleListAudit(w http.ResponseWriter, r *http.Request) {
 		Limit:            intQuery(r, "limit"),
 	})
 	if err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"audit_events": events}})
@@ -1084,7 +1142,7 @@ func (h Handler) handleListDiagnostics(w http.ResponseWriter, r *http.Request) {
 		Limit:             intQuery(r, "limit"),
 	})
 	if err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"diagnostic_events": events}})
@@ -1097,7 +1155,7 @@ func (h Handler) handleBindSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	var req secretRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if err := h.Host.BindSecretRef(r.Context(), host.SecretBindRequest(req)); err != nil {
@@ -1114,7 +1172,7 @@ func (h Handler) handleTestSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	var req secretRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if err := h.Host.TestSecretRef(r.Context(), host.SecretTestRequest(req)); err != nil {
@@ -1131,7 +1189,7 @@ func (h Handler) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	var req secretRefRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if err := h.Host.DeleteSecretRef(r.Context(), host.SecretDeleteRequest(req)); err != nil {
@@ -1189,7 +1247,7 @@ func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var req patchSettingsRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	result, err := h.Host.PatchPluginSettings(r.Context(), host.PatchSettingsRequest{
@@ -1210,7 +1268,7 @@ func (h Handler) handleSandboxBootstrap(w http.ResponseWriter, r *http.Request) 
 	}
 	var req sandboxBootstrapRequest
 	if err := decodeJSON(r, &req); err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if strings.TrimSpace(req.SurfaceInstanceID) == "" || strings.TrimSpace(req.AssetTicket) == "" {
@@ -1323,19 +1381,18 @@ func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
 	}
-	defer r.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxCSPReportBytes+1))
+	raw, err := readLimitedJSONBody(r, maxCSPReportBytes)
 	if err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
-	if len(raw) > maxCSPReportBytes {
-		WriteJSON(w, http.StatusRequestEntityTooLarge, Envelope{OK: false, Error: "csp report is too large", ErrorCode: string(security.ErrInvalidRequest)})
+	if err := validateJSONLimits(raw, cspReportJSONMaxDepth); err != nil {
+		writeInvalidRequestError(w, err)
 		return
 	}
 	report, err := parseCSPReport(raw)
 	if err != nil {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		writeInvalidRequestError(w, err)
 		return
 	}
 	if err := h.Host.ReportCSPViolation(r.Context(), report); err != nil {
@@ -1346,9 +1403,45 @@ func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(r *http.Request, dst any) error {
+	raw, err := readLimitedJSONBody(r, defaultJSONRequestMaxBytes)
+	if err != nil {
+		return err
+	}
+	if err := validateJSONLimits(raw, defaultJSONMaxDepth); err != nil {
+		return err
+	}
+	return decodeStrictJSON(raw, dst)
+}
+
+func readLimitedJSONBody(r *http.Request, maxBytes int64) ([]byte, error) {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, &jsonLimitError{reason: jsonLimitReasonPayloadBytes}
+	}
+	return raw, nil
+}
+
+func validateJSONLimits(raw []byte, maxDepth int) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var payload any
+	if err := decodeSingleJSONValue(decoder, &payload); err != nil {
+		return err
+	}
+	return validateJSONValueLimits(payload, 1, maxDepth)
+}
+
+func decodeStrictJSON(raw []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
+	return decodeSingleJSONValue(decoder, dst)
+}
+
+func decodeSingleJSONValue(decoder *json.Decoder, dst any) error {
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
@@ -1360,6 +1453,50 @@ func decodeJSON(r *http.Request, dst any) error {
 		return errors.New("request body contains trailing JSON values")
 	}
 	return nil
+}
+
+func validateJSONValueLimits(value any, depth int, maxDepth int) error {
+	if depth > maxDepth {
+		return &jsonLimitError{reason: jsonLimitReasonDepth}
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if isForbiddenJSONKey(key) {
+				return &jsonLimitError{reason: jsonLimitReasonPrototypeKey}
+			}
+			if err := validateJSONValueLimits(child, depth+1, maxDepth); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateJSONValueLimits(child, depth+1, maxDepth); err != nil {
+				return err
+			}
+		}
+	case json.Number:
+		if jsonNumberExceedsSafePrecision(typed) {
+			return &jsonLimitError{reason: jsonLimitReasonNumberPrecision}
+		}
+	}
+	return nil
+}
+
+func isForbiddenJSONKey(key string) bool {
+	return key == "__proto__" || key == "constructor" || key == "prototype"
+}
+
+func jsonNumberExceedsSafePrecision(number json.Number) bool {
+	parsed, _, err := big.ParseFloat(number.String(), 10, jsonNumberPrecisionBits, big.ToNearestEven)
+	if err != nil {
+		return true
+	}
+	magnitude := new(big.Float).SetPrec(jsonNumberPrecisionBits).Copy(parsed)
+	if magnitude.Sign() < 0 {
+		magnitude.Neg(magnitude)
+	}
+	return magnitude.Cmp(maxJSONSafeFloat) > 0
 }
 
 func surfaceInstanceIDFromPath(path string, suffix string) (string, bool) {
