@@ -904,6 +904,97 @@ func TestHandlerRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.activity", "surface_http_gateway_errors", "bridge_http_gateway")
+	baseBody := map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_gateway_errors",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_gateway",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "echo.ping",
+	}
+
+	invalidBody := cloneMap(baseBody)
+	invalidBody["plugin_gateway_token"] = "plugin_gateway_token.invalid"
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", invalidBody, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrGatewayTokenInvalid) {
+		t.Fatalf("invalid gateway token error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	}
+
+	wrongChannelBody := cloneMap(baseBody)
+	wrongChannelBody["bridge_channel_id"] = "bridge_http_other"
+	envelope = postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", wrongChannelBody, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrGatewayTokenChannelMismatch) {
+		t.Fatalf("gateway token channel mismatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	}
+}
+
+func TestHandlerBridgeTokenDuplicateChannelUsesGatewayMismatchCode(t *testing.T) {
+	h := newHTTPTestHost(t)
+	handler := Handler{Host: h}
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_id":              "http.activity",
+		"surface_instance_id":     "surface_http_duplicate_channel",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bootstrap", map[string]any{
+		"asset_ticket": openResp.AssetTicket,
+	})
+	handshake := map[string]any{
+		"plugin_id":           openResp.PluginID,
+		"surface_id":          openResp.SurfaceID,
+		"surface_instance_id": openResp.SurfaceInstanceID,
+		"active_fingerprint":  openResp.ActiveFingerprint,
+		"bridge_nonce":        openResp.BridgeNonce,
+		"ui_protocol_version": "plugin-ui-v1",
+	}
+	postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", map[string]any{
+		"bridge_channel_id": "bridge_http_a",
+		"handshake":         handshake,
+	})
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", map[string]any{
+		"bridge_channel_id": "bridge_http_b",
+		"handshake":         handshake,
+	}, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrGatewayTokenChannelMismatch) {
+		t.Fatalf("duplicate bridge channel error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	}
+}
+
+func TestRPCErrorCodeMapsGatewayTokenReplay(t *testing.T) {
+	if got := errorCodeForRPCError(bridge.ErrTokenReplay); got != security.ErrGatewayTokenReplayed {
+		t.Fatalf("gateway token replay error_code = %s, want %s", got, security.ErrGatewayTokenReplayed)
+	}
+}
+
 func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -972,7 +1063,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+	if envelope.ErrorCode != string(security.ErrGatewayTokenInvalid) {
 		t.Fatalf("stale token error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
 
@@ -1987,6 +2078,29 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 	return data
 }
 
+func postJSONError(t *testing.T, handler http.Handler, path string, body any, wantStatus int) Envelope {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("POST %s status = %d, want %d body = %s", path, rec.Code, wantStatus, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK {
+		t.Fatalf("POST %s returned ok for expected error: %s", path, rec.Body.String())
+	}
+	return envelope
+}
+
 func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -2010,6 +2124,14 @@ func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func samplePathForRoute(path string) string {

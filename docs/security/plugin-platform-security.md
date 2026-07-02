@@ -78,7 +78,8 @@ Bridge messages use exact target origins. Wildcard `postMessage` target origins
 are forbidden in the TypeScript SDK checks.
 
 Token and ticket kinds are described in `token-ticket-v1.schema.json`. Schema
-tests bind every token kind to its required `use` and audience fields:
+tests bind every token kind to its required `use`, audience fields, and
+token-id namespace:
 
 - `asset_ticket`;
 - `asset_session`;
@@ -90,6 +91,10 @@ tests bind every token kind to its required `use` and audience fields:
 
 Tokens are capabilities. A token that can be read by a different browser origin
 or reused across the wrong audience is a security bug.
+
+Plugin gateway token validation failures use gateway-specific stable error
+codes: `PLUGIN_GATEWAY_TOKEN_INVALID`, `PLUGIN_GATEWAY_TOKEN_REPLAYED`, and
+`PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH`.
 
 ## Permissions And Policy
 
@@ -158,4 +163,3 @@ Host products must:
   bypassing ReDevPlugin permission, token, lease, broker, audit, and lifecycle
   chains;
 - keep product-specific capability implementations outside ReDevPlugin core.
-

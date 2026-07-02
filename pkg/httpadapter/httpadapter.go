@@ -1956,17 +1956,35 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 		return security.ErrPermissionDenied
 	case errors.Is(err, bridge.ErrTokenExpired):
 		return security.ErrTokenExpired
-	case errors.Is(err, bridge.ErrTokenReplay):
-		return security.ErrTokenReplay
-	case errors.Is(err, bridge.ErrTokenAlreadyBound):
-		return security.ErrGatewayTokenChannelMismatch
-	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
-		return security.ErrPermissionDenied
+	case isGatewayTokenValidationError(err):
+		return errorCodeForGatewayTokenError(err)
 	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
 		return security.ErrRuntimeUnavailable
 	default:
 		return security.ErrPermissionDenied
 	}
+}
+
+func errorCodeForGatewayTokenError(err error) security.ErrorCode {
+	switch {
+	case errors.Is(err, bridge.ErrTokenReplay):
+		return security.ErrGatewayTokenReplayed
+	case errors.Is(err, bridge.ErrTokenAlreadyBound):
+		return security.ErrGatewayTokenChannelMismatch
+	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
+		return security.ErrGatewayTokenInvalid
+	default:
+		return security.ErrGatewayTokenInvalid
+	}
+}
+
+func isGatewayTokenValidationError(err error) bool {
+	return errors.Is(err, bridge.ErrTokenReplay) ||
+		errors.Is(err, bridge.ErrTokenAlreadyBound) ||
+		errors.Is(err, bridge.ErrTokenInvalid) ||
+		errors.Is(err, bridge.ErrTokenAudience) ||
+		errors.Is(err, bridge.ErrTokenRevoked) ||
+		errors.Is(err, bridge.ErrTokenKind)
 }
 
 func errorCodeForManagementError(err error) security.ErrorCode {

@@ -113,10 +113,12 @@ func TestGatewayTokenBindsSingleBridgeChannel(t *testing.T) {
 		t.Fatalf("BoundBridgeChannelID = %q", record.BoundBridgeChannelID)
 	}
 
+	wrongChannelAudience := audience
+	wrongChannelAudience.BridgeChannelID = "bridge_b"
 	_, err = manager.Validate(ValidateRequest{
 		Kind:     TokenKindPluginGatewayToken,
 		Token:    minted.Token,
-		Audience: audience,
+		Audience: wrongChannelAudience,
 		Revision: revision,
 		Now:      now.Add(2 * time.Second),
 		Bind:     &ChannelBinding{BridgeChannelID: "bridge_b"},

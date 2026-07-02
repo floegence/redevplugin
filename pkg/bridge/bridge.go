@@ -275,6 +275,9 @@ func (m *TokenManager) Validate(req ValidateRequest) (TokenRecord, error) {
 	if err != nil {
 		return TokenRecord{}, err
 	}
+	if req.Bind != nil && record.Audience.BridgeChannelID != "" && req.Bind.BridgeChannelID != "" && record.Audience.BridgeChannelID != req.Bind.BridgeChannelID {
+		return TokenRecord{}, ErrTokenAlreadyBound
+	}
 	if !audienceMatches(record.Audience, req.Audience) {
 		return TokenRecord{}, ErrTokenAudience
 	}
