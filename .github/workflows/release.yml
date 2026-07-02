@@ -11,8 +11,32 @@ permissions:
   id-token: write
 
 jobs:
+  stress-release:
+    name: Release Stress Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: rustup show
+      - run: ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redevplugin-release-stress
+          path: dist/redevplugin-release-stress.json
+          if-no-files-found: error
+
   runtime:
     name: Runtime ${{ matrix.target }}
+    needs: stress-release
     strategy:
       fail-fast: false
       matrix:
@@ -71,12 +95,12 @@ jobs:
       - name: Checksums
         run: |
           cd dist/artifacts
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz redevplugin-release-stress.json > SHA256SUMS
       - uses: sigstore/cosign-installer@v3
       - name: Sign release artifacts
         run: |
           cd dist/artifacts
-          for file in *.tar.gz SHA256SUMS; do
+          for file in *.tar.gz redevplugin-release-stress.json SHA256SUMS; do
             cosign sign-blob --yes \
               --bundle "${file}.bundle" \
               --output-signature "${file}.sig" \
@@ -88,6 +112,9 @@ jobs:
             dist/artifacts/*.tar.gz
             dist/artifacts/*.tar.gz.sig
             dist/artifacts/*.tar.gz.bundle
+            dist/artifacts/redevplugin-release-stress.json
+            dist/artifacts/redevplugin-release-stress.json.sig
+            dist/artifacts/redevplugin-release-stress.json.bundle
             dist/artifacts/SHA256SUMS
             dist/artifacts/SHA256SUMS.sig
             dist/artifacts/SHA256SUMS.bundle

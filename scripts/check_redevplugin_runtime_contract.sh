@@ -33,11 +33,19 @@ fi
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v1" }' spec/plugin/release-manifest-v1.schema.json
   grep -q '"runtime_target"' spec/plugin/release-manifest-v1.schema.json
   grep -q '"files"' spec/plugin/release-manifest-v1.schema.json
+  grep -q 'stress-release:' .github/workflows/release.yml
+  grep -q './scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json' .github/workflows/release.yml
+  grep -q 'needs: stress-release' .github/workflows/release.yml
+  grep -q 'redevplugin-release-stress.json > SHA256SUMS' .github/workflows/release.yml
   grep -q 'id-token: write' .github/workflows/release.yml
   grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
   grep -q 'cosign sign-blob --yes' .github/workflows/release.yml
+  grep -q 'redevplugin-release-stress.json SHA256SUMS' .github/workflows/release.yml
   grep -Fq 'dist/artifacts/*.tar.gz.sig' .github/workflows/release.yml
   grep -Fq 'dist/artifacts/*.tar.gz.bundle' .github/workflows/release.yml
+  grep -q 'dist/artifacts/redevplugin-release-stress.json' .github/workflows/release.yml
+  grep -q 'dist/artifacts/redevplugin-release-stress.json.sig' .github/workflows/release.yml
+  grep -q 'dist/artifacts/redevplugin-release-stress.json.bundle' .github/workflows/release.yml
   grep -q 'dist/artifacts/SHA256SUMS.sig' .github/workflows/release.yml
   grep -q 'dist/artifacts/SHA256SUMS.bundle' .github/workflows/release.yml
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs

@@ -221,11 +221,14 @@ provide a local sibling integration path for host products.
 ## Release Integrity
 
 Tagged GitHub releases build a platform-specific release bundle for each
-supported runtime target, publish `SHA256SUMS`, and sign every `.tar.gz` bundle
-plus `SHA256SUMS` with Sigstore keyless `cosign sign-blob`. Each signed artifact
-is uploaded with a detached `.sig` file and a `.bundle` transparency-log bundle.
-Host products should verify both the checksum and the cosign bundle before
-consuming a ReDevPlugin runtime artifact.
+supported runtime target only after the release stress gate passes. The
+published evidence includes `redevplugin-release-stress.json`, `SHA256SUMS`, and
+the runtime `.tar.gz` bundles. `SHA256SUMS` covers the runtime bundles and the
+stress summary, and every `.tar.gz`, the stress summary, and `SHA256SUMS` are
+signed with Sigstore keyless `cosign sign-blob`. Each signed artifact is
+uploaded with a detached `.sig` file and a `.bundle` transparency-log bundle.
+Host products should verify the checksum, the stress evidence, and the cosign
+bundle before consuming a ReDevPlugin runtime artifact.
 
 ## Local Checks
 
