@@ -303,7 +303,9 @@ func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var redirectRequests int
 	redirectServer := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectRequests++
 		http.Redirect(w, r, "https://other.example.com/", http.StatusFound)
 	})}
 	go func() {
@@ -317,6 +319,9 @@ func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusFound || len(response.Body) == 0 {
 		t.Fatalf("redirect response mismatch: %#v body=%q", response, response.Body)
+	}
+	if redirectRequests != 1 || response.Headers.Get("Location") != "https://other.example.com/" {
+		t.Fatalf("redirect handling mismatch: requests=%d location=%q", redirectRequests, response.Headers.Get("Location"))
 	}
 
 	largeListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -333,6 +338,23 @@ func TestExecutorRejectsHTTPRedirectAndOversizedResponse(t *testing.T) {
 	largeGrant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
 	if _, err := NewExecutor(ExecutorOptions{MaxResponseBytes: 4, DialContext: mapDialer(largeListener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{Grant: largeGrant}); !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("DoHTTP(large) error = %v, want ErrResponseTooLarge", err)
+	}
+}
+
+func TestExecutorRejectsDNSRebindingResolvedAddresses(t *testing.T) {
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	executor := NewExecutor(ExecutorOptions{
+		Dialer: &net.Dialer{Timeout: time.Millisecond},
+		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("10.0.0.10")},
+			}, nil
+		},
+	})
+	_, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant, Timeout: time.Millisecond})
+	if !errors.Is(err, ErrTargetDenied) {
+		t.Fatalf("DoHTTP(rebinding DNS) error = %v, want ErrTargetDenied", err)
 	}
 }
 

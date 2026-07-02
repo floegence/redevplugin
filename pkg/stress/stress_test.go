@@ -242,6 +242,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	}
 	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
 	httpCounters := stressHTTPProxyDefenseCounters(t, ctx, broker)
+	dnsRedirectCounters := stressDNSRedirectCounters(t, ctx, broker)
 	logStressSummary(t, stressSummary{
 		Category: "connectivity_classifier",
 		Counters: map[string]int{
@@ -249,6 +250,8 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 			"stale_grant_denials":         int(denied.Load()),
 			"blocked_resolved_ips":        int(blocked.Load()),
 			"connector_policy_count":      len(policy.Connectors),
+			"http_redirects_not_followed": dnsRedirectCounters.redirectsNotFollowed,
+			"dns_rebinding_denials":       dnsRedirectCounters.rebindingDenials,
 			"http_proxy_env_ignored":      httpCounters.proxyEnvIgnored,
 			"http_connect_denials":        httpCounters.connectDenials,
 			"alt_svc_headers_dropped":     httpCounters.altSvcHeadersDropped,
@@ -257,6 +260,54 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
 		},
 	})
+}
+
+type dnsRedirectCounters struct {
+	redirectsNotFollowed int
+	rebindingDenials     int
+}
+
+func stressDNSRedirectCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) dnsRedirectCounters {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redirectRequests atomic.Int64
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectRequests.Add(1)
+		http.Redirect(w, r, "https://other.example.com/", http.StatusFound)
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+	grant, err := broker.MintConnectionGrant(ctx, grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(listener.Addr().String()),
+	}).DoHTTP(ctx, connectivity.HTTPRequest{Grant: grant, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("DoHTTP(redirect evidence) error = %v", err)
+	}
+	if response.StatusCode != http.StatusFound || response.Headers.Get("Location") != "https://other.example.com/" || redirectRequests.Load() != 1 {
+		t.Fatalf("redirect evidence mismatch: status=%d location=%q requests=%d", response.StatusCode, response.Headers.Get("Location"), redirectRequests.Load())
+	}
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		Dialer: &net.Dialer{Timeout: time.Millisecond},
+		LookupIPAddr: func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{
+				{IP: net.ParseIP("203.0.113.10")},
+				{IP: net.ParseIP("10.0.0.10")},
+			}, nil
+		},
+	}).DoHTTP(ctx, connectivity.HTTPRequest{Grant: grant, Timeout: time.Millisecond})
+	if !errors.Is(err, connectivity.ErrTargetDenied) {
+		t.Fatalf("DoHTTP(DNS rebinding evidence) error = %v, want ErrTargetDenied", err)
+	}
+	return dnsRedirectCounters{redirectsNotFollowed: 1, rebindingDenials: 1}
 }
 
 type httpProxyDefenseCounters struct {
