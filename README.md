@@ -124,6 +124,10 @@ capabilities.
   Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
   version, and keep worker invocation leases bound to `lease_nonce` for runtime
   replay rejection.
+- The Go runtime supervisor gives every runtime-origin hostcall a bounded
+  context before invoking host adapters. Storage and network calls that carry
+  `timeout_ms` use that value with a platform cap; artifact, handle-grant,
+  storage file/KV, and network-grant calls use the default hostcall cap.
 - Bridge contract checks that keep sandbox iframe message names, exact-origin
   messaging, UI protocol version, and parent-only token boundaries aligned with
   the TypeScript SDK.

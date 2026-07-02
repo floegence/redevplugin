@@ -79,6 +79,11 @@ network access. The runtime validates WASM worker shape, executes the exported
 worker entrypoint with Wasmi, and performs brokered hostcalls through Host-owned
 IPC request/response frames.
 
+The Go supervisor derives a bounded context for runtime-origin hostcalls before
+entering host adapters. Storage SQLite and network execution use request
+`timeout_ms` within the platform cap; artifact reads, handle-grant validation,
+storage file/KV, and network grant minting use the default hostcall cap.
+
 The runtime contract is versioned by:
 
 - `plugin_host_protocol_version`;

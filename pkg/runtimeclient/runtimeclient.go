@@ -499,6 +499,11 @@ const (
 	ipcFrameTypeRevokeEpochAck      = "revoke_epoch_ack"
 )
 
+const (
+	defaultRuntimeHostcallTimeout = 30 * time.Second
+	maxRuntimeHostcallTimeout     = 30 * time.Second
+)
+
 type ipcFrame struct {
 	IPCVersion          string          `json:"ipc_version"`
 	FrameType           string          `json:"frame_type"`
@@ -1014,7 +1019,9 @@ func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Wr
 			Message: "runtime artifact provider is unavailable",
 		})
 	}
-	artifact, err := s.artifacts.ReadArtifact(ctx, ArtifactRequest(req))
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
+	defer cancel()
+	artifact, err := s.artifacts.ReadArtifact(hostcallCtx, ArtifactRequest(req))
 	if err != nil {
 		return s.writeOpenHandleResponse(stdin, runtimeGenerationID, frame.RequestID, artifactHandleResultPayload{
 			OK:      false,
@@ -1112,7 +1119,9 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 			Message: "runtime handle grant validator is unavailable",
 		})
 	}
-	result, err := s.handleGrants.ValidateHandleGrant(ctx, req)
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
+	defer cancel()
+	result, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, req)
 	if err != nil {
 		return s.writeHandleGrantValidationResponse(stdin, runtimeGenerationID, frame.RequestID, handleGrantValidationResultPayload{
 			OK:      false,
@@ -1192,7 +1201,9 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			Message: "runtime handle grant validator is unavailable",
 		})
 	}
-	grant, err := s.handleGrants.ValidateHandleGrant(ctx, HandleGrantValidationRequest{
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
+	defer cancel()
+	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
 		HandleGrantToken:    req.HandleGrantToken,
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
@@ -1219,7 +1230,7 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			Message: "handle grant validation result did not match storage file request",
 		})
 	}
-	payload := dispatchStorageFileRequest(ctx, s.storageFiles, req)
+	payload := dispatchStorageFileRequest(hostcallCtx, s.storageFiles, req)
 	return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 }
 
@@ -1389,7 +1400,9 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			Message: "runtime handle grant validator is unavailable",
 		})
 	}
-	grant, err := s.handleGrants.ValidateHandleGrant(ctx, HandleGrantValidationRequest{
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
+	defer cancel()
+	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
 		HandleGrantToken:    req.HandleGrantToken,
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
@@ -1416,7 +1429,7 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			Message: "handle grant validation result did not match storage kv request",
 		})
 	}
-	payload := dispatchStorageKVRequest(ctx, s.storageKV, req)
+	payload := dispatchStorageKVRequest(hostcallCtx, s.storageKV, req)
 	return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 }
 
@@ -1590,7 +1603,9 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			Message: "runtime handle grant validator is unavailable",
 		})
 	}
-	grant, err := s.handleGrants.ValidateHandleGrant(ctx, HandleGrantValidationRequest{
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, time.Duration(req.TimeoutMillis)*time.Millisecond)
+	defer cancel()
+	grant, err := s.handleGrants.ValidateHandleGrant(hostcallCtx, HandleGrantValidationRequest{
 		HandleGrantToken:    req.HandleGrantToken,
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
@@ -1617,7 +1632,7 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			Message: "handle grant validation result did not match storage sqlite request",
 		})
 	}
-	payload := dispatchStorageSQLiteRequest(ctx, s.storageSQLite, req)
+	payload := dispatchStorageSQLiteRequest(hostcallCtx, s.storageSQLite, req)
 	return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, payload)
 }
 
@@ -1833,8 +1848,10 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 			Message: "runtime connectivity broker is unavailable",
 		})
 	}
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, 0)
+	defer cancel()
 	ttl := time.Duration(req.TTLMillis) * time.Millisecond
-	grant, err := s.connectivity.MintConnectionGrant(ctx, connectivity.GrantRequest{
+	grant, err := s.connectivity.MintConnectionGrant(hostcallCtx, connectivity.GrantRequest{
 		PluginInstanceID:    req.PluginInstanceID,
 		ActiveFingerprint:   req.ActiveFingerprint,
 		PolicyRevision:      req.PolicyRevision,
@@ -1935,7 +1952,9 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			Message: "runtime network executor is unavailable",
 		})
 	}
-	grant, err := s.mintGrantForNetworkExecute(ctx, req)
+	hostcallCtx, cancel := runtimeHostcallContext(ctx, time.Duration(req.TimeoutMillis)*time.Millisecond)
+	defer cancel()
+	grant, err := s.mintGrantForNetworkExecute(hostcallCtx, req)
 	if err != nil {
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteErrorResponse(err))
 	}
@@ -1957,7 +1976,7 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			Message: err.Error(),
 		})
 	}
-	payload := dispatchNetworkExecute(ctx, s.networkExecutor, grant, req, s.now())
+	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, grant, req, s.now())
 	if payload.OK {
 		payload.GrantID = grant.GrantID
 		payload.ConnectorID = grant.ConnectorID
@@ -2170,6 +2189,17 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	default:
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: "network transport is not supported"}
 	}
+}
+
+func runtimeHostcallContext(parent context.Context, requested time.Duration) (context.Context, context.CancelFunc) {
+	timeout := requested
+	if timeout <= 0 {
+		timeout = defaultRuntimeHostcallTimeout
+	}
+	if timeout > maxRuntimeHostcallTimeout {
+		timeout = maxRuntimeHostcallTimeout
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 func decodeOptionalBase64(value string) ([]byte, error) {

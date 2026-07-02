@@ -157,6 +157,11 @@ handshake by replaying only the generation and version fields. Worker invocation
 frames must carry the Host-issued runtime lease nonce, and the runtime consumes
 `lease_id + lease_nonce` before opening the worker artifact. Reusing the same
 lease in a running runtime generation fails closed with `PLUGIN_LEASE_REPLAYED`.
+When the Rust runtime asks the Go supervisor to serve artifact, handle-grant,
+storage, or network hostcalls, the supervisor derives a bounded context before
+calling host adapters. Request-level `timeout_ms` controls storage SQLite and
+network execution within a platform cap; hostcalls without an explicit timeout
+use the default hostcall cap.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
 compatibility manifests are versioned contracts. Drift must fail closed through

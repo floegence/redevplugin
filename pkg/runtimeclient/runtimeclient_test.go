@@ -363,6 +363,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 	if files.readCalls != 1 || files.lastRead.PluginInstanceID != "plugini_1" || files.lastRead.StoreID != "workspace" || files.lastRead.Path != "notes/today.txt" {
 		t.Fatalf("storage read mismatch: calls=%d last=%#v", files.readCalls, files.lastRead)
 	}
+	assertBoundedDeadline(t, "storage file read", files.lastReadCalledAt, files.lastReadDeadline, files.lastReadDeadlineOK, defaultRuntimeHostcallTimeout)
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -430,6 +431,7 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 	if kv.putCalls != 1 || kv.lastPut.PluginInstanceID != "plugini_1" || kv.lastPut.StoreID != "settings" || kv.lastPut.Key != "demo/last_broker_run" || string(kv.lastPut.Value) != "hello kv" {
 		t.Fatalf("storage kv put mismatch: calls=%d last=%#v", kv.putCalls, kv.lastPut)
 	}
+	assertBoundedDeadline(t, "storage kv put", kv.lastPutCalledAt, kv.lastPutDeadline, kv.lastPutDeadlineOK, defaultRuntimeHostcallTimeout)
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -507,6 +509,7 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 	if sqlite.queryCalls != 1 || sqlite.lastQuery.PluginInstanceID != "plugini_1" || sqlite.lastQuery.StoreID != "db" || sqlite.lastQuery.SQL != "SELECT title, score FROM events WHERE score = ?" {
 		t.Fatalf("storage sqlite query mismatch: calls=%d last=%#v", sqlite.queryCalls, sqlite.lastQuery)
 	}
+	assertBoundedDeadline(t, "storage sqlite query", sqlite.lastQueryCalledAt, sqlite.lastQueryDeadline, sqlite.lastQueryDeadlineOK, time.Second)
 	if len(sqlite.lastQuery.Args) != 1 || sqlite.lastQuery.Args[0].Int == nil || *sqlite.lastQuery.Args[0].Int != score {
 		t.Fatalf("storage sqlite args mismatch: %#v", sqlite.lastQuery.Args)
 	}
@@ -663,6 +666,8 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 		executor.lastHTTP.Timeout != 2*time.Second {
 		t.Fatalf("network executor mismatch: calls=%d last=%#v", executor.httpCalls, executor.lastHTTP)
 	}
+	assertBoundedDeadline(t, "network grant mint", broker.lastCalledAt, broker.lastDeadline, broker.lastDeadlineOK, 2*time.Second)
+	assertBoundedDeadline(t, "network http execute", executor.lastHTTPCalledAt, executor.lastHTTPDeadline, executor.lastHTTPDeadlineOK, 2*time.Second)
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -1197,6 +1202,19 @@ func TestProcessSupervisorFailsClosedOnHandshakeNonceMismatch(t *testing.T) {
 	}
 	if health.Ready {
 		t.Fatalf("nonce mismatch left runtime ready: %#v", health)
+	}
+}
+
+func TestRuntimeHostcallContextCapsRequestedTimeout(t *testing.T) {
+	start := time.Now()
+	ctx, cancel := runtimeHostcallContext(context.Background(), 5*time.Minute)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("runtimeHostcallContext() missing deadline")
+	}
+	if remaining := deadline.Sub(start); remaining <= 0 || remaining > maxRuntimeHostcallTimeout+250*time.Millisecond {
+		t.Fatalf("runtimeHostcallContext() remaining deadline = %v, want capped by %v", remaining, maxRuntimeHostcallTimeout)
 	}
 }
 
@@ -1966,68 +1984,83 @@ type recordingHandleGrantValidator struct {
 }
 
 type recordingStorageFilesBroker struct {
-	readCalls   int
-	writeCalls  int
-	deleteCalls int
-	listCalls   int
-	lastRead    storage.FileReadRequest
-	lastWrite   storage.FileWriteRequest
-	lastDelete  storage.FileDeleteRequest
-	lastList    storage.FileListRequest
-	readResult  storage.FileReadResult
-	writeResult storage.FileWriteResult
-	listResult  storage.FileListResult
-	err         error
+	readCalls          int
+	writeCalls         int
+	deleteCalls        int
+	listCalls          int
+	lastRead           storage.FileReadRequest
+	lastWrite          storage.FileWriteRequest
+	lastDelete         storage.FileDeleteRequest
+	lastList           storage.FileListRequest
+	lastReadCalledAt   time.Time
+	lastReadDeadline   time.Time
+	lastReadDeadlineOK bool
+	readResult         storage.FileReadResult
+	writeResult        storage.FileWriteResult
+	listResult         storage.FileListResult
+	err                error
 }
 
 type recordingStorageKVBroker struct {
-	getCalls    int
-	putCalls    int
-	deleteCalls int
-	listCalls   int
-	lastGet     storage.KVGetRequest
-	lastPut     storage.KVPutRequest
-	lastDelete  storage.KVDeleteRequest
-	lastList    storage.KVListRequest
-	getResult   storage.KVGetResult
-	putResult   storage.KVPutResult
-	listResult  storage.KVListResult
-	err         error
+	getCalls          int
+	putCalls          int
+	deleteCalls       int
+	listCalls         int
+	lastGet           storage.KVGetRequest
+	lastPut           storage.KVPutRequest
+	lastDelete        storage.KVDeleteRequest
+	lastList          storage.KVListRequest
+	lastPutCalledAt   time.Time
+	lastPutDeadline   time.Time
+	lastPutDeadlineOK bool
+	getResult         storage.KVGetResult
+	putResult         storage.KVPutResult
+	listResult        storage.KVListResult
+	err               error
 }
 
 type recordingStorageSQLiteBroker struct {
-	execCalls   int
-	queryCalls  int
-	lastExec    storage.SQLiteExecRequest
-	lastQuery   storage.SQLiteQueryRequest
-	execResult  storage.SQLiteExecResult
-	queryResult storage.SQLiteQueryResult
-	err         error
+	execCalls           int
+	queryCalls          int
+	lastExec            storage.SQLiteExecRequest
+	lastQuery           storage.SQLiteQueryRequest
+	lastQueryCalledAt   time.Time
+	lastQueryDeadline   time.Time
+	lastQueryDeadlineOK bool
+	execResult          storage.SQLiteExecResult
+	queryResult         storage.SQLiteQueryResult
+	err                 error
 }
 
 type recordingConnectivityBroker struct {
-	calls       int
-	installCall int
-	removeCall  int
-	last        connectivity.GrantRequest
-	grant       connectivity.ConnectionGrant
-	err         error
+	calls          int
+	installCall    int
+	removeCall     int
+	last           connectivity.GrantRequest
+	lastCalledAt   time.Time
+	lastDeadline   time.Time
+	lastDeadlineOK bool
+	grant          connectivity.ConnectionGrant
+	err            error
 }
 
 type recordingNetworkExecutor struct {
-	httpCalls      int
-	websocketCalls int
-	tcpCalls       int
-	udpCalls       int
-	lastHTTP       connectivity.HTTPRequest
-	lastWebSocket  connectivity.WebSocketRoundTripRequest
-	lastTCP        connectivity.TCPRoundTripRequest
-	lastUDP        connectivity.UDPRoundTripRequest
-	httpResponse   connectivity.HTTPResponse
-	wsResponse     connectivity.WebSocketRoundTripResponse
-	tcpResponse    connectivity.TCPRoundTripResponse
-	udpResponse    connectivity.UDPRoundTripResponse
-	err            error
+	httpCalls          int
+	websocketCalls     int
+	tcpCalls           int
+	udpCalls           int
+	lastHTTP           connectivity.HTTPRequest
+	lastWebSocket      connectivity.WebSocketRoundTripRequest
+	lastTCP            connectivity.TCPRoundTripRequest
+	lastUDP            connectivity.UDPRoundTripRequest
+	lastHTTPCalledAt   time.Time
+	lastHTTPDeadline   time.Time
+	lastHTTPDeadlineOK bool
+	httpResponse       connectivity.HTTPResponse
+	wsResponse         connectivity.WebSocketRoundTripResponse
+	tcpResponse        connectivity.TCPRoundTripResponse
+	udpResponse        connectivity.UDPRoundTripResponse
+	err                error
 }
 
 func (b *recordingConnectivityBroker) InstallPolicy(context.Context, connectivity.PolicySet) error {
@@ -2040,18 +2073,22 @@ func (b *recordingConnectivityBroker) RemovePolicy(context.Context, string) erro
 	return nil
 }
 
-func (b *recordingConnectivityBroker) MintConnectionGrant(_ context.Context, req connectivity.GrantRequest) (connectivity.ConnectionGrant, error) {
+func (b *recordingConnectivityBroker) MintConnectionGrant(ctx context.Context, req connectivity.GrantRequest) (connectivity.ConnectionGrant, error) {
 	b.calls++
 	b.last = req
+	b.lastCalledAt = time.Now()
+	b.lastDeadline, b.lastDeadlineOK = ctx.Deadline()
 	if b.err != nil {
 		return connectivity.ConnectionGrant{}, b.err
 	}
 	return b.grant, nil
 }
 
-func (e *recordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
+func (e *recordingNetworkExecutor) DoHTTP(ctx context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
 	e.httpCalls++
 	e.lastHTTP = req
+	e.lastHTTPCalledAt = time.Now()
+	e.lastHTTPDeadline, e.lastHTTPDeadlineOK = ctx.Deadline()
 	if e.err != nil {
 		return connectivity.HTTPResponse{}, e.err
 	}
@@ -2094,9 +2131,11 @@ func (v *recordingHandleGrantValidator) ValidateHandleGrant(_ context.Context, r
 	return v.result, nil
 }
 
-func (b *recordingStorageFilesBroker) ReadFile(_ context.Context, req storage.FileReadRequest) (storage.FileReadResult, error) {
+func (b *recordingStorageFilesBroker) ReadFile(ctx context.Context, req storage.FileReadRequest) (storage.FileReadResult, error) {
 	b.readCalls++
 	b.lastRead = req
+	b.lastReadCalledAt = time.Now()
+	b.lastReadDeadline, b.lastReadDeadlineOK = ctx.Deadline()
 	if b.err != nil {
 		return storage.FileReadResult{}, b.err
 	}
@@ -2136,9 +2175,11 @@ func (b *recordingStorageKVBroker) GetKV(_ context.Context, req storage.KVGetReq
 	return b.getResult, nil
 }
 
-func (b *recordingStorageKVBroker) PutKV(_ context.Context, req storage.KVPutRequest) (storage.KVPutResult, error) {
+func (b *recordingStorageKVBroker) PutKV(ctx context.Context, req storage.KVPutRequest) (storage.KVPutResult, error) {
 	b.putCalls++
 	b.lastPut = req
+	b.lastPutCalledAt = time.Now()
+	b.lastPutDeadline, b.lastPutDeadlineOK = ctx.Deadline()
 	if b.err != nil {
 		return storage.KVPutResult{}, b.err
 	}
@@ -2169,9 +2210,11 @@ func (b *recordingStorageSQLiteBroker) ExecSQLite(_ context.Context, req storage
 	return b.execResult, nil
 }
 
-func (b *recordingStorageSQLiteBroker) QuerySQLite(_ context.Context, req storage.SQLiteQueryRequest) (storage.SQLiteQueryResult, error) {
+func (b *recordingStorageSQLiteBroker) QuerySQLite(ctx context.Context, req storage.SQLiteQueryRequest) (storage.SQLiteQueryResult, error) {
 	b.queryCalls++
 	b.lastQuery = req
+	b.lastQueryCalledAt = time.Now()
+	b.lastQueryDeadline, b.lastQueryDeadlineOK = ctx.Deadline()
 	if b.err != nil {
 		return storage.SQLiteQueryResult{}, b.err
 	}
@@ -2185,6 +2228,17 @@ func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req Artifact
 		return ArtifactResult{}, p.err
 	}
 	return ArtifactResult{Content: append([]byte(nil), p.content...), SHA256: p.sha256}, nil
+}
+
+func assertBoundedDeadline(t *testing.T, label string, calledAt time.Time, deadline time.Time, ok bool, max time.Duration) {
+	t.Helper()
+	if !ok {
+		t.Fatalf("%s context missing deadline", label)
+	}
+	remaining := deadline.Sub(calledAt)
+	if remaining <= 0 || remaining > max+250*time.Millisecond {
+		t.Fatalf("%s deadline remaining = %v, want >0 and <= %v", label, remaining, max)
+	}
 }
 
 func workerInvocationFixture() []byte {
