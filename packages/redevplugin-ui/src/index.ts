@@ -396,9 +396,11 @@ export type PluginCompatibilityMatrix = {
   token_ticket_schema_version: string;
   bridge_schema_version: string;
   target_classifier_version: string;
+  network_grant_schema_version: string;
   plugin_platform_openapi_version: string;
   compatibility_schema_version: string;
   worker_invocation_schema_version: string;
+  error_codes_schema_version: string;
   [key: string]: unknown;
 };
 

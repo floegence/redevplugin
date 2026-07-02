@@ -710,9 +710,11 @@ test("platform client reads compatibility manifest through host API", async () =
         token_ticket_schema_version: "token-ticket-v1",
         bridge_schema_version: "bridge-v1",
         target_classifier_version: "target-classifier-v1",
+        network_grant_schema_version: "network-grant-v1",
         plugin_platform_openapi_version: "plugin-platform-v1",
         compatibility_schema_version: "compatibility-manifest-v1",
         worker_invocation_schema_version: "worker-invocation-v1",
+        error_codes_schema_version: "error-codes-v1",
       },
       contracts: [
         {

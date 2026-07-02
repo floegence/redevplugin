@@ -62,6 +62,23 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 	}
 }
 
+func TestCompatibilityManifestUsesDedicatedNetworkGrantSchemaVersion(t *testing.T) {
+	manifest := CurrentCompatibilityManifest()
+	if manifest.Matrix.NetworkGrantSchemaVersion != NetworkGrantSchemaVersion {
+		t.Fatalf("network grant matrix version = %q, want %q", manifest.Matrix.NetworkGrantSchemaVersion, NetworkGrantSchemaVersion)
+	}
+	for _, contract := range manifest.Contracts {
+		if contract.ID != "network-grant-schema" {
+			continue
+		}
+		if contract.Version != NetworkGrantSchemaVersion {
+			t.Fatalf("network-grant-schema version = %q, want %q", contract.Version, NetworkGrantSchemaVersion)
+		}
+		return
+	}
+	t.Fatal("compatibility manifest missing network-grant-schema")
+}
+
 func TestVerifyCompatibilityManifestAcceptsCurrentContracts(t *testing.T) {
 	if err := VerifyCompatibilityManifest(CurrentCompatibilityManifest(), repoRoot(t)); err != nil {
 		t.Fatalf("VerifyCompatibilityManifest() error = %v", err)

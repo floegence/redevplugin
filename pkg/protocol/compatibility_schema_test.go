@@ -31,7 +31,12 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 		"rust_ipc_version":                 "rust-ipc-v1",
 		"wasm_abi_version":                 "redevplugin-wasm-worker-v1",
 		"manifest_schema_version":          "manifest-v1",
+		"package_signature_schema_version": "package-signature-v1",
+		"token_ticket_schema_version":      "token-ticket-v1",
 		"bridge_schema_version":            "bridge-v1",
+		"target_classifier_version":        "target-classifier-v1",
+		"network_grant_schema_version":     "network-grant-v1",
+		"plugin_platform_openapi_version":  "plugin-platform-v1",
 		"compatibility_schema_version":     "compatibility-manifest-v1",
 		"worker_invocation_schema_version": "worker-invocation-v1",
 		"error_codes_schema_version":       "error-codes-v1",
@@ -46,7 +51,21 @@ func TestCompatibilityManifestSchemaDefinesReleasedMatrix(t *testing.T) {
 	for _, item := range requireStringSlice(t, matrix["required"], "matrix required") {
 		required[item] = true
 	}
-	for _, name := range []string{"compatibility_schema_version", "worker_invocation_schema_version", "error_codes_schema_version"} {
+	for _, name := range []string{
+		"plugin_host_protocol_version",
+		"rust_ipc_version",
+		"wasm_abi_version",
+		"manifest_schema_version",
+		"package_signature_schema_version",
+		"token_ticket_schema_version",
+		"bridge_schema_version",
+		"target_classifier_version",
+		"network_grant_schema_version",
+		"plugin_platform_openapi_version",
+		"compatibility_schema_version",
+		"worker_invocation_schema_version",
+		"error_codes_schema_version",
+	} {
 		if !required[name] {
 			t.Fatalf("matrix required fields missing %s", name)
 		}

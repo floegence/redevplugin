@@ -34,6 +34,7 @@ const (
 	TokenTicketSchemaVersion      = "token-ticket-v1"
 	BridgeSchemaVersion           = "bridge-v1"
 	TargetClassifierVersion       = "target-classifier-v1"
+	NetworkGrantSchemaVersion     = "network-grant-v1"
 	PluginPlatformOpenAPIVersion  = "plugin-platform-v1"
 	CompatibilityManifestVersion  = "redevplugin.compatibility.v1"
 	CompatibilitySchemaVersion    = "compatibility-manifest-v1"
@@ -53,6 +54,7 @@ type Matrix struct {
 	TokenTicketSchemaVersion      string `json:"token_ticket_schema_version"`
 	BridgeSchemaVersion           string `json:"bridge_schema_version"`
 	TargetClassifierVersion       string `json:"target_classifier_version"`
+	NetworkGrantSchemaVersion     string `json:"network_grant_schema_version"`
 	PluginPlatformOpenAPIVersion  string `json:"plugin_platform_openapi_version"`
 	CompatibilitySchemaVersion    string `json:"compatibility_schema_version"`
 	WorkerInvocationSchemaVersion string `json:"worker_invocation_schema_version"`
@@ -92,6 +94,7 @@ func CurrentMatrix() Matrix {
 		TokenTicketSchemaVersion:      TokenTicketSchemaVersion,
 		BridgeSchemaVersion:           BridgeSchemaVersion,
 		TargetClassifierVersion:       TargetClassifierVersion,
+		NetworkGrantSchemaVersion:     NetworkGrantSchemaVersion,
 		PluginPlatformOpenAPIVersion:  PluginPlatformOpenAPIVersion,
 		CompatibilitySchemaVersion:    CompatibilitySchemaVersion,
 		WorkerInvocationSchemaVersion: WorkerInvocationSchemaVersion,
@@ -179,7 +182,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "compatibility-manifest-schema",
 				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
 				Version: CompatibilitySchemaVersion,
-				SHA256:  "152f152c184bbcfe7c0fd07feb49c74ad0c4d745f82b6429f4500d1886afafb6",
+				SHA256:  "db9907e927238cc0710054e7fafb6c9f816d90723c266472510a70e5b3e94e76",
 			},
 			{
 				ID:      "worker-invocation-schema",
@@ -208,7 +211,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 			{
 				ID:      "network-grant-schema",
 				Path:    "spec/plugin/network-grant-v1.schema.json",
-				Version: TargetClassifierVersion,
+				Version: NetworkGrantSchemaVersion,
 				SHA256:  "e3ba8e7aa42267596b5570c1de60994a0912b125ea78427776db8092c2b3ea7b",
 			},
 			{

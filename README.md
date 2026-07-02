@@ -131,7 +131,9 @@ capabilities.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, IPC, WASM, network-grant, and
-  worker invocation, error-code, and target-classifier contracts.
+  worker invocation, error-code, and target-classifier contracts. Network grant
+  schema and target-classifier fixture versions are tracked independently so
+  hosts can distinguish grant envelope drift from classifier rule drift.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
   verify the loaded platform artifact set without shelling out to the CLI; the
