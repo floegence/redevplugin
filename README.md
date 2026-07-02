@@ -60,6 +60,10 @@ capabilities.
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
   serving, and the package hash to avoid self-referential signatures.
+- Package validation requires surface entries to be packaged HTML assets and
+  rejects external, root-absolute, missing, inline-script/style, event-handler,
+  `srcdoc`, `base`, and Service Worker registration dependencies in sandbox UI
+  assets before Host install can persist them.
 - Install and update flows treat `trust_state` in management requests as a
   requested outcome, not as proof. Runnable verified/bundled trust states require
   a host-provided `PackageTrustVerifier`, while unsigned local and review states

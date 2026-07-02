@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -267,6 +268,150 @@ func TestReadRejectsDuplicateEntry(t *testing.T) {
 
 	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
 		t.Fatal("Read() expected duplicate entry error")
+	}
+}
+
+func TestBuildAcceptsPackageLocalSurfaceAssets(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html>
+<html>
+  <head>
+    <link rel="stylesheet" href="assets/styles.css">
+    <script src="assets/app.js" defer></script>
+  </head>
+  <body>
+    <img src="assets/icon.png" srcset="assets/icon-small.png 1x, assets/icon-large.png 2x" alt="">
+    <img src="data:image/png;base64,iVBORw0KGgo=" alt="">
+    <a href="#details">Details</a>
+  </body>
+</html>`)
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "styles.css"), "body{}")
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon.png"), "png")
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon-small.png"), "small")
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon-large.png"), "large")
+
+	var buf bytes.Buffer
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
+		t.Fatalf("BuildFromDir() local surface assets error = %v", err)
+	}
+}
+
+func TestBuildRejectsUnsafeSurfaceHTMLAssets(t *testing.T) {
+	tests := []struct {
+		name    string
+		html    string
+		wantErr string
+	}{
+		{
+			name:    "external script",
+			html:    `<!doctype html><script src="https://cdn.example/plugin.js"></script>`,
+			wantErr: "must reference a package-local relative asset",
+		},
+		{
+			name:    "root absolute stylesheet",
+			html:    `<!doctype html><link rel="stylesheet" href="/assets/styles.css">`,
+			wantErr: "must reference a package-local relative asset",
+		},
+		{
+			name:    "missing local script",
+			html:    `<!doctype html><script src="assets/missing.js"></script>`,
+			wantErr: `missing package asset "ui/assets/missing.js"`,
+		},
+		{
+			name:    "inline script",
+			html:    `<!doctype html><script>console.log("inline")</script>`,
+			wantErr: "inline script is not allowed",
+		},
+		{
+			name:    "inline event handler",
+			html:    `<!doctype html><button onclick="run()">Run</button>`,
+			wantErr: "inline event handler",
+		},
+		{
+			name:    "inline style block",
+			html:    `<!doctype html><style>body{color:red}</style>`,
+			wantErr: "inline style block is not allowed",
+		},
+		{
+			name:    "inline style attribute",
+			html:    `<!doctype html><main style="display:block"></main>`,
+			wantErr: "inline style attribute is not allowed",
+		},
+		{
+			name:    "base element",
+			html:    `<!doctype html><base href="assets/">`,
+			wantErr: "base element is not allowed",
+		},
+		{
+			name:    "iframe srcdoc",
+			html:    `<!doctype html><iframe srcdoc="<script></script>"></iframe>`,
+			wantErr: "iframe srcdoc is not allowed",
+		},
+		{
+			name:    "meta refresh",
+			html:    `<!doctype html><meta http-equiv="refresh" content="0; url=https://example.com">`,
+			wantErr: "meta refresh is not allowed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			mustWrite(t, filepath.Join(dir, "ui", "index.html"), tc.html)
+
+			var buf bytes.Buffer
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsSurfaceEntryWithoutPackagedHTML(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		wantErr  string
+	}{
+		{
+			name:     "missing entry",
+			manifest: strings.ReplaceAll(validManifestJSON(), `"entry": "ui/index.html"`, `"entry": "ui/missing.html"`),
+			wantErr:  `entry "ui/missing.html" is not present in package`,
+		},
+		{
+			name:     "non html entry",
+			manifest: strings.ReplaceAll(validManifestJSON(), `"entry": "ui/index.html"`, `"entry": "ui/assets/app.js"`),
+			wantErr:  `entry "ui/assets/app.js" must be an HTML asset`,
+		},
+		{
+			name:     "query entry",
+			manifest: strings.ReplaceAll(validManifestJSON(), `"entry": "ui/index.html"`, `"entry": "ui/index.html?v=1"`),
+			wantErr:  "must not include query or fragment",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			mustWrite(t, filepath.Join(dir, "manifest.json"), tc.manifest)
+
+			var buf bytes.Buffer
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsServiceWorkerRegistrationDependency(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><script src="assets/app.js" defer></script>`)
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), `navigator.serviceWorker.register("sw.js");`)
+
+	var buf bytes.Buffer
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err == nil || !strings.Contains(err.Error(), "Service Worker registration APIs are not allowed") {
+		t.Fatalf("BuildFromDir() error = %v, want Service Worker rejection", err)
 	}
 }
 

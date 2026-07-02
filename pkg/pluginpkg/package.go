@@ -12,14 +12,17 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"golang.org/x/net/html"
 )
 
 type Entry struct {
@@ -57,6 +60,13 @@ type ReadOptions struct {
 const PackageSignaturePath = "signatures/package.sig"
 const PackageSignatureAlgorithmEd25519 = "ed25519"
 const workerABIPath = "workers/abi.json"
+
+var serviceWorkerDependencyPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bnavigator\s*\.\s*serviceWorker\b`),
+	regexp.MustCompile(`\bserviceWorker\s*\.\s*register\s*\(`),
+	regexp.MustCompile(`\bServiceWorkerRegistration\b`),
+	regexp.MustCompile(`\bServiceWorkerContainer\b`),
+}
 
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
@@ -298,6 +308,9 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
 		return Package{}, err
 	}
+	if err := validatePackageAssetSecurity(decodedManifest, files); err != nil {
+		return Package{}, err
+	}
 	entries := make([]Entry, 0, len(files))
 	for entryPath, content := range files {
 		entry, err := makeEntry(entryPath, content)
@@ -453,6 +466,205 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		}
 	}
 	return nil
+}
+
+func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) error {
+	for i, surface := range m.Surfaces {
+		entry, err := validatePackageAssetPath(surface.Entry)
+		if err != nil {
+			return fmt.Errorf("surfaces[%d].entry: %w", i, err)
+		}
+		content, ok := files[entry]
+		if !ok {
+			return fmt.Errorf("surfaces[%d].entry %q is not present in package", i, entry)
+		}
+		if !isHTMLAsset(entry) {
+			return fmt.Errorf("surfaces[%d].entry %q must be an HTML asset", i, entry)
+		}
+		if err := validateSurfaceHTMLAsset(entry, content, files); err != nil {
+			return err
+		}
+	}
+	for entryPath, content := range files {
+		if isScriptAsset(entryPath) {
+			if err := validateNoServiceWorkerDependency(entryPath, content); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSurfaceHTMLAsset(entryPath string, content []byte, files map[string][]byte) error {
+	if err := validateNoServiceWorkerDependency(entryPath, content); err != nil {
+		return err
+	}
+	doc, err := html.Parse(bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("%s: invalid HTML: %w", entryPath, err)
+	}
+	baseDir := path.Dir(entryPath)
+	if baseDir == "." {
+		baseDir = ""
+	}
+	var walk func(*html.Node) error
+	walk = func(node *html.Node) error {
+		if node.Type == html.ElementNode {
+			tag := strings.ToLower(node.Data)
+			if tag == "base" {
+				return fmt.Errorf("%s: base element is not allowed", entryPath)
+			}
+			attrs := map[string]string{}
+			for _, attr := range node.Attr {
+				key := strings.ToLower(attr.Key)
+				attrs[key] = attr.Val
+				if strings.HasPrefix(key, "on") {
+					return fmt.Errorf("%s: inline event handler %q is not allowed", entryPath, attr.Key)
+				}
+				if key == "style" {
+					return fmt.Errorf("%s: inline style attribute is not allowed", entryPath)
+				}
+				if key == "srcdoc" {
+					return fmt.Errorf("%s: iframe srcdoc is not allowed", entryPath)
+				}
+				if isHTMLURLAttribute(tag, key) {
+					if err := validateHTMLAssetURL(entryPath, tag, key, attr.Val, baseDir, files); err != nil {
+						return err
+					}
+				}
+			}
+			if tag == "script" {
+				if _, ok := attrs["src"]; !ok && nodeTextContent(node) != "" {
+					return fmt.Errorf("%s: inline script is not allowed", entryPath)
+				}
+			}
+			if tag == "style" && nodeTextContent(node) != "" {
+				return fmt.Errorf("%s: inline style block is not allowed", entryPath)
+			}
+			if tag == "meta" && strings.EqualFold(strings.TrimSpace(attrs["http-equiv"]), "refresh") {
+				return fmt.Errorf("%s: meta refresh is not allowed", entryPath)
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(doc)
+}
+
+func validateNoServiceWorkerDependency(entryPath string, content []byte) error {
+	for _, pattern := range serviceWorkerDependencyPatterns {
+		if pattern.Match(content) {
+			return fmt.Errorf("%s: Service Worker registration APIs are not allowed in plugin package assets", entryPath)
+		}
+	}
+	return nil
+}
+
+func validateHTMLAssetURL(entryPath string, tag string, attr string, value string, baseDir string, files map[string][]byte) error {
+	if attr == "srcset" {
+		for _, candidate := range strings.Split(value, ",") {
+			fields := strings.Fields(strings.TrimSpace(candidate))
+			if len(fields) == 0 {
+				continue
+			}
+			if err := validateSingleHTMLAssetURL(entryPath, tag, attr, fields[0], baseDir, files); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return validateSingleHTMLAssetURL(entryPath, tag, attr, value, baseDir, files)
+}
+
+func validateSingleHTMLAssetURL(entryPath string, tag string, attr string, value string, baseDir string, files map[string][]byte) error {
+	raw := strings.TrimSpace(value)
+	if raw == "" || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "?") {
+		return nil
+	}
+	if strings.ContainsAny(raw, "\\\r\n\t") {
+		return fmt.Errorf("%s: <%s %s> URL %q is not a canonical package-local asset reference", entryPath, tag, attr, value)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: <%s %s> URL %q is invalid: %w", entryPath, tag, attr, value, err)
+	}
+	if parsed.Scheme != "" || parsed.Host != "" || strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/") {
+		if isAllowedInlineImageURL(tag, attr, raw, parsed) {
+			return nil
+		}
+		return fmt.Errorf("%s: <%s %s> URL %q must reference a package-local relative asset", entryPath, tag, attr, value)
+	}
+	if parsed.Path == "" {
+		return nil
+	}
+	assetPath, err := resolvePackageRelativeAssetPath(baseDir, parsed.Path)
+	if err != nil {
+		return fmt.Errorf("%s: <%s %s> URL %q: %w", entryPath, tag, attr, value, err)
+	}
+	if _, ok := files[assetPath]; !ok {
+		return fmt.Errorf("%s: <%s %s> URL %q references missing package asset %q", entryPath, tag, attr, value, assetPath)
+	}
+	return nil
+}
+
+func isAllowedInlineImageURL(tag string, attr string, raw string, parsed *url.URL) bool {
+	if parsed.Scheme != "data" {
+		return false
+	}
+	return tag == "img" && attr == "src" && strings.HasPrefix(strings.ToLower(raw), "data:image/")
+}
+
+func resolvePackageRelativeAssetPath(baseDir string, rawPath string) (string, error) {
+	joined := path.Clean(path.Join(baseDir, rawPath))
+	if joined == "." {
+		return "", errors.New("asset path is empty")
+	}
+	return validatePackageAssetPath(joined)
+}
+
+func validatePackageAssetPath(entryPath string) (string, error) {
+	if strings.ContainsAny(entryPath, "?#") {
+		return "", fmt.Errorf("entry %q must not include query or fragment", entryPath)
+	}
+	return validateEntryPath(entryPath)
+}
+
+func isHTMLURLAttribute(tag string, attr string) bool {
+	switch attr {
+	case "src", "href", "poster", "data", "action", "formaction", "cite", "background", "srcset":
+		return true
+	default:
+		return false
+	}
+}
+
+func nodeTextContent(node *html.Node) string {
+	var builder strings.Builder
+	var walk func(*html.Node)
+	walk = func(current *html.Node) {
+		if current.Type == html.TextNode {
+			builder.WriteString(current.Data)
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return strings.TrimSpace(builder.String())
+}
+
+func isHTMLAsset(entryPath string) bool {
+	ext := strings.ToLower(path.Ext(entryPath))
+	return ext == ".html" || ext == ".htm"
+}
+
+func isScriptAsset(entryPath string) bool {
+	ext := strings.ToLower(path.Ext(entryPath))
+	return ext == ".js" || ext == ".mjs"
 }
 
 type validatedWorkerABI struct {
