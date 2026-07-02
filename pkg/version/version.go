@@ -155,7 +155,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "manifest-schema",
 				Path:    "spec/plugin/manifest-v1.schema.json",
 				Version: ManifestSchemaVersion,
-				SHA256:  "caae19f507c0539d2873e21e82ad17c3269de1ee30d53e81e740220ddfb1beb4",
+				SHA256:  "65a36285af0ac3f4442388a37b8e45fca56b6b3037eb918757ceec59bc946aca",
 			},
 			{
 				ID:      "package-signature-schema",

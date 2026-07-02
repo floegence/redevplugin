@@ -403,6 +403,77 @@ func TestBuildRejectsSurfaceEntryWithoutPackagedHTML(t *testing.T) {
 	}
 }
 
+func TestBuildValidatesSurfaceIconAsset(t *testing.T) {
+	tests := []struct {
+		name     string
+		icon     string
+		content  []byte
+		wantErr  string
+		noWrite  bool
+		filename string
+	}{
+		{
+			name:     "packaged png icon",
+			icon:     "ui/assets/icon.png",
+			content:  minimalPNGForTest(),
+			filename: "ui/assets/icon.png",
+		},
+		{
+			name:     "svg icon rejected",
+			icon:     "ui/assets/icon.svg",
+			content:  []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+			wantErr:  "SVG icons are not allowed",
+			filename: "ui/assets/icon.svg",
+		},
+		{
+			name:    "external icon rejected",
+			icon:    "https://cdn.example/icon.png",
+			wantErr: "must reference a package-local relative raster image asset",
+			noWrite: true,
+		},
+		{
+			name:     "missing icon rejected",
+			icon:     "ui/assets/missing.png",
+			wantErr:  `icon "ui/assets/missing.png" is not present in package`,
+			noWrite:  true,
+			filename: "ui/assets/missing.png",
+		},
+		{
+			name:     "svg content masquerading as png rejected",
+			icon:     "ui/assets/icon.png",
+			content:  []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+			wantErr:  "content does not match a supported raster image format",
+			filename: "ui/assets/icon.png",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			manifestJSON := strings.ReplaceAll(validManifestJSON(), `"entry": "ui/index.html"`, `"entry": "ui/index.html", "icon": "`+tc.icon+`"`)
+			mustWrite(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+			if !tc.noWrite {
+				filename := tc.filename
+				if filename == "" {
+					filename = tc.icon
+				}
+				mustWriteBytes(t, filepath.Join(dir, filepath.FromSlash(filename)), tc.content)
+			}
+
+			var buf bytes.Buffer
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("BuildFromDir() icon error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestBuildRejectsServiceWorkerRegistrationDependency(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><script src="assets/app.js" defer></script>`)
@@ -820,6 +891,10 @@ func mustWriteBytes(t *testing.T, filename string, content []byte) {
 	if err := os.WriteFile(filename, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func minimalPNGForTest() []byte {
+	return []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0x00, 0x00, 0x0d}
 }
 
 func minimalWorkerWASMForTest(exportName string) []byte {

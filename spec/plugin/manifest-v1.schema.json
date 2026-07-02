@@ -40,7 +40,11 @@
           "kind": { "enum": ["activity", "workbench_widget", "settings_embed"] },
           "label": { "type": "string", "minLength": 1 },
           "entry": { "type": "string", "minLength": 1 },
-          "icon": { "type": "string" },
+          "icon": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*//)(?!.*(?:^|/)\\.)(?!.*[\\\\?#])(?!(?:[A-Za-z][A-Za-z0-9+.-]*:|//)).+\\.(?:[Pp][Nn][Gg]|[Jj][Pp][Gg]|[Jj][Pp][Ee][Gg]|[Gg][Ii][Ff]|[Ww][Ee][Bb][Pp]|[Ii][Cc][Oo])$"
+          },
           "method": { "type": "string" },
           "default_size": {
             "type": "object",

@@ -63,7 +63,9 @@ capabilities.
 - Package validation requires surface entries to be packaged HTML assets and
   rejects external, root-absolute, missing, inline-script/style, event-handler,
   `srcdoc`, `base`, and Service Worker registration dependencies in sandbox UI
-  assets before Host install can persist them. The same validation path rejects
+  assets before Host install can persist them. Surface icons must be packaged
+  raster image assets, not SVG or external URLs, so product shells do not need
+  to inline or sanitize plugin-provided SVG markup. The same validation path rejects
   shell/shebang scripts, native executable or dynamic-library artifacts, and
   package-manager install lifecycle scripts so third-party packages cannot smuggle
   a native backend beside the sandbox UI and WASM workers.

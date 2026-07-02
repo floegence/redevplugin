@@ -103,6 +103,15 @@ var forbiddenPackageLifecycleScripts = map[string]struct{}{
 	"prepack":     {},
 }
 
+var allowedSurfaceIconExtensions = map[string]struct{}{
+	".gif":  {},
+	".ico":  {},
+	".jpeg": {},
+	".jpg":  {},
+	".png":  {},
+	".webp": {},
+}
+
 type PackageSignature struct {
 	SchemaVersion string `json:"schema_version"`
 	Algorithm     string `json:"algorithm"`
@@ -601,6 +610,11 @@ func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) 
 		if err := validateSurfaceHTMLAsset(entry, content, files); err != nil {
 			return err
 		}
+		if strings.TrimSpace(surface.Icon) != "" {
+			if err := validateSurfaceIconAsset(i, surface.Icon, files); err != nil {
+				return err
+			}
+		}
 	}
 	for entryPath, content := range files {
 		if isScriptAsset(entryPath) {
@@ -608,6 +622,29 @@ func validatePackageAssetSecurity(m manifest.Manifest, files map[string][]byte) 
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validateSurfaceIconAsset(surfaceIndex int, iconPath string, files map[string][]byte) error {
+	iconValue := strings.TrimSpace(iconPath)
+	if strings.Contains(iconValue, "://") || strings.HasPrefix(iconValue, "//") || strings.HasPrefix(iconValue, "/") {
+		return fmt.Errorf("surfaces[%d].icon %q must reference a package-local relative raster image asset", surfaceIndex, iconPath)
+	}
+	icon, err := validatePackageAssetPath(iconPath)
+	if err != nil {
+		return fmt.Errorf("surfaces[%d].icon: %w", surfaceIndex, err)
+	}
+	ext := strings.ToLower(path.Ext(icon))
+	if _, ok := allowedSurfaceIconExtensions[ext]; !ok {
+		return fmt.Errorf("surfaces[%d].icon %q must be a packaged raster image asset; SVG icons are not allowed", surfaceIndex, icon)
+	}
+	content, ok := files[icon]
+	if !ok {
+		return fmt.Errorf("surfaces[%d].icon %q is not present in package", surfaceIndex, icon)
+	}
+	if !hasRasterIconMagic(ext, content) {
+		return fmt.Errorf("surfaces[%d].icon %q content does not match a supported raster image format", surfaceIndex, icon)
 	}
 	return nil
 }
@@ -782,6 +819,23 @@ func isHTMLAsset(entryPath string) bool {
 func isScriptAsset(entryPath string) bool {
 	ext := strings.ToLower(path.Ext(entryPath))
 	return ext == ".js" || ext == ".mjs"
+}
+
+func hasRasterIconMagic(ext string, content []byte) bool {
+	switch ext {
+	case ".png":
+		return bytes.HasPrefix(content, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	case ".jpg", ".jpeg":
+		return len(content) >= 3 && content[0] == 0xff && content[1] == 0xd8 && content[2] == 0xff
+	case ".gif":
+		return bytes.HasPrefix(content, []byte("GIF87a")) || bytes.HasPrefix(content, []byte("GIF89a"))
+	case ".webp":
+		return len(content) >= 12 && bytes.Equal(content[0:4], []byte("RIFF")) && bytes.Equal(content[8:12], []byte("WEBP"))
+	case ".ico":
+		return len(content) >= 4 && content[0] == 0x00 && content[1] == 0x00 && content[2] == 0x01 && content[3] == 0x00
+	default:
+		return false
+	}
 }
 
 type validatedWorkerABI struct {
