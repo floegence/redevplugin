@@ -122,9 +122,9 @@ Tagged GitHub Releases publish:
   stress summary, and `SHA256SUMS`.
 
 `scripts/verify_redevplugin_release_artifacts.sh <artifact-dir>` verifies the
-outer checksums, required stress evidence, signature file presence, cosign
-bundle presence, and cosign keyless identity unless explicitly run with
-`--skip-cosign` for local fixtures.
+outer checksums, required stress evidence categories, key counters and
+thresholds, signature file presence, cosign bundle presence, and cosign keyless
+identity unless explicitly run with `--skip-cosign` for local fixtures.
 
 ## Dependency Audit
 
@@ -144,7 +144,7 @@ consume local path dependencies. A release-ready host integration should:
 
 1. select published Go/npm/runtime artifact versions;
 2. verify release artifact checksums and signatures;
-3. verify stress evidence and third-party notice evidence;
+3. verify stress evidence counters/thresholds and third-party notice evidence;
 4. verify compatibility manifest hashes against the selected contracts;
 5. bundle the runtime artifact into the host's installer or desktop package;
 6. keep host-side release gates aligned with the consumed ReDevPlugin version.

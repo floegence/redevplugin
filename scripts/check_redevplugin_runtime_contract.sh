@@ -97,14 +97,15 @@ export GOWORK=off
 {
   "ok": true,
   "mode": "release",
+  "stress_categories": ["go_race","stream_backpressure","connectivity_classifier","runtime_revoke_ack","storage_quota","csp_report_flood","browser_demo","runtime_contract","release_bundle"],
   "stress_evidence": [
-    {"category":"stream_backpressure","counters":{"backpressure_denials":1}},
-    {"category":"connectivity_classifier","counters":{"stale_grant_denials":1}},
-    {"category":"runtime_revoke_ack","counters":{"p95_ms":1,"threshold_ms":500}},
-    {"category":"storage_quota","counters":{"quota_denials":1}},
-    {"category":"csp_report_flood","counters":{"rate_limited_reports":1,"diagnostic_events":1}}
+    {"category":"stream_backpressure","counters":{"workers":1,"backpressure_denials":1,"core_operation_checks":1}},
+    {"category":"connectivity_classifier","counters":{"minted_grants":1,"stale_grant_denials":1,"blocked_resolved_ips":1,"connector_policy_count":1}},
+    {"category":"runtime_revoke_ack","counters":{"attempts":1,"p95_ms":1,"max_ms":1,"threshold_ms":500,"hard_timeout_ms":2000,"closed_actor":1,"closed_socket":1,"closed_stream":1,"closed_storage":1}},
+    {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1}},
+    {"category":"csp_report_flood","counters":{"attempts":2,"accepted_reports":1,"rate_limited_reports":1,"diagnostic_events":1,"audit_events":0,"unique_sandbox_origins":1,"unique_active_fingerprints":1}}
   ],
-  "steps": [{"name":"release_bundle","status":0,"duration_ms":1}]
+  "steps": [{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1}]
 }
 JSON
   (
@@ -120,6 +121,29 @@ JSON
     done
   )
   ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"
+  cp "$verify_artifact_fixture/redevplugin-release-stress.json" "$verify_artifact_fixture/redevplugin-release-stress.valid.json"
+  sed 's/"p95_ms":1/"p95_ms":501/' "$verify_artifact_fixture/redevplugin-release-stress.valid.json" >"$verify_artifact_fixture/redevplugin-release-stress.json"
+  (
+    cd "$verify_artifact_fixture"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json >SHA256SUMS
+    else
+      shasum -a 256 redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json | awk '{ print $1 "  " $2 }' >SHA256SUMS
+    fi
+  )
+  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"; then
+    echo "release artifact verifier accepted stress p95 above threshold" >&2
+    exit 1
+  fi
+  cp "$verify_artifact_fixture/redevplugin-release-stress.valid.json" "$verify_artifact_fixture/redevplugin-release-stress.json"
+  (
+    cd "$verify_artifact_fixture"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json >SHA256SUMS
+    else
+      shasum -a 256 redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json | awk '{ print $1 "  " $2 }' >SHA256SUMS
+    fi
+  )
   printf 'unsigned extra tarball\n' >"$verify_artifact_fixture/redevplugin-v0.0.0-extra-linux-amd64.tar.gz"
   if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"; then
     echo "release artifact verifier accepted an unchecked tarball" >&2
