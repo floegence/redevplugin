@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,8 @@ type stressSummary struct {
 	Category string         `json:"category"`
 	Counters map[string]int `json:"counters"`
 }
+
+var stressEvidenceMu sync.Mutex
 
 func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -344,4 +347,19 @@ func logStressSummary(t *testing.T, summary stressSummary) {
 		t.Fatal(err)
 	}
 	t.Log(string(data))
+	if evidencePath := os.Getenv("REDEVPLUGIN_STRESS_EVIDENCE_PATH"); evidencePath != "" {
+		stressEvidenceMu.Lock()
+		defer stressEvidenceMu.Unlock()
+		file, err := os.OpenFile(evidencePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatalf("open stress evidence file: %v", err)
+		}
+		if _, err := file.Write(append(data, '\n')); err != nil {
+			_ = file.Close()
+			t.Fatalf("write stress evidence file: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close stress evidence file: %v", err)
+		}
+	}
 }

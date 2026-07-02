@@ -1346,48 +1346,6 @@ func importedMemoryHostcallSequenceWorkerWASM(exportName string, calls []memoryH
 	return module
 }
 
-func importedNoArgHostcallWorkerWASM(exportName string, imports [][2]string) []byte {
-	exportNameBytes := []byte(exportName)
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x07, 0x02,
-		0x60, 0x00, 0x00,
-		0x60, 0x00, 0x00,
-		0x02,
-	}
-	importPayload := []byte{byte(len(imports))}
-	for _, item := range imports {
-		importModule := []byte(item[0])
-		importName := []byte(item[1])
-		importPayload = append(importPayload, byte(len(importModule)))
-		importPayload = append(importPayload, importModule...)
-		importPayload = append(importPayload, byte(len(importName)))
-		importPayload = append(importPayload, importName...)
-		importPayload = append(importPayload, 0x00, 0x00)
-	}
-	module = appendLEBUint32(module, uint32(len(importPayload)))
-	module = append(module, importPayload...)
-	module = append(module, 0x03, 0x02, 0x01, 0x01, 0x07)
-	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, byte(len(imports)))
-	module = appendLEBUint32(module, uint32(len(exportPayload)))
-	module = append(module, exportPayload...)
-	codePayload := []byte{0x01}
-	body := []byte{0x00}
-	for index := range imports {
-		body = append(body, 0x10, byte(index))
-	}
-	body = append(body, 0x0b)
-	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
-	codePayload = append(codePayload, body...)
-	module = append(module, 0x0a)
-	module = appendLEBUint32(module, uint32(len(codePayload)))
-	module = append(module, codePayload...)
-	return module
-}
-
 func htmlEscape(value string) string {
 	replacer := strings.NewReplacer(
 		"&", "&amp;",

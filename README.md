@@ -230,6 +230,7 @@ npm run demo:browser:real
 npm run test:demo:browser
 ./scripts/check_redevplugin_runtime_contract.sh
 ./scripts/check_redevplugin_platform.sh
+./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
 ```
 
 Rust checks require a local Rust toolchain:
@@ -242,3 +243,9 @@ cargo test --workspace
 
 When Rust is unavailable, `check_redevplugin_runtime_contract.sh` still validates
 the Go/OpenAPI route contracts and reports that the Rust portion was skipped.
+
+`check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
+field records structured counters from `pkg/stress`, including stream
+backpressure denials, connectivity grant/classifier denials, and storage quota
+pressure. CI uploads that summary as release evidence for host-neutral
+broker/backpressure behavior.

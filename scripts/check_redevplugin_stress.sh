@@ -17,8 +17,9 @@ Modes:
   --full      Fast gate plus platform/browser/runtime-contract/release-bundle smoke.
   --release   Alias for --full; intended for release-blocking local use.
 
-The script always writes a JSON summary to stdout. When --summary is provided,
-the same JSON summary is also written to PATH.
+The script always writes a JSON summary with structured stress_evidence counters
+to stdout. When --summary is provided, the same JSON summary is also written to
+PATH.
 USAGE
 }
 
@@ -67,7 +68,8 @@ esac
 STEPS=()
 STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 STATUS=0
-TMP_DIR=""
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-stress.XXXXXX")
+STRESS_EVIDENCE_FILE="$TMP_DIR/stress-evidence.ndjson"
 
 json_step() {
   local name=$1
@@ -101,6 +103,7 @@ write_summary() {
   local ok
   local categories
   local steps_json
+  local evidence_json
   completed_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   if [[ "$STATUS" -eq 0 ]]; then
     ok=true
@@ -112,6 +115,7 @@ write_summary() {
     categories='["go_race","stream_backpressure","connectivity_classifier","storage_quota","browser_demo","runtime_contract","release_bundle"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
+  evidence_json=$(stress_evidence_json)
   local summary
   summary=$(cat <<JSON
 {
@@ -120,6 +124,7 @@ write_summary() {
   "started_at": "$STARTED_AT",
   "completed_at": "$completed_at",
   "stress_categories": $categories,
+  "stress_evidence": $evidence_json,
   "steps": [$steps_json]
 }
 JSON
@@ -129,6 +134,28 @@ JSON
     mkdir -p "$(dirname -- "$SUMMARY_PATH")"
     printf '%s\n' "$summary" >"$SUMMARY_PATH"
   fi
+}
+
+stress_evidence_json() {
+  if [[ ! -s "$STRESS_EVIDENCE_FILE" ]]; then
+    printf '[]'
+    return
+  fi
+  awk '
+    BEGIN {
+      printf "["
+    }
+    NF {
+      if (count > 0) {
+        printf ","
+      }
+      printf "%s", $0
+      count += 1
+    }
+    END {
+      printf "]"
+    }
+  ' "$STRESS_EVIDENCE_FILE"
 }
 
 cleanup() {
@@ -141,6 +168,11 @@ trap cleanup EXIT
 cd "$ROOT_DIR"
 
 run_step go_race_core env GOWORK=off go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/storage ./pkg/stream ./pkg/stress || {
+  write_summary
+  exit "$STATUS"
+}
+
+run_step stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRESS_EVIDENCE_FILE" go test -count=1 ./pkg/stress || {
   write_summary
   exit "$STATUS"
 }
@@ -164,7 +196,6 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-stress-release.XXXXXX")
   run_step release_bundle ./scripts/build_redevplugin_release.sh --version 0.0.0-stress.0 --out-dir "$TMP_DIR/release" || {
     write_summary
     exit "$STATUS"
