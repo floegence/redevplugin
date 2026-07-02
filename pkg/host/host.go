@@ -519,10 +519,11 @@ type AppendStreamEventRequest struct {
 }
 
 type ReadStreamRequest struct {
-	StreamID     string `json:"stream_id"`
-	StreamTicket string `json:"stream_ticket,omitempty"`
-	MaxEvents    int    `json:"max_events,omitempty"`
-	MaxBytes     int64  `json:"max_bytes,omitempty"`
+	StreamID      string `json:"stream_id"`
+	StreamTicket  string `json:"stream_ticket,omitempty"`
+	SandboxOrigin string `json:"sandbox_origin,omitempty"`
+	MaxEvents     int    `json:"max_events,omitempty"`
+	MaxBytes      int64  `json:"max_bytes,omitempty"`
 }
 
 type ReadStreamResult struct {
@@ -1920,6 +1921,9 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
+	if err := h.validateStreamSandboxOrigin(ctx, record, plugin, req.SandboxOrigin); err != nil {
+		return ReadStreamResult{}, err
+	}
 	if _, err := h.surfaceTokens.ValidateStreamTicket(bridge.ValidateStreamTicketRequest{
 		StreamTicket: req.StreamTicket,
 		Audience: bridge.Audience{
@@ -1952,6 +1956,36 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 		return ReadStreamResult{}, err
 	}
 	return ReadStreamResult{Record: record, Events: events}, nil
+}
+
+func (h *Host) validateStreamSandboxOrigin(ctx context.Context, record stream.Record, plugin registry.PluginRecord, sandboxOrigin string) error {
+	origin := strings.TrimRight(strings.TrimSpace(sandboxOrigin), "/")
+	if origin == "" || strings.TrimSpace(record.SurfaceInstanceID) == "" || h.adapters.BrowserSite == nil {
+		return nil
+	}
+	origins, err := h.adapters.BrowserSite.ListOrigins(ctx, browsersite.ListRequest{
+		PluginInstanceID: record.PluginInstanceID,
+		State:            string(browsersite.StateActive),
+	})
+	if err != nil {
+		return err
+	}
+	foundBinding := false
+	for _, registered := range origins {
+		if registered.SurfaceInstanceID != record.SurfaceInstanceID ||
+			registered.ActiveFingerprint != plugin.ActiveFingerprint ||
+			registered.OwnerSessionHash != record.OwnerSessionHash {
+			continue
+		}
+		foundBinding = true
+		if registered.Origin == origin {
+			return nil
+		}
+	}
+	if foundBinding {
+		return fmt.Errorf("%w: stream sandbox origin mismatch", bridge.ErrTokenAudience)
+	}
+	return nil
 }
 
 func (h *Host) CloseStream(ctx context.Context, req CloseStreamRequest) (stream.Record, error) {

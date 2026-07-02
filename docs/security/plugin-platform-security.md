@@ -104,6 +104,11 @@ Stream responses set `Cache-Control: no-store` and
 `Referrer-Policy: no-referrer` so `stream_ticket` query credentials are not
 cached or forwarded through referrer headers.
 
+Stream requests reject cross-site Fetch Metadata when browsers provide
+`Sec-Fetch-*` headers. When a sandbox origin has been registered for the
+surface, stream reads also bind the request `Origin` to that sandbox origin
+before consuming the stream ticket.
+
 ## Permissions And Policy
 
 The Host evaluates security policy before permission grants. Policy stores can

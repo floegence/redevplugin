@@ -1448,16 +1448,21 @@ func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "stream_id is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
+	if err := validatePluginStreamFetchMetadata(r); err != nil {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrStreamTicketInvalid)})
+		return
+	}
 	streamTicket := strings.TrimSpace(r.URL.Query().Get("ticket"))
 	if streamTicket == "" {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "stream ticket is required", ErrorCode: string(security.ErrStreamTicketInvalid)})
 		return
 	}
 	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
-		StreamID:     streamID,
-		StreamTicket: streamTicket,
-		MaxEvents:    defaultStreamReadMaxEvents,
-		MaxBytes:     defaultStreamReadMaxBytes,
+		StreamID:      streamID,
+		StreamTicket:  streamTicket,
+		SandboxOrigin: r.Header.Get("Origin"),
+		MaxEvents:     defaultStreamReadMaxEvents,
+		MaxBytes:      defaultStreamReadMaxBytes,
 	})
 	if err != nil {
 		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStreamError(err))})
@@ -1475,6 +1480,18 @@ func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func validatePluginStreamFetchMetadata(r *http.Request) error {
+	fetchSite := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Site")))
+	if fetchSite != "" && fetchSite != "same-origin" {
+		return errors.New("stream request fetch site is invalid")
+	}
+	fetchMode := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Mode")))
+	if fetchMode != "" && fetchMode != "cors" && fetchMode != "same-origin" {
+		return errors.New("stream request fetch mode is invalid")
+	}
+	return nil
 }
 
 func writePluginStreamSecurityHeaders(w http.ResponseWriter) {

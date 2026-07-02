@@ -1410,7 +1410,8 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
 	handler := Handler{Host: h}
-	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.subscription.activity", "surface_http_stream", "bridge_http_stream")
+	sandboxOrigin := "https://plg-stream.sandbox.redevplugin.local"
+	bridgeResp := openHTTPBridgeWithSandboxOrigin(t, handler, installed.PluginInstanceID, "http.subscription.activity", "surface_http_stream", "bridge_http_stream", sandboxOrigin)
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
@@ -1433,6 +1434,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1", nil)
+	req.Header.Set("Origin", sandboxOrigin)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -1448,6 +1450,43 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	assertStreamSecurityHeaders(t, rec)
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req.Header.Set("Origin", sandboxOrigin)
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stream cross-site fetch metadata status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
+		t.Fatalf("stream cross-site fetch metadata error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	assertStreamSecurityHeaders(t, rec)
+
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stream wrong origin status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
+		t.Fatalf("stream wrong origin error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	assertStreamSecurityHeaders(t, rec)
+
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req.Header.Set("Origin", sandboxOrigin)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1470,6 +1509,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req.Header.Set("Origin", sandboxOrigin)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -3009,14 +3049,23 @@ func (g *httpTestWebSecurityGuard) ValidateCSRF(_ *http.Request, sessionHash str
 
 func openHTTPBridge(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string) bridge.GatewayTokenResult {
 	t.Helper()
-	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
+	return openHTTPBridgeWithSandboxOrigin(t, handler, pluginInstanceID, surfaceID, surfaceInstanceID, bridgeChannelID, "")
+}
+
+func openHTTPBridgeWithSandboxOrigin(t *testing.T, handler http.Handler, pluginInstanceID string, surfaceID string, surfaceInstanceID string, bridgeChannelID string, sandboxOrigin string) bridge.GatewayTokenResult {
+	t.Helper()
+	openBody := map[string]any{
 		"plugin_instance_id":      pluginInstanceID,
 		"surface_id":              surfaceID,
 		"surface_instance_id":     surfaceInstanceID,
 		"owner_session_hash":      "session_hash",
 		"owner_user_hash":         "user_hash",
 		"session_channel_id_hash": "channel_hash",
-	})
+	}
+	if sandboxOrigin != "" {
+		openBody["sandbox_origin"] = sandboxOrigin
+	}
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", openBody)
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
