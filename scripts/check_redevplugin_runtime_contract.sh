@@ -33,6 +33,13 @@ fi
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v1" }' spec/plugin/release-manifest-v1.schema.json
   grep -q '"runtime_target"' spec/plugin/release-manifest-v1.schema.json
   grep -q '"files"' spec/plugin/release-manifest-v1.schema.json
+  grep -q 'id-token: write' .github/workflows/release.yml
+  grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
+  grep -q 'cosign sign-blob --yes' .github/workflows/release.yml
+  grep -Fq 'dist/artifacts/*.tar.gz.sig' .github/workflows/release.yml
+  grep -Fq 'dist/artifacts/*.tar.gz.bundle' .github/workflows/release.yml
+  grep -q 'dist/artifacts/SHA256SUMS.sig' .github/workflows/release.yml
+  grep -q 'dist/artifacts/SHA256SUMS.bundle' .github/workflows/release.yml
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'

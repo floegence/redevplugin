@@ -218,6 +218,15 @@ capabilities.
 ReDevPlugin intentionally does not import Redeven internals and does not
 provide a local sibling integration path for host products.
 
+## Release Integrity
+
+Tagged GitHub releases build a platform-specific release bundle for each
+supported runtime target, publish `SHA256SUMS`, and sign every `.tar.gz` bundle
+plus `SHA256SUMS` with Sigstore keyless `cosign sign-blob`. Each signed artifact
+is uploaded with a detached `.sig` file and a `.bundle` transparency-log bundle.
+Host products should verify both the checksum and the cosign bundle before
+consuming a ReDevPlugin runtime artifact.
+
 ## Local Checks
 
 ```bash
