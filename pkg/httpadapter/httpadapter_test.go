@@ -660,7 +660,12 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	grantHTTPDeclaredPermissions(t, h, installed)
-	handler := Handler{Host: h}
+	handler := Handler{
+		Host: h,
+		SandboxAssetSecurity: SandboxAssetSecurity{
+			FrameAncestors: []string{"https://app.example"},
+		},
+	}
 
 	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
@@ -717,6 +722,37 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("asset nosniff = %q", got)
+	}
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, snippet := range []string{
+		"default-src 'none'",
+		"script-src 'self'",
+		"style-src 'self'",
+		"connect-src 'self'",
+		"worker-src 'none'",
+		"webrtc 'block'",
+		"frame-ancestors https://app.example",
+		"report-to redevplugin-plugin-csp",
+		"report-uri /_redevplugin/csp-report",
+	} {
+		if !strings.Contains(csp, snippet) {
+			t.Fatalf("asset CSP missing %q: %s", snippet, csp)
+		}
+	}
+	if got := rec.Header().Get("Reporting-Endpoints"); got != `redevplugin-plugin-csp="/_redevplugin/csp-report"` {
+		t.Fatalf("reporting endpoints = %q", got)
+	}
+	if got := rec.Header().Get("Permissions-Policy"); !strings.Contains(got, "camera=()") || !strings.Contains(got, "fullscreen=()") {
+		t.Fatalf("permissions policy = %q", got)
+	}
+	if got := rec.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("referrer policy = %q", got)
+	}
+	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "same-origin" {
+		t.Fatalf("cross-origin resource policy = %q", got)
+	}
+	if got := rec.Header().Get("Service-Worker-Allowed"); got != "/_redevplugin/assets/"+bootstrapEnvelope.Data.AssetSessionID+"/ui/" {
+		t.Fatalf("service-worker-allowed = %q", got)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/assets/asset_session_other/ui/index.html", nil)

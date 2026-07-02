@@ -17,6 +17,10 @@ const runtimePath = await buildRuntime();
 const cliPath = await buildCLI(binRoot);
 const hostName = "app.redevplugin.localhost";
 const sandboxHost = "plg-real.redevplugin.localhost";
+const allowedConsoleErrors = new Set([
+  "error: Unrecognized Content-Security-Policy directive 'webrtc'.",
+  "error: Unrecognized Content-Security-Policy directive 'navigate-to'.",
+]);
 const server = spawn(cliPath, ["demo-real-server", stateRoot, runtimePath], {
   cwd: new URL("../..", import.meta.url),
   env: {
@@ -98,6 +102,17 @@ try {
   assert.equal(/Domain=/i.test(setCookie), false);
   const assetHeaders = headerEntry(responseHeaders, `${sandboxOrigin}/_redevplugin/assets/`);
   assert.equal(assetHeaders["x-content-type-options"], "nosniff");
+  assert.match(assetHeaders["content-security-policy"] ?? "", /default-src 'none'/);
+  assert.match(assetHeaders["content-security-policy"] ?? "", /script-src 'self'/);
+  assert.match(assetHeaders["content-security-policy"] ?? "", /connect-src 'self'/);
+  assert.match(assetHeaders["content-security-policy"] ?? "", /webrtc 'block'/);
+  assert.match(assetHeaders["content-security-policy"] ?? "", /navigate-to 'none'/);
+  assert.match(assetHeaders["content-security-policy"] ?? "", new RegExp(`frame-ancestors ${escapeRegExp(`http://${hostName}:${hostPort}`)}`));
+  assert.equal(assetHeaders["permissions-policy"]?.includes("camera=()"), true);
+  assert.equal(assetHeaders["permissions-policy"]?.includes("fullscreen=()"), true);
+  assert.equal(assetHeaders["referrer-policy"], "no-referrer");
+  assert.equal(assetHeaders["cross-origin-resource-policy"], "same-origin");
+  assert.match(assetHeaders["service-worker-allowed"] ?? "", /^\/_redevplugin\/assets\/[^/]+\/ui\/(?:assets\/)?$/);
 
   const frame = page.frameLocator("#plugin-frame");
   await expectText(frame.locator("#status"), "Ready");
@@ -168,7 +183,7 @@ try {
 
   const sandbox = await page.locator("#plugin-frame").getAttribute("sandbox");
   assert.equal(sandbox, "allow-scripts allow-same-origin");
-  assert.deepEqual(consoleErrors.filter((entry) => !entry.includes("409 (Conflict)")), []);
+  assert.deepEqual(consoleErrors.filter((entry) => !entry.includes("409 (Conflict)") && !allowedConsoleErrors.has(entry)), []);
   console.log("real runtime browser smoke passed");
 } finally {
   await browser?.close();

@@ -356,6 +356,25 @@ paths:
       responses:
         "200":
           description: Plugin package asset.
+          headers:
+            Content-Security-Policy:
+              description: Sandbox asset CSP that blocks ambient browser egress and may include host-configured exact frame-ancestors.
+              schema: { type: string }
+            Reporting-Endpoints:
+              description: CSP report endpoint for sandbox asset violations.
+              schema: { type: string }
+            Permissions-Policy:
+              description: Denies browser capabilities such as camera, microphone, geolocation, clipboard, payment, and fullscreen by default.
+              schema: { type: string }
+            Referrer-Policy:
+              description: Always no-referrer for plugin assets.
+              schema: { type: string }
+            Cross-Origin-Resource-Policy:
+              description: Always same-origin for plugin assets.
+              schema: { type: string }
+            Service-Worker-Allowed:
+              description: Does not expand the default service worker scope beyond the current asset directory.
+              schema: { type: string }
   /_redevplugin/stream/{stream_id}:
     get:
       operationId: getPluginStream

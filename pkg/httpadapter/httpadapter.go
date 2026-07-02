@@ -46,9 +46,16 @@ type Route struct {
 }
 
 type Handler struct {
-	Host             *host.Host
-	WebSecurity      websecurity.Guard
-	CSPReportLimiter CSPReportLimiter
+	Host                 *host.Host
+	WebSecurity          websecurity.Guard
+	SandboxAssetSecurity SandboxAssetSecurity
+	CSPReportLimiter     CSPReportLimiter
+}
+
+type SandboxAssetSecurity struct {
+	FrameAncestors []string
+	ReportTo       string
+	ReportURI      string
 }
 
 type CSPReportRateLimitKey struct {
@@ -222,6 +229,10 @@ type startRuntimeRequest struct {
 const assetSessionCookieName = "__Secure-redevplugin-asset-session"
 const assetPathPrefix = "/_redevplugin/assets/"
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
+const defaultCSPReportGroup = "redevplugin-plugin-csp"
+const defaultCSPReportURI = "/_redevplugin/csp-report"
+
+const sandboxPermissionsPolicy = "accelerometer=(), camera=(), microphone=(), geolocation=(), usb=(), serial=(), bluetooth=(), clipboard-read=(), clipboard-write=(), payment=(), fullscreen=()"
 
 // OwnerSessionHashHeader optionally carries the host session binding used by
 // the configured WebSecurity guard for CSRF validation.
@@ -1411,6 +1422,7 @@ func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	h.writeSandboxAssetSecurityHeaders(w, assetSessionID, assetPath)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(result.Content)
 }
@@ -1499,6 +1511,86 @@ func (h Handler) cspReportLimiter() CSPReportLimiter {
 		return h.CSPReportLimiter
 	}
 	return defaultCSPReportLimiter
+}
+
+func (h Handler) writeSandboxAssetSecurityHeaders(w http.ResponseWriter, assetSessionID string, assetPath string) {
+	reportTo := cleanCSPReportGroup(h.SandboxAssetSecurity.ReportTo)
+	reportURI := cleanCSPReportURI(h.SandboxAssetSecurity.ReportURI)
+	w.Header().Set("Content-Security-Policy", sandboxAssetCSP(h.SandboxAssetSecurity.FrameAncestors, reportTo, reportURI))
+	w.Header().Set("Reporting-Endpoints", reportTo+`="`+reportURI+`"`)
+	w.Header().Set("Permissions-Policy", sandboxPermissionsPolicy)
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+	w.Header().Set("Service-Worker-Allowed", serviceWorkerAllowedScope(assetSessionID, assetPath))
+}
+
+func sandboxAssetCSP(frameAncestors []string, reportTo string, reportURI string) string {
+	directives := []string{
+		"default-src 'none'",
+		"script-src 'self'",
+		"style-src 'self'",
+		"img-src 'self' data: blob:",
+		"media-src 'self' blob:",
+		"font-src 'self'",
+		"connect-src 'self'",
+		"frame-src 'none'",
+		"worker-src 'none'",
+		"webrtc 'block'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"form-action 'none'",
+		"navigate-to 'none'",
+	}
+	if sources := sanitizeCSPSourceList(frameAncestors); len(sources) > 0 {
+		directives = append(directives, "frame-ancestors "+strings.Join(sources, " "))
+	}
+	if reportTo != "" {
+		directives = append(directives, "report-to "+reportTo)
+	}
+	if reportURI != "" {
+		directives = append(directives, "report-uri "+reportURI)
+	}
+	return strings.Join(directives, "; ")
+}
+
+func cleanCSPReportGroup(value string) string {
+	group := strings.TrimSpace(value)
+	if group == "" || strings.ContainsAny(group, " \t;\"'\r\n") {
+		return defaultCSPReportGroup
+	}
+	return group
+}
+
+func cleanCSPReportURI(value string) string {
+	uri := strings.TrimSpace(value)
+	if uri == "" || strings.ContainsAny(uri, "\"\r\n") {
+		return defaultCSPReportURI
+	}
+	if strings.HasPrefix(uri, "/") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
+		return uri
+	}
+	return defaultCSPReportURI
+}
+
+func sanitizeCSPSourceList(values []string) []string {
+	sources := make([]string, 0, len(values))
+	for _, value := range values {
+		source := strings.TrimSpace(value)
+		if source == "" || strings.ContainsAny(source, " \t;\r\n") {
+			continue
+		}
+		sources = append(sources, source)
+	}
+	return sources
+}
+
+func serviceWorkerAllowedScope(assetSessionID string, assetPath string) string {
+	base := assetSessionCookiePath(assetSessionID)
+	dir := path.Dir(assetPath)
+	if dir == "." || dir == "/" {
+		return base
+	}
+	return base + strings.Trim(dir, "/") + "/"
 }
 
 func isAllowedCSPReportContentType(header string) bool {

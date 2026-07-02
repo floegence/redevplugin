@@ -86,6 +86,9 @@ capabilities.
   report bodies to 32 KiB and JSON depth 16, and applies a host-replaceable
   per sandbox origin, active fingerprint, and source IP rate limiter before
   appending diagnostics.
+- Sandboxed plugin package assets are served with CSP, reporting, permissions,
+  referrer, CORP, nosniff, and service-worker scope headers; hosts pass exact
+  frame ancestors when embedding the sandbox iframe.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   and TypeScript SDK route coverage aligned. Browser-owned protocol endpoints
   such as asset bootstrap, asset fetches, and CSP reports must be explicitly

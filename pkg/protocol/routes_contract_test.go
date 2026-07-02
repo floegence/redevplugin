@@ -165,6 +165,9 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"enum: [payload_bytes, json_depth, prototype_key, number_precision]",
 		"application/csp-report:",
 		"per sandbox_origin plus active_fingerprint plus source IP rate limiting",
+		"Content-Security-Policy:",
+		"Permissions-Policy:",
+		"Service-Worker-Allowed:",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)

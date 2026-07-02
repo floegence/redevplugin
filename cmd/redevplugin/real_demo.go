@@ -275,7 +275,12 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	sandboxHost := demoEnv("REAL_DEMO_SANDBOX_HOST", realDemoSandboxHost)
 	sandboxOrigin := "http://" + sandboxHost + ":" + pluginPort
 	hostOrigin := "http://" + hostName + ":" + hostPort
-	platformHandler := httpadapter.Handler{Host: pluginHost}
+	platformHandler := httpadapter.Handler{
+		Host: pluginHost,
+		SandboxAssetSecurity: httpadapter.SandboxAssetSecurity{
+			FrameAncestors: []string{hostOrigin},
+		},
+	}
 	hostMux := http.NewServeMux()
 	hostMux.HandleFunc("/favicon.ico", noContentHandler)
 	hostMux.Handle("/_redevplugin/api/plugins/", platformHandler)
