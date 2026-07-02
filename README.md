@@ -44,6 +44,11 @@ capabilities.
   filtering, defaults, newest-first ordering, retention limits, and generated
   event IDs as the in-memory store, and uses a package-local schema migration
   marker with newer-schema fail-closed behavior.
+- Secret binding stores include both in-memory and SQLite-backed
+  implementations. They persist only plugin-instance, scope, secret-ref, bound
+  state, and test/delete metadata, never secret plaintext, so hosts can keep the
+  actual vault implementation product-owned while reusing common lifecycle
+  state, filtering, cleanup, and newer-schema fail-closed behavior.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset

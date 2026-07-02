@@ -31,6 +31,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/retaineddata"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/settings"
@@ -108,20 +109,11 @@ const (
 	PolicyDeny  PolicyDecision = "deny"
 )
 
-type SecretStoreAdapter interface {
-	BindSecretRef(ctx context.Context, req SecretBindRequest) error
-	DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) error
-	TestSecretRef(ctx context.Context, req SecretTestRequest) error
-}
+type SecretStoreAdapter = secrets.Store
 
-type SecretBindRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	SecretRef        string `json:"secret_ref"`
-	Scope            string `json:"scope"`
-}
-
-type SecretDeleteRequest = SecretBindRequest
-type SecretTestRequest = SecretBindRequest
+type SecretBindRequest = secrets.BindRequest
+type SecretDeleteRequest = secrets.DeleteRequest
+type SecretTestRequest = secrets.TestRequest
 
 type RuntimeArtifactResolver interface {
 	RuntimePath(ctx context.Context, target RuntimeTarget) (string, error)
@@ -495,7 +487,7 @@ type ConfirmMethodResult struct {
 
 var (
 	ErrSecretStoreRequired             = errors.New("secret store adapter is required")
-	ErrInvalidSecretRef                = errors.New("secret_ref is invalid")
+	ErrInvalidSecretRef                = secrets.ErrInvalidSecretRef
 	ErrPackageTrustVerifierRequired    = errors.New("package trust verifier is required for requested trust state")
 	ErrPackageTrustVerificationInvalid = errors.New("package trust verifier returned invalid trust state")
 )
