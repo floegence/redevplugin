@@ -121,6 +121,20 @@ try {
   await expectText(frame.locator("#result"), "\"storage_grant_visible\": false");
   await expectText(page.locator("#rpc-count"), "2");
 
+  await clickPluginButton(frame, "Plan schedule");
+  await expectText(frame.locator("#status"), "Schedule saved");
+  await expectText(frame.locator("#schedule-meta"), "Persisted 1 item in plugin.sqlite");
+  await expectText(frame.locator("#schedule-list"), "Design plugin rollout");
+  await expectText(frame.locator("#schedule-list"), "Focus Room A");
+  await expectText(frame.locator("#schedule-list"), "rust runtime storage");
+  await expectText(frame.locator("#result"), "worker.schedulePlan");
+  await expectText(frame.locator("#result"), "schedule/agenda-export.json");
+  await expectText(frame.locator("#result"), "schedule/current_view");
+  await expectText(frame.locator("#result"), "storage_sqlite");
+  await expectText(frame.locator("#result"), "Design plugin rollout");
+  await expectText(frame.locator("#result"), "\"storage_grant_visible\": false");
+  await expectText(page.locator("#rpc-count"), "3");
+
   await clickPluginButton(frame, "Network matrix");
   await expectText(frame.locator("#status"), "Network matrix completed");
   await expectText(frame.locator("#result"), "network.matrix");
@@ -133,14 +147,14 @@ try {
   await expectText(frame.locator("#result"), "\"transport\": \"udp\"");
   await expectText(frame.locator("#result"), "\"gateway_token_visible\": false");
   await expectText(frame.locator("#result"), "\"network_grant_visible\": false");
-  await expectText(page.locator("#rpc-count"), "6");
+  await expectText(page.locator("#rpc-count"), "7");
 
   await clickPluginButton(frame, "Dangerous action");
   await expectText(page.locator("#confirmation-method"), "danger.run");
   await clickButton(page, "Deny");
   await expectText(frame.locator("#status"), "Dangerous action blocked");
   await expectText(frame.locator("#result"), "PLUGIN_CONFIRMATION_REJECTED");
-  await expectText(page.locator("#rpc-count"), "7");
+  await expectText(page.locator("#rpc-count"), "8");
 
   await clickPluginButton(frame, "Dangerous action");
   await expectText(page.locator("#confirmation-method"), "danger.run");
@@ -150,7 +164,7 @@ try {
   await expectText(frame.locator("#result"), "\"asset_ticket_visible\": false");
   await expectText(frame.locator("#result"), "\"gateway_token_visible\": false");
   await expectText(frame.locator("#result"), "\"confirmation_token_visible\": false");
-  await expectText(page.locator("#rpc-count"), "9");
+  await expectText(page.locator("#rpc-count"), "10");
 
   const sandbox = await page.locator("#plugin-frame").getAttribute("sandbox");
   assert.equal(sandbox, "allow-scripts allow-same-origin");

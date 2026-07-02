@@ -109,7 +109,7 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		"http://app.redevplugin.localhost:4175",
 		"http://plg-real.redevplugin.localhost:4176",
 		`{"plugin_id":"com.example.real.demo","plugin_instance_id":"plugin_real","surface_id":"com.example.real.demo.activity","surface_instance_id":"surface_real","active_fingerprint":"sha256:real","owner_session_hash":"owner","owner_user_hash":"user","session_channel_id_hash":"channel","asset_ticket":"ticket_secret","asset_ticket_id":"ticket_id","bridge_nonce":"nonce"}`,
-		`{"storage_handle_grant_token":"storage_secret","storage_kv_handle_grant_token":"kv_secret","storage_sqlite_handle_grant_token":"sqlite_secret"}`,
+		`{"broker_grants_url":"/demo/real/broker-grants"}`,
 		"runtime_generation",
 	)
 
@@ -120,10 +120,13 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		`credentials: "include"`,
 		`surface_instance_id: bootstrap.surface_instance_id`,
 		`asset_ticket: bootstrap.asset_ticket`,
-		`body.method === "worker.brokerDemo"`,
-		`storage_handle_grant_token: brokerConfig.storage_handle_grant_token`,
-		`storage_kv_handle_grant_token: brokerConfig.storage_kv_handle_grant_token`,
-		`storage_sqlite_handle_grant_token: brokerConfig.storage_sqlite_handle_grant_token`,
+		`isBrokeredRuntimeMethod(body.method)`,
+		`method === "` + realDemoScheduleMethod + `"`,
+		`fetchBrokerGrants`,
+		`brokerConfig.broker_grants_url`,
+		`storage_handle_grant_token: brokerGrants.storage_handle_grant_token`,
+		`storage_kv_handle_grant_token: brokerGrants.storage_kv_handle_grant_token`,
+		`storage_sqlite_handle_grant_token: brokerGrants.storage_sqlite_handle_grant_token`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("real demo html missing %q", want)
@@ -133,12 +136,14 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 		`new URL("/_redevplugin/assets/ui/index.html", pluginOrigin)`,
 		`new URL("/ui/index.html", pluginOrigin)`,
 		`/_redevplugin/api/plugins/surfaces/`,
-		`credentials: "same-origin"`,
 		`storage_path: brokerConfig.storage_path`,
 		`storage_data_base64: brokerConfig.storage_data_base64`,
 		`storage_kv_value_base64: brokerConfig.storage_kv_value_base64`,
 		`storage_sqlite_sql: brokerConfig.storage_sqlite_sql`,
 		`network_body_base64: brokerConfig.network_body_base64`,
+		`storage_secret`,
+		`kv_secret`,
+		`sqlite_secret`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("real demo html contains forbidden legacy flow %q", forbidden)
@@ -152,8 +157,12 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 
 	for _, want := range []string{
 		`id="invoke-broker"`,
+		`id="invoke-schedule"`,
+		`id="schedule-list"`,
 		`id="invoke-network-matrix"`,
 		`worker.brokerDemo`,
+		realDemoScheduleMethod,
+		`parseScheduleRows`,
 		`worker.networkWebSocket`,
 		`worker.networkTCP`,
 		`worker.networkUDP`,
@@ -178,6 +187,24 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 	} {
 		if strings.Contains(js, forbidden) {
 			t.Fatalf("plugin iframe script contains parent-only broker field %q", forbidden)
+		}
+	}
+}
+
+func TestRealDemoScheduleWorkerUsesRealStorageHostcalls(t *testing.T) {
+	raw := string(realDemoScheduleWorkerWASM())
+	for _, want := range []string{
+		"schedule/agenda-export.json",
+		"schedule/current_view",
+		"CREATE TABLE IF NOT EXISTS schedule_items",
+		"INSERT INTO schedule_items",
+		"SELECT title, starts_at, location, source FROM schedule_items",
+		"Design plugin rollout",
+		"Focus Room A",
+		"rust runtime storage",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("schedule worker wasm missing %q", want)
 		}
 	}
 }

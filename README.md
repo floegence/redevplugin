@@ -205,7 +205,12 @@ capabilities.
   clicks a `worker.brokerDemo` flow that routes through the Rust runtime and a
   WASM worker into the Storage Broker and Network Broker, proving the backend
   worker can persist a file and request host-mediated HTTP without exposing
-  parent-only grants to the iframe. The real runtime browser smoke also clicks
+  parent-only grants to the iframe. The same real-runtime surface now includes
+  a schedule planner flow whose `worker.schedulePlan` method refreshes
+  parent-only storage grants in the Host page, executes a WASM worker through
+  the Rust runtime, writes file/KV data, creates and queries a plugin SQLite
+  schedule table, and renders the stored schedule row inside the sandboxed
+  iframe without leaking those grants. The real runtime browser smoke also clicks
   the generated plugin's Network matrix flow, which routes HTTP, WebSocket, TCP,
   and UDP requests through the same WASM worker -> Rust runtime -> Host Network
   Broker boundary.

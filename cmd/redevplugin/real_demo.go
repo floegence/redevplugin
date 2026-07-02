@@ -42,6 +42,9 @@ const (
 	realDemoBrokerStoreID       = "workspace"
 	realDemoBrokerKVStoreID     = "settings"
 	realDemoBrokerSQLiteStoreID = "db"
+	realDemoScheduleMethod      = "worker.schedulePlan"
+	realDemoScheduleWorkerID    = "schedule_backend"
+	realDemoScheduleArtifact    = "workers/schedule.wasm"
 )
 
 var realDemoNetworkMatrix = []realDemoNetworkCase{
@@ -206,6 +209,9 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if err := writeBytesFile(filepath.Join(pluginDir, "workers", "broker.wasm"), realDemoBrokerWorkerWASM(), 0o644); err != nil {
 		return err
 	}
+	if err := writeBytesFile(filepath.Join(pluginDir, realDemoScheduleArtifact), realDemoScheduleWorkerWASM(), 0o644); err != nil {
+		return err
+	}
 	for _, networkCase := range realDemoNetworkMatrix {
 		if err := writeBytesFile(filepath.Join(pluginDir, networkCase.Artifact), realDemoNetworkWorkerWASM(networkCase), 0o644); err != nil {
 			return err
@@ -274,6 +280,24 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	hostMux.HandleFunc("/favicon.ico", noContentHandler)
 	hostMux.Handle("/_redevplugin/api/plugins/", platformHandler)
 	hostMux.HandleFunc("/packages/redevplugin-ui/dist/index.js", realDemoSDKHandler)
+	hostMux.HandleFunc("/demo/real/broker-grants", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && origin != hostOrigin {
+			http.Error(w, "origin is not allowed", http.StatusForbidden)
+			return
+		}
+		broker, err := mintRealDemoBrokerPayload(r.Context(), pluginHost, record.PluginInstanceID, health.RuntimeInstanceID, health.RuntimeGenerationID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": broker})
+	})
 	hostMux.HandleFunc("/demo/real/index.html", func(w http.ResponseWriter, _ *http.Request) {
 		bootstrap, err := pluginHost.OpenSurface(ctx, host.OpenSurfaceRequest{
 			PluginInstanceID:     record.PluginInstanceID,
@@ -288,41 +312,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		storageGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
-			PluginInstanceID:    record.PluginInstanceID,
-			StoreID:             realDemoBrokerStoreID,
-			RuntimeInstanceID:   health.RuntimeInstanceID,
-			RuntimeGenerationID: health.RuntimeGenerationID,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		storageKVGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
-			PluginInstanceID:    record.PluginInstanceID,
-			StoreID:             realDemoBrokerKVStoreID,
-			RuntimeInstanceID:   health.RuntimeInstanceID,
-			RuntimeGenerationID: health.RuntimeGenerationID,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		storageSQLiteGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
-			PluginInstanceID:    record.PluginInstanceID,
-			StoreID:             realDemoBrokerSQLiteStoreID,
-			RuntimeInstanceID:   health.RuntimeInstanceID,
-			RuntimeGenerationID: health.RuntimeGenerationID,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		broker := realDemoBrokerPayload{
-			StorageHandleGrantToken:       storageGrant.HandleGrant.HandleGrantToken,
-			StorageKVHandleGrantToken:     storageKVGrant.HandleGrant.HandleGrantToken,
-			StorageSQLiteHandleGrantToken: storageSQLiteGrant.HandleGrant.HandleGrantToken,
-		}
+		broker := realDemoBrokerConfig{BrokerGrantsURL: "/demo/real/broker-grants"}
 		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), bootstrapJSON(broker), health.RuntimeGenerationID))
 	})
 	pluginMux := http.NewServeMux()
@@ -374,6 +364,10 @@ type realDemoBrokerPayload struct {
 	StorageSQLiteHandleGrantToken string `json:"storage_sqlite_handle_grant_token"`
 }
 
+type realDemoBrokerConfig struct {
+	BrokerGrantsURL string `json:"broker_grants_url"`
+}
+
 func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPayload {
 	return realDemoBootstrapPayload{
 		PluginID:             bootstrap.PluginID,
@@ -388,6 +382,41 @@ func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPaylo
 		AssetTicketID:        bootstrap.AssetTicketID,
 		BridgeNonce:          bootstrap.BridgeNonce,
 	}
+}
+
+func mintRealDemoBrokerPayload(ctx context.Context, pluginHost *host.Host, pluginInstanceID string, runtimeInstanceID string, runtimeGenerationID string) (realDemoBrokerPayload, error) {
+	storageGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+		PluginInstanceID:    pluginInstanceID,
+		StoreID:             realDemoBrokerStoreID,
+		RuntimeInstanceID:   runtimeInstanceID,
+		RuntimeGenerationID: runtimeGenerationID,
+	})
+	if err != nil {
+		return realDemoBrokerPayload{}, err
+	}
+	storageKVGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+		PluginInstanceID:    pluginInstanceID,
+		StoreID:             realDemoBrokerKVStoreID,
+		RuntimeInstanceID:   runtimeInstanceID,
+		RuntimeGenerationID: runtimeGenerationID,
+	})
+	if err != nil {
+		return realDemoBrokerPayload{}, err
+	}
+	storageSQLiteGrant, err := pluginHost.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
+		PluginInstanceID:    pluginInstanceID,
+		StoreID:             realDemoBrokerSQLiteStoreID,
+		RuntimeInstanceID:   runtimeInstanceID,
+		RuntimeGenerationID: runtimeGenerationID,
+	})
+	if err != nil {
+		return realDemoBrokerPayload{}, err
+	}
+	return realDemoBrokerPayload{
+		StorageHandleGrantToken:       storageGrant.HandleGrant.HandleGrantToken,
+		StorageKVHandleGrantToken:     storageKVGrant.HandleGrant.HandleGrantToken,
+		StorageSQLiteHandleGrantToken: storageSQLiteGrant.HandleGrant.HandleGrantToken,
+	}, nil
 }
 
 func packageDirectoryBytes(ctx context.Context, pluginDir string, packageFile string) ([]byte, error) {
@@ -420,6 +449,14 @@ func addRealDemoMethods(manifestFile string) error {
 	doc.Workers = appendWorkerIfMissing(doc.Workers, manifest.WorkerSpec{
 		WorkerID:         "broker_backend",
 		Artifact:         "workers/broker.wasm",
+		ABI:              "redevplugin-wasm-worker-v1",
+		Mode:             manifest.WorkerModeJob,
+		Scope:            "user",
+		MemoryLimitBytes: 16 << 20,
+	})
+	doc.Workers = appendWorkerIfMissing(doc.Workers, manifest.WorkerSpec{
+		WorkerID:         realDemoScheduleWorkerID,
+		Artifact:         realDemoScheduleArtifact,
 		ABI:              "redevplugin-wasm-worker-v1",
 		Mode:             manifest.WorkerModeJob,
 		Scope:            "user",
@@ -517,6 +554,14 @@ func addRealDemoMethods(manifestFile string) error {
 		Effect:         manifest.MethodEffectWrite,
 		Execution:      manifest.MethodExecutionSync,
 		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
+		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
+		ResponseSchema: map[string]any{"type": "object"},
+	})
+	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
+		Method:         realDemoScheduleMethod,
+		Effect:         manifest.MethodEffectWrite,
+		Execution:      manifest.MethodExecutionSync,
+		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: realDemoScheduleWorkerID, Export: "redevplugin_worker_invoke"},
 		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
 		ResponseSchema: map[string]any{"type": "object"},
 	})
@@ -629,6 +674,105 @@ func stringSliceContains(values []string, needle string) bool {
 
 func realDemoBrokerWorkerWASM() []byte {
 	return scaffoldBrokerWorkerWASM()
+}
+
+func realDemoScheduleWorkerWASM() []byte {
+	return importedMemoryHostcallSequenceWorkerWASM("redevplugin_worker_invoke", realDemoScheduleHostcalls())
+}
+
+func realDemoScheduleHostcalls() []memoryHostcallSpec {
+	title := "Design plugin rollout"
+	startsAt := "2026-07-03T09:30:00+08:00"
+	location := "Focus Room A"
+	source := "rust runtime storage"
+	export := map[string]any{
+		"source": "real-runtime-schedule-demo",
+		"items": []map[string]string{{
+			"title":     title,
+			"starts_at": startsAt,
+			"location":  location,
+			"source":    source,
+		}},
+	}
+	exportRaw := mustJSONBytes(export)
+	return []memoryHostcallSpec{
+		{
+			Module: "redevplugin.storage",
+			Name:   "files",
+			Request: mustJSONBytes(map[string]any{
+				"store_id":    realDemoBrokerStoreID,
+				"operation":   "write",
+				"path":        "schedule/agenda-export.json",
+				"data_base64": base64.StdEncoding.EncodeToString(exportRaw),
+			}),
+			OutLen: 4096,
+		},
+		{
+			Module: "redevplugin.storage",
+			Name:   "kv",
+			Request: mustJSONBytes(map[string]any{
+				"store_id":     realDemoBrokerKVStoreID,
+				"operation":    "put",
+				"key":          "schedule/current_view",
+				"value_base64": base64.StdEncoding.EncodeToString([]byte("daily-planner")),
+			}),
+			OutLen: 4096,
+		},
+		{
+			Module: "redevplugin.storage",
+			Name:   "sqlite",
+			Request: mustJSONBytes(map[string]any{
+				"store_id":   realDemoBrokerSQLiteStoreID,
+				"operation":  "exec",
+				"database":   "plugin.sqlite",
+				"sql":        "CREATE TABLE IF NOT EXISTS schedule_items (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, starts_at TEXT NOT NULL, location TEXT NOT NULL, source TEXT NOT NULL)",
+				"args":       []any{},
+				"timeout_ms": 1000,
+			}),
+			OutLen: 4096,
+		},
+		{
+			Module: "redevplugin.storage",
+			Name:   "sqlite",
+			Request: mustJSONBytes(map[string]any{
+				"store_id":   realDemoBrokerSQLiteStoreID,
+				"operation":  "exec",
+				"database":   "plugin.sqlite",
+				"sql":        "DELETE FROM schedule_items WHERE title = ?",
+				"args":       []map[string]string{{"text": title}},
+				"timeout_ms": 1000,
+			}),
+			OutLen: 4096,
+		},
+		{
+			Module: "redevplugin.storage",
+			Name:   "sqlite",
+			Request: mustJSONBytes(map[string]any{
+				"store_id":   realDemoBrokerSQLiteStoreID,
+				"operation":  "exec",
+				"database":   "plugin.sqlite",
+				"sql":        "INSERT INTO schedule_items (title, starts_at, location, source) VALUES (?, ?, ?, ?)",
+				"args":       []map[string]string{{"text": title}, {"text": startsAt}, {"text": location}, {"text": source}},
+				"timeout_ms": 1000,
+			}),
+			OutLen: 4096,
+		},
+		{
+			Module: "redevplugin.storage",
+			Name:   "sqlite",
+			Request: mustJSONBytes(map[string]any{
+				"store_id":           realDemoBrokerSQLiteStoreID,
+				"operation":          "query",
+				"database":           "plugin.sqlite",
+				"sql":                "SELECT title, starts_at, location, source FROM schedule_items WHERE title = ? ORDER BY id DESC LIMIT 1",
+				"args":               []map[string]string{{"text": title}},
+				"max_rows":           4,
+				"max_response_bytes": 4096,
+				"timeout_ms":         1000,
+			}),
+			OutLen: 8192,
+		},
+	}
 }
 
 func realDemoNetworkWorkerWASM(networkCase realDemoNetworkCase) []byte {
@@ -891,6 +1035,25 @@ func realDemoPluginHTML() string {
       <section class="surface">
         <p class="eyebrow">Plugin surface</p>
         <h1>Real Runtime Demo Plugin</h1>
+        <section class="planner-panel" aria-label="Schedule planner">
+          <div>
+            <p class="eyebrow">Schedule planner</p>
+            <h2>Today at a glance</h2>
+            <p class="status" id="schedule-meta">No persisted schedule yet</p>
+          </div>
+          <div class="schedule-grid" aria-label="Schedule summary">
+            <div class="schedule-tile">
+              <span>Next focus</span>
+              <strong>Design plugin rollout</strong>
+            </div>
+            <div class="schedule-tile">
+              <span>Place</span>
+              <strong>Focus Room A</strong>
+            </div>
+          </div>
+          <button id="invoke-schedule" type="button">Plan schedule</button>
+          <ul id="schedule-list" class="schedule-list" aria-label="Persisted schedule"></ul>
+        </section>
         <div class="toolbar">
           <p class="status" id="status">Ready</p>
           <button id="invoke-worker" type="button">Invoke backend</button>
@@ -910,9 +1073,12 @@ func realDemoPluginJS() string {
 	return `const status = document.getElementById('status');
 const invokeButton = document.getElementById('invoke-worker');
 const brokerButton = document.getElementById('invoke-broker');
+const scheduleButton = document.getElementById('invoke-schedule');
 const networkMatrixButton = document.getElementById('invoke-network-matrix');
 const dangerButton = document.getElementById('invoke-danger');
 const result = document.getElementById('result');
+const scheduleList = document.getElementById('schedule-list');
+const scheduleMeta = document.getElementById('schedule-meta');
 const params = new URLSearchParams(window.location.search);
 const parentOrigin = params.get('parent_origin');
 const bootstrap = {
@@ -966,6 +1132,27 @@ brokerButton?.addEventListener('click', async () => {
   } catch (error) {
     setStatus('Brokered backend failed');
     writeResult({ method: 'worker.brokerDemo', error: String(error?.message || error), error_code: error?.errorCode });
+  } finally {
+    setBusy(false);
+  }
+});
+
+scheduleButton?.addEventListener('click', async () => {
+  try {
+    setBusy(true);
+    setStatus('Planning schedule...');
+    const response = await callHost('` + realDemoScheduleMethod + `', {
+      title: 'Design plugin rollout',
+      starts_at: '2026-07-03T09:30:00+08:00',
+      location: 'Focus Room A',
+    });
+    const rows = parseScheduleRows(response);
+    renderScheduleRows(rows);
+    setStatus('Schedule saved');
+    writeResult({ method: '` + realDemoScheduleMethod + `', response, parsed_schedule_rows: rows, token_leak_check: tokenLeakCheck(response) });
+  } catch (error) {
+    setStatus('Schedule planning failed');
+    writeResult({ method: '` + realDemoScheduleMethod + `', error: String(error?.message || error), error_code: error?.errorCode });
   } finally {
     setBusy(false);
   }
@@ -1096,12 +1283,64 @@ function parseNetworkPayload(value) {
   }
 }
 
+function parseScheduleRows(value) {
+  const sqlite = value?.data?.storage_sqlite || value?.storage_sqlite;
+  const rows = Array.isArray(sqlite?.rows) ? sqlite.rows : [];
+  return rows.map((row) => ({
+    title: sqliteValueText(row?.[0]),
+    starts_at: sqliteValueText(row?.[1]),
+    location: sqliteValueText(row?.[2]),
+    source: sqliteValueText(row?.[3]),
+    database: sqlite?.database || 'plugin.sqlite',
+  })).filter((item) => item.title);
+}
+
+function sqliteValueText(value) {
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  if (typeof value.text === 'string') {
+    return value.text;
+  }
+  if (typeof value.int === 'number') {
+    return String(value.int);
+  }
+  if (typeof value.float === 'number') {
+    return String(value.float);
+  }
+  return value.null ? '' : JSON.stringify(value);
+}
+
+function renderScheduleRows(rows) {
+  if (!scheduleList || !scheduleMeta) {
+    return;
+  }
+  scheduleList.textContent = '';
+  if (!rows.length) {
+    scheduleMeta.textContent = 'No schedule rows returned';
+    return;
+  }
+  scheduleMeta.textContent = ` + "`Persisted ${rows.length} item in ${rows[0].database}`" + `;
+  for (const item of rows) {
+    const entry = document.createElement('li');
+    const title = document.createElement('strong');
+    title.textContent = item.title;
+    const detail = document.createElement('span');
+    detail.textContent = ` + "`${item.starts_at} - ${item.location} - ${item.source}`" + `;
+    entry.append(title, detail);
+    scheduleList.append(entry);
+  }
+}
+
 function setBusy(busy) {
   if (invokeButton) {
     invokeButton.disabled = busy;
   }
   if (brokerButton) {
     brokerButton.disabled = busy;
+  }
+  if (scheduleButton) {
+    scheduleButton.disabled = busy;
   }
   if (networkMatrixButton) {
     networkMatrixButton.disabled = busy;
@@ -1218,12 +1457,13 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
         const url = String(input);
         const body = init?.body ? JSON.parse(init.body) : {};
         let nextInit = init;
-        if (url.endsWith("/rpc") && body.method === "worker.brokerDemo") {
+        if (url.endsWith("/rpc") && isBrokeredRuntimeMethod(body.method)) {
+          const brokerGrants = await fetchBrokerGrants();
           body.params = {
             ...(body.params || {}),
-            storage_handle_grant_token: brokerConfig.storage_handle_grant_token,
-            storage_kv_handle_grant_token: brokerConfig.storage_kv_handle_grant_token,
-            storage_sqlite_handle_grant_token: brokerConfig.storage_sqlite_handle_grant_token,
+            storage_handle_grant_token: brokerGrants.storage_handle_grant_token,
+            storage_kv_handle_grant_token: brokerGrants.storage_kv_handle_grant_token,
+            storage_sqlite_handle_grant_token: brokerGrants.storage_sqlite_handle_grant_token,
           };
           nextInit = { ...init, body: JSON.stringify(body) };
         }
@@ -1247,6 +1487,25 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
           }
         }
         return response;
+      };
+      const isBrokeredRuntimeMethod = (method) => method === "worker.brokerDemo" || method === "` + realDemoScheduleMethod + `";
+      const fetchBrokerGrants = async () => {
+        const response = await fetch(brokerConfig.broker_grants_url, {
+          method: "POST",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ surface_instance_id: bootstrap.surface_instance_id }),
+          credentials: "same-origin",
+        });
+        if (!response.ok) {
+          throw new Error("broker grant refresh failed with HTTP " + response.status);
+        }
+        const envelope = await response.json();
+        const grants = envelope?.data || envelope;
+        if (!grants?.storage_handle_grant_token || !grants?.storage_kv_handle_grant_token || !grants?.storage_sqlite_handle_grant_token) {
+          throw new Error("broker grant refresh omitted storage grants");
+        }
+        log("broker-grants", { refreshed: true });
+        return grants;
       };
       const surfaceHost = new PluginSurfaceHost({
         bootstrap: {

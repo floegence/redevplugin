@@ -1117,6 +1117,11 @@ func scaffoldStylesCSS() string {
 		"  font-size: 24px;\n" +
 		"  font-weight: 650;\n" +
 		"}\n\n" +
+		"h2 {\n" +
+		"  margin: 0;\n" +
+		"  font-size: 18px;\n" +
+		"  font-weight: 650;\n" +
+		"}\n\n" +
 		".status {\n" +
 		"  margin: 0;\n" +
 		"  font-size: 14px;\n" +
@@ -1138,6 +1143,43 @@ func scaffoldStylesCSS() string {
 		"  cursor: pointer;\n" +
 		"  font: inherit;\n" +
 		"  padding: 8px 12px;\n" +
+		"}\n\n" +
+		".planner-panel {\n" +
+		"  display: grid;\n" +
+		"  gap: 12px;\n" +
+		"  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);\n" +
+		"  border-radius: 8px;\n" +
+		"  padding: 14px;\n" +
+		"}\n\n" +
+		".schedule-grid {\n" +
+		"  display: grid;\n" +
+		"  gap: 10px;\n" +
+		"  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));\n" +
+		"}\n\n" +
+		".schedule-tile {\n" +
+		"  display: grid;\n" +
+		"  gap: 4px;\n" +
+		"  border: 1px solid color-mix(in srgb, CanvasText 12%, transparent);\n" +
+		"  border-radius: 8px;\n" +
+		"  padding: 10px;\n" +
+		"}\n\n" +
+		".schedule-tile span,\n" +
+		".schedule-list span {\n" +
+		"  font-size: 12px;\n" +
+		"  opacity: 0.72;\n" +
+		"}\n\n" +
+		".schedule-list {\n" +
+		"  display: grid;\n" +
+		"  gap: 8px;\n" +
+		"  list-style: none;\n" +
+		"  margin: 0;\n" +
+		"  padding: 0;\n" +
+		"}\n\n" +
+		".schedule-list li {\n" +
+		"  display: grid;\n" +
+		"  gap: 4px;\n" +
+		"  border-left: 3px solid color-mix(in srgb, Highlight 72%, CanvasText 8%);\n" +
+		"  padding: 8px 10px;\n" +
 		"}\n"
 }
 
