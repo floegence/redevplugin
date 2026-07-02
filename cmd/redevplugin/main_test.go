@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/trust"
@@ -734,11 +735,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 		t.Fatalf("dev-secret-bind summary mismatch: %#v", bindSummary)
 	}
 	boundState := loadDevStateForTest(t, stateRoot)
-	boundSecret := boundState.Secrets.Records[devSecretKey(host.SecretBindRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-		SecretRef:        "api_token",
-		Scope:            "user",
-	})]
+	boundSecret := findDevSecretRecordForTest(t, boundState.Secrets, installSummary.PluginInstanceID, "api_token", "user")
 	if !boundSecret.Bound || boundSecret.BoundAt == nil || boundSecret.LastTestStatus != "" {
 		t.Fatalf("secret state not bound: %#v", boundSecret)
 	}
@@ -780,11 +777,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 		t.Fatalf("dev-secret-delete summary mismatch: %#v", deleteSummary)
 	}
 	deletedState := loadDevStateForTest(t, stateRoot)
-	deletedSecret := deletedState.Secrets.Records[devSecretKey(host.SecretBindRequest{
-		PluginInstanceID: installSummary.PluginInstanceID,
-		SecretRef:        "api_token",
-		Scope:            "user",
-	})]
+	deletedSecret := findDevSecretRecordForTest(t, deletedState.Secrets, installSummary.PluginInstanceID, "api_token", "user")
 	if deletedSecret.Bound || deletedSecret.DeletedAt == nil {
 		t.Fatalf("secret state not deleted: %#v", deletedSecret)
 	}
@@ -1533,6 +1526,17 @@ func loadDevStateForTest(t *testing.T, stateRoot string) devLifecycleState {
 		t.Fatal(err)
 	}
 	return state
+}
+
+func findDevSecretRecordForTest(t *testing.T, state secrets.MemoryState, pluginInstanceID string, secretRef string, scope string) secrets.Record {
+	t.Helper()
+	for _, record := range state.Records {
+		if record.PluginInstanceID == pluginInstanceID && record.SecretRef == secretRef && record.Scope == scope {
+			return record
+		}
+	}
+	t.Fatalf("secret record %s/%s/%s not found in %#v", pluginInstanceID, scope, secretRef, state.Records)
+	return secrets.Record{}
 }
 
 func saveDevStateForTest(t *testing.T, stateRoot string, state devLifecycleState) {

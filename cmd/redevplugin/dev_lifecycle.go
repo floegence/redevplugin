@@ -19,6 +19,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 )
@@ -39,7 +40,7 @@ type devLifecycleState struct {
 	Record         registry.PluginRecord      `json:"record"`
 	BrowserOrigins []browsersite.OriginRecord `json:"browser_origins,omitempty"`
 	Settings       settings.MemoryState       `json:"settings,omitempty"`
-	Secrets        devSecretState             `json:"secrets,omitempty"`
+	Secrets        secrets.MemoryState        `json:"secrets,omitempty"`
 	Permissions    permissions.MemoryState    `json:"permissions,omitempty"`
 	UpdatedAt      time.Time                  `json:"updated_at"`
 }
@@ -495,7 +496,7 @@ func saveAndWriteDevSecret(harness devHarness, state devLifecycleState, action s
 	if err := saveDevState(harness.stateRoot, state); err != nil {
 		return err
 	}
-	return writeDevSecret(action, harness.stateRoot, state, harness.secretStore.recordFor(req, state.UpdatedAt))
+	return writeDevSecret(action, harness.stateRoot, state, devSecretRecordFor(harness.secretStore, req, state.UpdatedAt))
 }
 
 func saveAndWriteDevPermission(harness devHarness, state devLifecycleState, action string, record permissions.Record) error {
@@ -540,7 +541,7 @@ func writeDevLifecycle(action string, stateRoot string, state devLifecycleState)
 	})
 }
 
-func writeDevSecret(action string, stateRoot string, state devLifecycleState, secret devSecretRecord) error {
+func writeDevSecret(action string, stateRoot string, state devLifecycleState, secret secrets.Record) error {
 	return writeJSON(devSecretSummary{
 		OK:               true,
 		Action:           action,
@@ -561,7 +562,7 @@ type devHarness struct {
 	registryStore   *devRegistryStore
 	browserSite     *devBrowserSiteStore
 	settingsStore   *settings.MemoryStore
-	secretStore     *devSecretStore
+	secretStore     *secrets.MemoryStore
 	permissionStore *permissions.MemoryStore
 }
 
@@ -595,7 +596,7 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 	}
 	browserSite := newDevBrowserSiteStore(state.BrowserOrigins)
 	settingsStore := settings.NewMemoryStoreFromState(state.Settings)
-	secretStore := newDevSecretStore(state.Secrets)
+	secretStore := secrets.NewMemoryStoreFromState(state.Secrets)
 	permissionStore := permissions.NewMemoryStoreFromState(state.Permissions)
 	registryStore := newDevRegistryStore(state.Record)
 	h, err := host.New(host.Adapters{
@@ -635,7 +636,7 @@ func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, erro
 		Storage:         storageBroker,
 		BrowserSite:     browserSite,
 		Settings:        settings.NewMemoryStore(),
-		Secrets:         newDevSecretStore(devSecretState{}),
+		Secrets:         secrets.NewMemoryStore(),
 		Permissions:     permissions.NewMemoryStore(),
 	})
 	if err != nil {
@@ -1067,137 +1068,24 @@ func sortDevBrowserOrigins(records []browsersite.OriginRecord) {
 	})
 }
 
-type devSecretState struct {
-	Records map[string]devSecretRecord `json:"records,omitempty"`
-}
-
-type devSecretRecord struct {
-	PluginInstanceID string     `json:"plugin_instance_id"`
-	SecretRef        string     `json:"secret_ref"`
-	Scope            string     `json:"scope"`
-	Bound            bool       `json:"bound"`
-	LastTestStatus   string     `json:"last_test_status,omitempty"`
-	BoundAt          *time.Time `json:"bound_at,omitempty"`
-	TestedAt         *time.Time `json:"tested_at,omitempty"`
-	DeletedAt        *time.Time `json:"deleted_at,omitempty"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-}
-
-type devSecretStore struct {
-	mu      sync.Mutex
-	records map[string]devSecretRecord
-}
-
-func newDevSecretStore(state devSecretState) *devSecretStore {
-	records := cloneDevSecretRecords(state.Records)
-	if records == nil {
-		records = map[string]devSecretRecord{}
-	}
-	return &devSecretStore{records: records}
-}
-
-func (s *devSecretStore) BindSecretRef(_ context.Context, req host.SecretBindRequest) error {
+func devSecretRecordFor(store *secrets.MemoryStore, req host.SecretBindRequest, fallback time.Time) secrets.Record {
 	normalized, err := normalizeDevSecretRequest(req)
 	if err != nil {
-		return err
+		return secrets.Record{UpdatedAt: fallback}
 	}
-	now := time.Now().UTC()
-	record := devSecretRecord{
+	records, err := store.List(context.Background(), secrets.ListRequest{
 		PluginInstanceID: normalized.PluginInstanceID,
-		SecretRef:        normalized.SecretRef,
 		Scope:            normalized.Scope,
-		Bound:            true,
-		BoundAt:          &now,
-		UpdatedAt:        now,
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.records[devSecretKey(normalized)] = record
-	return nil
-}
-
-func (s *devSecretStore) TestSecretRef(_ context.Context, req host.SecretTestRequest) error {
-	normalized, err := normalizeDevSecretRequest(host.SecretBindRequest(req))
+	})
 	if err != nil {
-		return err
+		return secrets.Record{UpdatedAt: fallback}
 	}
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[devSecretKey(normalized)]
-	if !ok || !record.Bound {
-		return fmt.Errorf("%w: secret_ref must be bound before testing", host.ErrInvalidSecretRef)
-	}
-	record.PluginInstanceID = normalized.PluginInstanceID
-	record.SecretRef = normalized.SecretRef
-	record.Scope = normalized.Scope
-	record.Bound = true
-	if record.BoundAt == nil {
-		record.BoundAt = &now
-	}
-	record.LastTestStatus = "passed"
-	record.TestedAt = &now
-	record.DeletedAt = nil
-	record.UpdatedAt = now
-	s.records[devSecretKey(normalized)] = record
-	return nil
-}
-
-func (s *devSecretStore) DeleteSecretRef(_ context.Context, req host.SecretDeleteRequest) error {
-	normalized, err := normalizeDevSecretRequest(host.SecretBindRequest(req))
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record := s.records[devSecretKey(normalized)]
-	record.PluginInstanceID = normalized.PluginInstanceID
-	record.SecretRef = normalized.SecretRef
-	record.Scope = normalized.Scope
-	record.Bound = false
-	record.LastTestStatus = ""
-	record.DeletedAt = &now
-	record.UpdatedAt = now
-	s.records[devSecretKey(normalized)] = record
-	return nil
-}
-
-func (s *devSecretStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
-	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if pluginInstanceID == "" {
-		return host.ErrInvalidSecretRef
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, record := range s.records {
-		if record.PluginInstanceID == pluginInstanceID {
-			delete(s.records, key)
+	for _, record := range records {
+		if record.SecretRef == normalized.SecretRef {
+			return record
 		}
 	}
-	return nil
-}
-
-func (s *devSecretStore) State() devSecretState {
-	if s == nil {
-		return devSecretState{}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return devSecretState{Records: cloneDevSecretRecords(s.records)}
-}
-
-func (s *devSecretStore) recordFor(req host.SecretBindRequest, fallback time.Time) devSecretRecord {
-	normalized, err := normalizeDevSecretRequest(req)
-	if err != nil {
-		return devSecretRecord{UpdatedAt: fallback}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if record, ok := s.records[devSecretKey(normalized)]; ok {
-		return cloneDevSecretRecord(record)
-	}
-	return devSecretRecord{
+	return secrets.Record{
 		PluginInstanceID: normalized.PluginInstanceID,
 		SecretRef:        normalized.SecretRef,
 		Scope:            normalized.Scope,
@@ -1215,41 +1103,6 @@ func normalizeDevSecretRequest(req host.SecretBindRequest) (host.SecretBindReque
 	return req, nil
 }
 
-func devSecretKey(req host.SecretBindRequest) string {
-	return req.PluginInstanceID + "\x00" + req.Scope + "\x00" + req.SecretRef
-}
-
-func cloneDevSecretRecords(records map[string]devSecretRecord) map[string]devSecretRecord {
-	if len(records) == 0 {
-		return nil
-	}
-	cloned := make(map[string]devSecretRecord, len(records))
-	keys := make([]string, 0, len(records))
-	for key := range records {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		cloned[key] = cloneDevSecretRecord(records[key])
-	}
-	return cloned
-}
-
-func cloneDevSecretRecord(record devSecretRecord) devSecretRecord {
-	record.BoundAt = cloneTimePointer(record.BoundAt)
-	record.TestedAt = cloneTimePointer(record.TestedAt)
-	record.DeletedAt = cloneTimePointer(record.DeletedAt)
-	return record
-}
-
-func cloneTimePointer(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
-}
-
 var _ registry.Store = (*devRegistryStore)(nil)
 var _ browsersite.Store = (*devBrowserSiteStore)(nil)
-var _ host.SecretStoreAdapter = (*devSecretStore)(nil)
+var _ host.SecretStoreAdapter = (*secrets.MemoryStore)(nil)
