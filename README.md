@@ -35,6 +35,10 @@ capabilities.
   validation/default/secret-redaction lifecycle, restores settings across
   process restarts, and keeps retained bind/import behavior durable without
   storing secret plaintext.
+- Browser-site origin stores include both in-memory and SQLite-backed
+  implementations. The SQLite store persists sandbox origin registrations,
+  keep-data retention, delete-data cleanup completion, retryable cleanup
+  failures, and require-retained guards across host restarts.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
