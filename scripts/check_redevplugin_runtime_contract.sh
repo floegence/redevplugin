@@ -56,6 +56,35 @@ fi
   grep -q 'dist/artifacts/redevplugin-release-stress.json.bundle' .github/workflows/release.yml
   grep -q 'dist/artifacts/SHA256SUMS.sig' .github/workflows/release.yml
   grep -q 'dist/artifacts/SHA256SUMS.bundle' .github/workflows/release.yml
+  verify_artifact_fixture=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-release-artifacts.XXXXXX")
+  trap 'rm -rf "$verify_artifact_fixture"' EXIT
+  printf 'runtime bundle\n' >"$verify_artifact_fixture/redevplugin-v0.0.0-test-linux-amd64.tar.gz"
+  cat >"$verify_artifact_fixture/redevplugin-release-stress.json" <<'JSON'
+{
+  "ok": true,
+  "mode": "release",
+  "stress_evidence": [{"category":"stream_backpressure","counters":{"backpressure_denials":1}}],
+  "steps": [{"name":"release_bundle","status":0,"duration_ms":1}]
+}
+JSON
+  (
+    cd "$verify_artifact_fixture"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json >SHA256SUMS
+    else
+      shasum -a 256 redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json | awk '{ print $1 "  " $2 }' >SHA256SUMS
+    fi
+    for file in redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json SHA256SUMS; do
+      : >"${file}.sig"
+      : >"${file}.bundle"
+    done
+  )
+  ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"
+  printf 'unsigned extra tarball\n' >"$verify_artifact_fixture/redevplugin-v0.0.0-extra-linux-amd64.tar.gz"
+  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"; then
+    echo "release artifact verifier accepted an unchecked tarball" >&2
+    exit 1
+  fi
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'
