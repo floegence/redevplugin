@@ -81,6 +81,11 @@ type deleteRetainedDataRequest struct {
 	RetainedID string `json:"retained_id"`
 }
 
+type bindRetainedDataRequest struct {
+	RetainedID             string `json:"retained_id"`
+	TargetPluginInstanceID string `json:"target_plugin_instance_id"`
+}
+
 type cleanupExpiredRetainedDataRequest struct {
 	RetryFailed bool `json:"retry_failed,omitempty"`
 	MaxRecords  *int `json:"max_records,omitempty"`
@@ -253,6 +258,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleListRetainedData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/delete":
 		h.handleDeleteRetainedData(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/bind":
+		h.handleBindRetainedData(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/retained-data/cleanup-expired":
 		h.handleCleanupExpiredRetainedData(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/permissions":
@@ -350,6 +357,7 @@ func RouteSet() []Route {
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/data/import"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/retained-data"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/delete"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/bind"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/permissions"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/permissions/grant"},
@@ -901,6 +909,31 @@ func (h Handler) handleDeleteRetainedData(w http.ResponseWriter, r *http.Request
 		return
 	}
 	record, err := h.Host.DeleteRetainedData(r.Context(), host.DeleteRetainedDataRequest{RetainedID: req.RetainedID})
+	if err != nil {
+		envelope := Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))}
+		if record.RetainedID != "" {
+			envelope.Data = record
+		}
+		WriteJSON(w, httpStatusForDataLifecycleError(err), envelope)
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleBindRetainedData(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req bindRetainedDataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	record, err := h.Host.BindRetainedData(r.Context(), host.BindRetainedDataRequest{
+		RetainedID:             req.RetainedID,
+		TargetPluginInstanceID: req.TargetPluginInstanceID,
+	})
 	if err != nil {
 		envelope := Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForDataLifecycleError(err))}
 		if record.RetainedID != "" {
@@ -1690,6 +1723,8 @@ func errorCodeForDataLifecycleError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
+	case errors.Is(err, host.ErrRetainedDataBindFailed):
+		return security.ErrRetainedDataBindFailed
 	case errors.Is(err, host.ErrRetainedDataCleanupFailed):
 		return security.ErrRetainedDataCleanupFailed
 	case errors.Is(err, retaineddata.ErrNotFound), errors.Is(err, retaineddata.ErrInvalidRecord), errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):
@@ -1791,6 +1826,8 @@ func httpStatusForDataLifecycleError(err error) int {
 	switch {
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, host.ErrRetainedDataBindFailed):
+		return http.StatusConflict
 	case errors.Is(err, host.ErrRetainedDataCleanupFailed):
 		return http.StatusConflict
 	case errors.Is(err, retaineddata.ErrNotFound), errors.Is(err, retaineddata.ErrInvalidRecord), errors.Is(err, registry.ErrNotFound), errors.Is(err, host.ErrPluginDataArchiveRequired), errors.Is(err, host.ErrPluginDataNotDeclared), errors.Is(err, host.ErrPluginSettingsNotDeclared), errors.Is(err, host.ErrPluginStorageNotDeclared), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound), errors.Is(err, settings.ErrArchiveNotFound), errors.Is(err, settings.ErrNotDeclared), errors.Is(err, settings.ErrInvalidSetting):

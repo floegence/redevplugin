@@ -24,6 +24,7 @@
   {"method": "POST", "path": "/_redevplugin/api/plugins/data/import"},
   {"method": "GET", "path": "/_redevplugin/api/plugins/retained-data"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/retained-data/delete"},
+  {"method": "POST", "path": "/_redevplugin/api/plugins/retained-data/bind"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
   {"method": "GET", "path": "/_redevplugin/api/plugins/permissions"},
   {"method": "POST", "path": "/_redevplugin/api/plugins/permissions/grant"},

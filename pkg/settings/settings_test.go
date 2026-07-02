@@ -107,6 +107,54 @@ func TestMemoryStoreDeleteRetainLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreBindRetainedSettings(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	spec := settingsSpec()
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Patch(ctx, PatchRequest{
+		PluginInstanceID: "plugini_source",
+		Values:           map[string]any{"engine": "podman", "retry_count": 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkSecret(ctx, MarkSecretRequest{
+		PluginInstanceID: "plugini_source",
+		SecretRef:        "api_key",
+		Set:              true,
+		LastTestStatus:   "passed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, DeleteRequest{PluginInstanceID: "plugini_source"}); err != nil {
+		t.Fatal(err)
+	}
+
+	bound, err := store.BindRetained(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: "plugini_source",
+		TargetPluginInstanceID: "plugini_target",
+		Spec:                   &spec,
+	})
+	if err != nil {
+		t.Fatalf("BindRetained() error = %v", err)
+	}
+	if bound.PluginInstanceID != "plugini_target" || bound.Values["engine"] != "podman" || bound.Values["retry_count"] != int64(4) {
+		t.Fatalf("bound settings mismatch: %#v", bound)
+	}
+	secret, ok := bound.Values["api_key"].(SecretValue)
+	if !ok {
+		t.Fatalf("bound secret should be redacted state: %#v", bound.Values["api_key"])
+	}
+	if secret.Set || secret.LastTestStatus != "" || secret.UpdatedAt != nil {
+		t.Fatalf("retained bind must not restore secret binding state: %#v", secret)
+	}
+	if _, err := store.Get(ctx, GetRequest{PluginInstanceID: "plugini_source"}); !errors.Is(err, ErrNotDeclared) {
+		t.Fatalf("Get(source after bind) error = %v, want ErrNotDeclared", err)
+	}
+}
+
 func TestMemoryStoreExportImportSettingsData(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

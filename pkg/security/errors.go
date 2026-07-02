@@ -17,4 +17,5 @@ const (
 	ErrTrustVerificationRequired   ErrorCode = "PLUGIN_TRUST_VERIFICATION_REQUIRED"
 	ErrTrustVerificationInvalid    ErrorCode = "PLUGIN_TRUST_VERIFICATION_INVALID"
 	ErrRetainedDataCleanupFailed   ErrorCode = "PLUGIN_RETAINED_DATA_CLEANUP_FAILED"
+	ErrRetainedDataBindFailed      ErrorCode = "PLUGIN_RETAINED_DATA_BIND_FAILED"
 )

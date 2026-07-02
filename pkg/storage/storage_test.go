@@ -87,6 +87,104 @@ func TestMemoryBrokerRetainsAndDeletesNamespaces(t *testing.T) {
 	}
 }
 
+func TestMemoryBrokerBindsRetainedNamespace(t *testing.T) {
+	broker := NewMemoryBroker()
+	ctx := context.Background()
+	source := Namespace{
+		PluginInstanceID: "plugini_source",
+		StoreID:          "cache",
+		Kind:             StoreKV,
+		Scope:            "user",
+		QuotaBytes:       4096,
+		SchemaVersion:    1,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		StoreID:          source.StoreID,
+		Key:              "ui/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.DeleteNamespace(ctx, source.PluginInstanceID, false); err != nil {
+		t.Fatal(err)
+	}
+	target := source
+	target.PluginInstanceID = "plugini_target"
+
+	if err := broker.BindRetainedNamespace(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: source.PluginInstanceID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+		TargetNamespaces:       []Namespace{target},
+	}); err != nil {
+		t.Fatalf("BindRetainedNamespace() error = %v", err)
+	}
+	if namespaces, err := broker.ListNamespaces(ctx, source.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	} else if len(namespaces) != 0 {
+		t.Fatalf("source retained namespace still listed: %#v", namespaces)
+	}
+	value, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: target.PluginInstanceID,
+		StoreID:          target.StoreID,
+		Key:              "ui/filter",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(bound target) error = %v", err)
+	}
+	if string(value.Value) != "qa" || value.Usage.UsageBytes == 0 {
+		t.Fatalf("bound KV mismatch: %#v value=%q", value, string(value.Value))
+	}
+}
+
+func TestMemoryBrokerBindsRetainedNamespaceInPlace(t *testing.T) {
+	broker := NewMemoryBroker()
+	ctx := context.Background()
+	ns := Namespace{
+		PluginInstanceID: "plugini_same",
+		StoreID:          "cache",
+		Kind:             StoreKV,
+		Scope:            "user",
+		QuotaBytes:       4096,
+		SchemaVersion:    1,
+	}
+	if err := broker.EnsureNamespace(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, KVPutRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.DeleteNamespace(ctx, ns.PluginInstanceID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.BindRetainedNamespace(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: ns.PluginInstanceID,
+		TargetPluginInstanceID: ns.PluginInstanceID,
+		TargetNamespaces:       []Namespace{ns},
+	}); err != nil {
+		t.Fatalf("BindRetainedNamespace(in-place) error = %v", err)
+	}
+	value, err := broker.GetKV(ctx, KVGetRequest{
+		PluginInstanceID: ns.PluginInstanceID,
+		StoreID:          ns.StoreID,
+		Key:              "ui/filter",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(in-place bound target) error = %v", err)
+	}
+	if string(value.Value) != "qa" {
+		t.Fatalf("in-place bound KV value = %q", string(value.Value))
+	}
+}
+
 func TestMemoryBrokerKVStoreReadWriteListDelete(t *testing.T) {
 	broker := NewMemoryBroker()
 	ctx := context.Background()
@@ -434,6 +532,64 @@ func TestFileBrokerRetainsAndDeletesNamespaceDirectories(t *testing.T) {
 	}
 	if len(deleted) != 0 {
 		t.Fatalf("deleted namespace still listed: %#v", deleted)
+	}
+}
+
+func TestFileBrokerBindsRetainedNamespaceDirectory(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	source := Namespace{
+		PluginInstanceID: "plugini_file_source",
+		StoreID:          "workspace",
+		Kind:             StoreFiles,
+		Scope:            "user",
+		QuotaBytes:       128,
+		SchemaVersion:    1,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	sourceDataPath, err := broker.NamespacePath(ctx, source.PluginInstanceID, source.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDataPath, "kept.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.DeleteNamespace(ctx, source.PluginInstanceID, false); err != nil {
+		t.Fatal(err)
+	}
+	target := source
+	target.PluginInstanceID = "plugini_file_target"
+
+	if err := broker.BindRetainedNamespace(ctx, BindRetainedRequest{
+		SourcePluginInstanceID: source.PluginInstanceID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+		TargetNamespaces:       []Namespace{target},
+	}); err != nil {
+		t.Fatalf("BindRetainedNamespace() error = %v", err)
+	}
+	if namespaces, err := broker.ListNamespaces(ctx, source.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	} else if len(namespaces) != 0 {
+		t.Fatalf("source retained namespace still listed: %#v", namespaces)
+	}
+	targetDataPath, err := broker.NamespacePath(ctx, target.PluginInstanceID, target.StoreID)
+	if err != nil {
+		t.Fatalf("NamespacePath(bound target) error = %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(targetDataPath, "kept.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "data" {
+		t.Fatalf("bound file content = %q", string(raw))
+	}
+	if _, err := os.Stat(sourceDataPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source retained data path stat error = %v, want not exist", err)
 	}
 }
 

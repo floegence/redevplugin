@@ -61,6 +61,7 @@ var (
 	ErrPluginStorageNotDeclared  = errors.New("target plugin does not declare storage")
 	ErrPluginSettingsNotDeclared = errors.New("target plugin does not declare settings")
 	ErrRetainedDataCleanupFailed = errors.New("retained data cleanup failed")
+	ErrRetainedDataBindFailed    = errors.New("retained data bind failed")
 	ErrRetainedDataUnsafePayload = errors.New("retained data payload is not safe to delete")
 )
 
@@ -252,6 +253,12 @@ type ListRetainedDataRequest = retaineddata.ListRequest
 type DeleteRetainedDataRequest struct {
 	RetainedID string    `json:"retained_id"`
 	Now        time.Time `json:"now,omitempty"`
+}
+
+type BindRetainedDataRequest struct {
+	RetainedID             string    `json:"retained_id"`
+	TargetPluginInstanceID string    `json:"target_plugin_instance_id"`
+	Now                    time.Time `json:"now,omitempty"`
 }
 
 type CleanupExpiredRetainedDataRequest struct {
@@ -2323,6 +2330,71 @@ func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataReq
 	return h.cleanupRetainedDataRecord(ctx, record, req.Now)
 }
 
+func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest) (retaineddata.Record, error) {
+	if h.adapters.RetainedData == nil {
+		return retaineddata.Record{}, errors.New("retained data store is required")
+	}
+	retainedID := strings.TrimSpace(req.RetainedID)
+	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
+	if retainedID == "" || targetPluginInstanceID == "" {
+		return retaineddata.Record{}, retaineddata.ErrInvalidRecord
+	}
+	record, err := h.adapters.RetainedData.Get(ctx, retainedID)
+	if err != nil {
+		return retaineddata.Record{}, err
+	}
+	if record.State != retaineddata.StateRetained {
+		return retaineddata.Record{}, fmt.Errorf("%w: retained data state is %s", retaineddata.ErrInvalidRecord, record.State)
+	}
+	target, err := h.adapters.Registry.GetPlugin(ctx, targetPluginInstanceID)
+	if err != nil {
+		return retaineddata.Record{}, err
+	}
+	if err := validateRetainedDataBindTarget(record, target); err != nil {
+		return retaineddata.Record{}, err
+	}
+	if err := h.canRun(ctx, target); err != nil {
+		return retaineddata.Record{}, err
+	}
+
+	now := lifecycleNow(req.Now)
+	if err := h.bindRetainedDataPayload(ctx, record, target, true, now); err != nil {
+		h.reportRetainedDataBindFailure(ctx, record, target, err)
+		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
+	}
+	if err := h.discardRetainedBrowserSiteForBind(ctx, record, target, now); err != nil {
+		h.reportRetainedDataBindFailure(ctx, record, target, err)
+		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
+	}
+	if err := h.bindRetainedDataPayload(ctx, record, target, false, now); err != nil {
+		h.reportRetainedDataBindFailure(ctx, record, target, err)
+		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
+	}
+	bound, err := h.adapters.RetainedData.MarkBound(ctx, retaineddata.BindRequest{
+		RetainedID:            record.RetainedID,
+		BoundPluginInstanceID: target.PluginInstanceID,
+		Now:                   now,
+	})
+	if err != nil {
+		h.reportRetainedDataBindFailure(ctx, record, target, err)
+		return retaineddata.Record{}, fmt.Errorf("%w: mark retained data bound: %w", ErrRetainedDataBindFailed, err)
+	}
+	h.audit(ctx, AuditEvent{
+		Type:             "plugin.retained_data.bound",
+		PluginID:         target.PluginID,
+		PluginInstanceID: target.PluginInstanceID,
+		Details: map[string]any{
+			"retained_id":               bound.RetainedID,
+			"source_plugin_instance_id": bound.SourcePluginInstanceID,
+			"target_plugin_instance_id": target.PluginInstanceID,
+			"storage_retained":          bound.StorageRetained,
+			"settings_retained":         bound.SettingsRetained,
+			"browser_site_discarded":    bound.BrowserSiteRetained,
+		},
+	})
+	return bound, nil
+}
+
 func (h *Host) CleanupExpiredRetainedData(ctx context.Context, req CleanupExpiredRetainedDataRequest) (RetainedDataCleanupResult, error) {
 	if h.adapters.RetainedData == nil {
 		return RetainedDataCleanupResult{}, errors.New("retained data store is required")
@@ -3650,6 +3722,126 @@ func (h *Host) deleteRetainedDataPayload(ctx context.Context, record retaineddat
 	return cleanupErr
 }
 
+func (h *Host) bindRetainedDataPayload(ctx context.Context, record retaineddata.Record, target registry.PluginRecord, dryRun bool, now time.Time) error {
+	var bindErr error
+	if record.StorageRetained {
+		if h.adapters.Storage == nil {
+			bindErr = errors.Join(bindErr, errors.New("storage broker is required for retained storage bind"))
+		} else if binder, ok := h.adapters.Storage.(storage.RetainedBinder); !ok {
+			bindErr = errors.Join(bindErr, fmt.Errorf("%w: storage broker does not support retained bind", ErrRetainedDataBindFailed))
+		} else {
+			namespaces, err := storageNamespacesFromManifest(target)
+			if err != nil {
+				bindErr = errors.Join(bindErr, err)
+			} else if len(namespaces) == 0 {
+				bindErr = errors.Join(bindErr, ErrPluginStorageNotDeclared)
+			} else if err := binder.BindRetainedNamespace(ctx, storage.BindRetainedRequest{
+				SourcePluginInstanceID: record.SourcePluginInstanceID,
+				TargetPluginInstanceID: target.PluginInstanceID,
+				TargetNamespaces:       namespaces,
+				DryRun:                 dryRun,
+				Now:                    now,
+			}); err != nil {
+				bindErr = errors.Join(bindErr, fmt.Errorf("bind retained storage: %w", err))
+			}
+		}
+	}
+	if record.SettingsRetained {
+		if target.Manifest.Settings == nil {
+			bindErr = errors.Join(bindErr, ErrPluginSettingsNotDeclared)
+		} else if h.adapters.Settings == nil {
+			bindErr = errors.Join(bindErr, errors.New("settings store is required for retained settings bind"))
+		} else if _, err := h.adapters.Settings.BindRetained(ctx, settings.BindRetainedRequest{
+			SourcePluginInstanceID: record.SourcePluginInstanceID,
+			TargetPluginInstanceID: target.PluginInstanceID,
+			Spec:                   target.Manifest.Settings,
+			DryRun:                 dryRun,
+			Now:                    now,
+		}); err != nil {
+			bindErr = errors.Join(bindErr, fmt.Errorf("bind retained settings: %w", err))
+		}
+	}
+	return bindErr
+}
+
+func (h *Host) discardRetainedBrowserSiteForBind(ctx context.Context, record retaineddata.Record, target registry.PluginRecord, now time.Time) error {
+	if !record.BrowserSiteRetained {
+		return nil
+	}
+	if h.adapters.BrowserSite == nil {
+		return errors.New("browser site store is required for retained browser site cleanup")
+	}
+	result, err := h.adapters.BrowserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
+		PluginInstanceID: record.SourcePluginInstanceID,
+		DeleteData:       true,
+		RequireRetained:  true,
+		Reason:           "retained_data_bound_discard_browser_site",
+		Now:              now,
+	})
+	if err != nil {
+		return fmt.Errorf("discard retained browser site data: %w", err)
+	}
+	h.audit(ctx, AuditEvent{
+		Type:             "plugin.browser_site.retained_discarded",
+		PluginID:         target.PluginID,
+		PluginInstanceID: target.PluginInstanceID,
+		Details: map[string]any{
+			"retained_id":               record.RetainedID,
+			"source_plugin_instance_id": record.SourcePluginInstanceID,
+			"origin_count":              len(result.Records),
+		},
+	})
+	return nil
+}
+
+func validateRetainedDataBindTarget(record retaineddata.Record, target registry.PluginRecord) error {
+	if record.PublisherID != target.PublisherID || record.PluginID != target.PluginID {
+		return fmt.Errorf("retained data identity mismatch: got %s/%s, want %s/%s", target.PublisherID, target.PluginID, record.PublisherID, record.PluginID)
+	}
+	sourceTrust := registry.TrustState(strings.TrimSpace(record.Metadata["source_trust_state"]))
+	if sourceTrust == "" {
+		if target.TrustState == registry.TrustUnsignedLocal {
+			return errors.New("legacy retained data without source trust metadata cannot bind to unsigned_local plugins")
+		}
+		return nil
+	}
+	if !retainedTrustClassCompatible(sourceTrust, target.TrustState) {
+		return fmt.Errorf("retained data source trust %q is not compatible with target trust %q", sourceTrust, target.TrustState)
+	}
+	return nil
+}
+
+func retainedTrustClassCompatible(source registry.TrustState, target registry.TrustState) bool {
+	switch source {
+	case registry.TrustBundled, registry.TrustVerified:
+		return target == registry.TrustBundled || target == registry.TrustVerified
+	case registry.TrustUnsignedLocal:
+		return target == registry.TrustUnsignedLocal
+	default:
+		return false
+	}
+}
+
+func (h *Host) reportRetainedDataBindFailure(ctx context.Context, record retaineddata.Record, target registry.PluginRecord, err error) {
+	if h.adapters.Diagnostics == nil || err == nil {
+		return
+	}
+	_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
+		Type:             "plugin.retained_data.bind_failed",
+		Severity:         "warning",
+		Message:          err.Error(),
+		PluginID:         target.PluginID,
+		PluginInstanceID: target.PluginInstanceID,
+		Details: map[string]any{
+			"retained_id":               record.RetainedID,
+			"source_plugin_instance_id": record.SourcePluginInstanceID,
+			"storage_retained":          record.StorageRetained,
+			"settings_retained":         record.SettingsRetained,
+			"browser_site_retained":     record.BrowserSiteRetained,
+		},
+	})
+}
+
 func (h *Host) reportRetainedDataCleanupFailure(ctx context.Context, record retaineddata.Record, err error) {
 	if h.adapters.Diagnostics == nil || err == nil {
 		return
@@ -3693,7 +3885,8 @@ func (h *Host) recordRetainedDataIfNeeded(ctx context.Context, record registry.P
 		BrowserSiteRetained:    summary.BrowserSiteRetained,
 		UsageBytes:             summary.UsageBytes,
 		Metadata: map[string]string{
-			"reason": "uninstall_keep_data",
+			"reason":             "uninstall_keep_data",
+			"source_trust_state": string(record.TrustState),
 		},
 		Now: lifecycleNow(now),
 	})

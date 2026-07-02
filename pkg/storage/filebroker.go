@@ -169,6 +169,60 @@ func (b *FileBroker) DeleteRetainedNamespace(ctx context.Context, pluginInstance
 	return os.RemoveAll(b.pluginBasePath(pluginInstanceID))
 }
 
+func (b *FileBroker) BindRetainedNamespace(ctx context.Context, req BindRetainedRequest) error {
+	if b == nil {
+		return errors.New("storage broker is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sourcePluginInstanceID := strings.TrimSpace(req.SourcePluginInstanceID)
+	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
+	if sourcePluginInstanceID == "" || targetPluginInstanceID == "" {
+		return fmt.Errorf("%w: source_plugin_instance_id and target_plugin_instance_id are required", ErrInvalidNamespace)
+	}
+	targets, err := normalizeTargetNamespaces(req.TargetNamespaces, targetPluginInstanceID)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("%w: target namespaces are required", ErrInvalidNamespace)
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = b.now()
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	plans, err := b.bindRetainedPlansLocked(sourcePluginInstanceID, targetPluginInstanceID, targets, now)
+	if err != nil {
+		return err
+	}
+	if req.DryRun {
+		return nil
+	}
+	for _, plan := range plans {
+		if plan.sameNamespace {
+			if err := b.writeNamespaceRecordLocked(plan.record); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(plan.targetBase), 0o700); err != nil {
+			return err
+		}
+		if err := os.Rename(plan.sourceBase, plan.targetBase); err != nil {
+			return err
+		}
+		if err := b.writeNamespaceRecordLocked(plan.record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (b *FileBroker) ExportData(ctx context.Context, req ExportRequest) (string, error) {
 	if b == nil {
 		return "", errors.New("storage broker is nil")
@@ -242,6 +296,75 @@ func (b *FileBroker) ExportData(ctx context.Context, req ExportRequest) (string,
 	}
 	cleanupTmp = false
 	return ref, nil
+}
+
+type fileBindRetainedPlan struct {
+	record        NamespaceRecord
+	sourceBase    string
+	targetBase    string
+	sameNamespace bool
+}
+
+func (b *FileBroker) bindRetainedPlansLocked(sourcePluginInstanceID string, targetPluginInstanceID string, targets map[string]Namespace, now time.Time) ([]fileBindRetainedPlan, error) {
+	records, err := b.listNamespacesLocked(sourcePluginInstanceID)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, ErrNamespaceNotFound
+	}
+	plans := make([]fileBindRetainedPlan, 0, len(records))
+	for _, record := range records {
+		if record.State != NamespaceRetained {
+			return nil, fmt.Errorf("%w: %s/%s is %s", ErrNamespaceNotRetained, record.PluginInstanceID, record.StoreID, record.State)
+		}
+		target, ok := targets[record.StoreID]
+		if !ok {
+			return nil, fmt.Errorf("%w: retained store %q is not declared by target manifest", ErrInvalidNamespace, record.StoreID)
+		}
+		if record.Kind != target.Kind {
+			return nil, fmt.Errorf("%w: retained store %q kind %q does not match target kind %q", ErrInvalidNamespace, record.StoreID, record.Kind, target.Kind)
+		}
+		if record.SchemaVersion != target.SchemaVersion {
+			return nil, fmt.Errorf("%w: retained store %q schema_version %d does not match target schema_version %d", ErrInvalidNamespace, record.StoreID, record.SchemaVersion, target.SchemaVersion)
+		}
+		dataPath := b.namespaceDataPath(record.PluginInstanceID, record.StoreID)
+		usage, err := directoryUsage(dataPath)
+		if err != nil {
+			return nil, err
+		}
+		if usage > target.QuotaBytes {
+			return nil, fmt.Errorf("%w: retained store %q usage %d exceeds target quota %d", ErrQuotaExceeded, record.StoreID, usage, target.QuotaBytes)
+		}
+		sourceBase := b.namespaceBasePath(sourcePluginInstanceID, record.StoreID)
+		targetBase := b.namespaceBasePath(targetPluginInstanceID, record.StoreID)
+		sameNamespace := sourceBase == targetBase
+		if !sameNamespace {
+			if _, err := b.readNamespaceRecordLocked(targetPluginInstanceID, record.StoreID); err == nil {
+				return nil, fmt.Errorf("%w: %s/%s", ErrNamespaceAlreadyExists, targetPluginInstanceID, record.StoreID)
+			} else if !errors.Is(err, ErrNamespaceNotFound) {
+				return nil, err
+			}
+			if _, err := os.Stat(targetBase); err == nil {
+				return nil, fmt.Errorf("%w: %s/%s", ErrNamespaceAlreadyExists, targetPluginInstanceID, record.StoreID)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+		}
+		record.Namespace = target
+		record.State = NamespaceActive
+		record.UsageBytes = usage
+		record.UpdatedAt = now
+		record.RetainedAt = nil
+		plans = append(plans, fileBindRetainedPlan{
+			record:        record,
+			sourceBase:    sourceBase,
+			targetBase:    targetBase,
+			sameNamespace: sameNamespace,
+		})
+	}
+	sort.Slice(plans, func(i, j int) bool { return plans[i].record.StoreID < plans[j].record.StoreID })
+	return plans, nil
 }
 
 func (b *FileBroker) ImportData(ctx context.Context, req ImportRequest) error {

@@ -222,6 +222,16 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
         "409": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+  /_redevplugin/api/plugins/retained-data/bind:
+    post:
+      operationId: bindPluginRetainedData
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/BindRetainedDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+        "409": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
   /_redevplugin/api/plugins/retained-data/cleanup-expired:
     post:
       operationId: cleanupExpiredPluginRetainedData
@@ -537,6 +547,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/DeleteRetainedDataRequest"
+    BindRetainedDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BindRetainedDataRequest"
     CleanupExpiredRetainedDataRequest:
       required: true
       content:
@@ -605,6 +621,7 @@ components:
         - PLUGIN_RUNTIME_UNAVAILABLE
         - PLUGIN_CONTRACT_MISMATCH
         - PLUGIN_RETAINED_DATA_CLEANUP_FAILED
+        - PLUGIN_RETAINED_DATA_BIND_FAILED
     TrustState:
       type: string
       enum: [bundled, verified, unsigned_local, untrusted, needs_review, blocked_security]
@@ -842,6 +859,13 @@ components:
       additionalProperties: false
       properties:
         retained_id: { type: string, minLength: 1 }
+    BindRetainedDataRequest:
+      type: object
+      required: [retained_id, target_plugin_instance_id]
+      additionalProperties: false
+      properties:
+        retained_id: { type: string, minLength: 1 }
+        target_plugin_instance_id: { type: string, minLength: 1 }
     CleanupExpiredRetainedDataRequest:
       type: object
       additionalProperties: false

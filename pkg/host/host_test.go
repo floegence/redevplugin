@@ -2332,6 +2332,316 @@ func TestDeleteRetainedDataRemovesRetainedStoragePayload(t *testing.T) {
 	}
 }
 
+func TestBindRetainedDataRestoresStoragePayload(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		retainedData:   retainedRegistry,
+	})
+	packageBytes := buildStorageFixturePackage(t)
+	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatal(err)
+	}
+	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := h.InstallPackage(ctx, InstallRequest{
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+		TrustState:       registry.TrustVerified,
+		PluginInstanceID: "plugini_storage_rebind_target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bound, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
+		RetainedID:             retainedRecords[0].RetainedID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+	})
+	if err != nil {
+		t.Fatalf("BindRetainedData() error = %v", err)
+	}
+	if bound.State != retaineddata.StateBound || bound.BoundPluginInstanceID != target.PluginInstanceID {
+		t.Fatalf("bound retained record mismatch: %#v", bound)
+	}
+	if namespaces, err := broker.ListNamespaces(ctx, source.PluginInstanceID); err != nil {
+		t.Fatal(err)
+	} else if len(namespaces) != 0 {
+		t.Fatalf("source retained storage still present: %#v", namespaces)
+	}
+	value, err := broker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: target.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(bound target) error = %v", err)
+	}
+	if string(value.Value) != "qa" {
+		t.Fatalf("bound KV value = %q", string(value.Value))
+	}
+	if !audits.hasEvent("plugin.retained_data.bound") {
+		t.Fatalf("missing retained data bound audit event: %#v", audits.events)
+	}
+}
+
+func TestBindRetainedDataRestoresStoragePayloadInPlace(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		retainedData:   retainedRegistry,
+	})
+	packageBytes := buildStorageFixturePackage(t)
+	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+		Value:            []byte("qa"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatal(err)
+	}
+	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.PluginInstanceID != source.PluginInstanceID {
+		t.Fatalf("same package reinstall should reuse default instance id: got %s want %s", target.PluginInstanceID, source.PluginInstanceID)
+	}
+
+	bound, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
+		RetainedID:             retainedRecords[0].RetainedID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+	})
+	if err != nil {
+		t.Fatalf("BindRetainedData(in-place) error = %v", err)
+	}
+	if bound.State != retaineddata.StateBound || bound.BoundPluginInstanceID != target.PluginInstanceID {
+		t.Fatalf("in-place bound retained record mismatch: %#v", bound)
+	}
+	value, err := broker.GetKV(ctx, storage.KVGetRequest{
+		PluginInstanceID: target.PluginInstanceID,
+		StoreID:          "cache",
+		Key:              "planner/filter",
+	})
+	if err != nil {
+		t.Fatalf("GetKV(in-place bound target) error = %v", err)
+	}
+	if string(value.Value) != "qa" {
+		t.Fatalf("in-place bound KV value = %q", string(value.Value))
+	}
+}
+
+func TestBindRetainedDataRestoresSettingsWithoutSecretState(t *testing.T) {
+	ctx := context.Background()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  storage.NewMemoryBroker(),
+		retainedData:   retainedRegistry,
+		secrets:        &recordingSecretStore{},
+	})
+	packageBytes := buildSettingsFixturePackage(t)
+	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		Values:           map[string]any{"default_engine": "podman", "show_stopped": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.BindSecretRef(ctx, SecretBindRequest{
+		PluginInstanceID: source.PluginInstanceID,
+		SecretRef:        "api_token",
+		Scope:            "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatal(err)
+	}
+	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := h.InstallPackage(ctx, InstallRequest{
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+		TrustState:       registry.TrustVerified,
+		PluginInstanceID: "plugini_settings_rebind_target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
+		RetainedID:             retainedRecords[0].RetainedID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+	}); err != nil {
+		t.Fatalf("BindRetainedData(settings) error = %v", err)
+	}
+	snapshot, err := h.GetPluginSettings(ctx, GetSettingsRequest{PluginInstanceID: target.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Values["default_engine"] != "podman" || snapshot.Values["show_stopped"] != false {
+		t.Fatalf("bound settings mismatch: %#v", snapshot.Values)
+	}
+	secret, ok := snapshot.Values["api_token"].(settings.SecretValue)
+	if !ok {
+		t.Fatalf("bound secret should be redacted state: %#v", snapshot.Values["api_token"])
+	}
+	if secret.Set {
+		t.Fatalf("retained settings bind must not restore secret binding state: %#v", secret)
+	}
+}
+
+func TestBindRetainedDataRejectsUnsafeTrustClass(t *testing.T) {
+	ctx := context.Background()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  storage.NewMemoryBroker(),
+		retainedData:   retainedRegistry,
+	})
+	packageBytes := buildStorageFixturePackage(t)
+	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatal(err)
+	}
+	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := h.InstallPackage(ctx, InstallRequest{
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+		TrustState:       registry.TrustUnsignedLocal,
+		PluginInstanceID: "plugini_storage_unsigned_target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
+		RetainedID:             retainedRecords[0].RetainedID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+	}); err == nil {
+		t.Fatal("BindRetainedData() expected trust class error")
+	}
+	stored, err := retainedRegistry.Get(ctx, retainedRecords[0].RetainedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != retaineddata.StateRetained {
+		t.Fatalf("retained record state changed after rejected bind: %#v", stored)
+	}
+}
+
+func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
+	ctx := context.Background()
+	broker := storage.NewMemoryBroker()
+	retainedRegistry := retaineddata.NewMemoryStore()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		storageBroker:  broker,
+		retainedData:   retainedRegistry,
+	})
+	packageBytes := buildStorageFixturePackage(t)
+	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+		t.Fatal(err)
+	}
+	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := h.InstallPackage(ctx, InstallRequest{
+		PackageReader:    bytes.NewReader(packageBytes),
+		PackageSize:      int64(len(packageBytes)),
+		TrustState:       registry.TrustVerified,
+		PluginInstanceID: "plugini_storage_active_target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: target.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.BindRetainedData(ctx, BindRetainedDataRequest{
+		RetainedID:             retainedRecords[0].RetainedID,
+		TargetPluginInstanceID: target.PluginInstanceID,
+	}); !errors.Is(err, ErrRetainedDataBindFailed) {
+		t.Fatalf("BindRetainedData() error = %v, want ErrRetainedDataBindFailed", err)
+	}
+	stored, err := retainedRegistry.Get(ctx, retainedRecords[0].RetainedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != retaineddata.StateRetained {
+		t.Fatalf("retained record state changed after rejected bind: %#v", stored)
+	}
+}
+
 func TestCleanupExpiredRetainedDataDeletesPayloadAndMarksFailures(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)

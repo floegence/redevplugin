@@ -1401,6 +1401,51 @@ func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
+	ctx := context.Background()
+	storageBroker := storage.NewMemoryBroker()
+	h := newHTTPTestHostWithStorage(t, storageBroker)
+	handler := Handler{Host: h}
+	packageBase64 := base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t))
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+		"package_base64": packageBase64,
+		"trust_state":    "verified",
+	})
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+	})
+	if err := storageBroker.SetUsage(ctx, installed.PluginInstanceID, "db", 1024); err != nil {
+		t.Fatal(err)
+	}
+	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/uninstall", map[string]any{
+		"plugin_instance_id": installed.PluginInstanceID,
+		"delete_data":        false,
+	})
+	listed := getJSON[struct {
+		RetainedData []retaineddata.Record `json:"retained_data"`
+	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
+	target := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+		"package_base64":     packageBase64,
+		"trust_state":        "verified",
+		"plugin_instance_id": "plugini_http_storage_rebind_target",
+	})
+
+	bound := postJSON[retaineddata.Record](t, handler, "/_redevplugin/api/plugins/retained-data/bind", map[string]any{
+		"retained_id":               listed.RetainedData[0].RetainedID,
+		"target_plugin_instance_id": target.PluginInstanceID,
+	})
+	if bound.State != retaineddata.StateBound || bound.BoundPluginInstanceID != target.PluginInstanceID {
+		t.Fatalf("bound retained-data response mismatch: %#v", bound)
+	}
+	usage, err := storageBroker.Usage(ctx, target.PluginInstanceID, "db")
+	if err != nil {
+		t.Fatalf("Usage(bound target) error = %v", err)
+	}
+	if usage.UsageBytes != 1024 {
+		t.Fatalf("bound target usage = %d, want 1024", usage.UsageBytes)
+	}
+}
+
 func TestHandlerRetainedDataDeleteFailureReturnsCleanupCodeAndRecord(t *testing.T) {
 	ctx := context.Background()
 	storageBroker := storage.NewMemoryBroker()

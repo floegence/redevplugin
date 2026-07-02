@@ -638,6 +638,11 @@ export type PluginRetainedDataList = {
   [key: string]: unknown;
 };
 
+export type PluginRetainedDataBindRequest = {
+  retained_id: string;
+  target_plugin_instance_id: string;
+};
+
 export type PluginRetainedDataCleanupRequest = {
   retry_failed?: boolean;
   max_records?: number;
@@ -830,6 +835,10 @@ export class PluginPlatformClient {
 
   deleteRetainedData(retainedId: string): Promise<PluginRetainedDataRecord> {
     return this.#postJSON("/_redevplugin/api/plugins/retained-data/delete", { retained_id: retainedId });
+  }
+
+  bindRetainedData(request: PluginRetainedDataBindRequest): Promise<PluginRetainedDataRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/retained-data/bind", request);
   }
 
   cleanupExpiredRetainedData(request: PluginRetainedDataCleanupRequest = {}): Promise<PluginRetainedDataCleanupResult> {

@@ -36,6 +36,7 @@ var (
 	ErrInvalidSetting  = errors.New("plugin setting is invalid")
 	ErrArchiveNotFound = errors.New("plugin settings archive not found")
 	ErrNotRetained     = errors.New("plugin settings are not retained")
+	ErrAlreadyExists   = errors.New("plugin settings already exist")
 )
 
 type EnsureRequest struct {
@@ -81,6 +82,14 @@ type ImportRequest struct {
 	DeleteExisting   bool
 	Spec             *manifest.SettingsSpec
 	Now              time.Time
+}
+
+type BindRetainedRequest struct {
+	SourcePluginInstanceID string
+	TargetPluginInstanceID string
+	Spec                   *manifest.SettingsSpec
+	DryRun                 bool
+	Now                    time.Time
 }
 
 type SecretValue struct {
@@ -143,6 +152,7 @@ type Store interface {
 	Export(ctx context.Context, req ExportRequest) (string, error)
 	Import(ctx context.Context, req ImportRequest) (Snapshot, error)
 	Delete(ctx context.Context, req DeleteRequest) error
+	BindRetained(ctx context.Context, req BindRetainedRequest) (Snapshot, error)
 }
 
 type MemoryStore struct {
@@ -458,6 +468,70 @@ func (s *MemoryStore) Import(_ context.Context, req ImportRequest) (Snapshot, er
 		UpdatedAt:        now,
 	}
 	s.records[pluginInstanceID] = record
+	return snapshot(record), nil
+}
+
+func (s *MemoryStore) BindRetained(_ context.Context, req BindRetainedRequest) (Snapshot, error) {
+	if s == nil {
+		return Snapshot{}, errors.New("settings store is nil")
+	}
+	sourcePluginInstanceID := strings.TrimSpace(req.SourcePluginInstanceID)
+	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
+	if sourcePluginInstanceID == "" || targetPluginInstanceID == "" {
+		return Snapshot{}, fmt.Errorf("%w: source_plugin_instance_id and target_plugin_instance_id are required", ErrInvalidSetting)
+	}
+	if req.Spec == nil {
+		return Snapshot{}, ErrNotDeclared
+	}
+	if err := validateSpec(*req.Spec); err != nil {
+		return Snapshot{}, err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = s.now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	source, ok := s.records[sourcePluginInstanceID]
+	if !ok {
+		return Snapshot{}, ErrNotDeclared
+	}
+	if source.State != StateRetained {
+		return Snapshot{}, fmt.Errorf("%w: settings state is %s", ErrNotRetained, source.State)
+	}
+	if target, exists := s.records[targetPluginInstanceID]; exists && targetPluginInstanceID != sourcePluginInstanceID {
+		return Snapshot{}, fmt.Errorf("%w: %s is %s", ErrAlreadyExists, target.PluginInstanceID, target.State)
+	}
+
+	fields := cloneFields(req.Spec.Fields)
+	values := normalizedValuesForFields(fields, nil)
+	imported, err := importedValuesForFields(fields, source.Values, values)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	revision := source.SettingsRevision + 1
+	if revision == 0 {
+		revision = 1
+	}
+	record := Record{
+		PluginInstanceID: targetPluginInstanceID,
+		SchemaVersion:    req.Spec.SchemaVersion,
+		SettingsRevision: revision,
+		State:            StateActive,
+		Fields:           fields,
+		Values:           imported,
+		Secrets:          normalizedSecretsForFields(fields, nil),
+		UpdatedAt:        now,
+	}
+	if req.DryRun {
+		return snapshot(record), nil
+	}
+	if targetPluginInstanceID != sourcePluginInstanceID {
+		delete(s.records, sourcePluginInstanceID)
+	}
+	s.records[targetPluginInstanceID] = record
 	return snapshot(record), nil
 }
 
