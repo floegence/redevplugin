@@ -126,6 +126,15 @@ type CancelPolicySpec struct {
 	AckTimeoutMS      int    `json:"ack_timeout_ms,omitempty"`
 }
 
+const (
+	CancelDisableBehaviorCancel = "cancel"
+	CancelDisableBehaviorOrphan = "orphan"
+	CancelDisableBehaviorWait   = "wait"
+
+	CancelUninstallBehaviorCancelThenBlockDelete = "cancel_then_block_delete"
+	CancelUninstallBehaviorForceCleanupAllowed   = "force_cleanup_allowed"
+)
+
 type SurfaceKind string
 
 const (
@@ -325,29 +334,38 @@ func Validate(m Manifest) error {
 		if !validExecutionMode(method.Execution) {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].execution", i), Message: "is invalid"}
 		}
-		if method.Route.Kind != MethodRouteCapability && method.Route.Kind != MethodRouteWorker && method.Route.Kind != MethodRouteCoreAction {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].route.kind", i), Message: "must be capability, worker, or core_action"}
+		if err := validateMethodRoute(fmt.Sprintf("methods[%d].route", i), method.Route, bindings, workers); err != nil {
+			return err
 		}
-		if method.Route.Kind == MethodRouteCapability {
-			if _, ok := bindings[method.Route.BindingID]; !ok {
-				return ValidationError{Field: fmt.Sprintf("methods[%d].route.binding_id", i), Message: "must reference a declared capability binding"}
-			}
+		if err := validateMethodConfirmation(fmt.Sprintf("methods[%d]", i), method); err != nil {
+			return err
 		}
-		if method.Route.Kind == MethodRouteWorker {
-			if _, ok := workers[method.Route.WorkerID]; !ok {
-				return ValidationError{Field: fmt.Sprintf("methods[%d].route.worker_id", i), Message: "must reference a declared worker"}
-			}
-			if strings.TrimSpace(method.Route.Export) == "" {
-				return ValidationError{Field: fmt.Sprintf("methods[%d].route.export", i), Message: "is required for worker routes"}
-			}
-		}
-		if method.Route.Kind == MethodRouteCoreAction && strings.TrimSpace(method.Route.ActionID) == "" {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].route.action_id", i), Message: "is required for core_action routes"}
-		}
-		if method.Execution != MethodExecutionSync && method.CancelPolicy == nil {
-			return ValidationError{Field: fmt.Sprintf("methods[%d].cancel_policy", i), Message: "is required for operation and subscription methods"}
+		if err := validateMethodCancelPolicy(fmt.Sprintf("methods[%d]", i), method); err != nil {
+			return err
 		}
 		methods[method.Method] = method
+	}
+	for i, method := range m.Methods {
+		if method.Confirmation == nil || method.Confirmation.PreflightMethod == nil {
+			continue
+		}
+		preflightMethodName := strings.TrimSpace(*method.Confirmation.PreflightMethod)
+		preflight, ok := methods[preflightMethodName]
+		if !ok {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].confirmation.preflight_method", i), Message: "must reference a declared method"}
+		}
+		if preflight.Method == method.Method {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].confirmation.preflight_method", i), Message: "must not reference the same method"}
+		}
+		if !preflight.PreflightOnly {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].confirmation.preflight_method", i), Message: "must reference a preflight_only method"}
+		}
+		if preflight.Effect != MethodEffectRead {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].confirmation.preflight_method", i), Message: "must reference a read-only method"}
+		}
+		if preflight.Execution != MethodExecutionSync {
+			return ValidationError{Field: fmt.Sprintf("methods[%d].confirmation.preflight_method", i), Message: "must reference a sync method"}
+		}
 	}
 
 	surfaces := map[string]struct{}{}
@@ -517,6 +535,174 @@ func validEffect(effect MethodEffect) bool {
 func validExecutionMode(mode MethodExecutionMode) bool {
 	switch mode {
 	case MethodExecutionSync, MethodExecutionOperation, MethodExecutionSubscription:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateMethodRoute(field string, route MethodRouteSpec, bindings map[string]struct{}, workers map[string]struct{}) error {
+	switch route.Kind {
+	case MethodRouteCapability:
+		if _, ok := bindings[route.BindingID]; !ok {
+			return ValidationError{Field: field + ".binding_id", Message: "must reference a declared capability binding"}
+		}
+		if strings.TrimSpace(route.TargetMethod) == "" {
+			return ValidationError{Field: field + ".target_method", Message: "is required for capability routes"}
+		}
+		if strings.TrimSpace(route.WorkerID) != "" {
+			return ValidationError{Field: field + ".worker_id", Message: "is only allowed for worker routes"}
+		}
+		if strings.TrimSpace(route.Export) != "" {
+			return ValidationError{Field: field + ".export", Message: "is only allowed for worker routes"}
+		}
+		if strings.TrimSpace(route.ActionID) != "" {
+			return ValidationError{Field: field + ".action_id", Message: "is only allowed for core_action routes"}
+		}
+	case MethodRouteWorker:
+		if _, ok := workers[route.WorkerID]; !ok {
+			return ValidationError{Field: field + ".worker_id", Message: "must reference a declared worker"}
+		}
+		if strings.TrimSpace(route.Export) == "" {
+			return ValidationError{Field: field + ".export", Message: "is required for worker routes"}
+		}
+		if strings.TrimSpace(route.BindingID) != "" {
+			return ValidationError{Field: field + ".binding_id", Message: "is only allowed for capability routes"}
+		}
+		if strings.TrimSpace(route.TargetMethod) != "" {
+			return ValidationError{Field: field + ".target_method", Message: "is only allowed for capability routes"}
+		}
+		if strings.TrimSpace(route.ActionID) != "" {
+			return ValidationError{Field: field + ".action_id", Message: "is only allowed for core_action routes"}
+		}
+	case MethodRouteCoreAction:
+		if strings.TrimSpace(route.ActionID) == "" {
+			return ValidationError{Field: field + ".action_id", Message: "is required for core_action routes"}
+		}
+		if strings.TrimSpace(route.BindingID) != "" {
+			return ValidationError{Field: field + ".binding_id", Message: "is only allowed for capability routes"}
+		}
+		if strings.TrimSpace(route.TargetMethod) != "" {
+			return ValidationError{Field: field + ".target_method", Message: "is only allowed for capability routes"}
+		}
+		if strings.TrimSpace(route.WorkerID) != "" {
+			return ValidationError{Field: field + ".worker_id", Message: "is only allowed for worker routes"}
+		}
+		if strings.TrimSpace(route.Export) != "" {
+			return ValidationError{Field: field + ".export", Message: "is only allowed for worker routes"}
+		}
+	default:
+		return ValidationError{Field: field + ".kind", Message: "must be capability, worker, or core_action"}
+	}
+	return nil
+}
+
+func validateMethodConfirmation(field string, method MethodSpec) error {
+	if method.PreflightOnly {
+		if method.Effect != MethodEffectRead {
+			return ValidationError{Field: field + ".effect", Message: "must be read for preflight_only methods"}
+		}
+		if method.Execution != MethodExecutionSync {
+			return ValidationError{Field: field + ".execution", Message: "must be sync for preflight_only methods"}
+		}
+		if method.Dangerous {
+			return ValidationError{Field: field + ".dangerous", Message: "must be false for preflight_only methods"}
+		}
+	}
+	if method.Confirmation == nil {
+		if method.Dangerous {
+			return ValidationError{Field: field + ".confirmation", Message: "is required for dangerous methods"}
+		}
+		return nil
+	}
+	if !validConfirmationMode(method.Confirmation.Mode) {
+		return ValidationError{Field: field + ".confirmation.mode", Message: "must be none, required, or risk_based"}
+	}
+	if method.Dangerous && method.Confirmation.Mode == ConfirmationNone {
+		return ValidationError{Field: field + ".confirmation.mode", Message: "must be required or risk_based for dangerous methods"}
+	}
+	if method.PreflightOnly && method.Confirmation.Mode != ConfirmationNone {
+		return ValidationError{Field: field + ".confirmation.mode", Message: "must be none for preflight_only methods"}
+	}
+	if method.Confirmation.PreflightMethod != nil {
+		if strings.TrimSpace(*method.Confirmation.PreflightMethod) == "" {
+			return ValidationError{Field: field + ".confirmation.preflight_method", Message: "must not be empty"}
+		}
+		if method.Confirmation.Mode == ConfirmationNone {
+			return ValidationError{Field: field + ".confirmation.preflight_method", Message: "is only allowed when confirmation mode is required or risk_based"}
+		}
+		if !method.Confirmation.PlanHashRequired {
+			return ValidationError{Field: field + ".confirmation.plan_hash_required", Message: "must be true when preflight_method is set"}
+		}
+	}
+	seenRequestHashFields := map[string]struct{}{}
+	for i, hashField := range method.Confirmation.RequestHashFields {
+		if strings.TrimSpace(hashField) == "" {
+			return ValidationError{Field: fmt.Sprintf("%s.confirmation.request_hash_fields[%d]", field, i), Message: "must not be empty"}
+		}
+		if _, ok := seenRequestHashFields[hashField]; ok {
+			return ValidationError{Field: fmt.Sprintf("%s.confirmation.request_hash_fields[%d]", field, i), Message: "must be unique"}
+		}
+		seenRequestHashFields[hashField] = struct{}{}
+	}
+	return nil
+}
+
+func validateMethodCancelPolicy(field string, method MethodSpec) error {
+	if method.Execution == MethodExecutionSync {
+		if method.CancelPolicy == nil {
+			return nil
+		}
+		if method.CancelPolicy.Cancelable {
+			return ValidationError{Field: field + ".cancel_policy.cancelable", Message: "must be false for sync methods"}
+		}
+		if strings.TrimSpace(method.CancelPolicy.DisableBehavior) != "" {
+			return ValidationError{Field: field + ".cancel_policy.disable_behavior", Message: "is only allowed for operation and subscription methods"}
+		}
+		if strings.TrimSpace(method.CancelPolicy.UninstallBehavior) != "" {
+			return ValidationError{Field: field + ".cancel_policy.uninstall_behavior", Message: "is only allowed for operation and subscription methods"}
+		}
+		if method.CancelPolicy.AckTimeoutMS != 0 {
+			return ValidationError{Field: field + ".cancel_policy.ack_timeout_ms", Message: "is only allowed for operation and subscription methods"}
+		}
+		return nil
+	}
+	if method.CancelPolicy == nil {
+		return ValidationError{Field: field + ".cancel_policy", Message: "is required for operation and subscription methods"}
+	}
+	if !validCancelDisableBehavior(method.CancelPolicy.DisableBehavior) {
+		return ValidationError{Field: field + ".cancel_policy.disable_behavior", Message: "must be cancel, orphan, or wait"}
+	}
+	if !validCancelUninstallBehavior(method.CancelPolicy.UninstallBehavior) {
+		return ValidationError{Field: field + ".cancel_policy.uninstall_behavior", Message: "must be cancel_then_block_delete or force_cleanup_allowed"}
+	}
+	if method.CancelPolicy.AckTimeoutMS < 0 {
+		return ValidationError{Field: field + ".cancel_policy.ack_timeout_ms", Message: "must be zero or positive"}
+	}
+	return nil
+}
+
+func validConfirmationMode(mode ConfirmationMode) bool {
+	switch mode {
+	case ConfirmationNone, ConfirmationRequired, ConfirmationRiskBased:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCancelDisableBehavior(behavior string) bool {
+	switch behavior {
+	case CancelDisableBehaviorCancel, CancelDisableBehaviorOrphan, CancelDisableBehaviorWait:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCancelUninstallBehavior(behavior string) bool {
+	switch behavior {
+	case CancelUninstallBehaviorCancelThenBlockDelete, CancelUninstallBehaviorForceCleanupAllowed:
 		return true
 	default:
 		return false

@@ -71,6 +71,254 @@ func TestValidateRequiresCancelPolicyForSubscription(t *testing.T) {
 	}
 }
 
+func TestValidateMethodRouteDiscriminatedUnion(t *testing.T) {
+	t.Run("capability route requires target method", func(t *testing.T) {
+		m := validManifest()
+		m.Methods[0].Route.TargetMethod = ""
+
+		expectValidationField(t, m, "methods[0].route.target_method")
+	})
+
+	t.Run("capability route rejects worker fields", func(t *testing.T) {
+		m := validManifest()
+		m.Methods[0].Route.WorkerID = "echo_worker"
+
+		expectValidationField(t, m, "methods[0].route.worker_id")
+	})
+
+	t.Run("worker route rejects capability fields", func(t *testing.T) {
+		m := validManifestWithWorkerMethod()
+		m.Methods[1].Route.BindingID = "resource_provider"
+
+		expectValidationField(t, m, "methods[1].route.binding_id")
+	})
+
+	t.Run("core action route rejects capability fields", func(t *testing.T) {
+		m := validManifest()
+		m.Methods = append(m.Methods, MethodSpec{
+			Method:    "core.open",
+			Effect:    MethodEffectRead,
+			Execution: MethodExecutionSync,
+			Route:     MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "example.open_settings", BindingID: "resource_provider"},
+		})
+
+		expectValidationField(t, m, "methods[1].route.binding_id")
+	})
+}
+
+func TestValidateMethodConfirmationContract(t *testing.T) {
+	t.Run("allows dangerous operation with risk preflight", func(t *testing.T) {
+		m := validManifestWithRiskPreflightOperation()
+
+		if err := Validate(m); err != nil {
+			t.Fatalf("Validate() risk preflight operation error = %v", err)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(*Manifest)
+		field  string
+	}{
+		{
+			name: "dangerous method requires explicit confirmation",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Dangerous = true
+			},
+			field: "methods[0].confirmation",
+		},
+		{
+			name: "dangerous method rejects none confirmation",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Dangerous = true
+				m.Methods[0].Confirmation = &ConfirmationSpec{Mode: ConfirmationNone}
+			},
+			field: "methods[0].confirmation.mode",
+		},
+		{
+			name: "rejects invalid confirmation mode",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Confirmation = &ConfirmationSpec{Mode: ConfirmationMode("prompt")}
+			},
+			field: "methods[0].confirmation.mode",
+		},
+		{
+			name: "preflight method must not be empty",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Confirmation = &ConfirmationSpec{
+					Mode:             ConfirmationRiskBased,
+					PreflightMethod:  stringPtr(" "),
+					PlanHashRequired: true,
+				}
+			},
+			field: "methods[0].confirmation.preflight_method",
+		},
+		{
+			name: "preflight method requires plan hash",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskPreflightMethod())
+				m.Methods[0].Confirmation = &ConfirmationSpec{
+					Mode:            ConfirmationRiskBased,
+					PreflightMethod: stringPtr("resources.start.preflight"),
+				}
+			},
+			field: "methods[0].confirmation.plan_hash_required",
+		},
+		{
+			name: "preflight method must reference declared method",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Confirmation = &ConfirmationSpec{
+					Mode:             ConfirmationRiskBased,
+					PreflightMethod:  stringPtr("missing.preflight"),
+					PlanHashRequired: true,
+				}
+			},
+			field: "methods[0].confirmation.preflight_method",
+		},
+		{
+			name: "preflight method must not reference same method",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskPreflightMethod(), riskyOperationMethod())
+				m.Methods[2].Confirmation.PreflightMethod = stringPtr("resources.start")
+			},
+			field: "methods[2].confirmation.preflight_method",
+		},
+		{
+			name: "preflight method must reference preflight-only method",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskyOperationMethod())
+				m.Methods[1].Confirmation.PreflightMethod = stringPtr("resources.list")
+			},
+			field: "methods[1].confirmation.preflight_method",
+		},
+		{
+			name: "preflight-only method must be read",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskPreflightMethod())
+				m.Methods[1].Effect = MethodEffectWrite
+			},
+			field: "methods[1].effect",
+		},
+		{
+			name: "preflight-only method must be sync",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskPreflightMethod())
+				m.Methods[1].Execution = MethodExecutionOperation
+			},
+			field: "methods[1].execution",
+		},
+		{
+			name: "preflight-only method must not be dangerous",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskPreflightMethod())
+				m.Methods[1].Dangerous = true
+				m.Methods[1].Confirmation = &ConfirmationSpec{Mode: ConfirmationRequired}
+			},
+			field: "methods[1].dangerous",
+		},
+		{
+			name: "preflight-only method must not require confirmation",
+			mutate: func(m *Manifest) {
+				m.Methods = append(m.Methods, riskPreflightMethod())
+				m.Methods[1].Confirmation = &ConfirmationSpec{Mode: ConfirmationRequired}
+			},
+			field: "methods[1].confirmation.mode",
+		},
+		{
+			name: "request hash fields must not be empty",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Confirmation = &ConfirmationSpec{
+					Mode:              ConfirmationRequired,
+					RequestHashFields: []string{"resource_id", " "},
+				}
+			},
+			field: "methods[0].confirmation.request_hash_fields[1]",
+		},
+		{
+			name: "request hash fields must be unique",
+			mutate: func(m *Manifest) {
+				m.Methods[0].Confirmation = &ConfirmationSpec{
+					Mode:              ConfirmationRequired,
+					RequestHashFields: []string{"resource_id", "resource_id"},
+				}
+			},
+			field: "methods[0].confirmation.request_hash_fields[1]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := validManifest()
+			tc.mutate(&candidate)
+
+			expectValidationField(t, candidate, tc.field)
+		})
+	}
+}
+
+func TestValidateMethodCancelPolicyContract(t *testing.T) {
+	t.Run("operation requires cancel policy", func(t *testing.T) {
+		m := validManifest()
+		m.Methods = append(m.Methods, riskyOperationMethod())
+		m.Methods[1].Dangerous = false
+		m.Methods[1].Confirmation = nil
+		m.Methods[1].CancelPolicy = nil
+
+		expectValidationField(t, m, "methods[1].cancel_policy")
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(*Manifest)
+		field  string
+	}{
+		{
+			name: "rejects invalid disable behavior",
+			mutate: func(m *Manifest) {
+				m.Methods[2].CancelPolicy.DisableBehavior = "detach"
+			},
+			field: "methods[2].cancel_policy.disable_behavior",
+		},
+		{
+			name: "rejects invalid uninstall behavior",
+			mutate: func(m *Manifest) {
+				m.Methods[2].CancelPolicy.UninstallBehavior = "delete_now"
+			},
+			field: "methods[2].cancel_policy.uninstall_behavior",
+		},
+		{
+			name: "rejects negative ack timeout",
+			mutate: func(m *Manifest) {
+				m.Methods[2].CancelPolicy.AckTimeoutMS = -1
+			},
+			field: "methods[2].cancel_policy.ack_timeout_ms",
+		},
+		{
+			name: "sync method cannot be cancelable",
+			mutate: func(m *Manifest) {
+				m.Methods[0].CancelPolicy = &CancelPolicySpec{Cancelable: true}
+			},
+			field: "methods[0].cancel_policy.cancelable",
+		},
+		{
+			name: "sync method cannot declare disable behavior",
+			mutate: func(m *Manifest) {
+				m.Methods[0].CancelPolicy = &CancelPolicySpec{DisableBehavior: CancelDisableBehaviorCancel}
+			},
+			field: "methods[0].cancel_policy.disable_behavior",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := validManifestWithRiskPreflightOperation()
+			tc.mutate(&candidate)
+
+			expectValidationField(t, candidate, tc.field)
+		})
+	}
+}
+
 func TestValidateNetworkConnectors(t *testing.T) {
 	m := validManifest()
 	m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
@@ -368,6 +616,69 @@ func TestValidateCoreActionRouteRequiresActionID(t *testing.T) {
 	if err := Validate(m); err == nil {
 		t.Fatal("Validate() expected missing action_id error")
 	}
+}
+
+func expectValidationField(t *testing.T, m Manifest, field string) {
+	t.Helper()
+	err := Validate(m)
+	if err == nil {
+		t.Fatalf("Validate() expected validation error for %s", field)
+	}
+	if validationErr, ok := err.(ValidationError); !ok || validationErr.Field != field {
+		t.Fatalf("Validate() error = %v, want field %s", err, field)
+	}
+}
+
+func validManifestWithWorkerMethod() Manifest {
+	m := validManifest()
+	m.Workers = []WorkerSpec{{
+		WorkerID:         "echo_worker",
+		Artifact:         "workers/echo.wasm",
+		ABI:              "redevplugin-wasm-worker-v1",
+		Mode:             WorkerModeJob,
+		Scope:            "user",
+		MemoryLimitBytes: 16 << 20,
+	}}
+	m.Methods = append(m.Methods, MethodSpec{
+		Method:    "worker.echo",
+		Effect:    MethodEffectRead,
+		Execution: MethodExecutionSync,
+		Route:     MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+	})
+	return m
+}
+
+func validManifestWithRiskPreflightOperation() Manifest {
+	m := validManifest()
+	m.Methods = append(m.Methods, riskPreflightMethod(), riskyOperationMethod())
+	return m
+}
+
+func riskPreflightMethod() MethodSpec {
+	return MethodSpec{
+		Method:        "resources.start.preflight",
+		Effect:        MethodEffectRead,
+		Execution:     MethodExecutionSync,
+		PreflightOnly: true,
+		Route:         MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start.preflight"},
+	}
+}
+
+func riskyOperationMethod() MethodSpec {
+	return MethodSpec{
+		Method:        "resources.start",
+		Effect:        MethodEffectExecute,
+		Execution:     MethodExecutionOperation,
+		Dangerous:     true,
+		Confirmation:  &ConfirmationSpec{Mode: ConfirmationRiskBased, PreflightMethod: stringPtr("resources.start.preflight"), RequestHashFields: []string{"resource_id"}, PlanHashRequired: true},
+		CancelPolicy:  &CancelPolicySpec{Cancelable: true, DisableBehavior: CancelDisableBehaviorCancel, UninstallBehavior: CancelUninstallBehaviorCancelThenBlockDelete, AckTimeoutMS: 2000},
+		Route:         MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start"},
+		RequestSchema: map[string]any{"type": "object", "required": []string{"resource_id"}},
+	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func validManifest() Manifest {

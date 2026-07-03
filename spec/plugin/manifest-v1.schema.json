@@ -94,24 +94,52 @@
             "required": ["kind"],
             "properties": {
               "kind": { "enum": ["capability", "worker", "core_action"] },
-              "binding_id": { "type": "string" },
-              "target_method": { "type": "string" },
-              "worker_id": { "type": "string" },
-              "export": { "type": "string" },
-              "action_id": { "type": "string" }
+              "binding_id": { "type": "string", "minLength": 1 },
+              "target_method": { "type": "string", "minLength": 1 },
+              "worker_id": { "type": "string", "minLength": 1 },
+              "export": { "type": "string", "minLength": 1 },
+              "action_id": { "type": "string", "minLength": 1 }
             },
             "allOf": [
               {
                 "if": { "properties": { "kind": { "const": "capability" } }, "required": ["kind"] },
-                "then": { "required": ["binding_id"] }
+                "then": {
+                  "required": ["binding_id", "target_method"],
+                  "not": {
+                    "anyOf": [
+                      { "required": ["worker_id"] },
+                      { "required": ["export"] },
+                      { "required": ["action_id"] }
+                    ]
+                  }
+                }
               },
               {
                 "if": { "properties": { "kind": { "const": "worker" } }, "required": ["kind"] },
-                "then": { "required": ["worker_id", "export"] }
+                "then": {
+                  "required": ["worker_id", "export"],
+                  "not": {
+                    "anyOf": [
+                      { "required": ["binding_id"] },
+                      { "required": ["target_method"] },
+                      { "required": ["action_id"] }
+                    ]
+                  }
+                }
               },
               {
                 "if": { "properties": { "kind": { "const": "core_action" } }, "required": ["kind"] },
-                "then": { "required": ["action_id"] }
+                "then": {
+                  "required": ["action_id"],
+                  "not": {
+                    "anyOf": [
+                      { "required": ["binding_id"] },
+                      { "required": ["target_method"] },
+                      { "required": ["worker_id"] },
+                      { "required": ["export"] }
+                    ]
+                  }
+                }
               }
             ]
           },
@@ -139,7 +167,36 @@
           },
           "request_schema": { "type": "object" },
           "response_schema": { "type": "object" }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "dangerous": { "const": true } }, "required": ["dangerous"] },
+            "then": {
+              "required": ["confirmation"],
+              "properties": {
+                "confirmation": {
+                  "properties": {
+                    "mode": { "enum": ["required", "risk_based"] }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "preflight_only": { "const": true } }, "required": ["preflight_only"] },
+            "then": {
+              "properties": {
+                "effect": { "const": "read" },
+                "execution": { "const": "sync" },
+                "dangerous": { "const": false }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "execution": { "enum": ["operation", "subscription"] } }, "required": ["execution"] },
+            "then": { "required": ["cancel_policy"] }
+          }
+        ]
       }
     },
     "workers": {

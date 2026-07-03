@@ -75,6 +75,33 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 		string(manifest.MethodRouteWorker),
 		string(manifest.MethodRouteCoreAction),
 	})
+	routeConditions := requireObjectArray(t, route["allOf"], "method route allOf")
+	capabilityRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteCapability), "capability route")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, capabilityRoute, "then")["required"], "capability route required"), []string{"binding_id", "target_method"}, "capability route required")
+	assertForbiddenRequiredFields(t, requireNestedObject(t, capabilityRoute, "then"), []string{"worker_id", "export", "action_id"}, "capability route forbidden fields")
+	workerRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteWorker), "worker route")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, workerRoute, "then")["required"], "worker route required"), []string{"worker_id", "export"}, "worker route required")
+	assertForbiddenRequiredFields(t, requireNestedObject(t, workerRoute, "then"), []string{"binding_id", "target_method", "action_id"}, "worker route forbidden fields")
+	coreActionRoute := requireConstCondition(t, routeConditions, "kind", string(manifest.MethodRouteCoreAction), "core action route")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, coreActionRoute, "then")["required"], "core action route required"), []string{"action_id"}, "core action route required")
+	assertForbiddenRequiredFields(t, requireNestedObject(t, coreActionRoute, "then"), []string{"binding_id", "target_method", "worker_id", "export"}, "core action route forbidden fields")
+
+	methodConditions := requireObjectArray(t, requireNestedObject(t, props, "methods", "items")["allOf"], "method allOf")
+	dangerousMethod := requireConstCondition(t, methodConditions, "dangerous", true, "dangerous method")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, dangerousMethod, "then")["required"], "dangerous method required"), []string{"confirmation"}, "dangerous method required")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, dangerousMethod, "then", "properties", "confirmation", "properties", "mode")["enum"], "dangerous confirmation modes"), []string{string(manifest.ConfirmationRequired), string(manifest.ConfirmationRiskBased)}, "dangerous confirmation modes")
+	preflightOnlyMethod := requireConstCondition(t, methodConditions, "preflight_only", true, "preflight-only method")
+	if got := requireNestedObject(t, preflightOnlyMethod, "then", "properties", "effect")["const"]; got != string(manifest.MethodEffectRead) {
+		t.Fatalf("preflight_only effect const = %#v, want %q", got, manifest.MethodEffectRead)
+	}
+	if got := requireNestedObject(t, preflightOnlyMethod, "then", "properties", "execution")["const"]; got != string(manifest.MethodExecutionSync) {
+		t.Fatalf("preflight_only execution const = %#v, want %q", got, manifest.MethodExecutionSync)
+	}
+	if got := requireNestedObject(t, preflightOnlyMethod, "then", "properties", "dangerous")["const"]; got != false {
+		t.Fatalf("preflight_only dangerous const = %#v, want false", got)
+	}
+	asyncMethod := requireEnumCondition(t, methodConditions, "execution", []string{string(manifest.MethodExecutionOperation), string(manifest.MethodExecutionSubscription)}, "async method")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, asyncMethod, "then")["required"], "async method required"), []string{"cancel_policy"}, "async method required")
 
 	workerProps := requireNestedObject(t, props, "workers", "items", "properties")
 	if got := requireNestedObject(t, workerProps, "abi")["const"]; got != version.WASMABIVersion {
@@ -124,4 +151,77 @@ func assertStringEnum(t *testing.T, value any, label string, want []string) {
 	if !stringSetEqual(got, want) {
 		t.Fatalf("%s enum = %#v, want %#v", label, got, want)
 	}
+}
+
+func requireObjectArray(t *testing.T, value any, label string) []map[string]any {
+	t.Helper()
+	rawItems, ok := value.([]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want array", label, value)
+	}
+	items := make([]map[string]any, 0, len(rawItems))
+	for i, rawItem := range rawItems {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			t.Fatalf("%s[%d] = %#v, want object", label, i, rawItem)
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func requireConstCondition(t *testing.T, conditions []map[string]any, field string, value any, label string) map[string]any {
+	t.Helper()
+	for _, condition := range conditions {
+		fieldSchema, ok := nestedObject(condition, "if", "properties", field)
+		if !ok {
+			continue
+		}
+		if got := fieldSchema["const"]; got == value {
+			return condition
+		}
+	}
+	t.Fatalf("%s condition for %s const %#v not found", label, field, value)
+	return nil
+}
+
+func requireEnumCondition(t *testing.T, conditions []map[string]any, field string, values []string, label string) map[string]any {
+	t.Helper()
+	for _, condition := range conditions {
+		fieldSchema, ok := nestedObject(condition, "if", "properties", field)
+		if !ok {
+			continue
+		}
+		if got := requireStringSlice(t, fieldSchema["enum"], label+" enum"); stringSetEqual(got, values) {
+			return condition
+		}
+	}
+	t.Fatalf("%s condition for %s enum %#v not found", label, field, values)
+	return nil
+}
+
+func nestedObject(from map[string]any, path ...string) (map[string]any, bool) {
+	current := from
+	for _, key := range path {
+		next, ok := current[key].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func assertForbiddenRequiredFields(t *testing.T, schema map[string]any, want []string, label string) {
+	t.Helper()
+	forbidden := requireObjectArray(t, requireNestedObject(t, schema, "not")["anyOf"], label)
+	got := make([]string, 0, len(forbidden))
+	for _, condition := range forbidden {
+		required := requireStringSlice(t, condition["required"], label+" required")
+		if len(required) != 1 {
+			t.Fatalf("%s condition required = %#v, want one field", label, required)
+		}
+		got = append(got, required[0])
+	}
+	assertStringSet(t, got, want, label)
 }
