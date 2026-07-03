@@ -249,6 +249,20 @@ if (backpressureDenials < streamWorkers) {
   fail(`stream_backpressure backpressure_denials ${backpressureDenials} must cover workers ${streamWorkers}`);
 }
 requireAtLeast(evidenceByCategory, "stream_backpressure", "core_operation_checks", 1);
+const streamCloseRequests = requireAtLeast(evidenceByCategory, "stream_backpressure", "stream_close_requests", 1);
+const closedStreams = requireAtLeast(evidenceByCategory, "stream_backpressure", "closed_streams", 1);
+if (closedStreams !== streamCloseRequests) {
+  fail(`stream_backpressure closed_streams ${closedStreams} must equal stream_close_requests ${streamCloseRequests}`);
+}
+const postCloseAppendDenials = requireAtLeast(evidenceByCategory, "stream_backpressure", "post_close_append_denials", 1);
+if (postCloseAppendDenials !== closedStreams) {
+  fail(`stream_backpressure post_close_append_denials ${postCloseAppendDenials} must equal closed_streams ${closedStreams}`);
+}
+const streamCloseAudits = requireAtLeast(evidenceByCategory, "stream_backpressure", "stream_close_audit_events", 1);
+if (streamCloseAudits !== closedStreams) {
+  fail(`stream_backpressure stream_close_audit_events ${streamCloseAudits} must equal closed_streams ${closedStreams}`);
+}
+requireAtLeast(evidenceByCategory, "stream_backpressure", "stream_close_status_checked", 1);
 
 const operationCancelRegistered = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "operations_registered", 2);
 const operationCancelRequested = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "cancel_requested_records", 2);

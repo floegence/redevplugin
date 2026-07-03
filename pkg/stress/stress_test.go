@@ -59,6 +59,17 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 
 	streams := stream.NewMemoryStore()
 	operations := operation.NewMemoryStore()
+	events := observability.NewMemoryStore()
+	pluginHost, err := host.New(host.Adapters{
+		SessionResolver: stressSessionResolver{},
+		Policy:          stressPolicy{},
+		Audit:           events,
+		Diagnostics:     events,
+		Streams:         streams,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	payload := make([]byte, 64)
 	var backpressure atomic.Int64
 
@@ -72,6 +83,7 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			streamID := fmt.Sprintf("stream_%02d", worker)
 			if _, err := streams.Register(ctx, stream.RegisterRequest{
 				StreamID:         streamID,
+				PluginID:         "com.example.stress.logs",
 				PluginInstanceID: "plugini_stress_stream",
 				Method:           "stress.logs.tail",
 				Execution:        "stream",
@@ -147,12 +159,50 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 	if len(records) != 96 {
 		t.Fatalf("operation records = %d, want 96", len(records))
 	}
+	var closedStreams int
+	var postCloseAppendDenials int
+	for worker := 0; worker < workerCount; worker++ {
+		streamID := fmt.Sprintf("stream_%02d", worker)
+		closed, err := pluginHost.CloseStream(ctx, host.CloseStreamRequest{
+			StreamID: streamID,
+			Status:   stream.StatusCanceled,
+			Reason:   "stress shutdown",
+		})
+		if err != nil {
+			t.Fatalf("CloseStream(%s) error = %v", streamID, err)
+		}
+		if closed.Status != stream.StatusCanceled || closed.ClosedAt == nil {
+			t.Fatalf("closed stream mismatch: %#v", closed)
+		}
+		closedStreams++
+		if _, err := streams.Append(ctx, stream.AppendRequest{StreamID: streamID, Data: payload}); errors.Is(err, stream.ErrStreamClosed) {
+			postCloseAppendDenials++
+		} else {
+			t.Fatalf("Append(%s) after close error = %v, want ErrStreamClosed", streamID, err)
+		}
+	}
+	auditEvents, err := events.ListPluginAudit(ctx, observability.ListAuditRequest{
+		PluginInstanceID: "plugini_stress_stream",
+		Type:             "plugin.stream.closed",
+		Limit:            workerCount + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auditEvents) != workerCount {
+		t.Fatalf("stream close audit events = %d, want %d", len(auditEvents), workerCount)
+	}
 	logStressSummary(t, stressSummary{
 		Category: "stream_backpressure",
 		Counters: map[string]int{
-			"workers":               workerCount,
-			"backpressure_denials":  int(backpressure.Load()),
-			"core_operation_checks": len(records),
+			"workers":                     workerCount,
+			"backpressure_denials":        int(backpressure.Load()),
+			"core_operation_checks":       len(records),
+			"stream_close_requests":       closedStreams,
+			"closed_streams":              closedStreams,
+			"post_close_append_denials":   postCloseAppendDenials,
+			"stream_close_audit_events":   len(auditEvents),
+			"stream_close_status_checked": 1,
 		},
 	})
 }

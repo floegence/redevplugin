@@ -417,7 +417,8 @@ Go classifier, Rust crate, and JSON contract cannot drift.
 
 `check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
 field records structured counters from `pkg/stress`, including stream
-backpressure denials, operation cancel dispatch success/failure persistence,
+backpressure denials plus stream close/cancel fail-closed checks, operation
+cancel dispatch success/failure persistence,
 connectivity grant/classifier denials, runtime revoke ACK p95 latency,
 redirect/DNS rebinding denials, HTTP proxy/CONNECT/header hardening, TCP mock
 database round trips, TCP size denials, TCP cancelled reads, UDP source-pin
@@ -425,5 +426,5 @@ mismatch drops, UDP rate-limit denials, WebSocket round trips, WebSocket size
 denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota
 pressure, SQLite sidecar/sparse bypass checks, and CSP report flood rate
 limiting. CI uploads that summary as release evidence for host-neutral
-broker/backpressure, operation cancel dispatch, runtime-control, storage, and
-sandbox telemetry behavior.
+broker/backpressure and stream close/cancel, operation cancel dispatch,
+runtime-control, storage, and sandbox telemetry behavior.
