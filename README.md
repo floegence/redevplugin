@@ -169,7 +169,9 @@ capabilities.
   `audit_events`, and `diagnostic_events`, so host products can consume the SDK
   and raw HTTP contract consistently. The browser demo uses this client from the
   host page to exercise settings management without exposing management
-  credentials to the sandboxed iframe.
+  credentials to the sandboxed iframe. Host pages can also use
+  `PluginSurfaceReloadLimiter` to cap consecutive automatic iframe reloads
+  after crashes or load failures before showing a host-owned error state.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, compatibility, release-manifest,

@@ -79,6 +79,16 @@ Asset responses carry CSP, reporting, permissions, referrer, CORP, nosniff, and
 service-worker scope headers. Host products provide exact `frame-ancestors`
 values when embedding iframes.
 
+## Surface Reload Guard
+
+Trusted host UI may automatically reload a sandbox iframe after a crash or load
+failure, but it must not loop forever. `PluginSurfaceReloadLimiter` provides a
+small host-side guard for that lifecycle. The default policy allows two reload
+attempts within 30 seconds. When `recordCrash()` returns `allowed: false`, the
+host should stop automatic reloads and show a host-owned error state with
+diagnostics. `recordHealthyLoad()` resets the window after the host has observed
+that the reloaded surface is healthy enough to treat the crash loop as cleared.
+
 ## Settings And Intents
 
 Settings helpers must preserve manifest validation and secret redaction:
@@ -124,4 +134,3 @@ Host products should:
    bridge, token, package, or lifecycle protocols;
 5. keep product-specific capability UI outside ReDevPlugin core unless it is a
    reusable platform component.
-

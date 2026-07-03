@@ -112,6 +112,38 @@ export type PluginBridgeClientOptions = {
   receiver?: WindowLike;
 };
 
+export const defaultPluginSurfaceReloadMax = 2;
+export const defaultPluginSurfaceReloadWindowMs = 30_000;
+
+export type PluginSurfaceReloadLimiterOptions = {
+  maxReloads?: number;
+  windowMs?: number;
+  now?: () => number;
+};
+
+export type PluginSurfaceReloadDecision =
+  | {
+      allowed: true;
+      attempt: number;
+      remaining: number;
+      windowStartedAtMs: number;
+    }
+  | {
+      allowed: false;
+      attempt: number;
+      remaining: 0;
+      windowStartedAtMs: number;
+      nextRetryAtMs: number;
+      reason: "reload_limit_exceeded";
+    };
+
+export type PluginSurfaceReloadState = {
+  reloads: number;
+  remaining: number;
+  windowStartedAtMs?: number;
+  nextRetryAtMs?: number;
+};
+
 export type WindowLike = {
   postMessage(message: unknown, targetOrigin: string): void;
   addEventListener?(type: "message", listener: (event: MessageEventLike) => void): void;
@@ -135,6 +167,76 @@ export class PluginBridgeError extends Error {
     this.errorCode = errorCode;
     this.data = data;
     this.details = details ?? data;
+  }
+}
+
+export class PluginSurfaceReloadLimiter {
+  readonly maxReloads: number;
+  readonly windowMs: number;
+  #now: () => number;
+  #windowStartedAtMs?: number;
+  #reloads = 0;
+
+  constructor(options: PluginSurfaceReloadLimiterOptions = {}) {
+    this.maxReloads = normalizeReloadMax(options.maxReloads ?? defaultPluginSurfaceReloadMax);
+    this.windowMs = normalizeReloadWindow(options.windowMs ?? defaultPluginSurfaceReloadWindowMs);
+    this.#now = options.now ?? (() => Date.now());
+  }
+
+  recordCrash(nowMs = this.#now()): PluginSurfaceReloadDecision {
+    nowMs = normalizeNowMs(nowMs);
+    this.#ensureWindow(nowMs);
+    const windowStartedAtMs = this.#windowStartedAtMs ?? nowMs;
+    if (this.#reloads >= this.maxReloads) {
+      return {
+        allowed: false,
+        attempt: this.#reloads + 1,
+        remaining: 0,
+        windowStartedAtMs,
+        nextRetryAtMs: windowStartedAtMs + this.windowMs,
+        reason: "reload_limit_exceeded",
+      };
+    }
+    this.#reloads += 1;
+    return {
+      allowed: true,
+      attempt: this.#reloads,
+      remaining: this.maxReloads - this.#reloads,
+      windowStartedAtMs,
+    };
+  }
+
+  recordHealthyLoad(): void {
+    this.reset();
+  }
+
+  reset(): void {
+    this.#windowStartedAtMs = undefined;
+    this.#reloads = 0;
+  }
+
+  get state(): PluginSurfaceReloadState {
+    const remaining = Math.max(0, this.maxReloads - this.#reloads);
+    return {
+      reloads: this.#reloads,
+      remaining,
+      windowStartedAtMs: this.#windowStartedAtMs,
+      nextRetryAtMs:
+        remaining === 0 && this.#windowStartedAtMs !== undefined
+          ? this.#windowStartedAtMs + this.windowMs
+          : undefined,
+    };
+  }
+
+  #ensureWindow(nowMs: number): void {
+    if (
+      this.#windowStartedAtMs === undefined ||
+      nowMs < this.#windowStartedAtMs ||
+      nowMs >= this.#windowStartedAtMs + this.windowMs
+    ) {
+      this.#windowStartedAtMs = nowMs;
+      this.#reloads = 0;
+    }
   }
 }
 
@@ -1233,6 +1335,27 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
     throw new Error("timeoutMs must be a positive finite number");
   }
   return timeoutMs;
+}
+
+function normalizeReloadMax(maxReloads: number): number {
+  if (!Number.isInteger(maxReloads) || maxReloads < 0) {
+    throw new Error("maxReloads must be a non-negative integer");
+  }
+  return maxReloads;
+}
+
+function normalizeReloadWindow(windowMs: number): number {
+  if (!Number.isFinite(windowMs) || windowMs <= 0) {
+    throw new Error("windowMs must be a positive finite number");
+  }
+  return windowMs;
+}
+
+function normalizeNowMs(nowMs: number): number {
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("nowMs must be a finite number");
+  }
+  return nowMs;
 }
 
 function defaultFetch(): FetchLike {

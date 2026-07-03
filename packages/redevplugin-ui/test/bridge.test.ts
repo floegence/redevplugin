@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  defaultPluginSurfaceReloadMax,
+  defaultPluginSurfaceReloadWindowMs,
   decodePluginStreamText,
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
@@ -9,6 +11,7 @@ import {
   PluginBridgeError,
   PluginPlatformClient,
   PluginSurfaceHost,
+  PluginSurfaceReloadLimiter,
   readPluginStream,
   type FetchInitLike,
   type FetchResponseLike,
@@ -128,6 +131,105 @@ test("stable error-code exports separate platform, bridge, and client-only codes
   assert.equal(pluginClientErrorCodes.includes("PLUGIN_PLATFORM_REQUEST_FAILED"), true);
   assert.equal((pluginPlatformErrorCodes as readonly string[]).includes("PLUGIN_PLATFORM_REQUEST_FAILED"), false);
   assert.equal((pluginBridgeErrorCodes as readonly string[]).includes("PLUGIN_STREAM_FAILED"), false);
+});
+
+test("surface reload limiter caps consecutive automatic reloads", () => {
+  let now = 1_000;
+  const limiter = new PluginSurfaceReloadLimiter({ now: () => now });
+
+  assert.equal(defaultPluginSurfaceReloadMax, 2);
+  assert.equal(defaultPluginSurfaceReloadWindowMs, 30_000);
+  assert.deepEqual(limiter.recordCrash(), {
+    allowed: true,
+    attempt: 1,
+    remaining: 1,
+    windowStartedAtMs: 1_000,
+  });
+  now += 1_000;
+  assert.deepEqual(limiter.recordCrash(), {
+    allowed: true,
+    attempt: 2,
+    remaining: 0,
+    windowStartedAtMs: 1_000,
+  });
+  assert.deepEqual(limiter.state, {
+    reloads: 2,
+    remaining: 0,
+    windowStartedAtMs: 1_000,
+    nextRetryAtMs: 31_000,
+  });
+  now += 1_000;
+  assert.deepEqual(limiter.recordCrash(), {
+    allowed: false,
+    attempt: 3,
+    remaining: 0,
+    windowStartedAtMs: 1_000,
+    nextRetryAtMs: 31_000,
+    reason: "reload_limit_exceeded",
+  });
+});
+
+test("surface reload limiter resets on healthy load or a new window", () => {
+  const limiter = new PluginSurfaceReloadLimiter({ maxReloads: 1, windowMs: 100 });
+
+  assert.deepEqual(limiter.recordCrash(10), {
+    allowed: true,
+    attempt: 1,
+    remaining: 0,
+    windowStartedAtMs: 10,
+  });
+  assert.equal(limiter.recordCrash(99).allowed, false);
+  assert.deepEqual(limiter.recordCrash(110), {
+    allowed: true,
+    attempt: 1,
+    remaining: 0,
+    windowStartedAtMs: 110,
+  });
+
+  limiter.recordHealthyLoad();
+  assert.deepEqual(limiter.state, {
+    reloads: 0,
+    remaining: 1,
+    windowStartedAtMs: undefined,
+    nextRetryAtMs: undefined,
+  });
+  assert.deepEqual(limiter.recordCrash(120), {
+    allowed: true,
+    attempt: 1,
+    remaining: 0,
+    windowStartedAtMs: 120,
+  });
+
+  limiter.reset();
+  assert.equal(limiter.state.reloads, 0);
+});
+
+test("surface reload limiter supports fail-closed zero cap", () => {
+  const limiter = new PluginSurfaceReloadLimiter({ maxReloads: 0, windowMs: 500 });
+
+  assert.deepEqual(limiter.recordCrash(50), {
+    allowed: false,
+    attempt: 1,
+    remaining: 0,
+    windowStartedAtMs: 50,
+    nextRetryAtMs: 550,
+    reason: "reload_limit_exceeded",
+  });
+  assert.deepEqual(limiter.state, {
+    reloads: 0,
+    remaining: 0,
+    windowStartedAtMs: 50,
+    nextRetryAtMs: 550,
+  });
+});
+
+test("surface reload limiter rejects invalid timing options", () => {
+  assert.throws(() => new PluginSurfaceReloadLimiter({ maxReloads: -1 }), /maxReloads/);
+  assert.throws(() => new PluginSurfaceReloadLimiter({ maxReloads: 1.5 }), /maxReloads/);
+  assert.throws(() => new PluginSurfaceReloadLimiter({ windowMs: 0 }), /windowMs/);
+  assert.throws(() => new PluginSurfaceReloadLimiter({ windowMs: Number.POSITIVE_INFINITY }), /windowMs/);
+  const limiter = new PluginSurfaceReloadLimiter();
+  assert.throws(() => limiter.recordCrash(Number.NaN), /nowMs/);
 });
 
 test("handshake posts exact-origin message", () => {
