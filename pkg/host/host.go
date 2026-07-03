@@ -61,6 +61,7 @@ var (
 	ErrPluginDataArchiveRequired = errors.New("archive_ref or settings_archive_ref is required")
 	ErrPluginStorageNotDeclared  = errors.New("target plugin does not declare storage")
 	ErrPluginSettingsNotDeclared = errors.New("target plugin does not declare settings")
+	ErrPluginMigrationPreflight  = errors.New("plugin migration preflight failed")
 	ErrRetainedDataCleanupFailed = errors.New("retained data cleanup failed")
 	ErrRetainedDataBindFailed    = errors.New("retained data bind failed")
 	ErrRetainedDataUnsafePayload = errors.New("retained data payload is not safe to delete")
@@ -1264,6 +1265,9 @@ func (h *Host) UpdatePlugin(ctx context.Context, req UpdateRequest) (registry.Pl
 	if err := validateSamePluginIdentity(current, next); err != nil {
 		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, req.Now)
 	}
+	if err := validateUpdateMigrationPreflight(current, next); err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "migration_preflight_failed", err, req.Now)
+	}
 	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
 		StageID:       stage.StageID,
 		ResolvedTrust: string(trust),
@@ -1349,6 +1353,125 @@ func (h *Host) markInstallStageFailed(ctx context.Context, stageID string, code 
 	return cause
 }
 
+func validateUpdateMigrationPreflight(current registry.PluginRecord, next registry.PluginRecord) error {
+	if err := validateSettingsUpdateMigration(current.Manifest.Settings, next.Manifest.Settings); err != nil {
+		return err
+	}
+	return validateStorageUpdateMigration(current.Manifest.Storage, next.Manifest.Storage)
+}
+
+func validateDowngradeMigrationPreflight(current registry.PluginRecord, next registry.PluginRecord) error {
+	if err := validateSettingsDowngradeMigration(current.Manifest.Settings, next.Manifest.Settings); err != nil {
+		return err
+	}
+	return validateStorageDowngradeMigration(current.Manifest.Storage, next.Manifest.Storage)
+}
+
+func validateSettingsUpdateMigration(current *manifest.SettingsSpec, next *manifest.SettingsSpec) error {
+	if next == nil {
+		return nil
+	}
+	fromVersion := 0
+	if current != nil {
+		fromVersion = current.SchemaVersion
+	}
+	if fromVersion == next.SchemaVersion {
+		return nil
+	}
+	if fromVersion > next.SchemaVersion {
+		return fmt.Errorf("%w: settings schema_version cannot decrease during update from %d to %d; use downgrade", ErrPluginMigrationPreflight, fromVersion, next.SchemaVersion)
+	}
+	return requireMigrationRange("settings", next.Migration, fromVersion, next.SchemaVersion, false)
+}
+
+func validateSettingsDowngradeMigration(current *manifest.SettingsSpec, next *manifest.SettingsSpec) error {
+	if current == nil || next == nil || current.SchemaVersion == next.SchemaVersion {
+		return nil
+	}
+	if next.SchemaVersion > current.SchemaVersion {
+		return fmt.Errorf("%w: settings schema_version cannot increase during downgrade from %d to %d", ErrPluginMigrationPreflight, current.SchemaVersion, next.SchemaVersion)
+	}
+	return requireMigrationRange("settings", current.Migration, next.SchemaVersion, current.SchemaVersion, true)
+}
+
+func validateStorageUpdateMigration(current *manifest.StorageSpec, next *manifest.StorageSpec) error {
+	if next == nil {
+		return nil
+	}
+	currentStores := storageStoresByID(current)
+	for _, nextStore := range next.Stores {
+		label := fmt.Sprintf("storage store %q", nextStore.StoreID)
+		currentStore, existed := currentStores[nextStore.StoreID]
+		if !existed {
+			if err := requireMigrationRange(label, nextStore.Migration, 0, nextStore.SchemaVersion, false); err != nil {
+				return err
+			}
+			continue
+		}
+		if currentStore.Kind != nextStore.Kind {
+			return fmt.Errorf("%w: %s kind changed from %s to %s", ErrPluginMigrationPreflight, label, currentStore.Kind, nextStore.Kind)
+		}
+		if currentStore.SchemaVersion == nextStore.SchemaVersion {
+			continue
+		}
+		if currentStore.SchemaVersion > nextStore.SchemaVersion {
+			return fmt.Errorf("%w: %s schema_version cannot decrease during update from %d to %d; use downgrade", ErrPluginMigrationPreflight, label, currentStore.SchemaVersion, nextStore.SchemaVersion)
+		}
+		if err := requireMigrationRange(label, nextStore.Migration, currentStore.SchemaVersion, nextStore.SchemaVersion, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateStorageDowngradeMigration(current *manifest.StorageSpec, next *manifest.StorageSpec) error {
+	if current == nil || next == nil {
+		return nil
+	}
+	nextStores := storageStoresByID(next)
+	for _, currentStore := range current.Stores {
+		nextStore, exists := nextStores[currentStore.StoreID]
+		if !exists {
+			continue
+		}
+		label := fmt.Sprintf("storage store %q", currentStore.StoreID)
+		if currentStore.Kind != nextStore.Kind {
+			return fmt.Errorf("%w: %s kind changed from %s to %s", ErrPluginMigrationPreflight, label, currentStore.Kind, nextStore.Kind)
+		}
+		if currentStore.SchemaVersion == nextStore.SchemaVersion {
+			continue
+		}
+		if nextStore.SchemaVersion > currentStore.SchemaVersion {
+			return fmt.Errorf("%w: %s schema_version cannot increase during downgrade from %d to %d", ErrPluginMigrationPreflight, label, currentStore.SchemaVersion, nextStore.SchemaVersion)
+		}
+		if err := requireMigrationRange(label, currentStore.Migration, nextStore.SchemaVersion, currentStore.SchemaVersion, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireMigrationRange(label string, migration manifest.MigrationSpec, fromVersion int, toVersion int, requireReversible bool) error {
+	if migration.FromVersion != fromVersion || migration.ToVersion != toVersion {
+		return fmt.Errorf("%w: %s migration must describe schema_version %d to %d, got %d to %d", ErrPluginMigrationPreflight, label, fromVersion, toVersion, migration.FromVersion, migration.ToVersion)
+	}
+	if requireReversible && !migration.Reversible {
+		return fmt.Errorf("%w: %s migration from %d to %d is not reversible", ErrPluginMigrationPreflight, label, fromVersion, toVersion)
+	}
+	return nil
+}
+
+func storageStoresByID(spec *manifest.StorageSpec) map[string]manifest.StoreSpec {
+	stores := map[string]manifest.StoreSpec{}
+	if spec == nil {
+		return stores
+	}
+	for _, store := range spec.Stores {
+		stores[store.StoreID] = store
+	}
+	return stores
+}
+
 func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (registry.PluginRecord, error) {
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
@@ -1359,6 +1482,9 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	next := recordFromVersionSnapshot(current, snapshot)
+	if err := validateDowngradeMigrationPreflight(current, next); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	next.VersionHistory = remaining
 	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, req.Now), req.Now)
 	if next.EnableState == registry.EnableEnabled {

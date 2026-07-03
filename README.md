@@ -61,6 +61,10 @@ capabilities.
   but every migration must point `to_version` at the active schema version and
   carry a non-empty `steps_hash`, non-negative estimates, and a monotonic version
   range before a package can be installed.
+- Host update and downgrade flows compare the currently installed settings and
+  storage schema versions with the target package. Updates must describe the
+  exact current-to-target migration, and downgrades require the current version's
+  migration descriptor to be reversible before the registry can switch versions.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset

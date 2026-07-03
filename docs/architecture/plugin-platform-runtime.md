@@ -153,7 +153,11 @@ schema contract require each migration's `to_version` to match the active
 settings or store `schema_version`, require monotonic version ranges, and reject
 empty step hashes or negative estimates. Hosts can therefore detect migration
 intent from the package manifest instead of inferring it from ad hoc product
-logic.
+logic. During update, the Host compares the installed settings/storage schema
+versions to the target package and rejects a registry switch unless the target
+manifest describes the exact current-to-target migration. During downgrade, the
+Host validates the current version's migration descriptor and requires it to be
+reversible before restoring the older version snapshot.
 
 ## Runtime State Model
 

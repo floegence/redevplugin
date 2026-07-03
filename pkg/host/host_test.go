@@ -208,6 +208,144 @@ func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 	}
 }
 
+func TestUpdateAndDowngradeValidateMigrationPreflight(t *testing.T) {
+	ctx := context.Background()
+	h, _, _ := newTestHost(t, true, true)
+	v1 := buildMigrationFixturePackage(t, migrationFixtureOptions{
+		Version:            "1.0.0",
+		SettingsSchema:     1,
+		SettingsFrom:       1,
+		SettingsTo:         1,
+		SettingsReversible: true,
+		StorageSchema:      1,
+		StorageFrom:        1,
+		StorageTo:          1,
+		StorageReversible:  true,
+	})
+	v2 := buildMigrationFixturePackage(t, migrationFixtureOptions{
+		Version:            "2.0.0",
+		SettingsSchema:     2,
+		SettingsFrom:       1,
+		SettingsTo:         2,
+		SettingsReversible: true,
+		StorageSchema:      2,
+		StorageFrom:        1,
+		StorageTo:          2,
+		StorageReversible:  true,
+	})
+
+	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(v2),
+		PackageSize:      int64(len(v2)),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlugin() migration preflight error = %v", err)
+	}
+	if updated.Manifest.Settings.SchemaVersion != 2 || updated.Manifest.Storage.Stores[0].SchemaVersion != 2 {
+		t.Fatalf("updated schemas mismatch: settings=%#v storage=%#v", updated.Manifest.Settings, updated.Manifest.Storage)
+	}
+	downgraded, err := h.DowngradePlugin(ctx, DowngradeRequest{
+		PluginInstanceID: updated.PluginInstanceID,
+		Version:          "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("DowngradePlugin() reversible migration error = %v", err)
+	}
+	if downgraded.Version != "1.0.0" || downgraded.Manifest.Settings.SchemaVersion != 1 {
+		t.Fatalf("downgraded record mismatch: %#v", downgraded)
+	}
+}
+
+func TestUpdateRejectsMismatchedMigrationPreflight(t *testing.T) {
+	ctx := context.Background()
+	h, _, _ := newTestHost(t, true, true)
+	v1 := buildMigrationFixturePackage(t, migrationFixtureOptions{
+		Version:            "1.0.0",
+		SettingsSchema:     1,
+		SettingsFrom:       1,
+		SettingsTo:         1,
+		SettingsReversible: true,
+		StorageSchema:      1,
+		StorageFrom:        1,
+		StorageTo:          1,
+		StorageReversible:  true,
+	})
+	badV2 := buildMigrationFixturePackage(t, migrationFixtureOptions{
+		Version:            "2.0.0",
+		SettingsSchema:     2,
+		SettingsFrom:       0,
+		SettingsTo:         2,
+		SettingsReversible: true,
+		StorageSchema:      2,
+		StorageFrom:        1,
+		StorageTo:          2,
+		StorageReversible:  true,
+	})
+
+	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(badV2),
+		PackageSize:      int64(len(badV2)),
+	}); !errors.Is(err, ErrPluginMigrationPreflight) {
+		t.Fatalf("UpdatePlugin() error = %v, want ErrPluginMigrationPreflight", err)
+	}
+}
+
+func TestDowngradeRejectsIrreversibleMigrationPreflight(t *testing.T) {
+	ctx := context.Background()
+	h, _, _ := newTestHost(t, true, true)
+	v1 := buildMigrationFixturePackage(t, migrationFixtureOptions{
+		Version:            "1.0.0",
+		SettingsSchema:     1,
+		SettingsFrom:       1,
+		SettingsTo:         1,
+		SettingsReversible: true,
+		StorageSchema:      1,
+		StorageFrom:        1,
+		StorageTo:          1,
+		StorageReversible:  true,
+	})
+	irreversibleV2 := buildMigrationFixturePackage(t, migrationFixtureOptions{
+		Version:            "2.0.0",
+		SettingsSchema:     2,
+		SettingsFrom:       1,
+		SettingsTo:         2,
+		SettingsReversible: false,
+		StorageSchema:      2,
+		StorageFrom:        1,
+		StorageTo:          2,
+		StorageReversible:  true,
+	})
+
+	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PackageReader:    bytes.NewReader(irreversibleV2),
+		PackageSize:      int64(len(irreversibleV2)),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlugin() irreversible forward migration error = %v", err)
+	}
+	if _, err := h.DowngradePlugin(ctx, DowngradeRequest{
+		PluginInstanceID: updated.PluginInstanceID,
+		Version:          "1.0.0",
+	}); !errors.Is(err, ErrPluginMigrationPreflight) {
+		t.Fatalf("DowngradePlugin() error = %v, want ErrPluginMigrationPreflight", err)
+	}
+}
+
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustUntrusted)
@@ -3977,6 +4115,30 @@ func buildSettingsFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+type migrationFixtureOptions struct {
+	Version            string
+	SettingsSchema     int
+	SettingsFrom       int
+	SettingsTo         int
+	SettingsReversible bool
+	StorageSchema      int
+	StorageFrom        int
+	StorageTo          int
+	StorageReversible  bool
+}
+
+func buildMigrationFixturePackage(t *testing.T, opts migrationFixtureOptions) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), migrationFixtureManifestJSON(opts))
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Migration</title>")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	return buildVersionedRPCPackage(t, "1.0.0", "RPC")
@@ -4544,6 +4706,65 @@ func settingsFixtureManifestJSON() string {
 				{"key": "default_engine", "type": "select", "scope": "user", "label": "Default engine", "default": "docker", "options": ["docker", "podman"]},
 				{"key": "show_stopped", "type": "boolean", "scope": "user", "label": "Show stopped", "default": true},
 				{"key": "api_token", "type": "secret", "scope": "user", "label": "API token", "secret_ref": "api_token"}
+			]
+		}
+	}`
+}
+
+func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
+	version := opts.Version
+	if version == "" {
+		version = "1.0.0"
+	}
+	return `{
+		"schema_version": "redevplugin.manifest.v1",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.migration",
+			"display_name": "Migration",
+			"version": ` + strconv.Quote(version) + `,
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v1"
+		},
+		"surfaces": [
+			{"surface_id": "migration.activity", "kind": "activity", "label": "Migration", "entry": "ui/index.html"}
+		],
+		"storage": {
+			"stores": [
+				{
+					"store_id": "workspace",
+					"kind": "files",
+					"scope": "user",
+					"quota_bytes": 4096,
+					"schema_version": ` + strconv.Itoa(opts.StorageSchema) + `,
+					"migration": {
+						"from_version": ` + strconv.Itoa(opts.StorageFrom) + `,
+						"to_version": ` + strconv.Itoa(opts.StorageTo) + `,
+						"reversible": ` + strconv.FormatBool(opts.StorageReversible) + `,
+						"requires_worker": false,
+						"estimated_bytes": 0,
+						"max_duration_ms": 0,
+						"data_loss_risk": false,
+						"steps_hash": "sha256:storage-migration"
+					}
+				}
+			]
+		},
+		"settings": {
+			"schema_version": ` + strconv.Itoa(opts.SettingsSchema) + `,
+			"migration": {
+				"from_version": ` + strconv.Itoa(opts.SettingsFrom) + `,
+				"to_version": ` + strconv.Itoa(opts.SettingsTo) + `,
+				"reversible": ` + strconv.FormatBool(opts.SettingsReversible) + `,
+				"requires_worker": false,
+				"estimated_bytes": 0,
+				"max_duration_ms": 0,
+				"data_loss_risk": false,
+				"steps_hash": "sha256:settings-migration"
+			},
+			"fields": [
+				{"key": "mode", "type": "select", "scope": "user", "label": "Mode", "default": "stable", "options": ["stable", "preview"]}
 			]
 		}
 	}`
