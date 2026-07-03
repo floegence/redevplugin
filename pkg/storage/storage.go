@@ -580,6 +580,9 @@ func (b *MemoryBroker) ImportData(_ context.Context, req ImportRequest) error {
 			if !ok {
 				return fmt.Errorf("%w: archive store %q is not declared by target manifest", ErrInvalidNamespace, archived.StoreID)
 			}
+			if err := validateArchivedNamespaceTarget(archived, target); err != nil {
+				return err
+			}
 			record.Namespace = target
 			if record.UsageBytes > target.QuotaBytes {
 				return fmt.Errorf("%w: archive store %q usage %d exceeds target quota %d", ErrQuotaExceeded, archived.StoreID, record.UsageBytes, target.QuotaBytes)
@@ -879,6 +882,16 @@ func normalizeTargetNamespaces(namespaces []Namespace, pluginInstanceID string) 
 		targets[normalized.StoreID] = normalized
 	}
 	return targets, nil
+}
+
+func validateArchivedNamespaceTarget(archived NamespaceRecord, target Namespace) error {
+	if archived.Kind != target.Kind {
+		return fmt.Errorf("%w: archive store %q kind %q does not match target kind %q", ErrInvalidNamespace, archived.StoreID, archived.Kind, target.Kind)
+	}
+	if archived.SchemaVersion != target.SchemaVersion {
+		return fmt.Errorf("%w: archive store %q schema_version %d does not match target schema_version %d", ErrInvalidNamespace, archived.StoreID, archived.SchemaVersion, target.SchemaVersion)
+	}
+	return nil
 }
 
 func makeKey(pluginInstanceID string, storeID string) namespaceKey {

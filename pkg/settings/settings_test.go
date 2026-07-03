@@ -339,6 +339,29 @@ func TestMemoryStoreImportRejectsInvalidArchiveSetting(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreImportRejectsArchiveSchemaMismatch(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	spec := settingsSpec()
+	if _, err := store.Ensure(ctx, EnsureRequest{PluginInstanceID: "plugini_source", Spec: &spec}); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := store.Export(ctx, ExportRequest{PluginInstanceID: "plugini_source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetSpec := settingsSpec()
+	targetSpec.SchemaVersion = spec.SchemaVersion + 1
+	if _, err := store.Import(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		Spec:             &targetSpec,
+	}); !errors.Is(err, ErrInvalidSetting) {
+		t.Fatalf("Import(schema mismatch) error = %v, want ErrInvalidSetting", err)
+	}
+}
+
 func TestSQLiteStorePersistsSettingsAndArchivesAcrossOpen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "settings.sqlite")

@@ -442,6 +442,9 @@ func (s *MemoryStore) Import(_ context.Context, req ImportRequest) (Snapshot, er
 	if !ok {
 		return Snapshot{}, ErrArchiveNotFound
 	}
+	if archive.SchemaVersion != req.Spec.SchemaVersion {
+		return Snapshot{}, fmt.Errorf("%w: archive schema_version %d does not match target schema_version %d", ErrInvalidSetting, archive.SchemaVersion, req.Spec.SchemaVersion)
+	}
 	fields := cloneFields(req.Spec.Fields)
 	values := normalizedValuesForFields(fields, nil)
 	secrets := normalizedSecretsForFields(fields, nil)

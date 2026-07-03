@@ -159,6 +159,12 @@ manifest describes the exact current-to-target migration. During downgrade, the
 Host validates the current version's migration descriptor and requires it to be
 reversible before restoring the older version snapshot.
 
+Archive import is also fail-closed on schema boundaries. Storage archive
+namespaces must match the target store kind and schema version before the Host
+applies the target namespace and quota, and settings archives must match the
+target settings schema version before any values are imported into the target
+field set.
+
 ## Runtime State Model
 
 ReDevPlugin uses explicit stores instead of implicit process memory:

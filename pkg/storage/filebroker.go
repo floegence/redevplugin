@@ -419,6 +419,9 @@ func (b *FileBroker) ImportData(ctx context.Context, req ImportRequest) error {
 			if !ok {
 				return fmt.Errorf("%w: archive store %q is not declared by target manifest", ErrInvalidNamespace, archived.StoreID)
 			}
+			if err := validateArchivedNamespaceTarget(archived, target); err != nil {
+				return err
+			}
 			record.Namespace = target
 		} else {
 			record.PluginInstanceID = pluginInstanceID

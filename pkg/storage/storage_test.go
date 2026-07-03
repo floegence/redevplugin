@@ -460,9 +460,10 @@ func TestMemoryBrokerImportHonorsTargetNamespaces(t *testing.T) {
 		PluginInstanceID: "plugini_target",
 		ArchiveRef:       archiveRef,
 		TargetNamespaces: []Namespace{{
-			StoreID:    "db",
-			Kind:       StoreSQLite,
-			QuotaBytes: 1024,
+			StoreID:       "db",
+			Kind:          StoreSQLite,
+			QuotaBytes:    1024,
+			SchemaVersion: 1,
 		}},
 	})
 	if !errors.Is(err, ErrQuotaExceeded) {
@@ -480,6 +481,34 @@ func TestMemoryBrokerImportHonorsTargetNamespaces(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidNamespace) {
 		t.Fatalf("ImportData() error = %v, want ErrInvalidNamespace", err)
+	}
+
+	err = broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		TargetNamespaces: []Namespace{{
+			StoreID:       "db",
+			Kind:          StoreKV,
+			QuotaBytes:    8192,
+			SchemaVersion: 1,
+		}},
+	})
+	if !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("ImportData(kind mismatch) error = %v, want ErrInvalidNamespace", err)
+	}
+
+	err = broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_target",
+		ArchiveRef:       archiveRef,
+		TargetNamespaces: []Namespace{{
+			StoreID:       "db",
+			Kind:          StoreSQLite,
+			QuotaBytes:    8192,
+			SchemaVersion: 2,
+		}},
+	})
+	if !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("ImportData(schema mismatch) error = %v, want ErrInvalidNamespace", err)
 	}
 }
 
@@ -734,7 +763,7 @@ func TestFileBrokerExportImportCopiesData(t *testing.T) {
 		StoreID:       "db",
 		Kind:          StoreSQLite,
 		QuotaBytes:    128,
-		SchemaVersion: 3,
+		SchemaVersion: 2,
 	}
 	if err := broker.ImportData(ctx, ImportRequest{
 		PluginInstanceID: "plugini_target",
@@ -761,6 +790,63 @@ func TestFileBrokerExportImportCopiesData(t *testing.T) {
 	}
 	if usage.UsageBytes != int64(len("sqlite bytes")) {
 		t.Fatalf("imported usage = %d", usage.UsageBytes)
+	}
+}
+
+func TestFileBrokerImportDataRejectsIncompatibleTargetNamespace(t *testing.T) {
+	ctx := context.Background()
+	broker, err := NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	source := Namespace{
+		PluginInstanceID: "plugini_import_source",
+		StoreID:          "db",
+		Kind:             StoreSQLite,
+		QuotaBytes:       128,
+		SchemaVersion:    2,
+	}
+	if err := broker.EnsureNamespace(ctx, source); err != nil {
+		t.Fatalf("EnsureNamespace(source) error = %v", err)
+	}
+	sourcePath, err := broker.NamespacePath(ctx, source.PluginInstanceID, source.StoreID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourcePath, "plugin.sqlite"), []byte("sqlite bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archiveRef, err := broker.ExportData(ctx, ExportRequest{PluginInstanceID: source.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("ExportData() error = %v", err)
+	}
+
+	if err := broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_import_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		TargetNamespaces: []Namespace{{
+			StoreID:       source.StoreID,
+			Kind:          StoreKV,
+			QuotaBytes:    128,
+			SchemaVersion: 2,
+		}},
+	}); !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("ImportData(kind mismatch) error = %v, want ErrInvalidNamespace", err)
+	}
+
+	if err := broker.ImportData(ctx, ImportRequest{
+		PluginInstanceID: "plugini_import_target",
+		ArchiveRef:       archiveRef,
+		DeleteExisting:   true,
+		TargetNamespaces: []Namespace{{
+			StoreID:       source.StoreID,
+			Kind:          source.Kind,
+			QuotaBytes:    128,
+			SchemaVersion: 3,
+		}},
+	}); !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("ImportData(schema mismatch) error = %v, want ErrInvalidNamespace", err)
 	}
 }
 
