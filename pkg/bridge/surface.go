@@ -122,6 +122,7 @@ type MintConfirmationTokenRequest struct {
 	BridgeChannelID      string          `json:"bridge_channel_id"`
 	Method               string          `json:"method"`
 	RequestHash          string          `json:"request_hash"`
+	PlanHash             string          `json:"plan_hash"`
 	Revision             RevisionBinding `json:"revision"`
 	Now                  time.Time       `json:"now,omitempty"`
 	ExpiresAt            time.Time       `json:"expires_at,omitempty"`
@@ -131,6 +132,7 @@ type ConfirmationTokenResult struct {
 	ConfirmationToken   string    `json:"confirmation_token"`
 	ConfirmationTokenID string    `json:"confirmation_token_id"`
 	RequestHash         string    `json:"request_hash"`
+	PlanHash            string    `json:"plan_hash"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
 }
@@ -508,7 +510,7 @@ func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenReq
 		strings.TrimSpace(req.Method) == "" {
 		return ConfirmationTokenResult{}, ErrMissingTokenAudience
 	}
-	if !requestHashPattern.MatchString(req.RequestHash) {
+	if !requestHashPattern.MatchString(req.RequestHash) || !requestHashPattern.MatchString(req.PlanHash) {
 		return ConfirmationTokenResult{}, ErrTokenAudience
 	}
 	now := req.Now
@@ -530,6 +532,7 @@ func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenReq
 		BridgeChannelID:      req.BridgeChannelID,
 		Method:               req.Method,
 		RequestHash:          req.RequestHash,
+		PlanHash:             req.PlanHash,
 	}
 	minted, err := s.tokens.Mint(MintRequest{
 		Kind:      TokenKindConfirmationToken,
@@ -545,6 +548,7 @@ func (s *SurfaceTokenService) MintConfirmationToken(req MintConfirmationTokenReq
 		ConfirmationToken:   minted.Token,
 		ConfirmationTokenID: minted.TokenID,
 		RequestHash:         req.RequestHash,
+		PlanHash:            req.PlanHash,
 		IssuedAt:            minted.IssuedAt,
 		ExpiresAt:           minted.ExpiresAt,
 	}, nil

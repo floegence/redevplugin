@@ -438,6 +438,8 @@ export type PluginConfirmationIntent = {
   method: string;
   params?: Record<string, unknown>;
   requestHash: string;
+  planHash: string;
+  plan?: unknown;
   confirmationTokenId: string;
 };
 
@@ -512,6 +514,8 @@ export type PluginConfirmationResult = {
   confirmation_id: string;
   confirmation_token_id: string;
   request_hash: string;
+  plan_hash: string;
+  plan?: unknown;
   expires_at?: string;
 };
 
@@ -1259,6 +1263,8 @@ export class PluginSurfaceHost {
         method: request.method,
         params: validRPCParams(request.params) ? request.params : undefined,
         requestHash: confirmation.request_hash,
+        planHash: confirmation.plan_hash,
+        plan: confirmation.plan,
         confirmationTokenId: confirmation.confirmation_token_id,
       });
       if (!confirmationDecisionAccepted(decision)) {

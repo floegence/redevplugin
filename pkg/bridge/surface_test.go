@@ -219,6 +219,7 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 	audience.ConfirmationID = "confirmation_1"
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
 		PluginInstanceID:     audience.PluginInstanceID,
 		ActiveFingerprint:    audience.ActiveFingerprint,
@@ -230,13 +231,14 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 		BridgeChannelID:      audience.BridgeChannelID,
 		Method:               audience.Method,
 		RequestHash:          audience.RequestHash,
+		PlanHash:             audience.PlanHash,
 		Revision:             testRevision(4),
 		Now:                  now,
 	})
 	if err != nil {
 		t.Fatalf("MintConfirmationToken() error = %v", err)
 	}
-	if result.ConfirmationToken == "" || result.RequestHash != audience.RequestHash {
+	if result.ConfirmationToken == "" || result.RequestHash != audience.RequestHash || result.PlanHash != audience.PlanHash {
 		t.Fatalf("confirmation result mismatch: %#v", result)
 	}
 
@@ -249,6 +251,16 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 		Now:               now.Add(time.Second),
 	}); !errors.Is(err, ErrTokenAudience) {
 		t.Fatalf("ValidateConfirmationToken() wrong hash error = %v, want %v", err, ErrTokenAudience)
+	}
+	wrongAudience = audience
+	wrongAudience.PlanHash = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	if _, err := service.ValidateConfirmationToken(ValidateConfirmationTokenRequest{
+		ConfirmationToken: result.ConfirmationToken,
+		Audience:          wrongAudience,
+		Revision:          testRevision(4),
+		Now:               now.Add(time.Second),
+	}); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("ValidateConfirmationToken() wrong plan hash error = %v, want %v", err, ErrTokenAudience)
 	}
 
 	if _, err := service.ValidateConfirmationToken(ValidateConfirmationTokenRequest{
@@ -276,6 +288,7 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	audience.ConfirmationID = "confirmation_1"
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	req := MintConfirmationTokenRequest{
 		PluginInstanceID:     audience.PluginInstanceID,
 		ActiveFingerprint:    audience.ActiveFingerprint,
@@ -287,6 +300,7 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 		BridgeChannelID:      audience.BridgeChannelID,
 		Method:               audience.Method,
 		RequestHash:          audience.RequestHash,
+		PlanHash:             audience.PlanHash,
 		Revision:             testRevision(4),
 		Now:                  now,
 	}
@@ -304,6 +318,11 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	badHash.RequestHash = "sha256:not-a-real-hash"
 	if _, err := service.MintConfirmationToken(badHash); !errors.Is(err, ErrTokenAudience) {
 		t.Fatalf("MintConfirmationToken() invalid hash error = %v, want %v", err, ErrTokenAudience)
+	}
+	badPlanHash := req
+	badPlanHash.PlanHash = "sha256:not-a-real-hash"
+	if _, err := service.MintConfirmationToken(badPlanHash); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("MintConfirmationToken() invalid plan hash error = %v, want %v", err, ErrTokenAudience)
 	}
 }
 

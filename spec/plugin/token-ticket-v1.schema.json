@@ -82,6 +82,10 @@
         "request_hash": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "plan_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     },
@@ -163,7 +167,8 @@
               "confirmation_id",
               "bridge_channel_id",
               "method",
-              "request_hash"
+              "request_hash",
+              "plan_hash"
             ]
           }
         },

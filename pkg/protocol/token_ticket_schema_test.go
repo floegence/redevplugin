@@ -62,6 +62,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"bridge_channel_id",
 		"method",
 		"request_hash",
+		"plan_hash",
 	}, "^ct_[A-Za-z0-9_-]+$")
 	assertTokenTicketCondition(t, conditions, "runtime_execution_lease", "reusable", []string{
 		"plugin_instance_id",

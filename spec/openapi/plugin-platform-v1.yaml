@@ -818,7 +818,7 @@ components:
           additionalProperties: true
     ConfirmResult:
       type: object
-      required: [confirmation_id, confirmation_token_id, request_hash, expires_at]
+      required: [confirmation_id, confirmation_token_id, request_hash, plan_hash, expires_at]
       additionalProperties: false
       properties:
         confirmation_id: { type: string, minLength: 1 }
@@ -829,6 +829,11 @@ components:
         request_hash:
           type: string
           pattern: "^sha256:[0-9a-f]{64}$"
+        plan_hash:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+        plan:
+          description: Host-redacted confirmation plan payload returned by the declared preflight method, when available.
         expires_at: { type: string, format: date-time }
     InvokeIntentRequest:
       type: object

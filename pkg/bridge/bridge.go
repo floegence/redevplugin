@@ -116,6 +116,7 @@ type Audience struct {
 	ConfirmationID       string `json:"confirmation_id,omitempty"`
 	Method               string `json:"method,omitempty"`
 	RequestHash          string `json:"request_hash,omitempty"`
+	PlanHash             string `json:"plan_hash,omitempty"`
 }
 
 type RevisionBinding struct {
@@ -462,7 +463,8 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.HandleID == got.HandleID &&
 		expected.ConfirmationID == got.ConfirmationID &&
 		expected.Method == got.Method &&
-		expected.RequestHash == got.RequestHash
+		expected.RequestHash == got.RequestHash &&
+		expected.PlanHash == got.PlanHash
 }
 
 func prefixedID(kind TokenKind) (string, error) {

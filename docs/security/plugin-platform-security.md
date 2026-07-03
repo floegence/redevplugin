@@ -108,6 +108,13 @@ Plugin gateway token validation failures use gateway-specific stable error
 codes: `PLUGIN_GATEWAY_TOKEN_INVALID`, `PLUGIN_GATEWAY_TOKEN_REPLAYED`, and
 `PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH`.
 
+Confirmation tokens are server-held one-time tokens. The parent receives only a
+confirmation intent id, an audit/display token id, the canonical request hash,
+the confirmation plan hash, and the redacted plan payload when a declared
+preflight method produced one. The token audience binds both `request_hash` and
+`plan_hash`, so a confirmed call cannot swap either the request payload or the
+plan that the parent approved.
+
 Sandbox bootstrap, package asset, and stream routes use token-specific stable
 error codes when their credentials fail validation: `PLUGIN_ASSET_TICKET_INVALID`,
 `PLUGIN_ASSET_SESSION_INVALID`, and `PLUGIN_STREAM_TICKET_INVALID`.

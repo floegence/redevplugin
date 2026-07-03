@@ -185,6 +185,12 @@ capabilities.
   `OperationCanceler` adapter with plugin, method, surface, bridge-channel, and
   reason context. If that dispatch fails, the cancel request remains recorded
   while HTTP callers receive `PLUGIN_RUNTIME_UNAVAILABLE`.
+- Dangerous method confirmation uses server-held one-time intents. When a method
+  declares a risk preflight method, the Host runs that read-only sync preflight
+  during confirmation preparation, returns the redacted plan plus `plan_hash` to
+  the trusted parent, and binds both `request_hash` and `plan_hash` into the
+  parent-only confirmation token audience. The raw confirmation token is never
+  returned to parent JavaScript or the sandboxed iframe.
 - Capability, worker, and core-action method results pass through the Host-owned
   `capability.DefaultResponseRedactionPolicy` before they are returned to the
   plugin surface or HTTP adapter. The default policy clones structured

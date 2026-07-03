@@ -564,6 +564,8 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
       confirmation_id: "confirmation_intent_1",
       confirmation_token_id: "confirmation_token_1",
       request_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      plan_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      plan: { summary: "Start task" },
     },
   });
   fetch.push({ ok: true, data: { data: { done: true } } });
@@ -597,6 +599,8 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
     method: "danger.run",
     params: { target: "db" },
     requestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    planHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    plan: { summary: "Start task" },
     confirmationTokenId: "confirmation_token_1",
   }]);
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {
@@ -649,6 +653,7 @@ test("surface host rejects dangerous call when confirmation callback declines", 
       confirmation_id: "confirmation_intent_1",
       confirmation_token_id: "confirmation_token_1",
       request_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      plan_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     },
   });
   const host = new PluginSurfaceHost({

@@ -217,6 +217,7 @@ type confirmationIntent struct {
 	BridgeChannelID     string
 	Method              string
 	RequestHash         string
+	PlanHash            string
 	IssuedAt            time.Time
 	ExpiresAt           time.Time
 }
@@ -445,6 +446,7 @@ type CallMethodResult struct {
 	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
 	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
 	RequestHash          string `json:"request_hash,omitempty"`
+	PlanHash             string `json:"plan_hash,omitempty"`
 }
 
 type IntentRecord struct {
@@ -507,6 +509,8 @@ type ConfirmMethodResult struct {
 	ConfirmationID      string    `json:"confirmation_id"`
 	ConfirmationTokenID string    `json:"confirmation_token_id"`
 	RequestHash         string    `json:"request_hash"`
+	PlanHash            string    `json:"plan_hash"`
+	Plan                any       `json:"plan,omitempty"`
 	ExpiresAt           time.Time `json:"expires_at"`
 }
 
@@ -834,6 +838,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 		confirmationAudience.ConfirmationID = intent.ConfirmationID
 		confirmationAudience.Method = call.method.Method
 		confirmationAudience.RequestHash = requestHash
+		confirmationAudience.PlanHash = intent.PlanHash
 		if _, err := h.surfaceTokens.ValidateConfirmationToken(bridge.ValidateConfirmationTokenRequest{
 			ConfirmationToken: intent.ConfirmationToken,
 			Audience:          confirmationAudience,
@@ -896,6 +901,10 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 	if err != nil {
 		return ConfirmMethodResult{}, err
 	}
+	plan, planHash, err := h.prepareConfirmationPlan(ctx, call, req, requestHash)
+	if err != nil {
+		return ConfirmMethodResult{}, err
+	}
 	confirmationID, err := newConfirmationID()
 	if err != nil {
 		return ConfirmMethodResult{}, err
@@ -911,6 +920,7 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		BridgeChannelID:      req.BridgeChannelID,
 		Method:               call.method.Method,
 		RequestHash:          requestHash,
+		PlanHash:             planHash,
 		Revision:             call.revision,
 		Now:                  req.Now,
 	})
@@ -927,6 +937,7 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		BridgeChannelID:     req.BridgeChannelID,
 		Method:              call.method.Method,
 		RequestHash:         result.RequestHash,
+		PlanHash:            result.PlanHash,
 		IssuedAt:            result.IssuedAt,
 		ExpiresAt:           result.ExpiresAt,
 	})
@@ -935,6 +946,8 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		ConfirmationID:      confirmationID,
 		ConfirmationTokenID: result.ConfirmationTokenID,
 		RequestHash:         result.RequestHash,
+		PlanHash:            result.PlanHash,
+		Plan:                plan,
 		ExpiresAt:           result.ExpiresAt,
 	}, nil
 }
@@ -3472,6 +3485,85 @@ func methodRequestHash(method manifest.MethodSpec, params map[string]any) (strin
 	}{
 		Method: method.Method,
 		Params: params,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodCall, req ConfirmMethodRequest, requestHash string) (any, string, error) {
+	var plan any
+	preflightMethodName := confirmationPreflightMethod(call.method)
+	if preflightMethodName != "" {
+		preflight, ok := manifestMethod(call.record.Manifest, preflightMethodName)
+		if !ok {
+			return nil, "", fmt.Errorf("confirmation preflight method %q is not declared", preflightMethodName)
+		}
+		preflightReq := req
+		preflightReq.Method = preflight.Method
+		preflightReq.ConfirmationID = ""
+		result, err := h.dispatchMethod(ctx, call.record, preflight, preflightReq)
+		if err != nil {
+			return nil, "", fmt.Errorf("confirmation preflight method %q failed: %w", preflight.Method, err)
+		}
+		plan = result.Data
+	}
+	planHash, err := methodPlanHash(call.method, requestHash, plan)
+	if err != nil {
+		return nil, "", err
+	}
+	if preflightMethodName != "" {
+		h.audit(ctx, AuditEvent{
+			Type:             "plugin.confirmation.preflighted",
+			PluginID:         call.record.PluginID,
+			PluginInstanceID: call.record.PluginInstanceID,
+			Details: map[string]any{
+				"method":           call.method.Method,
+				"preflight_method": preflightMethodName,
+				"plan_hash":        planHash,
+			},
+		})
+	}
+	return plan, planHash, nil
+}
+
+func confirmationPreflightMethod(method manifest.MethodSpec) string {
+	if method.Confirmation == nil || method.Confirmation.PreflightMethod == nil {
+		return ""
+	}
+	return strings.TrimSpace(*method.Confirmation.PreflightMethod)
+}
+
+func methodPlanHash(method manifest.MethodSpec, requestHash string, plan any) (string, error) {
+	confirmationMode := ""
+	planHashRequired := false
+	var requestHashFields []string
+	preflightMethod := ""
+	if method.Confirmation != nil {
+		confirmationMode = string(method.Confirmation.Mode)
+		planHashRequired = method.Confirmation.PlanHashRequired
+		requestHashFields = append([]string(nil), method.Confirmation.RequestHashFields...)
+		preflightMethod = confirmationPreflightMethod(method)
+	}
+	payload := struct {
+		Method            string   `json:"method"`
+		RequestHash       string   `json:"request_hash"`
+		ConfirmationMode  string   `json:"confirmation_mode,omitempty"`
+		PreflightMethod   string   `json:"preflight_method,omitempty"`
+		RequestHashFields []string `json:"request_hash_fields,omitempty"`
+		PlanHashRequired  bool     `json:"plan_hash_required,omitempty"`
+		Plan              any      `json:"plan,omitempty"`
+	}{
+		Method:            method.Method,
+		RequestHash:       requestHash,
+		ConfirmationMode:  confirmationMode,
+		PreflightMethod:   preflightMethod,
+		RequestHashFields: requestHashFields,
+		PlanHashRequired:  planHashRequired,
+		Plan:              plan,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

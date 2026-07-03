@@ -1677,6 +1677,116 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	}
 }
 
+func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{OperationID: "operation_start_task", Data: map[string]any{"started": true}},
+		resultsByTarget: map[string]capability.Result{
+			"tasks.start.preflight": {Data: map[string]any{
+				"summary":    "Start task",
+				"risk_flags": []any{"executes_task"},
+			}},
+		},
+	}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.tasks",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "tasks.start",
+		Params:               map[string]any{"task_id": "task_1"},
+	}
+
+	result, err := h.CallPluginMethod(context.Background(), call)
+	if !errors.Is(err, ErrConfirmationRequired) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationRequired", err)
+	}
+	if !result.ConfirmationRequired || result.RequestHash == "" {
+		t.Fatalf("confirmation response mismatch: %#v", result)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter should not run before prepare confirmation, calls=%d", capabilityAdapter.calls)
+	}
+
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	if confirmation.PlanHash == "" || confirmation.RequestHash != result.RequestHash {
+		t.Fatalf("confirmation plan mismatch: %#v", confirmation)
+	}
+	plan, ok := confirmation.Plan.(map[string]any)
+	if !ok || plan["summary"] != "Start task" {
+		t.Fatalf("confirmation plan = %#v", confirmation.Plan)
+	}
+	if capabilityAdapter.calls != 1 || capabilityAdapter.last.TargetMethod != "tasks.start.preflight" || capabilityAdapter.last.Effect != capability.EffectRead {
+		t.Fatalf("preflight invocation mismatch: calls=%d last=%#v", capabilityAdapter.calls, capabilityAdapter.last)
+	}
+	if !audits.hasEvent("plugin.confirmation.preflighted") || !audits.hasEvent("plugin.confirmation.issued") {
+		t.Fatalf("missing preflight/issued audit events: %#v", audits.events)
+	}
+
+	call.ConfirmationID = confirmation.ConfirmationID
+	confirmed, err := h.CallPluginMethod(context.Background(), call)
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
+	}
+	if capabilityAdapter.calls != 2 || capabilityAdapter.last.TargetMethod != "tasks.start" {
+		t.Fatalf("confirmed invocation mismatch: calls=%d last=%#v", capabilityAdapter.calls, capabilityAdapter.last)
+	}
+	if confirmed.Data == nil {
+		t.Fatalf("confirmed result missing data: %#v", confirmed)
+	}
+}
+
+func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.confirmationMu.Lock()
+	intent := h.confirmations[confirmation.ConfirmationID]
+	intent.PlanHash = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	h.confirmations[confirmation.ConfirmationID] = intent
+	h.confirmationMu.Unlock()
+
+	call.ConfirmationID = confirmation.ConfirmationID
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() expected tampered plan hash to fail token audience validation")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
 func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
@@ -4291,6 +4401,16 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildMethodContractFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -5641,10 +5761,11 @@ func (c *recordingBrowserSiteCleaner) ClearOriginData(_ context.Context, origin 
 }
 
 type recordingCapabilityAdapter struct {
-	calls  int
-	last   capability.Invocation
-	result capability.Result
-	err    error
+	calls           int
+	last            capability.Invocation
+	result          capability.Result
+	resultsByTarget map[string]capability.Result
+	err             error
 }
 
 type recordingCoreActionAdapter struct {
@@ -5729,6 +5850,11 @@ func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req cap
 	a.last = req
 	if a.err != nil {
 		return capability.Result{}, a.err
+	}
+	if a.resultsByTarget != nil {
+		if result, ok := a.resultsByTarget[req.TargetMethod]; ok {
+			return result, nil
+		}
 	}
 	return a.result, nil
 }
