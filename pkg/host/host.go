@@ -3498,6 +3498,11 @@ func (h *Host) prepareConfirmationPlan(ctx context.Context, call resolvedMethodC
 			return nil, "", fmt.Errorf("confirmation preflight method %q failed: %w", preflight.Method, err)
 		}
 		plan = result.Data
+		normalizedPlan, err := capability.NormalizeRiskPlanData(plan)
+		if err != nil {
+			return nil, "", fmt.Errorf("confirmation preflight method %q returned invalid risk plan: %w", preflight.Method, err)
+		}
+		plan = normalizedPlan
 	}
 	planHash, err := methodPlanHash(call.method, requestHash, plan)
 	if err != nil {

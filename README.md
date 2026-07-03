@@ -197,12 +197,17 @@ capabilities.
   parent-only confirmation token audience. The raw confirmation token is never
   returned to parent JavaScript, written to the confirmation intent store, or
   exposed to the sandboxed iframe.
+- Capability adapters can return `capability.RiskPlan` from preflight methods to
+  use the host-neutral `redevplugin.capability.risk_plan.v1` contract. The Host
+  validates and normalizes that typed plan before hashing it, rejects unknown or
+  invalid risk fields fail-closed, and still accepts legacy generic preflight
+  objects that do not declare a risk-plan schema version.
 - Capability, worker, and core-action method results pass through the Host-owned
   `capability.DefaultResponseRedactionPolicy` before they are returned to the
   plugin surface or HTTP adapter. The default policy clones structured
-  `data` payloads and redacts sensitive keys plus container-shaped env, label,
-  and mount secret values while preserving safe identifiers such as token IDs
-  and secret refs, hashes, and fingerprints.
+  `data` payloads, including typed risk-plan `details`, and redacts sensitive
+  keys plus container-shaped env, label, and mount secret values while preserving
+  safe identifiers such as token IDs and secret refs, hashes, and fingerprints.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, compatibility, release-manifest,

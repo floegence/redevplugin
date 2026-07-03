@@ -115,6 +115,12 @@ preflight method produced one. The token audience binds both `request_hash` and
 `plan_hash`, so a confirmed call cannot swap either the request payload or the
 plan that the parent approved.
 
+Capability adapters may return `capability.RiskPlan` for dynamic preflight
+plans. ReDevPlugin treats `redevplugin.capability.risk_plan.v1` as a
+host-neutral closed-world contract: typed plans are normalized, validated, and
+redacted before their `plan_hash` is computed, while legacy generic plan objects
+without that schema version remain supported for compatibility.
+
 Confirmation intents are stored through a Host-provided store with in-memory
 and SQLite implementations. The store persists only intent metadata,
 confirmation token id, request hash, plan hash, and expiry; it does not persist
@@ -173,8 +179,9 @@ Business capability adapters are host-owned, but their method result data leaves
 through ReDevPlugin. The Host applies `capability.DefaultResponseRedactionPolicy`
 to capability, worker, and core-action `data` before returning it to a sandbox
 surface or HTTP caller. The policy clones supported structured values and
-redacts sensitive keys, environment assignments, label values, and mount paths
-that look like secrets while preserving safe display identifiers such as
+redacts sensitive keys, environment assignments, label values, typed risk-plan
+details, and mount paths that look like secrets while preserving safe display
+identifiers such as
 `*_id`, `*_ref`, `*_name`, `*_hash`, and fingerprints.
 
 This redaction is a platform safety net. Capability adapters should still avoid

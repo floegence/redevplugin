@@ -93,6 +93,42 @@ func TestRedactResponseDataDoesNotMutateOriginal(t *testing.T) {
 	}
 }
 
+func TestRedactResponseDataRedactsTypedRiskPlanDetails(t *testing.T) {
+	input := RiskPlan{
+		Summary: "Start container",
+		RiskFlags: []RiskFlag{
+			{ID: "container.secret_mount", Severity: RiskSeverityHigh, Summary: "Mounts a secret path"},
+		},
+		Details: map[string]any{
+			"env": []any{
+				"PATH=/usr/bin",
+				"DB_PASSWORD=plaintext",
+			},
+			"mounts": []any{
+				map[string]any{"source": "/run/secrets/db_password", "target": "/run/secrets/db_password"},
+				map[string]any{"source": "/srv/app/data", "target": "/data"},
+			},
+		},
+	}
+
+	redacted := RedactResponseData(input)
+	raw, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, leaked := range []string{"plaintext", "/run/secrets/db_password"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("redacted risk plan leaked %q: %s", leaked, got)
+		}
+	}
+	for _, kept := range []string{"Start container", "PATH=/usr/bin", "/srv/app/data"} {
+		if !strings.Contains(got, kept) {
+			t.Fatalf("redacted risk plan dropped safe value %q: %s", kept, got)
+		}
+	}
+}
+
 func TestResponseRedactionPolicyHonorsCustomReplacementAndDepth(t *testing.T) {
 	policy := ResponseRedactionPolicy{Replacement: "***", MaxDepth: 1}
 

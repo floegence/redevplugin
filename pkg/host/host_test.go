@@ -1748,6 +1748,75 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	}
 }
 
+func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{OperationID: "operation_start_task", Data: map[string]any{"started": true}},
+		resultsByTarget: map[string]capability.Result{
+			"tasks.start.preflight": {Data: capability.RiskPlan{
+				Summary:     "Start high-risk container",
+				Effect:      capability.EffectExecute,
+				ResourceRef: "container_hash_1",
+				RiskFlags: []capability.RiskFlag{
+					{ID: "container.host_network", Severity: "HIGH", Summary: "Uses host networking", RequiresAdmin: true},
+				},
+				Details: map[string]any{
+					"env": []any{
+						"PATH=/usr/bin",
+						"API_TOKEN=plaintext-token",
+					},
+					"mounts": []any{
+						map[string]any{"source": "/run/secrets/api_token", "target": "/run/secrets/api_token"},
+						map[string]any{"source": "/srv/project", "target": "/workspace"},
+					},
+				},
+			}},
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.tasks",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.activity")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "tasks.start",
+		Params:               map[string]any{"task_id": "task_1"},
+	}
+
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	plan, ok := confirmation.Plan.(capability.RiskPlan)
+	if !ok {
+		t.Fatalf("confirmation plan = %#v, want capability.RiskPlan", confirmation.Plan)
+	}
+	if plan.SchemaVersion != capability.RiskPlanSchemaVersion || plan.Effect != capability.EffectExecute {
+		t.Fatalf("normalized plan mismatch: %#v", plan)
+	}
+	if !plan.RequiresAdmin || !plan.RequiresConfirmation || plan.RiskFlags[0].Severity != capability.RiskSeverityHigh {
+		t.Fatalf("risk plan flags were not normalized: %#v", plan)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "plaintext-token") || strings.Contains(string(raw), "/run/secrets/api_token") {
+		t.Fatalf("confirmation risk plan leaked sensitive detail: %s", raw)
+	}
+	if !strings.Contains(string(raw), "/srv/project") {
+		t.Fatalf("confirmation risk plan dropped safe detail: %s", raw)
+	}
+}
+
 func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
 	confirmationIntents := &tamperingConfirmationIntentStore{

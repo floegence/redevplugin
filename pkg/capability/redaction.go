@@ -51,6 +51,13 @@ func (p ResponseRedactionPolicy) redactValue(value any, ctx redactionContext, re
 	switch v := value.(type) {
 	case nil:
 		return nil
+	case RiskPlan:
+		return p.redactRiskPlan(v, replacement, depth, maxDepth)
+	case *RiskPlan:
+		if v == nil {
+			return nil
+		}
+		return p.redactRiskPlan(*v, replacement, depth, maxDepth)
 	case map[string]any:
 		return p.redactAnyMap(v, ctx, replacement, depth, maxDepth)
 	case map[string]string:
@@ -72,6 +79,19 @@ func (p ResponseRedactionPolicy) redactValue(value any, ctx redactionContext, re
 	default:
 		return value
 	}
+}
+
+func (p ResponseRedactionPolicy) redactRiskPlan(plan RiskPlan, replacement string, depth int, maxDepth int) RiskPlan {
+	if plan.SchemaVersion == "" {
+		plan.SchemaVersion = RiskPlanSchemaVersion
+	}
+	if plan.Details != nil {
+		redacted, ok := p.redactValue(plan.Details, redactionContext{}, replacement, depth+1, maxDepth).(map[string]any)
+		if ok {
+			plan.Details = redacted
+		}
+	}
+	return plan
 }
 
 func (p ResponseRedactionPolicy) redactAnyMap(in map[string]any, ctx redactionContext, replacement string, depth int, maxDepth int) map[string]any {
