@@ -1543,6 +1543,31 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	assertStreamSecurityHeaders(t, rec)
 }
 
+func TestStreamTokenValidationErrorsMapToInvalidCode(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "missing ticket", err: host.ErrStreamTicketRequired},
+		{name: "expired ticket", err: bridge.ErrTokenExpired},
+		{name: "replayed ticket", err: bridge.ErrTokenReplay},
+		{name: "invalid ticket", err: bridge.ErrTokenInvalid},
+		{name: "audience mismatch", err: bridge.ErrTokenAudience},
+		{name: "revoked ticket", err: bridge.ErrTokenRevoked},
+		{name: "wrong token kind", err: bridge.ErrTokenKind},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := errorCodeForStreamError(tc.err); got != security.ErrStreamTicketInvalid {
+				t.Fatalf("errorCodeForStreamError(%v) = %s, want %s", tc.err, got, security.ErrStreamTicketInvalid)
+			}
+			if got := httpStatusForStreamError(tc.err); got != http.StatusForbidden {
+				t.Fatalf("httpStatusForStreamError(%v) = %d, want %d", tc.err, got, http.StatusForbidden)
+			}
+		})
+	}
+}
+
 func assertStreamSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {

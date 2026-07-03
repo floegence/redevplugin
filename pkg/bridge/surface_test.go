@@ -577,6 +577,91 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 	}
 }
 
+func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.StreamID = "stream_logs_1"
+	audience.StreamDirection = "read"
+	audience.Method = "logs.tail"
+
+	expiring, err := service.MintStreamTicket(MintStreamTicketRequest{
+		PluginInstanceID:     audience.PluginInstanceID,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		StreamID:             audience.StreamID,
+		StreamDirection:      audience.StreamDirection,
+		Method:               audience.Method,
+		Revision:             testRevision(11),
+		ExpiresAt:            now.Add(2 * time.Second),
+		Now:                  now,
+	})
+	if err != nil {
+		t.Fatalf("MintStreamTicket() error = %v", err)
+	}
+	if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
+		StreamTicket: expiring.StreamTicket,
+		Audience:     audience,
+		Revision:     testRevision(11),
+		Now:          now.Add(3 * time.Second),
+	}); !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("ValidateStreamTicket() expired error = %v, want %v", err, ErrTokenExpired)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(Audience) Audience
+	}{
+		{
+			name: "wrong surface",
+			mutate: func(audience Audience) Audience {
+				audience.SurfaceInstanceID = "surface_other"
+				return audience
+			},
+		},
+		{
+			name: "wrong fingerprint",
+			mutate: func(audience Audience) Audience {
+				audience.ActiveFingerprint = "sha256:other"
+				return audience
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := service.MintStreamTicket(MintStreamTicketRequest{
+				PluginInstanceID:     audience.PluginInstanceID,
+				ActiveFingerprint:    audience.ActiveFingerprint,
+				SurfaceInstanceID:    audience.SurfaceInstanceID,
+				OwnerSessionHash:     audience.OwnerSessionHash,
+				OwnerUserHash:        audience.OwnerUserHash,
+				SessionChannelIDHash: audience.SessionChannelIDHash,
+				BridgeChannelID:      audience.BridgeChannelID,
+				StreamID:             audience.StreamID,
+				StreamDirection:      audience.StreamDirection,
+				Method:               audience.Method,
+				Revision:             testRevision(11),
+				Now:                  now,
+			})
+			if err != nil {
+				t.Fatalf("MintStreamTicket() error = %v", err)
+			}
+			if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
+				StreamTicket: result.StreamTicket,
+				Audience:     tc.mutate(audience),
+				Revision:     testRevision(11),
+				Now:          now.Add(time.Second),
+			}); !errors.Is(err, ErrTokenAudience) {
+				t.Fatalf("ValidateStreamTicket() audience error = %v, want %v", err, ErrTokenAudience)
+			}
+		})
+	}
+}
+
 func TestStreamTicketRequiresStreamDirectionAndMethod(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	audience := testSurfaceAudience("bridge_1")
