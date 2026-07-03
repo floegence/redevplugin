@@ -115,6 +115,13 @@ preflight method produced one. The token audience binds both `request_hash` and
 `plan_hash`, so a confirmed call cannot swap either the request payload or the
 plan that the parent approved.
 
+Confirmation intents are stored through a Host-provided store with in-memory
+and SQLite implementations. The store persists only intent metadata,
+confirmation token id, request hash, plan hash, and expiry; it does not persist
+the raw confirmation token capability. If a host process restarts with durable
+intent metadata but without the matching in-memory token-manager record,
+confirmation consumption fails closed.
+
 Sandbox bootstrap, package asset, and stream routes use token-specific stable
 error codes when their credentials fail validation: `PLUGIN_ASSET_TICKET_INVALID`,
 `PLUGIN_ASSET_SESSION_INVALID`, and `PLUGIN_STREAM_TICKET_INVALID`.

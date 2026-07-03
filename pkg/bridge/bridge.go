@@ -163,6 +163,15 @@ type ValidateRequest struct {
 	Bind     *ChannelBinding `json:"bind,omitempty"`
 }
 
+type ValidateTokenIDRequest struct {
+	Kind     TokenKind       `json:"kind"`
+	TokenID  string          `json:"token_id"`
+	Audience Audience        `json:"audience"`
+	Revision RevisionBinding `json:"revision"`
+	Now      time.Time       `json:"now,omitempty"`
+	Consume  bool            `json:"consume,omitempty"`
+}
+
 type InspectRequest struct {
 	Kind  TokenKind `json:"kind"`
 	Token string    `json:"token"`
@@ -305,6 +314,43 @@ func (m *TokenManager) Validate(req ValidateRequest) (TokenRecord, error) {
 	return record, nil
 }
 
+func (m *TokenManager) ValidateID(req ValidateTokenIDRequest) (TokenRecord, error) {
+	if m == nil {
+		return TokenRecord{}, errors.New("token manager is nil")
+	}
+	tokenID := strings.TrimSpace(req.TokenID)
+	if tokenID == "" {
+		return TokenRecord{}, ErrTokenInvalid
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	tokenHash, record, err := m.loadTokenRecordByIDLocked(req.Kind, tokenID, now)
+	if err != nil {
+		return TokenRecord{}, err
+	}
+	if !audienceMatches(record.Audience, req.Audience) {
+		return TokenRecord{}, ErrTokenAudience
+	}
+	if record.Revision != req.Revision {
+		return TokenRecord{}, ErrTokenRevoked
+	}
+	if req.Consume {
+		if record.Use != TokenUseSingleUse {
+			return TokenRecord{}, fmt.Errorf("token kind %s is not single-use", record.Kind)
+		}
+		record.Consumed = true
+		record.ConsumedAt = &now
+	}
+	m.records[tokenHash] = record
+	return record, nil
+}
+
 func (m *TokenManager) Inspect(req InspectRequest) (TokenRecord, error) {
 	if m == nil {
 		return TokenRecord{}, errors.New("token manager is nil")
@@ -322,6 +368,28 @@ func (m *TokenManager) Inspect(req InspectRequest) (TokenRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.loadTokenRecordLocked(req, tokenHash)
+}
+
+func (m *TokenManager) loadTokenRecordByIDLocked(kind TokenKind, tokenID string, now time.Time) (string, TokenRecord, error) {
+	for tokenHash, record := range m.records {
+		if record.TokenID != tokenID {
+			continue
+		}
+		if record.Kind != kind {
+			return "", TokenRecord{}, ErrTokenKind
+		}
+		if record.Revoked {
+			return "", TokenRecord{}, ErrTokenRevoked
+		}
+		if !now.Before(record.ExpiresAt) {
+			return "", TokenRecord{}, ErrTokenExpired
+		}
+		if record.Consumed {
+			return "", TokenRecord{}, ErrTokenReplay
+		}
+		return tokenHash, record, nil
+	}
+	return "", TokenRecord{}, ErrTokenInvalid
 }
 
 func (m *TokenManager) loadTokenRecordLocked(req InspectRequest, tokenHash string) (TokenRecord, error) {

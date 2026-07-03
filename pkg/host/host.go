@@ -192,6 +192,7 @@ type Adapters struct {
 	Operations              operation.Store
 	Permissions             permissions.Store
 	SecurityPolicy          security.PolicyStore
+	ConfirmationIntents     security.ConfirmationIntentStore
 	Cleanup                 cleanup.Orchestrator
 	RetainedData            retaineddata.Store
 	BrowserSite             browsersite.Store
@@ -200,26 +201,9 @@ type Adapters struct {
 }
 
 type Host struct {
-	adapters       Adapters
-	surfaceTokens  *bridge.SurfaceTokenService
-	confirmationMu sync.Mutex
-	confirmations  map[string]confirmationIntent
-	runtimeMu      sync.Mutex
-}
-
-type confirmationIntent struct {
-	ConfirmationID      string
-	ConfirmationToken   string
-	ConfirmationTokenID string
-	PluginID            string
-	PluginInstanceID    string
-	SurfaceInstanceID   string
-	BridgeChannelID     string
-	Method              string
-	RequestHash         string
-	PlanHash            string
-	IssuedAt            time.Time
-	ExpiresAt           time.Time
+	adapters      Adapters
+	surfaceTokens *bridge.SurfaceTokenService
+	runtimeMu     sync.Mutex
 }
 
 type InstallRequest struct {
@@ -638,6 +622,9 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.SecurityPolicy == nil {
 		adapters.SecurityPolicy = security.NewMemoryPolicyStore()
 	}
+	if adapters.ConfirmationIntents == nil {
+		adapters.ConfirmationIntents = security.NewMemoryConfirmationIntentStore()
+	}
 	if adapters.Cleanup == nil {
 		adapters.Cleanup = cleanup.NewMemoryOrchestrator()
 	}
@@ -662,7 +649,6 @@ func New(adapters Adapters) (*Host, error) {
 	return &Host{
 		adapters:      adapters,
 		surfaceTokens: adapters.SurfaceTokens,
-		confirmations: map[string]confirmationIntent{},
 	}, nil
 }
 
@@ -823,7 +809,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 				RequestHash:          requestHash,
 			}, ErrConfirmationRequired
 		}
-		intent, err := h.consumeConfirmationIntent(req.ConfirmationID, req.Now)
+		intent, err := h.consumeConfirmationIntent(ctx, req.ConfirmationID, req.Now)
 		if err != nil {
 			return CallMethodResult{}, err
 		}
@@ -839,11 +825,11 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 		confirmationAudience.Method = call.method.Method
 		confirmationAudience.RequestHash = requestHash
 		confirmationAudience.PlanHash = intent.PlanHash
-		if _, err := h.surfaceTokens.ValidateConfirmationToken(bridge.ValidateConfirmationTokenRequest{
-			ConfirmationToken: intent.ConfirmationToken,
-			Audience:          confirmationAudience,
-			Revision:          call.revision,
-			Now:               req.Now,
+		if _, err := h.surfaceTokens.ValidateConfirmationTokenID(bridge.ValidateConfirmationTokenIDRequest{
+			ConfirmationTokenID: intent.ConfirmationTokenID,
+			Audience:            confirmationAudience,
+			Revision:            call.revision,
+			Now:                 req.Now,
 		}); err != nil {
 			return CallMethodResult{}, err
 		}
@@ -927,9 +913,8 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 	if err != nil {
 		return ConfirmMethodResult{}, err
 	}
-	h.storeConfirmationIntent(confirmationIntent{
+	if _, err := h.storeConfirmationIntent(ctx, security.PutConfirmationIntentRequest{
 		ConfirmationID:      confirmationID,
-		ConfirmationToken:   result.ConfirmationToken,
 		ConfirmationTokenID: result.ConfirmationTokenID,
 		PluginID:            call.record.PluginID,
 		PluginInstanceID:    call.record.PluginInstanceID,
@@ -940,7 +925,10 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		PlanHash:            result.PlanHash,
 		IssuedAt:            result.IssuedAt,
 		ExpiresAt:           result.ExpiresAt,
-	})
+		Now:                 req.Now,
+	}); err != nil {
+		return ConfirmMethodResult{}, err
+	}
 	h.audit(ctx, AuditEvent{Type: "plugin.confirmation.issued", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
 	return ConfirmMethodResult{
 		ConfirmationID:      confirmationID,
@@ -1078,7 +1066,7 @@ type resolvedIntentCall struct {
 
 var ErrConfirmationRequired = errors.New("plugin method confirmation required")
 
-const maxPendingConfirmationIntentsPerPlugin = 64
+const maxPendingConfirmationIntentsPerPlugin = security.DefaultMaxPendingConfirmationIntentsPerPlugin
 const runtimeCapabilityRevokeTimeout = 2 * time.Second
 
 func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (resolvedMethodCall, error) {
@@ -3581,92 +3569,37 @@ func newConfirmationID() (string, error) {
 	return "confirmation_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
-func (h *Host) storeConfirmationIntent(intent confirmationIntent) {
-	h.confirmationMu.Lock()
-	defer h.confirmationMu.Unlock()
-	if h.confirmations == nil {
-		h.confirmations = map[string]confirmationIntent{}
-	}
-	now := time.Now().UTC()
-	for id, existing := range h.confirmations {
-		if !existing.ExpiresAt.IsZero() && !existing.ExpiresAt.After(now) {
-			delete(h.confirmations, id)
-		}
-	}
-	if intent.IssuedAt.IsZero() {
-		intent.IssuedAt = now
-	}
-	for pendingConfirmationCount(h.confirmations, intent.PluginInstanceID) >= maxPendingConfirmationIntentsPerPlugin {
-		oldestID := oldestConfirmationIntentID(h.confirmations, intent.PluginInstanceID)
-		if oldestID == "" {
-			break
-		}
-		delete(h.confirmations, oldestID)
-	}
-	h.confirmations[intent.ConfirmationID] = intent
+func (h *Host) storeConfirmationIntent(ctx context.Context, req security.PutConfirmationIntentRequest) (security.ConfirmationIntentRecord, error) {
+	req.MaxPendingPerPlugin = maxPendingConfirmationIntentsPerPlugin
+	return h.adapters.ConfirmationIntents.PutConfirmationIntent(ctx, req)
 }
 
-func pendingConfirmationCount(confirmations map[string]confirmationIntent, pluginInstanceID string) int {
-	count := 0
-	for _, intent := range confirmations {
-		if intent.PluginInstanceID == pluginInstanceID {
-			count++
-		}
-	}
-	return count
+func (h *Host) deleteConfirmationIntentsForPlugin(ctx context.Context, pluginInstanceID string, now time.Time) (int, error) {
+	return h.adapters.ConfirmationIntents.RevokePluginConfirmationIntents(ctx, security.RevokePluginConfirmationIntentsRequest{
+		PluginInstanceID: pluginInstanceID,
+		Now:              now,
+	})
 }
 
-func oldestConfirmationIntentID(confirmations map[string]confirmationIntent, pluginInstanceID string) string {
-	var oldestID string
-	var oldestTime time.Time
-	for id, intent := range confirmations {
-		if intent.PluginInstanceID != pluginInstanceID {
-			continue
-		}
-		when := intent.IssuedAt
-		if when.IsZero() {
-			when = intent.ExpiresAt
-		}
-		if oldestID == "" || when.Before(oldestTime) {
-			oldestID = id
-			oldestTime = when
-		}
-	}
-	return oldestID
-}
-
-func (h *Host) deleteConfirmationIntentsForPlugin(pluginInstanceID string) int {
-	h.confirmationMu.Lock()
-	defer h.confirmationMu.Unlock()
-	count := 0
-	for id, intent := range h.confirmations {
-		if intent.PluginInstanceID != pluginInstanceID {
-			continue
-		}
-		delete(h.confirmations, id)
-		count++
-	}
-	return count
-}
-
-func (h *Host) consumeConfirmationIntent(confirmationID string, now time.Time) (confirmationIntent, error) {
+func (h *Host) consumeConfirmationIntent(ctx context.Context, confirmationID string, now time.Time) (security.ConfirmationIntentRecord, error) {
 	if strings.TrimSpace(confirmationID) == "" {
-		return confirmationIntent{}, bridge.ErrMissingTokenAudience
+		return security.ConfirmationIntentRecord{}, bridge.ErrMissingTokenAudience
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	h.confirmationMu.Lock()
-	defer h.confirmationMu.Unlock()
-	intent, ok := h.confirmations[confirmationID]
-	if ok {
-		delete(h.confirmations, confirmationID)
+	intent, err := h.adapters.ConfirmationIntents.ConsumeConfirmationIntent(ctx, security.ConsumeConfirmationIntentRequest{
+		ConfirmationID: confirmationID,
+		Now:            now,
+	})
+	if errors.Is(err, security.ErrConfirmationIntentNotFound) {
+		return security.ConfirmationIntentRecord{}, bridge.ErrTokenInvalid
 	}
-	if !ok {
-		return confirmationIntent{}, bridge.ErrTokenInvalid
+	if errors.Is(err, security.ErrConfirmationIntentExpired) {
+		return security.ConfirmationIntentRecord{}, bridge.ErrTokenExpired
 	}
-	if !intent.ExpiresAt.IsZero() && !intent.ExpiresAt.After(now) {
-		return confirmationIntent{}, bridge.ErrTokenExpired
+	if err != nil {
+		return security.ConfirmationIntentRecord{}, err
 	}
 	return intent, nil
 }
@@ -3676,7 +3609,10 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	if h.surfaceTokens != nil {
 		revokedTokens = h.surfaceTokens.RevokePlugin(record.PluginInstanceID, 0, now)
 	}
-	revokedConfirmations := h.deleteConfirmationIntentsForPlugin(record.PluginInstanceID)
+	revokedConfirmations, err := h.deleteConfirmationIntentsForPlugin(ctx, record.PluginInstanceID, now)
+	if err != nil {
+		return err
+	}
 	runtimeRevoked := false
 	var runtimeRevokeResult runtimeclient.RevokeResult
 	if h.adapters.RuntimeSupervisor != nil {

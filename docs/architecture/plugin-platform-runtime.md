@@ -188,6 +188,8 @@ ReDevPlugin uses explicit stores instead of implicit process memory:
 - browser-site records track sandbox origin registration and cleanup status;
 - secret binding stores track secret references without secret plaintext;
 - permission and security policy stores drive authorization and revoke epochs;
+- confirmation intent stores keep dangerous-method approval state without
+  persisting raw confirmation token capabilities;
 - operation and stream stores keep observable long-running work and buffered
   events;
 - retained-data and cleanup stores make keep-data/delete-data outcomes auditable;

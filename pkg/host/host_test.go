@@ -1750,11 +1750,16 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 
 func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	confirmationIntents := &tamperingConfirmationIntentStore{
+		ConfirmationIntentStore: security.NewMemoryConfirmationIntentStore(),
+		planHash:                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:     true,
-		localGenerated:    true,
-		capabilityID:      "example.capability.echo",
-		capabilityAdapter: capabilityAdapter,
+		developerMode:       true,
+		localGenerated:      true,
+		capabilityID:        "example.capability.echo",
+		capabilityAdapter:   capabilityAdapter,
+		confirmationIntents: confirmationIntents,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
 	call := CallMethodRequest{
@@ -1772,11 +1777,6 @@ func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.confirmationMu.Lock()
-	intent := h.confirmations[confirmation.ConfirmationID]
-	intent.PlanHash = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	h.confirmations[confirmation.ConfirmationID] = intent
-	h.confirmationMu.Unlock()
 
 	call.ConfirmationID = confirmation.ConfirmationID
 	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
@@ -1792,13 +1792,15 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
 	}
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	confirmationIntents := security.NewMemoryConfirmationIntentStore()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
-		capabilityID:       "example.capability.echo",
-		capabilityAdapter:  capabilityAdapter,
-		runtimeSupervisor:  runtime,
-		connectivityBroker: connectivity.NewMemoryBroker(),
+		developerMode:       true,
+		localGenerated:      true,
+		capabilityID:        "example.capability.echo",
+		capabilityAdapter:   capabilityAdapter,
+		runtimeSupervisor:   runtime,
+		connectivityBroker:  connectivity.NewMemoryBroker(),
+		confirmationIntents: confirmationIntents,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
 	call := CallMethodRequest{
@@ -1815,6 +1817,9 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
 	if err != nil {
 		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 1 {
+		t.Fatalf("stored confirmation intents before disable = %#v, err=%v", listed, err)
 	}
 	call.ConfirmationID = confirmation.ConfirmationID
 
@@ -1845,6 +1850,9 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter called after disabled confirmation: %d", capabilityAdapter.calls)
+	}
+	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 0 {
+		t.Fatalf("stored confirmation intents after disable = %#v, err=%v", listed, err)
 	}
 	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
 		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
@@ -1912,28 +1920,6 @@ func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 	}
 	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.runtime_capabilities.revoke_failed" {
 		t.Fatalf("diagnostics mismatch: %#v", diagnostics.events)
-	}
-}
-
-func TestStoreConfirmationIntentCapsPendingIntentsPerPlugin(t *testing.T) {
-	h := &Host{}
-	now := time.Now().UTC()
-	for i := 0; i < maxPendingConfirmationIntentsPerPlugin+1; i++ {
-		h.storeConfirmationIntent(confirmationIntent{
-			ConfirmationID:   "confirmation_" + strconv.Itoa(i),
-			PluginInstanceID: "plugini_confirm",
-			IssuedAt:         now.Add(time.Duration(i) * time.Second),
-			ExpiresAt:        now.Add(time.Hour),
-		})
-	}
-	if len(h.confirmations) != maxPendingConfirmationIntentsPerPlugin {
-		t.Fatalf("pending confirmation count = %d, want %d", len(h.confirmations), maxPendingConfirmationIntentsPerPlugin)
-	}
-	if _, ok := h.confirmations["confirmation_0"]; ok {
-		t.Fatalf("oldest confirmation was not evicted: %#v", h.confirmations)
-	}
-	if _, ok := h.confirmations["confirmation_1"]; !ok {
-		t.Fatalf("newer confirmation was unexpectedly evicted: %#v", h.confirmations)
 	}
 }
 
@@ -4241,6 +4227,7 @@ type testHostOptions struct {
 	installStages           installstage.Store
 	permissions             permissions.Store
 	securityPolicy          security.PolicyStore
+	confirmationIntents     security.ConfirmationIntentStore
 	runtimeSupervisor       runtimeclient.Supervisor
 	runtimeArtifactResolver RuntimeArtifactResolver
 	secrets                 SecretStoreAdapter
@@ -4287,6 +4274,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		InstallStages:           opts.installStages,
 		Permissions:             opts.permissions,
 		SecurityPolicy:          opts.securityPolicy,
+		ConfirmationIntents:     opts.confirmationIntents,
 		RuntimeSupervisor:       opts.runtimeSupervisor,
 		RuntimeArtifactResolver: opts.runtimeArtifactResolver,
 		Secrets:                 opts.secrets,
@@ -5779,6 +5767,20 @@ type recordingOperationCanceler struct {
 	calls int
 	last  OperationCancelAdapterRequest
 	err   error
+}
+
+type tamperingConfirmationIntentStore struct {
+	security.ConfirmationIntentStore
+	planHash string
+}
+
+func (s *tamperingConfirmationIntentStore) ConsumeConfirmationIntent(ctx context.Context, req security.ConsumeConfirmationIntentRequest) (security.ConfirmationIntentRecord, error) {
+	record, err := s.ConfirmationIntentStore.ConsumeConfirmationIntent(ctx, req)
+	if err != nil {
+		return security.ConfirmationIntentRecord{}, err
+	}
+	record.PlanHash = s.planHash
+	return record, nil
 }
 
 type recordingSecretStore struct {

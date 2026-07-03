@@ -144,6 +144,13 @@ type ValidateConfirmationTokenRequest struct {
 	Now               time.Time       `json:"now,omitempty"`
 }
 
+type ValidateConfirmationTokenIDRequest struct {
+	ConfirmationTokenID string          `json:"confirmation_token_id"`
+	Audience            Audience        `json:"audience"`
+	Revision            RevisionBinding `json:"revision"`
+	Now                 time.Time       `json:"now,omitempty"`
+}
+
 type MintRuntimeExecutionLeaseRequest struct {
 	PluginInstanceID    string          `json:"plugin_instance_id"`
 	ActiveFingerprint   string          `json:"active_fingerprint"`
@@ -561,6 +568,20 @@ func (s *SurfaceTokenService) ValidateConfirmationToken(req ValidateConfirmation
 	return s.tokens.Validate(ValidateRequest{
 		Kind:     TokenKindConfirmationToken,
 		Token:    req.ConfirmationToken,
+		Audience: req.Audience,
+		Revision: req.Revision,
+		Now:      req.Now,
+		Consume:  true,
+	})
+}
+
+func (s *SurfaceTokenService) ValidateConfirmationTokenID(req ValidateConfirmationTokenIDRequest) (TokenRecord, error) {
+	if s == nil {
+		return TokenRecord{}, errors.New("surface token service is nil")
+	}
+	return s.tokens.ValidateID(ValidateTokenIDRequest{
+		Kind:     TokenKindConfirmationToken,
+		TokenID:  req.ConfirmationTokenID,
 		Audience: req.Audience,
 		Revision: req.Revision,
 		Now:      req.Now,

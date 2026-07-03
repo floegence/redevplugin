@@ -281,6 +281,50 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 	}
 }
 
+func TestConfirmationTokenCanBeConsumedByServerHeldTokenID(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.ConfirmationID = "confirmation_by_id"
+	audience.Method = "danger.run"
+	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
+		PluginInstanceID:     audience.PluginInstanceID,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		ConfirmationID:       audience.ConfirmationID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		Method:               audience.Method,
+		RequestHash:          audience.RequestHash,
+		PlanHash:             audience.PlanHash,
+		Revision:             testRevision(4),
+		Now:                  now,
+	})
+	if err != nil {
+		t.Fatalf("MintConfirmationToken() error = %v", err)
+	}
+	if _, err := service.ValidateConfirmationTokenID(ValidateConfirmationTokenIDRequest{
+		ConfirmationTokenID: result.ConfirmationTokenID,
+		Audience:            audience,
+		Revision:            testRevision(4),
+		Now:                 now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("ValidateConfirmationTokenID() error = %v", err)
+	}
+	if _, err := service.ValidateConfirmationTokenID(ValidateConfirmationTokenIDRequest{
+		ConfirmationTokenID: result.ConfirmationTokenID,
+		Audience:            audience,
+		Revision:            testRevision(4),
+		Now:                 now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrTokenReplay) {
+		t.Fatalf("ValidateConfirmationTokenID() replay error = %v, want %v", err, ErrTokenReplay)
+	}
+}
+
 func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()

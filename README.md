@@ -49,6 +49,11 @@ capabilities.
   state, and test/delete metadata, never secret plaintext, so hosts can keep the
   actual vault implementation product-owned while reusing common lifecycle
   state, filtering, cleanup, and newer-schema fail-closed behavior.
+- Confirmation intent stores include both in-memory and SQLite-backed
+  implementations. They persist the server-held intent metadata and
+  confirmation token id, request hash, plan hash, and expiry, but not the raw
+  confirmation token; after a process restart, missing token-manager state makes
+  any recovered intent fail closed instead of silently confirming.
 - Host lifecycle APIs include `RefreshEnabledPlugins`, which lets an embedding
   product restore enabled plugin runtime state after restart by replaying
   storage/settings initialization, connectivity policy installation, and
@@ -190,7 +195,8 @@ capabilities.
   during confirmation preparation, returns the redacted plan plus `plan_hash` to
   the trusted parent, and binds both `request_hash` and `plan_hash` into the
   parent-only confirmation token audience. The raw confirmation token is never
-  returned to parent JavaScript or the sandboxed iframe.
+  returned to parent JavaScript, written to the confirmation intent store, or
+  exposed to the sandboxed iframe.
 - Capability, worker, and core-action method results pass through the Host-owned
   `capability.DefaultResponseRedactionPolicy` before they are returned to the
   plugin surface or HTTP adapter. The default policy clones structured

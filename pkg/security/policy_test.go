@@ -98,6 +98,178 @@ func TestPolicyStorePutListEvaluateAndDelete(t *testing.T) {
 	}
 }
 
+func TestConfirmationIntentStorePutListConsumeAndRevoke(t *testing.T) {
+	for _, tc := range confirmationIntentStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+			record, err := store.PutConfirmationIntent(ctx, testPutConfirmationIntentRequest("confirmation_1", "plugini_confirm", now))
+			if err != nil {
+				t.Fatalf("PutConfirmationIntent() error = %v", err)
+			}
+			if record.ConfirmationID != "confirmation_1" ||
+				record.ConfirmationTokenID != "ct_1" ||
+				record.PluginID != "com.example.confirm" ||
+				record.RequestHash != "sha256:request" ||
+				record.PlanHash != "sha256:plan" ||
+				!record.IssuedAt.Equal(now) ||
+				!record.ExpiresAt.Equal(now.Add(time.Minute)) {
+				t.Fatalf("confirmation intent mismatch: %#v", record)
+			}
+
+			listed, err := store.ListConfirmationIntents(ctx, ListConfirmationIntentsRequest{PluginInstanceID: "plugini_confirm"})
+			if err != nil {
+				t.Fatalf("ListConfirmationIntents() error = %v", err)
+			}
+			if len(listed) != 1 || listed[0].ConfirmationID != "confirmation_1" {
+				t.Fatalf("listed confirmation intents mismatch: %#v", listed)
+			}
+
+			consumed, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
+				ConfirmationID: "confirmation_1",
+				Now:            now.Add(30 * time.Second),
+			})
+			if err != nil {
+				t.Fatalf("ConsumeConfirmationIntent() error = %v", err)
+			}
+			if consumed.ConfirmationID != record.ConfirmationID || consumed.ConfirmationTokenID != record.ConfirmationTokenID {
+				t.Fatalf("consumed confirmation intent mismatch: %#v", consumed)
+			}
+			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{ConfirmationID: "confirmation_1", Now: now.Add(31 * time.Second)}); !errors.Is(err, ErrConfirmationIntentNotFound) {
+				t.Fatalf("ConsumeConfirmationIntent(replay) error = %v, want ErrConfirmationIntentNotFound", err)
+			}
+
+			if _, err := store.PutConfirmationIntent(ctx, testPutConfirmationIntentRequest("confirmation_2", "plugini_confirm", now)); err != nil {
+				t.Fatalf("PutConfirmationIntent(second) error = %v", err)
+			}
+			revoked, err := store.RevokePluginConfirmationIntents(ctx, RevokePluginConfirmationIntentsRequest{PluginInstanceID: "plugini_confirm"})
+			if err != nil {
+				t.Fatalf("RevokePluginConfirmationIntents() error = %v", err)
+			}
+			if revoked != 1 {
+				t.Fatalf("revoked confirmation intents = %d, want 1", revoked)
+			}
+			if listed, err := store.ListConfirmationIntents(ctx, ListConfirmationIntentsRequest{PluginInstanceID: "plugini_confirm"}); err != nil || len(listed) != 0 {
+				t.Fatalf("ListConfirmationIntents(after revoke) = %#v, err=%v", listed, err)
+			}
+		})
+	}
+}
+
+func TestConfirmationIntentStoreRejectsExpiredAndInvalidRequests(t *testing.T) {
+	for _, tc := range confirmationIntentStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+			if _, err := store.PutConfirmationIntent(ctx, PutConfirmationIntentRequest{ConfirmationID: "confirmation_invalid", Now: now}); !errors.Is(err, ErrInvalidConfirmationIntent) {
+				t.Fatalf("PutConfirmationIntent(invalid) error = %v, want ErrInvalidConfirmationIntent", err)
+			}
+			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{}); !errors.Is(err, ErrInvalidConfirmationIntent) {
+				t.Fatalf("ConsumeConfirmationIntent(invalid) error = %v, want ErrInvalidConfirmationIntent", err)
+			}
+			if _, err := store.RevokePluginConfirmationIntents(ctx, RevokePluginConfirmationIntentsRequest{}); !errors.Is(err, ErrInvalidConfirmationIntent) {
+				t.Fatalf("RevokePluginConfirmationIntents(invalid) error = %v, want ErrInvalidConfirmationIntent", err)
+			}
+			req := testPutConfirmationIntentRequest("confirmation_expired", "plugini_expired", now)
+			req.ExpiresAt = now.Add(time.Second)
+			if _, err := store.PutConfirmationIntent(ctx, req); err != nil {
+				t.Fatalf("PutConfirmationIntent(expiring) error = %v", err)
+			}
+			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
+				ConfirmationID: "confirmation_expired",
+				Now:            now.Add(2 * time.Second),
+			}); !errors.Is(err, ErrConfirmationIntentExpired) {
+				t.Fatalf("ConsumeConfirmationIntent(expired) error = %v, want ErrConfirmationIntentExpired", err)
+			}
+			if _, err := store.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
+				ConfirmationID: "confirmation_expired",
+				Now:            now.Add(3 * time.Second),
+			}); !errors.Is(err, ErrConfirmationIntentNotFound) {
+				t.Fatalf("ConsumeConfirmationIntent(expired replay) error = %v, want ErrConfirmationIntentNotFound", err)
+			}
+		})
+	}
+}
+
+func TestConfirmationIntentStoreCapsPendingIntentsPerPlugin(t *testing.T) {
+	for _, tc := range confirmationIntentStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+			for i := 0; i < 3; i++ {
+				req := testPutConfirmationIntentRequest("confirmation_cap_"+string(rune('0'+i)), "plugini_cap", now.Add(time.Duration(i)*time.Second))
+				req.MaxPendingPerPlugin = 2
+				if _, err := store.PutConfirmationIntent(ctx, req); err != nil {
+					t.Fatalf("PutConfirmationIntent(%d) error = %v", i, err)
+				}
+			}
+			listed, err := store.ListConfirmationIntents(ctx, ListConfirmationIntentsRequest{PluginInstanceID: "plugini_cap"})
+			if err != nil {
+				t.Fatalf("ListConfirmationIntents() error = %v", err)
+			}
+			if len(listed) != 2 || listed[0].ConfirmationID != "confirmation_cap_1" || listed[1].ConfirmationID != "confirmation_cap_2" {
+				t.Fatalf("pending confirmation cap mismatch: %#v", listed)
+			}
+		})
+	}
+}
+
+func TestSQLiteConfirmationIntentStorePersistsAcrossOpen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "confirmation-intents.sqlite")
+	store, err := NewSQLiteConfirmationIntentStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+	record, err := store.PutConfirmationIntent(ctx, testPutConfirmationIntentRequest("confirmation_persist", "plugini_persist", now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteConfirmationIntentStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = reopened.Close()
+	})
+	got, err := reopened.ConsumeConfirmationIntent(ctx, ConsumeConfirmationIntentRequest{
+		ConfirmationID: "confirmation_persist",
+		Now:            now.Add(30 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != record {
+		t.Fatalf("persisted confirmation intent mismatch: %#v want %#v", got, record)
+	}
+}
+
+func TestSQLiteConfirmationIntentStoreRejectsNewerSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "confirmation-intents.sqlite")
+	store, err := NewSQLiteConfirmationIntentStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT OR REPLACE INTO plugin_confirmation_intent_schema_migrations(version, applied_at) VALUES(999, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSQLiteConfirmationIntentStore(ctx, path); err == nil {
+		t.Fatal("NewSQLiteConfirmationIntentStore() accepted newer schema version")
+	}
+}
+
 func TestPolicyStoreNoPolicyAllowsByDefault(t *testing.T) {
 	for _, tc := range policyStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -211,6 +383,54 @@ func policyStoreCases() []policyStoreCase {
 			open: func(t *testing.T) PolicyStore {
 				t.Helper()
 				store, err := NewSQLitePolicyStore(context.Background(), filepath.Join(t.TempDir(), "security-policy.sqlite"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					_ = store.Close()
+				})
+				return store
+			},
+		},
+	}
+}
+
+func testPutConfirmationIntentRequest(confirmationID string, pluginInstanceID string, now time.Time) PutConfirmationIntentRequest {
+	return PutConfirmationIntentRequest{
+		ConfirmationID:      confirmationID,
+		ConfirmationTokenID: "ct_1",
+		PluginID:            "com.example.confirm",
+		PluginInstanceID:    pluginInstanceID,
+		SurfaceInstanceID:   "surface_1",
+		BridgeChannelID:     "bridge_1",
+		Method:              "danger.run",
+		RequestHash:         "sha256:request",
+		PlanHash:            "sha256:plan",
+		IssuedAt:            now,
+		ExpiresAt:           now.Add(time.Minute),
+		Now:                 now,
+	}
+}
+
+type confirmationIntentStoreCase struct {
+	name string
+	open func(t *testing.T) ConfirmationIntentStore
+}
+
+func confirmationIntentStoreCases() []confirmationIntentStoreCase {
+	return []confirmationIntentStoreCase{
+		{
+			name: "memory",
+			open: func(t *testing.T) ConfirmationIntentStore {
+				t.Helper()
+				return NewMemoryConfirmationIntentStore()
+			},
+		},
+		{
+			name: "sqlite",
+			open: func(t *testing.T) ConfirmationIntentStore {
+				t.Helper()
+				store, err := NewSQLiteConfirmationIntentStore(context.Background(), filepath.Join(t.TempDir(), "confirmation-intents.sqlite"))
 				if err != nil {
 					t.Fatal(err)
 				}
