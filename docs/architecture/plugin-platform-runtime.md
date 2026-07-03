@@ -147,6 +147,14 @@ set. `redevplugin verify-compatibility <compatibility.json> <artifact-root>`
 checks the version matrix and contract hashes before a host product consumes a
 published dependency set.
 
+Manifest storage and settings migration metadata is part of that contract. A
+bootstrap migration may use `from_version: 0`, but the manifest validator and
+schema contract require each migration's `to_version` to match the active
+settings or store `schema_version`, require monotonic version ranges, and reject
+empty step hashes or negative estimates. Hosts can therefore detect migration
+intent from the package manifest instead of inferring it from ad hoc product
+logic.
+
 ## Runtime State Model
 
 ReDevPlugin uses explicit stores instead of implicit process memory:

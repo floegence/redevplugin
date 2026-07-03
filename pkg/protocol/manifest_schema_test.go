@@ -96,6 +96,14 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	if migration["additionalProperties"] != false {
 		t.Fatalf("migration additionalProperties = %#v, want false", migration["additionalProperties"])
 	}
+	migrationRequired := requireStringSlice(t, migration["required"], "migration required")
+	assertStringSet(t, migrationRequired, []string{"from_version", "to_version", "reversible", "requires_worker", "estimated_bytes", "max_duration_ms", "data_loss_risk", "steps_hash"}, "migration required")
+	if got := requireNestedObject(t, migration, "properties", "from_version")["minimum"]; got != float64(0) {
+		t.Fatalf("migration.from_version minimum = %#v, want 0", got)
+	}
+	if got := requireNestedObject(t, migration, "properties", "to_version")["minimum"]; got != float64(1) {
+		t.Fatalf("migration.to_version minimum = %#v, want 1", got)
+	}
 
 	networkProps := requireNestedObject(t, props, "network_access", "properties", "connectors", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, networkProps, "transport")["enum"], "network connector transport", []string{

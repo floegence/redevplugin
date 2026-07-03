@@ -376,6 +376,9 @@ func Validate(m Manifest) error {
 		if m.Settings.SchemaVersion <= 0 {
 			return ValidationError{Field: "settings.schema_version", Message: "must be positive"}
 		}
+		if err := validateMigrationSpec("settings.migration", m.Settings.SchemaVersion, m.Settings.Migration); err != nil {
+			return err
+		}
 		settingsFields := map[string]struct{}{}
 		for i, field := range m.Settings.Fields {
 			if strings.TrimSpace(field.Key) == "" {
@@ -410,6 +413,9 @@ func Validate(m Manifest) error {
 			if store.SchemaVersion <= 0 {
 				return ValidationError{Field: fmt.Sprintf("storage.stores[%d].schema_version", i), Message: "must be positive"}
 			}
+			if err := validateMigrationSpec(fmt.Sprintf("storage.stores[%d].migration", i), store.SchemaVersion, store.Migration); err != nil {
+				return err
+			}
 		}
 	}
 	if m.NetworkAccess != nil {
@@ -434,6 +440,34 @@ func Validate(m Manifest) error {
 		}
 	}
 
+	return nil
+}
+
+func validateMigrationSpec(field string, schemaVersion int, migration MigrationSpec) error {
+	if migration.ToVersion == 0 && migration.FromVersion == 0 && strings.TrimSpace(migration.StepsHash) == "" {
+		return ValidationError{Field: field, Message: "is required"}
+	}
+	if migration.FromVersion < 0 {
+		return ValidationError{Field: field + ".from_version", Message: "must be zero or positive"}
+	}
+	if migration.ToVersion <= 0 {
+		return ValidationError{Field: field + ".to_version", Message: "must be positive"}
+	}
+	if migration.FromVersion > migration.ToVersion {
+		return ValidationError{Field: field + ".from_version", Message: "must be less than or equal to to_version"}
+	}
+	if migration.ToVersion != schemaVersion {
+		return ValidationError{Field: field + ".to_version", Message: "must match schema_version"}
+	}
+	if migration.EstimatedBytes < 0 {
+		return ValidationError{Field: field + ".estimated_bytes", Message: "must be zero or positive"}
+	}
+	if migration.MaxDurationMS < 0 {
+		return ValidationError{Field: field + ".max_duration_ms", Message: "must be zero or positive"}
+	}
+	if strings.TrimSpace(migration.StepsHash) == "" {
+		return ValidationError{Field: field + ".steps_hash", Message: "is required"}
+	}
 	return nil
 }
 

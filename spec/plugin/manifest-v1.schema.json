@@ -251,7 +251,7 @@
       "additionalProperties": false,
       "required": ["from_version", "to_version", "reversible", "requires_worker", "estimated_bytes", "max_duration_ms", "data_loss_risk", "steps_hash"],
       "properties": {
-        "from_version": { "type": "integer", "minimum": 1 },
+        "from_version": { "type": "integer", "minimum": 0 },
         "to_version": { "type": "integer", "minimum": 1 },
         "reversible": { "type": "boolean" },
         "requires_worker": { "type": "boolean" },

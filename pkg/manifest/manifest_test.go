@@ -134,6 +134,125 @@ func TestValidateStorageQuotaFiles(t *testing.T) {
 	}
 }
 
+func TestValidateMigrationSpecBinding(t *testing.T) {
+	t.Run("allows bootstrap from empty data", func(t *testing.T) {
+		m := validManifest()
+		m.Settings.Migration = MigrationSpec{
+			FromVersion:    0,
+			ToVersion:      1,
+			Reversible:     true,
+			RequiresWorker: false,
+			StepsHash:      "sha256:initial-settings",
+		}
+		m.Storage = &StorageSpec{Stores: []StoreSpec{{
+			StoreID:       "cache",
+			Kind:          "kv",
+			Scope:         "user",
+			QuotaBytes:    1024,
+			SchemaVersion: 1,
+			Migration: MigrationSpec{
+				FromVersion:    0,
+				ToVersion:      1,
+				Reversible:     true,
+				RequiresWorker: false,
+				StepsHash:      "sha256:initial-storage",
+			},
+		}}}
+
+		if err := Validate(m); err != nil {
+			t.Fatalf("Validate() bootstrap migration error = %v", err)
+		}
+	})
+
+	cases := []struct {
+		name   string
+		mutate func(*Manifest)
+		field  string
+	}{
+		{
+			name: "settings migration is required",
+			mutate: func(m *Manifest) {
+				m.Settings.Migration = MigrationSpec{}
+			},
+			field: "settings.migration",
+		},
+		{
+			name: "settings migration target matches schema",
+			mutate: func(m *Manifest) {
+				m.Settings.Migration.ToVersion = 2
+			},
+			field: "settings.migration.to_version",
+		},
+		{
+			name: "settings migration source cannot exceed target",
+			mutate: func(m *Manifest) {
+				m.Settings.Migration.FromVersion = 2
+			},
+			field: "settings.migration.from_version",
+		},
+		{
+			name: "settings migration requires steps hash",
+			mutate: func(m *Manifest) {
+				m.Settings.Migration.StepsHash = " "
+			},
+			field: "settings.migration.steps_hash",
+		},
+		{
+			name: "settings migration rejects negative estimate",
+			mutate: func(m *Manifest) {
+				m.Settings.Migration.EstimatedBytes = -1
+			},
+			field: "settings.migration.estimated_bytes",
+		},
+		{
+			name: "storage migration target matches schema",
+			mutate: func(m *Manifest) {
+				m.Storage = &StorageSpec{Stores: []StoreSpec{{
+					StoreID:       "cache",
+					Kind:          "kv",
+					Scope:         "user",
+					QuotaBytes:    1024,
+					SchemaVersion: 2,
+					Migration:     noopMigration(),
+				}}}
+			},
+			field: "storage.stores[0].migration.to_version",
+		},
+		{
+			name: "storage migration rejects negative duration",
+			mutate: func(m *Manifest) {
+				m.Storage = &StorageSpec{Stores: []StoreSpec{{
+					StoreID:       "cache",
+					Kind:          "kv",
+					Scope:         "user",
+					QuotaBytes:    1024,
+					SchemaVersion: 1,
+					Migration: MigrationSpec{
+						FromVersion:   1,
+						ToVersion:     1,
+						StepsHash:     "sha256:storage",
+						MaxDurationMS: -1,
+					},
+				}}}
+			},
+			field: "storage.stores[0].migration.max_duration_ms",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := validManifest()
+			tc.mutate(&candidate)
+			err := Validate(candidate)
+			if err == nil {
+				t.Fatal("Validate() expected migration validation error")
+			}
+			if validationErr, ok := err.(ValidationError); !ok || validationErr.Field != tc.field {
+				t.Fatalf("Validate() error = %v, want field %s", err, tc.field)
+			}
+		})
+	}
+}
+
 func TestValidateWorkers(t *testing.T) {
 	m := validManifest()
 	m.Workers = []WorkerSpec{{

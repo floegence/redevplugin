@@ -56,6 +56,11 @@ capabilities.
   The mountable HTTP adapter exposes the same behavior at
   `POST /_redevplugin/api/plugins/runtime/refresh-enabled`, so hosts can keep
   route mounting thin instead of reimplementing the refresh loop.
+- Manifest validation binds settings and storage migration metadata to the
+  declared schema versions: bootstrap migrations may start at `from_version: 0`,
+  but every migration must point `to_version` at the active schema version and
+  carry a non-empty `steps_hash`, non-negative estimates, and a monotonic version
+  range before a package can be installed.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
