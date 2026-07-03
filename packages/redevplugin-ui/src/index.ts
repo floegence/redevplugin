@@ -433,13 +433,62 @@ export type PluginSurfaceHostOptions = {
 
 export type PluginConfirmationHandler = (intent: PluginConfirmationIntent) => Promise<PluginConfirmationDecision> | PluginConfirmationDecision;
 
+export const pluginRiskPlanSchemaVersion = "redevplugin.capability.risk_plan.v1" as const;
+
+export type PluginRiskSeverity = "info" | "low" | "medium" | "high" | "critical";
+
+export type PluginRiskEffect = "read" | "write" | "execute" | "delete" | "admin";
+
+export type PluginRiskFlag = {
+  id: string;
+  severity: PluginRiskSeverity;
+  summary: string;
+  description?: string;
+  requires_confirmation?: boolean;
+  requires_admin?: boolean;
+  data_loss_risk?: boolean;
+  destructive?: boolean;
+};
+
+export type PluginRiskPlan = {
+  schema_version: typeof pluginRiskPlanSchemaVersion;
+  capability_id?: string;
+  binding_id?: string;
+  method?: string;
+  target_method?: string;
+  action?: string;
+  effect?: PluginRiskEffect;
+  resource_ref?: string;
+  resource_display_name?: string;
+  summary: string;
+  risk_flags: PluginRiskFlag[];
+  requires_confirmation?: boolean;
+  requires_admin?: boolean;
+  data_loss_risk?: boolean;
+  destructive?: boolean;
+  deny_reason?: string;
+  details?: Record<string, unknown>;
+};
+
+export type PluginConfirmationPlan = PluginRiskPlan | Record<string, unknown>;
+
+export function isPluginRiskPlan(plan: unknown): plan is PluginRiskPlan {
+  return isRecord(plan) &&
+    plan.schema_version === pluginRiskPlanSchemaVersion &&
+    typeof plan.summary === "string" &&
+    Array.isArray(plan.risk_flags) &&
+    plan.risk_flags.every(isPluginRiskFlag) &&
+    (plan.effect == null || isPluginRiskEffect(plan.effect)) &&
+    (plan.details == null || isRecord(plan.details));
+}
+
 export type PluginConfirmationIntent = {
   requestId: string;
   method: string;
   params?: Record<string, unknown>;
   requestHash: string;
   planHash: string;
-  plan?: unknown;
+  plan?: PluginConfirmationPlan;
   confirmationTokenId: string;
 };
 
@@ -515,7 +564,7 @@ export type PluginConfirmationResult = {
   confirmation_token_id: string;
   request_hash: string;
   plan_hash: string;
-  plan?: unknown;
+  plan?: PluginConfirmationPlan;
   expires_at?: string;
 };
 
@@ -1558,6 +1607,26 @@ function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessa
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isPluginRiskFlag(value: unknown): value is PluginRiskFlag {
+  return isRecord(value) &&
+    typeof value.id === "string" &&
+    isPluginRiskSeverity(value.severity) &&
+    typeof value.summary === "string" &&
+    (value.description == null || typeof value.description === "string") &&
+    (value.requires_confirmation == null || typeof value.requires_confirmation === "boolean") &&
+    (value.requires_admin == null || typeof value.requires_admin === "boolean") &&
+    (value.data_loss_risk == null || typeof value.data_loss_risk === "boolean") &&
+    (value.destructive == null || typeof value.destructive === "boolean");
+}
+
+function isPluginRiskSeverity(value: unknown): value is PluginRiskSeverity {
+  return value === "info" || value === "low" || value === "medium" || value === "high" || value === "critical";
+}
+
+function isPluginRiskEffect(value: unknown): value is PluginRiskEffect {
+  return value === "read" || value === "write" || value === "execute" || value === "delete" || value === "admin";
 }
 
 function validRPCParams(value: unknown): value is Record<string, unknown> | undefined {

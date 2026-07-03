@@ -12,11 +12,15 @@ import {
   PluginPlatformClient,
   PluginSurfaceHost,
   PluginSurfaceReloadLimiter,
+  isPluginRiskPlan,
+  pluginRiskPlanSchemaVersion,
   pluginBridgeHandshakeTranscriptSHA256,
   readPluginStream,
   type FetchInitLike,
   type FetchResponseLike,
   type MessageEventLike,
+  type PluginConfirmationIntent,
+  type PluginRiskPlan,
   type StreamFetchInitLike,
   type StreamFetchResponseLike,
   type WindowLike,
@@ -360,7 +364,7 @@ test("surface host mints parent-only gateway token after matching handshake", as
   });
 
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
 
   assert.equal(fetch.calls.length, 1);
   assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/surfaces/surface_1/bridge-token");
@@ -395,12 +399,13 @@ test("surface host calls rpc with gateway token without exposing it to iframe", 
   });
 
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
   parent.emit("https://plugin.example", {
     type: "redevplugin.bridge.call",
     request: { id: "call_1", method: "echo.ping", params: { message: "hello" } },
   }, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 2);
+  await waitForMessages(iframe, 2);
 
   assert.equal(fetch.calls.length, 2);
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/rpc");
@@ -531,12 +536,13 @@ test("surface host maps rpc envelope errors into bridge responses", async () => 
   });
 
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
   parent.emit("https://plugin.example", {
     type: "redevplugin.bridge.call",
     request: { id: "call_denied", method: "echo.ping", params: {} },
   }, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 2);
+  await waitForMessages(iframe, 2);
 
   assert.deepEqual(iframe.sent[1], {
     targetOrigin: "https://plugin.example",
@@ -555,7 +561,28 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
   const parent = new FakeWindow();
   const iframe = new FakeWindow();
   const fetch = new FakeFetch();
-  const confirmations: unknown[] = [];
+  const confirmations: PluginConfirmationIntent[] = [];
+  const riskPlan = {
+    schema_version: pluginRiskPlanSchemaVersion,
+    capability_id: "redeven.capability.container_resources",
+    method: "containers.start",
+    target_method: "containers.start",
+    effect: "execute",
+    resource_ref: "container_hash_1",
+    summary: "Start container",
+    risk_flags: [{
+      id: "container.host_network",
+      severity: "high",
+      summary: "Uses host networking",
+      requires_admin: true,
+    }],
+    requires_confirmation: true,
+    requires_admin: true,
+    details: {
+      network_mode: "host",
+      image_digest: "sha256:container_image",
+    },
+  } satisfies PluginRiskPlan;
   fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
   fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
   fetch.push({
@@ -565,7 +592,7 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
       confirmation_token_id: "confirmation_token_1",
       request_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       plan_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      plan: { summary: "Start task" },
+      plan: riskPlan,
     },
   });
   fetch.push({ ok: true, data: { data: { done: true } } });
@@ -583,12 +610,13 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
   });
 
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
   parent.emit("https://plugin.example", {
     type: "redevplugin.bridge.call",
     request: { id: "call_danger", method: "danger.run", params: { target: "db" } },
   }, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 4);
+  await waitForMessages(iframe, 2);
 
   assert.equal(fetch.calls.length, 4);
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/rpc");
@@ -600,9 +628,16 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
     params: { target: "db" },
     requestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     planHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    plan: { summary: "Start task" },
+    plan: riskPlan,
     confirmationTokenId: "confirmation_token_1",
   }]);
+  assert.equal(isPluginRiskPlan(confirmations[0]?.plan), true);
+  const confirmedPlan = confirmations[0]?.plan;
+  if (!isPluginRiskPlan(confirmedPlan)) {
+    throw new Error("expected typed risk plan");
+  }
+  assert.equal(confirmedPlan.schema_version, pluginRiskPlanSchemaVersion);
+  assert.equal(confirmedPlan.risk_flags[0]?.severity, "high");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
     surface_instance_id: "surface_1",
@@ -667,12 +702,13 @@ test("surface host rejects dangerous call when confirmation callback declines", 
   });
 
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
   parent.emit("https://plugin.example", {
     type: "redevplugin.bridge.call",
     request: { id: "call_declined", method: "danger.run", params: { target: "db" } },
   }, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 3);
+  await waitForMessages(iframe, 2);
 
   assert.equal(fetch.calls.length, 3);
   assert.deepEqual(iframe.sent[1], {
@@ -704,12 +740,13 @@ test("surface host keeps dangerous call fail-closed without confirmation callbac
   });
 
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
   parent.emit("https://plugin.example", {
     type: "redevplugin.bridge.call",
     request: { id: "call_no_confirm_handler", method: "danger.run", params: { target: "db" } },
   }, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 2);
+  await waitForMessages(iframe, 2);
 
   assert.equal(fetch.calls.length, 2);
   assert.deepEqual(iframe.sent[1], {
@@ -1273,4 +1310,24 @@ test("platform client maps management envelope errors", async () => {
 
 async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitForFetchCalls(fetch: FakeFetch, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (fetch.calls.length >= count) {
+      return;
+    }
+    await tick();
+  }
+  throw new Error(`expected at least ${count} fetch calls, got ${fetch.calls.length}`);
+}
+
+async function waitForMessages(window: FakeWindow, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (window.sent.length >= count) {
+      return;
+    }
+    await tick();
+  }
+  throw new Error(`expected at least ${count} posted messages, got ${window.sent.length}`);
 }

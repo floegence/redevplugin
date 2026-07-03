@@ -104,6 +104,21 @@ host should stop automatic reloads and show a host-owned error state with
 diagnostics. `recordHealthyLoad()` resets the window after the host has observed
 that the reloaded surface is healthy enough to treat the crash loop as cleared.
 
+## Confirmation Plans
+
+`PluginSurfaceHost` passes dangerous-method confirmation intents to the trusted
+parent through the configured `confirm` callback. The callback receives the
+server-issued confirmation id, request hash, plan hash, and host-redacted plan,
+but never receives the raw confirmation token capability.
+
+When a capability preflight returns the host-neutral typed risk plan contract,
+the SDK exposes it as `PluginRiskPlan` with `PluginRiskFlag` entries and the
+`redevplugin.capability.risk_plan.v1` schema version. Host pages can use
+`isPluginRiskPlan(intent.plan)` before rendering severity, admin requirement,
+data-loss risk, destructive-operation markers, and redacted details. Legacy
+generic preflight objects are still represented as ordinary records so existing
+host pages remain compatible.
+
 ## Settings And Intents
 
 Settings helpers must preserve manifest validation and secret redaction:

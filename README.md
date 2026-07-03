@@ -201,7 +201,10 @@ capabilities.
   use the host-neutral `redevplugin.capability.risk_plan.v1` contract. The Host
   validates and normalizes that typed plan before hashing it, rejects unknown or
   invalid risk fields fail-closed, and still accepts legacy generic preflight
-  objects that do not declare a risk-plan schema version.
+  objects that do not declare a risk-plan schema version. The TypeScript SDK
+  exports matching `PluginRiskPlan` / `PluginRiskFlag` types plus
+  `isPluginRiskPlan()` so trusted parent UI can render the typed plan without
+  brittle ad hoc shape checks.
 - Capability, worker, and core-action method results pass through the Host-owned
   `capability.DefaultResponseRedactionPolicy` before they are returned to the
   plugin surface or HTTP adapter. The default policy clones structured
