@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -351,6 +352,173 @@ func TestExecutorHTTPHostHeaderIncludesNonDefaultPort(t *testing.T) {
 	}
 	if string(response.Body) != "ok" {
 		t.Fatalf("HTTP response body = %q", response.Body)
+	}
+}
+
+func TestExecutorHTTPStreamResponseChunks(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/stream" {
+			t.Errorf("request = %s %s, want POST /v1/stream", r.Method, r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("ReadAll() error = %v", err)
+		}
+		if string(body) != "payload" {
+			t.Errorf("request body = %q, want payload", body)
+		}
+		w.Header().Set("X-Test", "stream")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("one"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("two"))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	var chunks []HTTPResponseChunk
+	response, err := NewExecutor(ExecutorOptions{
+		DialContext: mapDialer(listener.Addr().String()),
+	}).StreamHTTP(context.Background(), HTTPRequest{
+		Grant:            grant,
+		Method:           http.MethodPost,
+		Path:             "/v1/stream",
+		Body:             []byte("payload"),
+		MaxResponseBytes: 16,
+		MaxChunkBytes:    3,
+	}, func(chunk HTTPResponseChunk) error {
+		chunks = append(chunks, HTTPResponseChunk{Index: chunk.Index, Data: append([]byte(nil), chunk.Data...)})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamHTTP() error = %v", err)
+	}
+	if response.StatusCode != http.StatusAccepted || response.Headers.Get("X-Test") != "stream" || response.BytesRead != 6 || response.ChunkCount != 2 {
+		t.Fatalf("stream response mismatch: %#v", response)
+	}
+	if len(chunks) != 2 || chunks[0].Index != 0 || chunks[1].Index != 1 || string(chunks[0].Data)+string(chunks[1].Data) != "onetwo" {
+		t.Fatalf("stream chunks mismatch: %#v", chunks)
+	}
+}
+
+func TestExecutorHTTPStreamRejectsOversizedRequestBeforeDial(t *testing.T) {
+	dialed := false
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	_, err := NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("dial should not be called for oversized http stream request")
+	}}).StreamHTTP(context.Background(), HTTPRequest{
+		Grant:           grant,
+		Body:            []byte("too-large"),
+		MaxRequestBytes: 4,
+	}, func(HTTPResponseChunk) error {
+		return nil
+	})
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("StreamHTTP(large request) error = %v, want ErrRequestTooLarge", err)
+	}
+	if dialed {
+		t.Fatal("StreamHTTP dialed before rejecting oversized request")
+	}
+}
+
+func TestExecutorHTTPStreamRejectsOversizedResponse(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("too-large"))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	var delivered bytes.Buffer
+	_, err = NewExecutor(ExecutorOptions{
+		DialContext: mapDialer(listener.Addr().String()),
+	}).StreamHTTP(context.Background(), HTTPRequest{
+		Grant:            grant,
+		MaxResponseBytes: 4,
+		MaxChunkBytes:    4,
+	}, func(chunk HTTPResponseChunk) error {
+		_, _ = delivered.Write(chunk.Data)
+		return nil
+	})
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("StreamHTTP(large response) error = %v, want ErrResponseTooLarge", err)
+	}
+	if delivered.Len() > 4 {
+		t.Fatalf("StreamHTTP delivered %d bytes, want <= 4", delivered.Len())
+	}
+}
+
+func TestExecutorHTTPStreamStopsWhenContextIsCanceled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	headersSent := make(chan struct{})
+	releaseBlockedServer := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() {
+			close(releaseBlockedServer)
+		})
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(headersSent)
+		<-releaseBlockedServer
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer func() {
+		releaseServer()
+		_ = server.Close()
+	}()
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewExecutor(ExecutorOptions{
+			DialContext: mapDialer(listener.Addr().String()),
+		}).StreamHTTP(cancelCtx, HTTPRequest{
+			Grant:            grant,
+			MaxResponseBytes: 32,
+			Timeout:          5 * time.Second,
+		}, func(HTTPResponseChunk) error {
+			return nil
+		})
+		errCh <- err
+	}()
+	select {
+	case <-headersSent:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("StreamHTTP server did not send headers")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StreamHTTP(canceled) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("StreamHTTP did not stop promptly after context cancellation")
 	}
 }
 
@@ -989,6 +1157,17 @@ func TestExecutorRejectsGrantClassifierVersionMismatchBeforeDial(t *testing.T) {
 			raw:       "https://api.example.com",
 			execute: func(executor *Executor, grant ConnectionGrant) error {
 				_, err := executor.DoHTTP(context.Background(), HTTPRequest{Grant: grant})
+				return err
+			},
+		},
+		{
+			name:      "http-stream",
+			transport: TransportHTTP,
+			raw:       "https://api.example.com",
+			execute: func(executor *Executor, grant ConnectionGrant) error {
+				_, err := executor.StreamHTTP(context.Background(), HTTPRequest{Grant: grant}, func(HTTPResponseChunk) error {
+					return nil
+				})
 				return err
 			},
 		},

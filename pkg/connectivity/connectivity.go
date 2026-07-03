@@ -476,6 +476,7 @@ type HTTPRequest struct {
 	Body             []byte          `json:"-"`
 	MaxRequestBytes  int64           `json:"max_request_bytes,omitempty"`
 	MaxResponseBytes int64           `json:"max_response_bytes,omitempty"`
+	MaxChunkBytes    int64           `json:"max_chunk_bytes,omitempty"`
 	Timeout          time.Duration   `json:"timeout,omitempty"`
 	Now              time.Time       `json:"now,omitempty"`
 }
@@ -484,6 +485,18 @@ type HTTPResponse struct {
 	StatusCode int         `json:"status_code"`
 	Headers    http.Header `json:"headers,omitempty"`
 	Body       []byte      `json:"-"`
+}
+
+type HTTPResponseChunk struct {
+	Index int    `json:"index"`
+	Data  []byte `json:"-"`
+}
+
+type HTTPStreamResponse struct {
+	StatusCode int         `json:"status_code"`
+	Headers    http.Header `json:"headers,omitempty"`
+	BytesRead  int64       `json:"bytes_read"`
+	ChunkCount int         `json:"chunk_count"`
 }
 
 type TCPRoundTripRequest struct {
@@ -567,6 +580,7 @@ type Executor struct {
 const (
 	DefaultMaxNetworkRequestBytes  = 1 << 20
 	DefaultMaxNetworkResponseBytes = 1 << 20
+	DefaultHTTPStreamChunkBytes    = 32 << 10
 	DefaultNetworkTimeout          = 10 * time.Second
 	DefaultUDPRateLimitRoundTrips  = 120
 	DefaultUDPRateLimitWindow      = time.Second
@@ -788,22 +802,68 @@ func (e *Executor) DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 	if e == nil {
 		return HTTPResponse{}, errors.New("network executor is nil")
 	}
-	if err := validateGrantForTransport(req.Grant, TransportHTTP, req.Now, e.now); err != nil {
+	resp, cancel, err := e.openHTTP(ctx, req)
+	if err != nil {
 		return HTTPResponse{}, err
 	}
-	if err := checkSize(int64(len(req.Body)), e.maxRequestBytes, req.MaxRequestBytes, ErrRequestTooLarge); err != nil {
+	defer cancel()
+	defer resp.Body.Close()
+	body, err := readBounded(resp.Body, responseLimit(req.MaxResponseBytes, e.maxResponseBytes))
+	if err != nil {
 		return HTTPResponse{}, err
+	}
+	return HTTPResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    cloneHTTPHeader(resp.Header),
+		Body:       body,
+	}, nil
+}
+
+func (e *Executor) StreamHTTP(ctx context.Context, req HTTPRequest, onChunk func(HTTPResponseChunk) error) (HTTPStreamResponse, error) {
+	if e == nil {
+		return HTTPStreamResponse{}, errors.New("network executor is nil")
+	}
+	if onChunk == nil {
+		return HTTPStreamResponse{}, fmt.Errorf("%w: http response chunk handler is required", ErrInvalidConnector)
+	}
+	resp, cancel, err := e.openHTTP(ctx, req)
+	if err != nil {
+		return HTTPStreamResponse{}, err
+	}
+	defer cancel()
+	defer resp.Body.Close()
+	stats, err := streamBounded(resp.Body, responseLimit(req.MaxResponseBytes, e.maxResponseBytes), req.MaxChunkBytes, onChunk)
+	if err != nil {
+		return HTTPStreamResponse{}, contextOrNetworkError(ctx, err)
+	}
+	return HTTPStreamResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    cloneHTTPHeader(resp.Header),
+		BytesRead:  stats.bytesRead,
+		ChunkCount: stats.chunkCount,
+	}, nil
+}
+
+func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Response, context.CancelFunc, error) {
+	if e == nil {
+		return nil, nil, errors.New("network executor is nil")
+	}
+	if err := validateGrantForTransport(req.Grant, TransportHTTP, req.Now, e.now); err != nil {
+		return nil, nil, err
+	}
+	if err := checkSize(int64(len(req.Body)), e.maxRequestBytes, req.MaxRequestBytes, ErrRequestTooLarge); err != nil {
+		return nil, nil, err
 	}
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
 	}
 	if method == http.MethodConnect {
-		return HTTPResponse{}, fmt.Errorf("%w: HTTP CONNECT is disabled", ErrInvalidConnector)
+		return nil, nil, fmt.Errorf("%w: HTTP CONNECT is disabled", ErrInvalidConnector)
 	}
 	path, err := cleanHTTPPath(req.Path)
 	if err != nil {
-		return HTTPResponse{}, err
+		return nil, nil, err
 	}
 	target := url.URL{
 		Scheme: req.Grant.Destination.Scheme,
@@ -811,10 +871,10 @@ func (e *Executor) DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 		Path:   path,
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
-	defer cancel()
 	httpReq, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(req.Body))
 	if err != nil {
-		return HTTPResponse{}, err
+		cancel()
+		return nil, nil, err
 	}
 	httpReq.Host = hostHeader(req.Grant.Destination)
 	for key, values := range req.Headers {
@@ -827,18 +887,10 @@ func (e *Executor) DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, e
 	}
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return HTTPResponse{}, err
+		cancel()
+		return nil, nil, err
 	}
-	defer resp.Body.Close()
-	body, err := readBounded(resp.Body, responseLimit(req.MaxResponseBytes, e.maxResponseBytes))
-	if err != nil {
-		return HTTPResponse{}, err
-	}
-	return HTTPResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    cloneHTTPHeader(resp.Header),
-		Body:       body,
-	}, nil
+	return resp, cancel, nil
 }
 
 func (e *Executor) WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTripRequest) (WebSocketRoundTripResponse, error) {
@@ -1421,6 +1473,54 @@ func readBounded(reader io.Reader, maxBytes int64) ([]byte, error) {
 		return nil, fmt.Errorf("%w: response exceeded %d bytes", ErrResponseTooLarge, maxBytes)
 	}
 	return body, nil
+}
+
+type httpStreamStats struct {
+	bytesRead  int64
+	chunkCount int
+}
+
+func streamBounded(reader io.Reader, maxBytes int64, maxChunkBytes int64, onChunk func(HTTPResponseChunk) error) (httpStreamStats, error) {
+	if maxBytes <= 0 {
+		return httpStreamStats{}, fmt.Errorf("%w: response limit must be positive", ErrResponseTooLarge)
+	}
+	if onChunk == nil {
+		return httpStreamStats{}, fmt.Errorf("%w: http response chunk handler is required", ErrInvalidConnector)
+	}
+	buf := make([]byte, httpStreamChunkSize(maxChunkBytes))
+	var stats httpStreamStats
+	for {
+		remaining := maxBytes - stats.bytesRead
+		readSize := len(buf)
+		if remaining < int64(readSize) {
+			readSize = int(remaining + 1)
+		}
+		n, err := reader.Read(buf[:readSize])
+		if n > 0 {
+			if stats.bytesRead+int64(n) > maxBytes {
+				return stats, fmt.Errorf("%w: response exceeded %d bytes", ErrResponseTooLarge, maxBytes)
+			}
+			chunk := append([]byte(nil), buf[:n]...)
+			if err := onChunk(HTTPResponseChunk{Index: stats.chunkCount, Data: chunk}); err != nil {
+				return stats, err
+			}
+			stats.bytesRead += int64(n)
+			stats.chunkCount++
+		}
+		if errors.Is(err, io.EOF) {
+			return stats, nil
+		}
+		if err != nil {
+			return stats, err
+		}
+	}
+}
+
+func httpStreamChunkSize(maxChunkBytes int64) int {
+	if maxChunkBytes <= 0 || maxChunkBytes > DefaultHTTPStreamChunkBytes {
+		return DefaultHTTPStreamChunkBytes
+	}
+	return int(maxChunkBytes)
 }
 
 func cloneHTTPHeader(header http.Header) http.Header {

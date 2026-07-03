@@ -249,32 +249,38 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
 	httpCounters := stressHTTPProxyDefenseCounters(t, ctx, broker)
 	dnsRedirectCounters := stressDNSRedirectCounters(t, ctx, broker)
+	httpStreamCounters := stressHTTPStreamingCounters(t, ctx, broker)
 	tcpCounters := stressTCPDatabaseProtocolCounters(t, ctx, broker)
 	webSocketCounters := stressWebSocketPressureCounters(t, ctx, broker)
 	logStressSummary(t, stressSummary{
 		Category: "connectivity_classifier",
 		Counters: map[string]int{
-			"minted_grants":               int(minted.Load()),
-			"stale_grant_denials":         int(denied.Load()),
-			"blocked_resolved_ips":        int(blocked.Load()),
-			"connector_policy_count":      len(policy.Connectors),
-			"http_redirects_not_followed": dnsRedirectCounters.redirectsNotFollowed,
-			"dns_rebinding_denials":       dnsRedirectCounters.rebindingDenials,
-			"http_proxy_env_ignored":      httpCounters.proxyEnvIgnored,
-			"http_connect_denials":        httpCounters.connectDenials,
-			"alt_svc_headers_dropped":     httpCounters.altSvcHeadersDropped,
-			"proxy_auth_headers_dropped":  httpCounters.proxyAuthHeadersDropped,
-			"tcp_cancelled_reads":         tcpCounters.cancelledReads,
-			"tcp_database_round_trips":    tcpCounters.databaseRoundTrips,
-			"tcp_request_denials":         tcpCounters.requestDenials,
-			"tcp_response_denials":        tcpCounters.responseDenials,
-			"udp_round_trips":             udpCounters.roundTrips,
-			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
-			"udp_rate_limit_denials":      udpCounters.rateLimitDenials,
-			"websocket_round_trips":       webSocketCounters.roundTrips,
-			"websocket_request_denials":   webSocketCounters.requestDenials,
-			"websocket_response_denials":  webSocketCounters.responseDenials,
-			"websocket_cancelled_reads":   webSocketCounters.cancelledReads,
+			"minted_grants":                int(minted.Load()),
+			"stale_grant_denials":          int(denied.Load()),
+			"blocked_resolved_ips":         int(blocked.Load()),
+			"connector_policy_count":       len(policy.Connectors),
+			"http_redirects_not_followed":  dnsRedirectCounters.redirectsNotFollowed,
+			"dns_rebinding_denials":        dnsRedirectCounters.rebindingDenials,
+			"http_proxy_env_ignored":       httpCounters.proxyEnvIgnored,
+			"http_connect_denials":         httpCounters.connectDenials,
+			"alt_svc_headers_dropped":      httpCounters.altSvcHeadersDropped,
+			"proxy_auth_headers_dropped":   httpCounters.proxyAuthHeadersDropped,
+			"http_stream_cancelled_reads":  httpStreamCounters.cancelledReads,
+			"http_stream_chunks":           httpStreamCounters.chunks,
+			"http_stream_request_denials":  httpStreamCounters.requestDenials,
+			"http_stream_response_denials": httpStreamCounters.responseDenials,
+			"http_stream_round_trips":      httpStreamCounters.roundTrips,
+			"tcp_cancelled_reads":          tcpCounters.cancelledReads,
+			"tcp_database_round_trips":     tcpCounters.databaseRoundTrips,
+			"tcp_request_denials":          tcpCounters.requestDenials,
+			"tcp_response_denials":         tcpCounters.responseDenials,
+			"udp_round_trips":              udpCounters.roundTrips,
+			"udp_source_mismatch_dropped":  udpCounters.sourceMismatchDropped,
+			"udp_rate_limit_denials":       udpCounters.rateLimitDenials,
+			"websocket_round_trips":        webSocketCounters.roundTrips,
+			"websocket_request_denials":    webSocketCounters.requestDenials,
+			"websocket_response_denials":   webSocketCounters.responseDenials,
+			"websocket_cancelled_reads":    webSocketCounters.cancelledReads,
 		},
 	})
 }
@@ -408,6 +414,187 @@ func stressHTTPProxyDefenseCounters(t *testing.T, ctx context.Context, broker co
 	}
 	result.connectDenials = 1
 	return result
+}
+
+type httpStreamingCounters struct {
+	roundTrips      int
+	chunks          int
+	requestDenials  int
+	responseDenials int
+	cancelledReads  int
+}
+
+func stressHTTPStreamingCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) httpStreamingCounters {
+	t.Helper()
+	grant, err := broker.MintConnectionGrant(ctx, grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counters := httpStreamingCounters{}
+
+	successAddr, stopSuccess := startStressHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/stream" {
+			t.Errorf("http stream path = %q, want /v1/stream", r.URL.Path)
+		}
+		w.Header().Set("X-Stress", "stream")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("one"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("two"))
+	}))
+	var streamed bytes.Buffer
+	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(successAddr),
+	}).StreamHTTP(ctx, connectivity.HTTPRequest{
+		Grant:            grant,
+		Path:             "/v1/stream",
+		MaxResponseBytes: 16,
+		MaxChunkBytes:    3,
+		Timeout:          time.Second,
+	}, func(chunk connectivity.HTTPResponseChunk) error {
+		_, _ = streamed.Write(chunk.Data)
+		counters.chunks++
+		return nil
+	})
+	stopSuccess()
+	if err != nil {
+		t.Fatalf("StreamHTTP(stress success) error = %v", err)
+	}
+	if response.StatusCode != http.StatusAccepted || response.Headers.Get("X-Stress") != "stream" || response.BytesRead != 6 || response.ChunkCount != counters.chunks || streamed.String() != "onetwo" {
+		t.Fatalf("StreamHTTP(stress success) response=%#v chunks=%d body=%q", response, counters.chunks, streamed.String())
+	}
+	counters.roundTrips = 1
+
+	dialed := false
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, errors.New("dial should not be called for oversized http stream request")
+		},
+	}).StreamHTTP(ctx, connectivity.HTTPRequest{
+		Grant:           grant,
+		Body:            []byte("too-large"),
+		MaxRequestBytes: 4,
+		Timeout:         time.Second,
+	}, func(connectivity.HTTPResponseChunk) error {
+		return nil
+	})
+	if !errors.Is(err, connectivity.ErrRequestTooLarge) {
+		t.Fatalf("StreamHTTP(stress request limit) error = %v, want ErrRequestTooLarge", err)
+	}
+	if dialed {
+		t.Fatal("StreamHTTP(stress request limit) dialed before rejecting oversized request")
+	}
+	counters.requestDenials = 1
+
+	largeAddr, stopLarge := startStressHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("too-large"))
+	}))
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(largeAddr),
+	}).StreamHTTP(ctx, connectivity.HTTPRequest{
+		Grant:            grant,
+		MaxResponseBytes: 4,
+		MaxChunkBytes:    4,
+		Timeout:          time.Second,
+	}, func(connectivity.HTTPResponseChunk) error {
+		return nil
+	})
+	stopLarge()
+	if !errors.Is(err, connectivity.ErrResponseTooLarge) {
+		t.Fatalf("StreamHTTP(stress response limit) error = %v, want ErrResponseTooLarge", err)
+	}
+	counters.responseDenials = 1
+
+	headersSent := make(chan struct{})
+	releaseBlockedServer := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() {
+			close(releaseBlockedServer)
+		})
+	}
+	blockedAddr, stopBlocked := startStressHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(headersSent)
+		<-releaseBlockedServer
+	}))
+	cancelCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+			DialContext: stressMappedDialer(blockedAddr),
+		}).StreamHTTP(cancelCtx, connectivity.HTTPRequest{
+			Grant:            grant,
+			MaxResponseBytes: 32,
+			Timeout:          5 * time.Second,
+		}, func(connectivity.HTTPResponseChunk) error {
+			return nil
+		})
+		errCh <- err
+	}()
+	select {
+	case <-headersSent:
+	case <-time.After(time.Second):
+		cancel()
+		releaseServer()
+		stopBlocked()
+		t.Fatal("StreamHTTP(stress cancel) server did not send headers")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			releaseServer()
+			stopBlocked()
+			t.Fatalf("StreamHTTP(stress cancel) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		releaseServer()
+		stopBlocked()
+		t.Fatal("StreamHTTP(stress cancel) did not stop promptly")
+	}
+	releaseServer()
+	stopBlocked()
+	counters.cancelledReads = 1
+
+	return counters
+}
+
+func startStressHTTPServer(t *testing.T, handler http.Handler) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: handler}
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			done <- err
+		}
+	}()
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			_ = server.Close()
+			select {
+			case err, ok := <-done:
+				if ok && err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("http stress server did not stop")
+			}
+		})
+	}
+	return listener.Addr().String(), stop
 }
 
 type tcpDatabaseProtocolCounters struct {
