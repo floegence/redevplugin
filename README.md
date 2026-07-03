@@ -137,6 +137,10 @@ capabilities.
   replay rejection, require structured heartbeat ACK results for control-channel
   liveness, and require `revoke_epoch_ack` results to report the plugin
   instance, revoke epoch, and closed actor/socket/stream/storage-handle counters.
+  IPC golden fixtures under `testdata/contracts/ipc/` cover the current
+  handshake/response shape plus Host/Rust IPC version mismatch, WASM ABI
+  mismatch, missing required fields, replayed request IDs, unknown frame types,
+  and runtime-generation mismatch fail-closed paths.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and

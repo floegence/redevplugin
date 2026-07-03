@@ -1,0 +1,22 @@
+{
+  "name": "current invoke worker result",
+  "kind": "response",
+  "request_id": "runtime_gen_fixture:invoke_worker:1",
+  "runtime_generation_id": "runtime_gen_fixture",
+  "response_frame_type": "invoke_worker_result",
+  "want_error": false,
+  "frame": {
+    "ipc_version": "rust-ipc-v1",
+    "frame_type": "invoke_worker_result",
+    "request_id": "runtime_gen_fixture:invoke_worker:1",
+    "runtime_generation_id": "runtime_gen_fixture",
+    "payload": {
+      "ok": true,
+      "result": {
+        "data": {
+          "fixture": true
+        }
+      }
+    }
+  }
+}

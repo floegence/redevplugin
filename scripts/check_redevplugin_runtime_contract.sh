@@ -160,6 +160,16 @@ JSON
   go run ./cmd/redevplugin version | grep -q '"network_grant_schema_version": "network-grant-v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "network-grant-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'
+  test -f testdata/contracts/ipc/current_hello_ack.json
+  test -f testdata/contracts/ipc/invoke_worker_result_ok.json
+  test -f testdata/contracts/ipc/host_new_rust_old.json
+  test -f testdata/contracts/ipc/host_old_rust_new.json
+  test -f testdata/contracts/ipc/wasm_abi_old.json
+  test -f testdata/contracts/ipc/wasm_abi_new.json
+  test -f testdata/contracts/ipc/unknown_enum.json
+  test -f testdata/contracts/ipc/missing_required.json
+  test -f testdata/contracts/ipc/replay_frame.json
+  test -f testdata/contracts/ipc/runtime_generation_mismatch.json
   grep -q '"hello_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
   grep -q '"open_handle_request_payload"' spec/plugin/ipc-v1.schema.json

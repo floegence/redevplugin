@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -293,6 +295,73 @@ func TestDecodeHeartbeatResultRequiresStructuredTiming(t *testing.T) {
 	}
 	if result.RuntimeGenerationID != "gen_1" || result.RuntimeUnixNano != 2 || result.MaxStalenessMillis != 5000 || result.HostSentUnixNanoEcho != 1 {
 		t.Fatalf("decodeHeartbeatResult() result mismatch: %#v", result)
+	}
+}
+
+func TestIPCGoldenFixtures(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "contracts", "ipc", "*.json"))
+	if err != nil {
+		t.Fatalf("glob ipc fixtures: %v", err)
+	}
+	if len(files) < 8 {
+		t.Fatalf("expected ipc golden fixtures, got %d", len(files))
+	}
+	sort.Strings(files)
+	for _, file := range files {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			var fixture ipcGoldenFixture
+			if err := json.Unmarshal(raw, &fixture); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			if fixture.Name == "" || fixture.Kind == "" {
+				t.Fatalf("fixture missing name/kind: %#v", fixture)
+			}
+			err = validateIPCGoldenFixture(fixture)
+			if fixture.WantError {
+				if err == nil {
+					t.Fatal("fixture unexpectedly passed")
+				}
+				if fixture.ErrorContains != "" && !strings.Contains(err.Error(), fixture.ErrorContains) {
+					t.Fatalf("fixture error = %v, want substring %q", err, fixture.ErrorContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fixture error = %v", err)
+			}
+		})
+	}
+}
+
+type ipcGoldenFixture struct {
+	Name                string   `json:"name"`
+	Kind                string   `json:"kind"`
+	RequestID           string   `json:"request_id"`
+	RuntimeGenerationID string   `json:"runtime_generation_id"`
+	ResponseFrameType   string   `json:"response_frame_type,omitempty"`
+	ChannelNonce        string   `json:"channel_nonce,omitempty"`
+	WantError           bool     `json:"want_error"`
+	ErrorContains       string   `json:"error_contains,omitempty"`
+	Frame               ipcFrame `json:"frame"`
+}
+
+func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
+	switch fixture.Kind {
+	case "hello_ack":
+		_, err := validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ChannelNonce, fixture.Frame)
+		return err
+	case "response":
+		if err := validateIPCResponse(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ResponseFrameType, fixture.Frame); err != nil {
+			return err
+		}
+		_, err := decodeRuntimeResponse(fixture.Frame)
+		return err
+	default:
+		return fmt.Errorf("unsupported ipc fixture kind %q", fixture.Kind)
 	}
 }
 

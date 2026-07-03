@@ -1,0 +1,23 @@
+{
+  "name": "response rejects unknown frame type",
+  "kind": "response",
+  "request_id": "runtime_gen_fixture:invoke_worker:1",
+  "runtime_generation_id": "runtime_gen_fixture",
+  "response_frame_type": "invoke_worker_result",
+  "want_error": true,
+  "error_contains": "frame_type",
+  "frame": {
+    "ipc_version": "rust-ipc-v1",
+    "frame_type": "future_frame_type",
+    "request_id": "runtime_gen_fixture:invoke_worker:1",
+    "runtime_generation_id": "runtime_gen_fixture",
+    "payload": {
+      "ok": true,
+      "result": {
+        "data": {
+          "fixture": true
+        }
+      }
+    }
+  }
+}
