@@ -111,10 +111,10 @@ The runtime contract is versioned by:
 - compatibility manifest contract hashes.
 
 The runtime IPC contract also has executable golden fixtures in
-`testdata/contracts/ipc/`. Host-side tests validate the current `hello_ack` and
-runtime response frames and reject older/newer Rust IPC versions, older/newer
-WASM ABI versions, missing request IDs, replayed request IDs, unknown frame
-types, and mismatched runtime generations.
+`testdata/contracts/ipc/`. Go Host tests and Rust IPC crate tests validate the
+current `hello_ack` and runtime response frames and reject older/newer Rust IPC
+versions, older/newer WASM ABI versions, missing request IDs, replayed request
+IDs, unknown frame types, and mismatched runtime generations.
 
 Any incompatible Host/runtime combination must fail closed with a diagnostic
 error instead of silently running a plugin.

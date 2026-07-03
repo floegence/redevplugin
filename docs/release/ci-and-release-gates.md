@@ -41,8 +41,9 @@ the same command shape.
 - manifest, package signature, token/ticket, bridge, error-code, release
   manifest, IPC, WASM ABI, worker invocation, network grant, and target
   classifier contract snippets;
-- executable runtime IPC golden fixtures for handshake/version mismatch,
-  replay, unknown-frame, missing-field, and runtime-generation mismatch cases;
+- executable Go/Rust runtime IPC golden fixtures for handshake/version
+  mismatch, replay, unknown-frame, missing-field, and runtime-generation
+  mismatch cases;
 - release artifact verifier fixture behavior, including rejection of an
   unchecked extra tarball;
 - Rust IPC, runtime, target classifier, and WASM ABI tests when Cargo is

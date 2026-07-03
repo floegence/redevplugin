@@ -1107,6 +1107,9 @@ fn is_worker_artifact_path(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn validates_hello_frame() {
@@ -1148,6 +1151,141 @@ mod tests {
         assert!(frame.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(frame.contains(r#""ok":false"#));
         assert!(frame.contains(r#""code":"WASM_NOT_IMPLEMENTED""#));
+    }
+
+    #[test]
+    fn ipc_golden_fixtures_match_rust_frame_contract() {
+        let fixtures = [
+            "current_hello_ack.json",
+            "invoke_worker_result_ok.json",
+            "host_new_rust_old.json",
+            "host_old_rust_new.json",
+            "wasm_abi_old.json",
+            "wasm_abi_new.json",
+            "missing_required.json",
+            "replay_frame.json",
+            "runtime_generation_mismatch.json",
+            "unknown_enum.json",
+        ];
+        for fixture_name in fixtures {
+            let fixture = load_ipc_fixture(fixture_name);
+            assert_eq!(
+                fixture["want_error"].as_bool(),
+                Some(
+                    fixture_name != "current_hello_ack.json"
+                        && fixture_name != "invoke_worker_result_ok.json"
+                ),
+                "fixture {fixture_name} want_error mismatch"
+            );
+            let frame = fixture.get("frame").expect("fixture frame").clone();
+            let frame_json = serde_json::to_string(&frame).expect("compact frame");
+            match fixture_name {
+                "current_hello_ack.json" => {
+                    let encoded = hello_ack_frame(
+                        fixture["request_id"].as_str().expect("request_id"),
+                        fixture["runtime_generation_id"]
+                            .as_str()
+                            .expect("runtime_generation_id"),
+                        fixture["channel_nonce"].as_str().expect("channel_nonce"),
+                        frame["payload"]["runtime_version"]
+                            .as_str()
+                            .expect("runtime_version"),
+                        WASM_ABI_VERSION,
+                    );
+                    assert_json_eq(&frame_json, &encoded, fixture_name);
+                }
+                "invoke_worker_result_ok.json" => {
+                    let result =
+                        serde_json::to_string(&frame["payload"]["result"]).expect("compact result");
+                    let encoded = response_frame(
+                        FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        fixture["request_id"].as_str().expect("request_id"),
+                        fixture["runtime_generation_id"]
+                            .as_str()
+                            .expect("runtime_generation_id"),
+                        true,
+                        Some(&result),
+                        None,
+                        None,
+                    );
+                    assert_json_eq(&frame_json, &encoded, fixture_name);
+                }
+                "host_new_rust_old.json" | "host_old_rust_new.json" => {
+                    assert_eq!(
+                        parse_frame_identity(&frame_json),
+                        Err("unsupported ipc_version"),
+                        "fixture {fixture_name} should reject unsupported ipc version"
+                    );
+                }
+                "wasm_abi_old.json" | "wasm_abi_new.json" => {
+                    let (_, _, _) = parse_frame_identity(&frame_json)
+                        .expect("wasm abi mismatch fixture should keep valid frame identity");
+                    assert_ne!(
+                        frame["payload"]["wasm_abi_version"].as_str(),
+                        Some(WASM_ABI_VERSION),
+                        "fixture {fixture_name} should carry mismatched wasm abi"
+                    );
+                }
+                "missing_required.json" => {
+                    assert_eq!(
+                        parse_frame_identity(&frame_json),
+                        Err("missing request_id"),
+                        "fixture {fixture_name} should reject missing request_id"
+                    );
+                }
+                "replay_frame.json" => {
+                    let (_, request_id, _) =
+                        parse_frame_identity(&frame_json).expect("parse replay fixture");
+                    assert_ne!(
+                        request_id,
+                        fixture["request_id"].as_str().expect("expected request_id"),
+                        "fixture {fixture_name} should replay a different request_id"
+                    );
+                }
+                "runtime_generation_mismatch.json" => {
+                    let (_, _, runtime_generation_id) = parse_frame_identity(&frame_json)
+                        .expect("parse runtime generation mismatch fixture");
+                    assert_ne!(
+                        runtime_generation_id,
+                        fixture["runtime_generation_id"]
+                            .as_str()
+                            .expect("expected runtime_generation_id"),
+                        "fixture {fixture_name} should carry mismatched runtime generation"
+                    );
+                }
+                "unknown_enum.json" => {
+                    let (frame_type, _, _) =
+                        parse_frame_identity(&frame_json).expect("parse unknown enum fixture");
+                    assert_ne!(
+                        frame_type, FRAME_TYPE_INVOKE_WORKER_RESULT,
+                        "fixture {fixture_name} should use an unknown frame type"
+                    );
+                }
+                _ => panic!("unhandled fixture {fixture_name}"),
+            }
+        }
+    }
+
+    fn load_ipc_fixture(name: &str) -> Value {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("..");
+        path.push("..");
+        path.push("testdata");
+        path.push("contracts");
+        path.push("ipc");
+        path.push(name);
+        let raw = fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("read fixture {}: {err}", path.display());
+        });
+        serde_json::from_str(&raw).unwrap_or_else(|err| {
+            panic!("decode fixture {}: {err}", path.display());
+        })
+    }
+
+    fn assert_json_eq(actual: &str, expected: &str, label: &str) {
+        let actual: Value = serde_json::from_str(actual).expect("actual json");
+        let expected: Value = serde_json::from_str(expected).expect("expected json");
+        assert_eq!(actual, expected, "{label} json mismatch");
     }
 
     #[test]

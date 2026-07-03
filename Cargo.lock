@@ -84,6 +84,9 @@ dependencies = [
 [[package]]
 name = "redevplugin-ipc"
 version = "0.0.0-dev"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "redevplugin-runtime"
