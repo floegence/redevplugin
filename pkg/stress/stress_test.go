@@ -258,6 +258,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 			"proxy_auth_headers_dropped":  httpCounters.proxyAuthHeadersDropped,
 			"udp_round_trips":             udpCounters.roundTrips,
 			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
+			"udp_rate_limit_denials":      udpCounters.rateLimitDenials,
 		},
 	})
 }
@@ -396,6 +397,7 @@ func stressHTTPProxyDefenseCounters(t *testing.T, ctx context.Context, broker co
 type udpSourcePinCounters struct {
 	roundTrips            int
 	sourceMismatchDropped int
+	rateLimitDenials      int
 }
 
 func stressUDPSourcePinCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) udpSourcePinCounters {
@@ -439,9 +441,11 @@ func stressUDPSourcePinCounters(t *testing.T, ctx context.Context, broker connec
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
-		DialContext: stressMappedDialer(conn.LocalAddr().String()),
-	}).UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
+	executor := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext:    stressMappedDialer(conn.LocalAddr().String()),
+		UDPRateLimiter: connectivity.NewMemoryUDPRateLimiter(connectivity.UDPRateLimit{MaxRoundTrips: 1, Window: time.Minute}),
+	})
+	response, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
 		Grant:        grant,
 		Payload:      []byte("hello"),
 		MaxReadBytes: 32,
@@ -456,7 +460,16 @@ func stressUDPSourcePinCounters(t *testing.T, ctx context.Context, broker connec
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	return udpSourcePinCounters{roundTrips: 1, sourceMismatchDropped: 1}
+	_, err = executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
+		Grant:        grant,
+		Payload:      []byte("again"),
+		MaxReadBytes: 32,
+		Timeout:      time.Second,
+	})
+	if !errors.Is(err, connectivity.ErrRateLimited) {
+		t.Fatalf("UDPRoundTrip(rate limit) error = %v, want ErrRateLimited", err)
+	}
+	return udpSourcePinCounters{roundTrips: 1, sourceMismatchDropped: 1, rateLimitDenials: 1}
 }
 
 func TestStressGateRuntimeRevokeACKP95(t *testing.T) {

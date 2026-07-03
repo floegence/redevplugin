@@ -55,6 +55,7 @@ var (
 	ErrGrantExpired     = errors.New("network grant expired")
 	ErrRequestTooLarge  = errors.New("network request too large")
 	ErrResponseTooLarge = errors.New("network response too large")
+	ErrRateLimited      = errors.New("network rate limited")
 	ErrConnectionClosed = errors.New("network connection closed")
 	ErrWebSocketFailed  = errors.New("websocket handshake failed")
 )
@@ -545,6 +546,7 @@ type ExecutorOptions struct {
 	Dialer           *net.Dialer
 	DialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
 	LookupIPAddr     func(ctx context.Context, host string) ([]net.IPAddr, error)
+	UDPRateLimiter   UDPRateLimiter
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
 	DefaultTimeout   time.Duration
@@ -554,6 +556,7 @@ type ExecutorOptions struct {
 type Executor struct {
 	httpClient       *http.Client
 	dialContext      func(ctx context.Context, network string, address string) (net.Conn, error)
+	udpRateLimiter   UDPRateLimiter
 	maxRequestBytes  int64
 	maxResponseBytes int64
 	defaultTimeout   time.Duration
@@ -564,7 +567,107 @@ const (
 	DefaultMaxNetworkRequestBytes  = 1 << 20
 	DefaultMaxNetworkResponseBytes = 1 << 20
 	DefaultNetworkTimeout          = 10 * time.Second
+	DefaultUDPRateLimitRoundTrips  = 120
+	DefaultUDPRateLimitWindow      = time.Second
 )
+
+type UDPRateLimitKey struct {
+	PluginInstanceID  string      `json:"plugin_instance_id"`
+	ActiveFingerprint string      `json:"active_fingerprint"`
+	ConnectorID       string      `json:"connector_id"`
+	GrantID           string      `json:"grant_id"`
+	Destination       Destination `json:"destination"`
+}
+
+type UDPRateLimiter interface {
+	AllowUDPRoundTrip(now time.Time, key UDPRateLimitKey) bool
+}
+
+type UDPRateLimiterFunc func(now time.Time, key UDPRateLimitKey) bool
+
+func (f UDPRateLimiterFunc) AllowUDPRoundTrip(now time.Time, key UDPRateLimitKey) bool {
+	if f == nil {
+		return true
+	}
+	return f(now, key)
+}
+
+type UDPRateLimit struct {
+	MaxRoundTrips int
+	Window        time.Duration
+}
+
+type MemoryUDPRateLimiter struct {
+	mu      sync.Mutex
+	limit   UDPRateLimit
+	windows map[string]udpRateWindow
+}
+
+type udpRateWindow struct {
+	startedAt time.Time
+	lastSeen  time.Time
+	count     int
+}
+
+func NewMemoryUDPRateLimiter(limit UDPRateLimit) *MemoryUDPRateLimiter {
+	return &MemoryUDPRateLimiter{
+		limit:   normalizeUDPRateLimit(limit),
+		windows: map[string]udpRateWindow{},
+	}
+}
+
+func (l *MemoryUDPRateLimiter) AllowUDPRoundTrip(now time.Time, key UDPRateLimitKey) bool {
+	if l == nil {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	bucket := key.udpRateBucketKey()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	window := l.windows[bucket]
+	if window.startedAt.IsZero() || !now.Before(window.startedAt.Add(l.limit.Window)) {
+		window = udpRateWindow{startedAt: now}
+	}
+	window.lastSeen = now
+	if window.count >= l.limit.MaxRoundTrips {
+		l.windows[bucket] = window
+		l.pruneLocked(now)
+		return false
+	}
+	window.count++
+	l.windows[bucket] = window
+	l.pruneLocked(now)
+	return true
+}
+
+func normalizeUDPRateLimit(limit UDPRateLimit) UDPRateLimit {
+	if limit.MaxRoundTrips <= 0 {
+		limit.MaxRoundTrips = DefaultUDPRateLimitRoundTrips
+	}
+	if limit.Window <= 0 {
+		limit.Window = DefaultUDPRateLimitWindow
+	}
+	return limit
+}
+
+func (l *MemoryUDPRateLimiter) pruneLocked(now time.Time) {
+	if len(l.windows) <= 1024 {
+		return
+	}
+	cutoff := now.Add(-2 * l.limit.Window)
+	for bucket, window := range l.windows {
+		if window.lastSeen.Before(cutoff) {
+			delete(l.windows, bucket)
+		}
+	}
+}
+
+func (key UDPRateLimitKey) udpRateBucketKey() string {
+	// GrantID stays available to custom limiters, but the default bucket omits it so fresh grants cannot bypass endpoint throttling.
+	return key.PluginInstanceID + "\x00" + key.ActiveFingerprint + "\x00" + key.ConnectorID + "\x00" + key.Destination.Canonical()
+}
 
 func NewExecutor(options ExecutorOptions) *Executor {
 	dialer := options.Dialer
@@ -596,6 +699,10 @@ func NewExecutor(options ExecutorOptions) *Executor {
 	if maxResponseBytes <= 0 {
 		maxResponseBytes = DefaultMaxNetworkResponseBytes
 	}
+	udpRateLimiter := options.UDPRateLimiter
+	if udpRateLimiter == nil {
+		udpRateLimiter = NewMemoryUDPRateLimiter(UDPRateLimit{})
+	}
 	defaultTimeout := options.DefaultTimeout
 	if defaultTimeout <= 0 {
 		defaultTimeout = DefaultNetworkTimeout
@@ -607,6 +714,7 @@ func NewExecutor(options ExecutorOptions) *Executor {
 	return &Executor{
 		httpClient:       httpClient,
 		dialContext:      dialContext,
+		udpRateLimiter:   udpRateLimiter,
 		maxRequestBytes:  maxRequestBytes,
 		maxResponseBytes: maxResponseBytes,
 		defaultTimeout:   defaultTimeout,
@@ -834,6 +942,17 @@ func (e *Executor) UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (U
 	if err := checkSize(int64(len(req.Payload)), e.maxRequestBytes, 0, ErrRequestTooLarge); err != nil {
 		return UDPRoundTripResponse{}, err
 	}
+	limit := responseLimit(req.MaxReadBytes, e.maxResponseBytes)
+	if limit <= 0 {
+		return UDPRoundTripResponse{}, fmt.Errorf("%w: max_read_bytes must be positive", ErrResponseTooLarge)
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = e.now()
+	}
+	if e.udpRateLimiter != nil && !e.udpRateLimiter.AllowUDPRoundTrip(now, udpRateLimitKey(req.Grant)) {
+		return UDPRoundTripResponse{}, fmt.Errorf("%w: udp connector %q destination %s", ErrRateLimited, req.Grant.ConnectorID, req.Grant.Destination.Canonical())
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
 	defer cancel()
 	conn, err := e.dialContext(ctx, "udp", grantEndpoint(req.Grant))
@@ -850,16 +969,22 @@ func (e *Executor) UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (U
 			return UDPRoundTripResponse{}, err
 		}
 	}
-	limit := responseLimit(req.MaxReadBytes, e.maxResponseBytes)
-	if limit <= 0 {
-		return UDPRoundTripResponse{}, fmt.Errorf("%w: max_read_bytes must be positive", ErrResponseTooLarge)
-	}
 	buf := make([]byte, limit)
 	n, err := conn.Read(buf)
 	if err != nil {
 		return UDPRoundTripResponse{}, err
 	}
 	return UDPRoundTripResponse{Payload: append([]byte(nil), buf[:n]...)}, nil
+}
+
+func udpRateLimitKey(grant ConnectionGrant) UDPRateLimitKey {
+	return UDPRateLimitKey{
+		PluginInstanceID:  grant.PluginInstanceID,
+		ActiveFingerprint: grant.ActiveFingerprint,
+		ConnectorID:       grant.ConnectorID,
+		GrantID:           grant.GrantID,
+		Destination:       grant.Destination,
+	}
 }
 
 func validateGrantForTransport(grant ConnectionGrant, transport Transport, now time.Time, nowFunc func() time.Time) error {

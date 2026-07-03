@@ -261,6 +261,7 @@ requireAtLeast(evidenceByCategory, "connectivity_classifier", "alt_svc_headers_d
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "proxy_auth_headers_dropped", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_round_trips", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_source_mismatch_dropped", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_rate_limit_denials", 1);
 
 requireAtLeast(evidenceByCategory, "runtime_revoke_ack", "attempts", 1);
 const p95Ms = requireAtLeast(evidenceByCategory, "runtime_revoke_ack", "p95_ms", 0);

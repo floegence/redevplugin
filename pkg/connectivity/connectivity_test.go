@@ -688,6 +688,70 @@ func TestExecutorUDPRoundTripIgnoresMismatchedSource(t *testing.T) {
 	}
 }
 
+func TestExecutorUDPRoundTripRateLimitsEndpointBeforeDial(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 32)
+		n, addr, err := conn.ReadFrom(buf)
+		if err != nil {
+			done <- err
+			return
+		}
+		if string(buf[:n]) != "hello" {
+			done <- fmt.Errorf("request payload = %q", buf[:n])
+			return
+		}
+		_, err = conn.WriteTo([]byte("udp:hello"), addr)
+		done <- err
+	}()
+	now := time.Now().UTC()
+	dials := 0
+	executor := NewExecutor(ExecutorOptions{
+		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			dials++
+			return mapDialer(conn.LocalAddr().String())(ctx, network, address)
+		},
+		UDPRateLimiter: NewMemoryUDPRateLimiter(UDPRateLimit{MaxRoundTrips: 1, Window: time.Minute}),
+		Now:            func() time.Time { return now },
+	})
+	grant := testGrant(t, TransportUDP, "udp://metrics.example.com:8125", time.Minute)
+	response, err := executor.UDPRoundTrip(context.Background(), UDPRoundTripRequest{
+		Grant:        grant,
+		Payload:      []byte("hello"),
+		MaxReadBytes: 32,
+		Timeout:      time.Second,
+	})
+	if err != nil {
+		t.Fatalf("UDPRoundTrip(first) error = %v", err)
+	}
+	if string(response.Payload) != "udp:hello" {
+		t.Fatalf("UDP payload = %q", response.Payload)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	secondGrant := grant
+	secondGrant.GrantID = "netgrant_ffeeddccbbaa99887766554433221100"
+	_, err = executor.UDPRoundTrip(context.Background(), UDPRoundTripRequest{
+		Grant:        secondGrant,
+		Payload:      []byte("again"),
+		MaxReadBytes: 32,
+		Timeout:      time.Second,
+		Now:          now.Add(time.Second),
+	})
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("UDPRoundTrip(second) error = %v, want ErrRateLimited", err)
+	}
+	if dials != 1 {
+		t.Fatalf("UDP dials = %d, want rate-limited request to stop before dial", dials)
+	}
+}
+
 func TestExecutorRejectsExpiredAndMismatchedGrants(t *testing.T) {
 	grant := testGrant(t, TransportTCP, "127.0.0.1:443", -time.Second)
 	if _, err := NewExecutor(ExecutorOptions{}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{Grant: grant}); !errors.Is(err, ErrGrantExpired) {

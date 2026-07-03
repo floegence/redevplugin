@@ -2442,6 +2442,8 @@ func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_REQUEST_TOO_LARGE", Message: err.Error()}
 	case errors.Is(err, connectivity.ErrResponseTooLarge):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: err.Error()}
+	case errors.Is(err, connectivity.ErrRateLimited):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_RATE_LIMITED", Message: err.Error()}
 	case errors.Is(err, connectivity.ErrConnectionClosed):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: err.Error()}
 	case errors.Is(err, connectivity.ErrWebSocketFailed):

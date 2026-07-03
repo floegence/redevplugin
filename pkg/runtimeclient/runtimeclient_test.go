@@ -813,6 +813,13 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestNetworkExecuteErrorResponseMapsRateLimit(t *testing.T) {
+	response := networkExecuteErrorResponse(fmt.Errorf("%w: udp endpoint", connectivity.ErrRateLimited))
+	if response.OK || response.Code != "NETWORK_RATE_LIMITED" || !strings.Contains(response.Message, "udp endpoint") {
+		t.Fatalf("rate-limit response mismatch: %#v", response)
+	}
+}
+
 func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocation(t *testing.T) {
 	cases := []struct {
 		name          string
