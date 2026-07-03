@@ -68,7 +68,9 @@ capabilities.
   to inline or sanitize plugin-provided SVG markup. The same validation path rejects
   shell/shebang scripts, native executable or dynamic-library artifacts, and
   package-manager install lifecycle scripts so third-party packages cannot smuggle
-  a native backend beside the sandbox UI and WASM workers. Validation failures
+  a native backend beside the sandbox UI and WASM workers. Package IO also
+  rejects file counts, entry sizes, package-local path lengths, compression
+  ratios, and total uncompressed sizes beyond configured limits. Validation failures
   use stable platform error codes (`PLUGIN_MANIFEST_INVALID`,
   `PLUGIN_PACKAGE_INVALID`, `PLUGIN_PACKAGE_TOO_LARGE`, or
   `PLUGIN_PACKAGE_PATH_FORBIDDEN`) and expose structured `error_details` such as

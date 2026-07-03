@@ -54,6 +54,7 @@ type ReadOptions struct {
 	MaxUncompressedBytes int64 `json:"max_uncompressed_bytes"`
 	MaxFiles             int   `json:"max_files"`
 	MaxEntryBytes        int64 `json:"max_entry_bytes"`
+	MaxPathBytes         int   `json:"max_path_bytes"`
 	MaxCompressionRatio  int64 `json:"max_compression_ratio"`
 }
 
@@ -147,6 +148,7 @@ func DefaultReadOptions() ReadOptions {
 		MaxUncompressedBytes: 128 << 20,
 		MaxFiles:             4096,
 		MaxEntryBytes:        32 << 20,
+		MaxPathBytes:         512,
 		MaxCompressionRatio:  100,
 	}
 }
@@ -281,6 +283,9 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 		if err != nil {
 			return Package{}, err
 		}
+		if err := validateEntryPathLength(entryPath, opts.MaxPathBytes); err != nil {
+			return Package{}, err
+		}
 		if _, ok := files[entryPath]; ok {
 			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "duplicate_entry", entryPath, "", "duplicate entry %q", entryPath)
 		}
@@ -413,6 +418,9 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 		if err != nil {
 			return err
 		}
+		if err := validateEntryPathLength(entryPath, opts.MaxPathBytes); err != nil {
+			return err
+		}
 		info, err := d.Info()
 		if err != nil {
 			return err
@@ -468,6 +476,13 @@ func validateEntryPath(entryPath string) (string, error) {
 		return "", validationErrorf(ValidationCodePackagePathForbidden, "hidden_path", entryPath, "", "hidden entry %q is not allowed", entryPath)
 	}
 	return entryPath, nil
+}
+
+func validateEntryPathLength(entryPath string, maxPathBytes int) error {
+	if maxPathBytes > 0 && len(entryPath) > maxPathBytes {
+		return validationErrorf(ValidationCodePackageTooLarge, "path_length", entryPath, "", "entry path %q exceeds maximum length %d", entryPath, maxPathBytes)
+	}
+	return nil
 }
 
 func manifestDecodeValidationError(err error) error {

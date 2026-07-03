@@ -302,6 +302,16 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 			reason: "total_uncompressed_bytes",
 		},
 		{
+			name: "path length",
+			entries: map[string][]byte{
+				"manifest.json": []byte(validManifestJSON()),
+			},
+			opts:   ReadOptions{MaxPathBytes: 4},
+			want:   ValidationCodePackageTooLarge,
+			reason: "path_length",
+			path:   "manifest.json",
+		},
+		{
 			name: "manifest field",
 			entries: map[string][]byte{
 				"manifest.json": []byte(strings.ReplaceAll(validManifestJSON(), `"version": "1.0.0"`, `"version": ""`)),
@@ -324,6 +334,13 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 			requireValidationError(t, err, tc.want, tc.reason, tc.path, tc.pointer)
 		})
 	}
+}
+
+func TestBuildFromDirRejectsPathLengthLimit(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	var buf bytes.Buffer
+	_, err := BuildFromDir(context.Background(), dir, &buf, ReadOptions{MaxPathBytes: 4})
+	requireValidationError(t, err, ValidationCodePackageTooLarge, "path_length", "manifest.json", "")
 }
 
 func TestBuildAcceptsPackageLocalSurfaceAssets(t *testing.T) {
