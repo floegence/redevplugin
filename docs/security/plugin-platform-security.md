@@ -50,7 +50,9 @@ messages.
 
 Detached package signatures live in `signatures/package.sig`. Signature metadata
 is retained for trust verification but excluded from canonical package entries
-and canonical package hashes, avoiding self-referential signatures.
+and canonical package hashes, avoiding self-referential signatures. The
+`signatures/` directory is closed-world; any entry other than
+`signatures/package.sig` is rejected during package build/read.
 
 `pkg/trust` provides an Ed25519 verifier and keyring interface. Hosts decide
 which publishers, keys, registries, local developer flows, bundled packages, or

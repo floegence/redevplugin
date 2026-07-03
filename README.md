@@ -68,7 +68,9 @@ capabilities.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
-  serving, and the package hash to avoid self-referential signatures.
+  serving, and the package hash to avoid self-referential signatures. The
+  signature directory is closed-world: package IO rejects any signature entry
+  other than `signatures/package.sig`.
 - Package validation requires surface entries to be packaged HTML assets and
   rejects external, root-absolute, missing, inline-script/style, event-handler,
   `srcdoc`, `base`, and Service Worker registration dependencies in sandbox UI

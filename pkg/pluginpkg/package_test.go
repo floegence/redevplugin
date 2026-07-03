@@ -232,6 +232,20 @@ func TestBuildRejectsSignatureIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsUnsupportedSignatureEntry(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, "signatures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "signatures", "extra.sig"), []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	requireValidationError(t, err, ValidationCodePackagePathForbidden, "unsupported_signature_entry", "signatures/extra.sig", "")
+}
+
 func TestReadRejectsUnsafePath(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -310,6 +324,17 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 			want:   ValidationCodePackageTooLarge,
 			reason: "path_length",
 			path:   "manifest.json",
+		},
+		{
+			name: "unsupported signature entry",
+			entries: map[string][]byte{
+				"manifest.json":        []byte(validManifestJSON()),
+				"ui/index.html":        []byte("<!doctype html><title>Plugin</title>"),
+				"signatures/extra.sig": []byte("extra"),
+			},
+			want:   ValidationCodePackagePathForbidden,
+			reason: "unsupported_signature_entry",
+			path:   "signatures/extra.sig",
 		},
 		{
 			name: "manifest field",
