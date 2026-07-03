@@ -930,7 +930,7 @@ func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocatio
 			},
 			assertRequest: func(t *testing.T, executor *recordingNetworkExecutor) {
 				t.Helper()
-				if executor.tcpCalls != 1 || string(executor.lastTCP.Payload) != "hello" || executor.lastTCP.MaxReadBytes != 1024 || executor.lastTCP.Timeout != 2*time.Second {
+				if executor.tcpCalls != 1 || string(executor.lastTCP.Payload) != "hello" || executor.lastTCP.MaxRequestBytes != 2048 || executor.lastTCP.MaxReadBytes != 1024 || executor.lastTCP.Timeout != 2*time.Second {
 					t.Fatalf("tcp executor mismatch: calls=%d last=%#v", executor.tcpCalls, executor.lastTCP)
 				}
 			},
@@ -2107,6 +2107,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 		Path:                "/v1/worker",
 		Headers:             http.Header{"X-Test": []string{"ok"}},
 		BodyBase64:          base64.StdEncoding.EncodeToString([]byte(`{"hello":"network"}`)),
+		MaxRequestBytes:     2048,
 		MaxResponseBytes:    1024,
 		TimeoutMillis:       2000,
 	}

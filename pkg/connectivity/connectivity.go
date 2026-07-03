@@ -487,11 +487,12 @@ type HTTPResponse struct {
 }
 
 type TCPRoundTripRequest struct {
-	Grant        ConnectionGrant `json:"grant"`
-	Payload      []byte          `json:"-"`
-	MaxReadBytes int64           `json:"max_read_bytes,omitempty"`
-	Timeout      time.Duration   `json:"timeout,omitempty"`
-	Now          time.Time       `json:"now,omitempty"`
+	Grant           ConnectionGrant `json:"grant"`
+	Payload         []byte          `json:"-"`
+	MaxRequestBytes int64           `json:"max_request_bytes,omitempty"`
+	MaxReadBytes    int64           `json:"max_read_bytes,omitempty"`
+	Timeout         time.Duration   `json:"timeout,omitempty"`
+	Now             time.Time       `json:"now,omitempty"`
 }
 
 type TCPRoundTripResponse struct {
@@ -908,7 +909,7 @@ func (e *Executor) TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (T
 	if err := validateGrantForTransport(req.Grant, TransportTCP, req.Now, e.now); err != nil {
 		return TCPRoundTripResponse{}, err
 	}
-	if err := checkSize(int64(len(req.Payload)), e.maxRequestBytes, 0, ErrRequestTooLarge); err != nil {
+	if err := checkSize(int64(len(req.Payload)), e.maxRequestBytes, req.MaxRequestBytes, ErrRequestTooLarge); err != nil {
 		return TCPRoundTripResponse{}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
@@ -918,18 +919,20 @@ func (e *Executor) TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (T
 		return TCPRoundTripResponse{}, err
 	}
 	defer conn.Close()
+	stopCancelWatch := closeConnectionOnContextDone(ctx, conn)
+	defer stopCancelWatch()
 	deadline, _ := ctx.Deadline()
 	if !deadline.IsZero() {
 		_ = conn.SetDeadline(deadline)
 	}
 	if len(req.Payload) > 0 {
 		if _, err := conn.Write(req.Payload); err != nil {
-			return TCPRoundTripResponse{}, err
+			return TCPRoundTripResponse{}, contextOrNetworkError(ctx, err)
 		}
 	}
 	payload, err := readBounded(conn, responseLimit(req.MaxReadBytes, e.maxResponseBytes))
 	if err != nil {
-		return TCPRoundTripResponse{}, err
+		return TCPRoundTripResponse{}, contextOrNetworkError(ctx, err)
 	}
 	return TCPRoundTripResponse{Payload: payload}, nil
 }

@@ -148,6 +148,10 @@ request paths revalidate transport, destination, grant expiry, target
 classifier, request size, response size, cancellation, and timeouts at execution
 time.
 
+TCP execution is byte-stream transport only: host-neutral tests use a small mock
+database request/response protocol to prove bounded round trips, but database
+semantics stay inside the plugin protocol client rather than the broker.
+
 Long-lived subscriptions belong to the stream envelope contract, not to
 unbounded one-shot network execution.
 

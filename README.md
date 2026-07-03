@@ -406,9 +406,10 @@ Go classifier, Rust crate, and JSON contract cannot drift.
 field records structured counters from `pkg/stress`, including stream
 backpressure denials, connectivity grant/classifier denials, runtime revoke ACK
 p95 latency, redirect/DNS rebinding denials, HTTP proxy/CONNECT/header
-hardening, UDP source-pin mismatch drops, UDP rate-limit denials, WebSocket
-round trips, WebSocket size denials, WebSocket cancelled reads, KV byte quota
-pressure, file-count quota pressure, SQLite sidecar/sparse bypass checks, and
-CSP report flood rate limiting. CI uploads that summary as release evidence for
-host-neutral broker/backpressure, runtime-control, storage, and sandbox
-telemetry behavior.
+hardening, TCP mock database round trips, TCP size denials, TCP cancelled reads,
+UDP source-pin mismatch drops, UDP rate-limit denials, WebSocket round trips,
+WebSocket size denials, WebSocket cancelled reads, KV byte quota pressure,
+file-count quota pressure, SQLite sidecar/sparse bypass checks, and CSP report
+flood rate limiting. CI uploads that summary as release evidence for
+host-neutral broker/backpressure, runtime-control, storage, and sandbox telemetry
+behavior.

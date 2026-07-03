@@ -126,9 +126,10 @@ Tagged GitHub Releases publish:
 
 `scripts/verify_redevplugin_release_artifacts.sh <artifact-dir>` verifies the
 outer checksums, required stress evidence categories, key counters and
-thresholds, including WebSocket round-trip, size-denial, and cancelled-read
-evidence, signature file presence, cosign bundle presence, and cosign keyless
-identity unless explicitly run with `--skip-cosign` for local fixtures.
+thresholds, including TCP mock database, WebSocket round-trip, size-denial, and
+cancelled-read evidence, signature file presence, cosign bundle presence, and
+cosign keyless identity unless explicitly run with `--skip-cosign` for local
+fixtures.
 
 ## Dependency Audit
 

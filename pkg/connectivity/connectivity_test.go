@@ -698,6 +698,123 @@ func TestExecutorTCPRoundTripUsesGrantEndpoint(t *testing.T) {
 	<-done
 }
 
+func TestExecutorTCPRoundTripRejectsOversizedRequestBeforeDial(t *testing.T) {
+	var dialed bool
+	grant := testGrant(t, TransportTCP, "tcp://db.example.com:5432", time.Minute)
+	_, err := NewExecutor(ExecutorOptions{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, errors.New("dial should not be called")
+		},
+	}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
+		Grant:           grant,
+		Payload:         []byte("SELECT too_large"),
+		MaxRequestBytes: 4,
+		Timeout:         time.Second,
+	})
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("TCPRoundTrip(large request) error = %v, want ErrRequestTooLarge", err)
+	}
+	if dialed {
+		t.Fatal("TCPRoundTrip dialed before rejecting oversized request")
+	}
+}
+
+func TestExecutorTCPRoundTripRejectsOversizedResponse(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 32)
+		if _, err := conn.Read(buf); err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("too-large"))
+	}()
+	grant := testGrant(t, TransportTCP, "tcp://db.example.com:5432", time.Minute)
+	_, err = NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).TCPRoundTrip(context.Background(), TCPRoundTripRequest{
+		Grant:        grant,
+		Payload:      []byte("query"),
+		MaxReadBytes: 4,
+		Timeout:      time.Second,
+	})
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("TCPRoundTrip(large response) error = %v, want ErrResponseTooLarge", err)
+	}
+}
+
+func TestExecutorTCPRoundTripStopsWhenContextIsCanceled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestRead := make(chan struct{})
+	releaseServer := make(chan struct{})
+	serverReleased := false
+	release := func() {
+		if !serverReleased {
+			close(releaseServer)
+			serverReleased = true
+		}
+	}
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 32)
+		if _, err := conn.Read(buf); err != nil {
+			t.Errorf("Read() error = %v", err)
+			return
+		}
+		close(requestRead)
+		<-releaseServer
+	}()
+
+	grant := testGrant(t, TransportTCP, "tcp://db.example.com:5432", time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).TCPRoundTrip(ctx, TCPRoundTripRequest{
+			Grant:        grant,
+			Payload:      []byte("query"),
+			MaxReadBytes: 32,
+			Timeout:      5 * time.Second,
+		})
+		errCh <- err
+	}()
+
+	select {
+	case <-requestRead:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive tcp request payload")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("TCPRoundTrip(canceled) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("TCPRoundTrip did not stop promptly after context cancellation")
+	}
+	release()
+	<-done
+}
+
 func TestExecutorUDPRoundTripUsesConnectedDestination(t *testing.T) {
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

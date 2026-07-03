@@ -457,6 +457,7 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 					executor.lastTCP.Grant.Destination.Port != 3306 ||
 					executor.lastTCP.Grant.RuntimeGenerationID == "" ||
 					string(executor.lastTCP.Payload) != "hello tcp" ||
+					executor.lastTCP.MaxRequestBytes != 1024 ||
 					executor.lastTCP.MaxReadBytes != 4096 ||
 					executor.lastTCP.Timeout != time.Second {
 					t.Fatalf("tcp executor call mismatch: calls=%d req=%#v", executor.tcpCalls, executor.lastTCP)

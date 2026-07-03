@@ -259,6 +259,10 @@ requireAtLeast(evidenceByCategory, "connectivity_classifier", "http_proxy_env_ig
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "http_connect_denials", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "alt_svc_headers_dropped", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "proxy_auth_headers_dropped", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "tcp_database_round_trips", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "tcp_request_denials", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "tcp_response_denials", 1);
+requireAtLeast(evidenceByCategory, "connectivity_classifier", "tcp_cancelled_reads", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_round_trips", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_source_mismatch_dropped", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "udp_rate_limit_denials", 1);

@@ -2362,11 +2362,12 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
 		}
 		result, err := executor.TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
-			Grant:        grant,
-			Payload:      payload,
-			MaxReadBytes: req.MaxResponseBytes,
-			Timeout:      timeout,
-			Now:          now,
+			Grant:           grant,
+			Payload:         payload,
+			MaxRequestBytes: req.MaxRequestBytes,
+			MaxReadBytes:    req.MaxResponseBytes,
+			Timeout:         timeout,
+			Now:             now,
 		})
 		if err != nil {
 			return networkExecuteErrorResponse(err)

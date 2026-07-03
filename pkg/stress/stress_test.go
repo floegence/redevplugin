@@ -249,6 +249,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
 	httpCounters := stressHTTPProxyDefenseCounters(t, ctx, broker)
 	dnsRedirectCounters := stressDNSRedirectCounters(t, ctx, broker)
+	tcpCounters := stressTCPDatabaseProtocolCounters(t, ctx, broker)
 	webSocketCounters := stressWebSocketPressureCounters(t, ctx, broker)
 	logStressSummary(t, stressSummary{
 		Category: "connectivity_classifier",
@@ -263,6 +264,10 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 			"http_connect_denials":        httpCounters.connectDenials,
 			"alt_svc_headers_dropped":     httpCounters.altSvcHeadersDropped,
 			"proxy_auth_headers_dropped":  httpCounters.proxyAuthHeadersDropped,
+			"tcp_cancelled_reads":         tcpCounters.cancelledReads,
+			"tcp_database_round_trips":    tcpCounters.databaseRoundTrips,
+			"tcp_request_denials":         tcpCounters.requestDenials,
+			"tcp_response_denials":        tcpCounters.responseDenials,
 			"udp_round_trips":             udpCounters.roundTrips,
 			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
 			"udp_rate_limit_denials":      udpCounters.rateLimitDenials,
@@ -403,6 +408,189 @@ func stressHTTPProxyDefenseCounters(t *testing.T, ctx context.Context, broker co
 	}
 	result.connectDenials = 1
 	return result
+}
+
+type tcpDatabaseProtocolCounters struct {
+	databaseRoundTrips int
+	requestDenials     int
+	responseDenials    int
+	cancelledReads     int
+}
+
+func stressTCPDatabaseProtocolCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) tcpDatabaseProtocolCounters {
+	t.Helper()
+	grant, err := broker.MintConnectionGrant(ctx, grantRequest("mysql", connectivity.TransportTCP, "db.example.com:3306"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counters := tcpDatabaseProtocolCounters{}
+
+	successAddr, stopSuccess := startStressTCPServer(t, func(reader *bufio.Reader, conn net.Conn) error {
+		query, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if query != "QUERY users\n" {
+			return fmt.Errorf("tcp mock database query = %q", query)
+		}
+		_, err = conn.Write([]byte("RESULT rows=1\n"))
+		return err
+	})
+	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(successAddr),
+	}).TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
+		Grant:           grant,
+		Payload:         []byte("QUERY users\n"),
+		MaxRequestBytes: 64,
+		MaxReadBytes:    32,
+		Timeout:         time.Second,
+	})
+	stopSuccess()
+	if err != nil {
+		t.Fatalf("TCPRoundTrip(mock database) error = %v", err)
+	}
+	if string(response.Payload) != "RESULT rows=1\n" {
+		t.Fatalf("TCPRoundTrip(mock database) payload = %q", response.Payload)
+	}
+	counters.databaseRoundTrips = 1
+
+	dialed := false
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, errors.New("dial should not be called for oversized tcp request")
+		},
+	}).TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
+		Grant:           grant,
+		Payload:         []byte("QUERY oversized\n"),
+		MaxRequestBytes: 4,
+		Timeout:         time.Second,
+	})
+	if !errors.Is(err, connectivity.ErrRequestTooLarge) {
+		t.Fatalf("TCPRoundTrip(stress request limit) error = %v, want ErrRequestTooLarge", err)
+	}
+	if dialed {
+		t.Fatal("TCPRoundTrip(stress request limit) dialed before rejecting oversized request")
+	}
+	counters.requestDenials = 1
+
+	largeAddr, stopLarge := startStressTCPServer(t, func(reader *bufio.Reader, conn net.Conn) error {
+		if _, err := reader.ReadString('\n'); err != nil {
+			return err
+		}
+		_, err := conn.Write([]byte("RESULT too-large\n"))
+		return err
+	})
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(largeAddr),
+	}).TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
+		Grant:        grant,
+		Payload:      []byte("QUERY users\n"),
+		MaxReadBytes: 4,
+		Timeout:      time.Second,
+	})
+	stopLarge()
+	if !errors.Is(err, connectivity.ErrResponseTooLarge) {
+		t.Fatalf("TCPRoundTrip(stress response limit) error = %v, want ErrResponseTooLarge", err)
+	}
+	counters.responseDenials = 1
+
+	requestRead := make(chan struct{})
+	releaseBlockedServer := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() {
+			close(releaseBlockedServer)
+		})
+	}
+	blockedAddr, stopBlocked := startStressTCPServer(t, func(reader *bufio.Reader, _ net.Conn) error {
+		if _, err := reader.ReadString('\n'); err != nil {
+			return err
+		}
+		close(requestRead)
+		<-releaseBlockedServer
+		return nil
+	})
+	cancelCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+			DialContext: stressMappedDialer(blockedAddr),
+		}).TCPRoundTrip(cancelCtx, connectivity.TCPRoundTripRequest{
+			Grant:        grant,
+			Payload:      []byte("QUERY cancel\n"),
+			MaxReadBytes: 32,
+			Timeout:      5 * time.Second,
+		})
+		errCh <- err
+	}()
+	select {
+	case <-requestRead:
+	case <-time.After(time.Second):
+		cancel()
+		releaseServer()
+		stopBlocked()
+		t.Fatal("TCPRoundTrip(stress cancel) server did not receive query")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			releaseServer()
+			stopBlocked()
+			t.Fatalf("TCPRoundTrip(stress cancel) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		releaseServer()
+		stopBlocked()
+		t.Fatal("TCPRoundTrip(stress cancel) did not stop promptly")
+	}
+	releaseServer()
+	stopBlocked()
+	counters.cancelledReads = 1
+
+	return counters
+}
+
+func startStressTCPServer(t *testing.T, handler func(*bufio.Reader, net.Conn) error) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		defer listener.Close()
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			done <- err
+			return
+		}
+		defer conn.Close()
+		if err := handler(bufio.NewReader(conn), conn); err != nil {
+			done <- err
+			return
+		}
+	}()
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			_ = listener.Close()
+			select {
+			case err, ok := <-done:
+				if ok && err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("tcp stress server did not stop")
+			}
+		})
+	}
+	return listener.Addr().String(), stop
 }
 
 type webSocketPressureCounters struct {

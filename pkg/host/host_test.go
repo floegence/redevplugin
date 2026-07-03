@@ -4470,7 +4470,7 @@ func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transpor
 	case connectivity.TransportWebSocket:
 		request = []byte(`{"connector_id":"stream","transport":"websocket","destination":"wss://stream.example.com","operation":"websocket_round_trip","message_type":"text","payload_base64":"aGVsbG8gd2Vic29ja2V0","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
 	case connectivity.TransportTCP:
-		request = []byte(`{"connector_id":"mysql","transport":"tcp","destination":"db.example.com:3306","operation":"tcp_round_trip","payload_base64":"aGVsbG8gdGNw","max_response_bytes":4096,"timeout_ms":1000}`)
+		request = []byte(`{"connector_id":"mysql","transport":"tcp","destination":"db.example.com:3306","operation":"tcp_round_trip","payload_base64":"aGVsbG8gdGNw","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
 	case connectivity.TransportUDP:
 		request = []byte(`{"connector_id":"metrics","transport":"udp","destination":"metrics.example.com:8125","operation":"udp_round_trip","payload_base64":"aGVsbG8gdWRw","max_response_bytes":4096,"timeout_ms":1000}`)
 	default:
