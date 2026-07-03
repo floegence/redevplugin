@@ -195,19 +195,19 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "worker-invocation-schema",
 				Path:    "spec/plugin/worker-invocation-v1.schema.json",
 				Version: WorkerInvocationSchemaVersion,
-				SHA256:  "913e7fbdc87ed59f0f1b7f9b16b87e88c9441cc1c26a5547a22d03f0f1c4fc03",
+				SHA256:  "cbbef78febae6d13d914bf382d22f2d9785d0bac158eb92d18a2815d5c70dbe6",
 			},
 			{
 				ID:      "error-codes-schema",
 				Path:    "spec/plugin/error-codes-v1.schema.json",
 				Version: ErrorCodesSchemaVersion,
-				SHA256:  "a3b674bba0875f1025b7cc970aee1632e470755305bee1d2c68dc62d3a00fd6a",
+				SHA256:  "b58f0a408c07fbf8f15a6c522b7ff31477587fa12c67970406a7265373483dec",
 			},
 			{
 				ID:      "rust-ipc-schema",
 				Path:    "spec/plugin/ipc-v1.schema.json",
 				Version: RustIPCVersion,
-				SHA256:  "373316775dd5a0908c1d1902a1bbd6e1ea2c186f34d8e825fea618d227df6b8b",
+				SHA256:  "7882f640ae92405d8bd2e04d0849f308dd761a5781ffdf2e87e9438e797ab0de",
 			},
 			{
 				ID:      "wasm-worker-schema",

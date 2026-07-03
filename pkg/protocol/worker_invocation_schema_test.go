@@ -43,6 +43,11 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 			t.Fatalf("worker invocation schema missing required field %q", name)
 		}
 	}
+	for _, name := range []string{"surface_instance_id", "owner_session_hash", "owner_user_hash", "session_channel_id_hash", "bridge_channel_id"} {
+		if _, ok := properties[name].(map[string]any); !ok {
+			t.Fatalf("worker invocation schema missing optional audience field %q", name)
+		}
+	}
 	for _, name := range []string{"package_hash", "artifact_sha256"} {
 		property := requireNestedObject(t, properties, name)
 		if property["$ref"] != "#/$defs/sha256" {

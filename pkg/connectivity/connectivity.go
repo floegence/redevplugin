@@ -550,6 +550,7 @@ type WebSocketRoundTripResponse struct {
 
 type NetworkExecutor interface {
 	DoHTTP(ctx context.Context, req HTTPRequest) (HTTPResponse, error)
+	StreamHTTP(ctx context.Context, req HTTPRequest, onChunk func(HTTPResponseChunk) error) (HTTPStreamResponse, error)
 	WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTripRequest) (WebSocketRoundTripResponse, error)
 	TCPRoundTrip(ctx context.Context, req TCPRoundTripRequest) (TCPRoundTripResponse, error)
 	UDPRoundTrip(ctx context.Context, req UDPRoundTripRequest) (UDPRoundTripResponse, error)

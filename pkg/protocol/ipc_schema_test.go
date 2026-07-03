@@ -428,18 +428,18 @@ func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
 	defs := requireNestedObject(t, schema, "$defs")
 	request := requireNestedObject(t, defs, "network_execute_request_payload")
 	requestProps := requireNestedObject(t, request, "properties")
-	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "runtime_generation_id", "policy_revision", "management_revision", "revoke_epoch", "connector_id", "transport", "destination", "operation", "method", "path", "headers", "body_base64", "payload_base64", "max_response_bytes", "timeout_ms"} {
+	for _, name := range []string{"plugin_id", "plugin_instance_id", "active_fingerprint", "runtime_generation_id", "policy_revision", "management_revision", "revoke_epoch", "connector_id", "transport", "destination", "operation", "method", "path", "headers", "body_base64", "payload_base64", "max_response_bytes", "max_chunk_bytes", "max_buffered_bytes", "timeout_ms", "stream_id", "stream_method", "stream_effect", "stream_execution", "surface_instance_id", "owner_session_hash", "owner_user_hash", "session_channel_id_hash", "bridge_channel_id", "content_type"} {
 		if _, ok := requestProps[name].(map[string]any); !ok {
 			t.Fatalf("network_execute request missing %s", name)
 		}
 	}
 	operation := requireNestedObject(t, requestProps, "operation")
-	if enum, ok := operation["enum"].([]any); !ok || !containsString(enum, "websocket_round_trip") || !containsString(enum, "udp_round_trip") {
+	if enum, ok := operation["enum"].([]any); !ok || !containsString(enum, "http_stream") || !containsString(enum, "websocket_round_trip") || !containsString(enum, "udp_round_trip") {
 		t.Fatalf("network_execute operation enum = %#v", operation["enum"])
 	}
 	response := requireNestedObject(t, defs, "network_execute_response_payload")
 	responseProps := requireNestedObject(t, response, "properties")
-	for _, name := range []string{"ok", "transport", "destination", "status_code", "headers", "message_type", "body_base64", "payload_base64", "grant_id", "connector_id", "runtime_generation_id", "code", "message"} {
+	for _, name := range []string{"ok", "transport", "destination", "status_code", "headers", "message_type", "body_base64", "payload_base64", "stream_id", "bytes_read", "chunk_count", "grant_id", "connector_id", "runtime_generation_id", "code", "message"} {
 		if _, ok := responseProps[name].(map[string]any); !ok {
 			t.Fatalf("network_execute response missing %s", name)
 		}

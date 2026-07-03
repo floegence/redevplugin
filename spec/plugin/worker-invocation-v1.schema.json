@@ -47,6 +47,8 @@
     "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
     "execution": { "enum": ["sync", "operation", "subscription"] },
     "surface_instance_id": { "type": "string" },
+    "owner_session_hash": { "type": "string" },
+    "owner_user_hash": { "type": "string" },
     "session_channel_id_hash": { "type": "string" },
     "bridge_channel_id": { "type": "string" },
     "params": {

@@ -90,7 +90,8 @@ func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.
 		options.Artifacts == nil ||
 		options.HandleGrants == nil ||
 		options.Connectivity != broker ||
-		options.NetworkExecutor != executor {
+		options.NetworkExecutor != executor ||
+		options.Streams != h.adapters.Streams {
 		t.Fatalf("process supervisor options mismatch: %#v", options)
 	}
 }
@@ -98,7 +99,7 @@ func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.
 func TestNewHostProvidesDefaultNetworkExecutor(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
-	if options.Connectivity == nil || options.NetworkExecutor == nil {
+	if options.Connectivity == nil || options.NetworkExecutor == nil || options.Streams == nil {
 		t.Fatalf("default runtime network hostcalls missing: %#v", options)
 	}
 }
@@ -140,15 +141,18 @@ func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {
 
 type recordingHostNetworkExecutor struct {
 	httpCalls      int
+	streamCalls    int
 	websocketCalls int
 	tcpCalls       int
 	udpCalls       int
 	lastHTTP       connectivity.HTTPRequest
+	lastStreamHTTP connectivity.HTTPRequest
 	lastWebSocket  connectivity.WebSocketRoundTripRequest
 	lastTCP        connectivity.TCPRoundTripRequest
 	lastUDP        connectivity.UDPRoundTripRequest
 	httpStatus     int
 	httpBody       []byte
+	streamChunks   [][]byte
 	wsResponse     connectivity.WebSocketRoundTripResponse
 	tcpResponse    connectivity.TCPRoundTripResponse
 	udpResponse    connectivity.UDPRoundTripResponse
@@ -162,6 +166,27 @@ func (e *recordingHostNetworkExecutor) DoHTTP(_ context.Context, req connectivit
 		status = http.StatusOK
 	}
 	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
+}
+
+func (e *recordingHostNetworkExecutor) StreamHTTP(_ context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
+	e.streamCalls++
+	e.lastStreamHTTP = req
+	status := e.httpStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	chunks := e.streamChunks
+	if len(chunks) == 0 && len(e.httpBody) > 0 {
+		chunks = [][]byte{e.httpBody}
+	}
+	var bytesRead int64
+	for index, chunk := range chunks {
+		if err := onChunk(connectivity.HTTPResponseChunk{Index: index, Data: append([]byte(nil), chunk...)}); err != nil {
+			return connectivity.HTTPStreamResponse{}, err
+		}
+		bytesRead += int64(len(chunk))
+	}
+	return connectivity.HTTPStreamResponse{StatusCode: status, BytesRead: bytesRead, ChunkCount: len(chunks)}, nil
 }
 
 func (e *recordingHostNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {

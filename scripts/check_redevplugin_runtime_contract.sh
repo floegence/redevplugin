@@ -191,6 +191,8 @@ JSON
   grep -q '"network_grant_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"network_execute_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"network_execute_response_payload"' spec/plugin/ipc-v1.schema.json
+  grep -q '"http_stream"' spec/plugin/ipc-v1.schema.json
+  grep -q '"stream_id": { "type": "string"' spec/plugin/ipc-v1.schema.json
   grep -q '"network_destination"' spec/plugin/ipc-v1.schema.json
   grep -q '"ttl_ms": { "type": "integer", "minimum": 0 }' spec/plugin/ipc-v1.schema.json
   grep -q 'FRAME_TYPE_STORAGE_FILE' crates/redevplugin-ipc/src/lib.rs
@@ -215,6 +217,7 @@ JSON
   grep -q 'validate_network_grant_response' crates/redevplugin-ipc/src/lib.rs
   grep -q 'FRAME_TYPE_NETWORK_EXECUTE' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_NETWORK_EXECUTE_FAILED' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_NETWORK_STREAM_BACKPRESSURE' crates/redevplugin-ipc/src/lib.rs
   grep -q 'struct NetworkExecuteRequest' crates/redevplugin-ipc/src/lib.rs
   grep -q 'network_execute_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_network_execute_response' crates/redevplugin-ipc/src/lib.rs
@@ -251,6 +254,8 @@ JSON
   grep -q 'networkMemoryHostcallWorkerWASMForTest' pkg/host/host_test.go
   grep -q 'runtime_instance_id' spec/plugin/worker-invocation-v1.schema.json
   grep -q 'runtime_generation_id' spec/plugin/worker-invocation-v1.schema.json
+  grep -q 'owner_session_hash' spec/plugin/worker-invocation-v1.schema.json
+  grep -q 'owner_user_hash' spec/plugin/worker-invocation-v1.schema.json
   grep -q '"revoke_epoch_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json

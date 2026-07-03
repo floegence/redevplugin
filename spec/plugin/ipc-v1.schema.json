@@ -660,6 +660,7 @@
         "destination"
       ],
       "properties": {
+        "plugin_id": { "type": "string" },
         "plugin_instance_id": { "type": "string", "minLength": 1 },
         "active_fingerprint": { "type": "string", "minLength": 1 },
         "runtime_instance_id": { "type": "string" },
@@ -672,7 +673,7 @@
         "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
         "destination": { "type": "string", "minLength": 1 },
         "ttl_ms": { "type": "integer", "minimum": 0 },
-        "operation": { "enum": ["http", "websocket_round_trip", "tcp_round_trip", "udp_round_trip"] },
+        "operation": { "enum": ["http", "http_stream", "websocket_round_trip", "tcp_round_trip", "udp_round_trip"] },
         "method": { "type": "string", "minLength": 1 },
         "path": { "type": "string" },
         "headers": {
@@ -687,7 +688,19 @@
         "payload_base64": { "type": "string", "contentEncoding": "base64" },
         "max_request_bytes": { "type": "integer", "minimum": 0 },
         "max_response_bytes": { "type": "integer", "minimum": 0 },
-        "timeout_ms": { "type": "integer", "minimum": 0 }
+        "max_chunk_bytes": { "type": "integer", "minimum": 0 },
+        "max_buffered_bytes": { "type": "integer", "minimum": 0 },
+        "timeout_ms": { "type": "integer", "minimum": 0 },
+        "stream_id": { "type": "string" },
+        "stream_method": { "type": "string" },
+        "stream_effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
+        "stream_execution": { "enum": ["sync", "operation", "subscription"] },
+        "surface_instance_id": { "type": "string" },
+        "owner_session_hash": { "type": "string" },
+        "owner_user_hash": { "type": "string" },
+        "session_channel_id_hash": { "type": "string" },
+        "bridge_channel_id": { "type": "string" },
+        "content_type": { "type": "string" }
       }
     },
     "network_execute_response_payload": {
@@ -709,6 +722,9 @@
         "message_type": { "enum": ["text", "binary"] },
         "body_base64": { "type": "string", "contentEncoding": "base64" },
         "payload_base64": { "type": "string", "contentEncoding": "base64" },
+        "stream_id": { "type": "string", "minLength": 1 },
+        "bytes_read": { "type": "integer", "minimum": 0 },
+        "chunk_count": { "type": "integer", "minimum": 0 },
         "grant_id": { "type": "string", "pattern": "^netgrant_[0-9a-f]{32}$" },
         "connector_id": { "type": "string", "minLength": 1 },
         "runtime_generation_id": { "type": "string" },

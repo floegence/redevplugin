@@ -473,6 +473,8 @@ type WorkerInvocationPayload struct {
 	Effect               string         `json:"effect"`
 	Execution            string         `json:"execution"`
 	SurfaceInstanceID    string         `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
 	BridgeChannelID      string         `json:"bridge_channel_id,omitempty"`
 	Params               map[string]any `json:"params"`
@@ -1969,6 +1971,7 @@ func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.Proces
 		StorageSQLite:   storageSQLiteBroker(h.adapters.Storage),
 		Connectivity:    h.adapters.Connectivity,
 		NetworkExecutor: h.adapters.NetworkExecutor,
+		Streams:         h.adapters.Streams,
 	}
 }
 
@@ -3127,6 +3130,8 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Effect:               string(method.Effect),
 		Execution:            string(method.Execution),
 		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		Params:               params,

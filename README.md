@@ -200,8 +200,9 @@ capabilities.
 - Connectivity brokers compile manifest-declared HTTP, WebSocket, TCP, and UDP
   connectors into grantable policies. The host-neutral network executor now
   consumes short-lived connection grants and performs bounded HTTP
-  request/response calls plus WebSocket, TCP, and UDP round trips with explicit
-  timeout, cancellation, request-size, and response-size limits. It revalidates
+  request/response calls, HTTP response streaming into the Host stream store,
+  plus WebSocket, TCP, and UDP round trips with explicit timeout, cancellation,
+  request-size, response-size, chunk-size, and stream-buffer limits. It revalidates
   grant expiry, transport, destination, and the target classifier at execution
   time so UI bridge calls and backend worker hostcalls can share the same
   fail-closed network boundary. Grants whose `target_classifier_version` does
@@ -212,8 +213,10 @@ capabilities.
   to the streaming envelope contract instead of the one-shot round trip API.
 - Host tests include a black-box runtime subprocess path that invokes a worker
   method, has the helper runtime request `network_execute` over IPC, mints the
-  grant through the Host connectivity broker, and records HTTP, WebSocket, TCP,
-  and UDP executor request/response paths before returning the worker result.
+  grant through the Host connectivity broker, records HTTP, streamed HTTP,
+  WebSocket, TCP, and UDP executor request/response paths, and verifies that
+  streamed HTTP responses return a Host-readable `stream_id` and stream ticket
+  before returning the worker result.
 - The Rust runtime now performs the first executable worker slice: it requests
   the bound WASM artifact from the Host over IPC, validates the WASM binary
   header and required function export through `redevplugin-wasm-abi`, executes
@@ -226,10 +229,15 @@ capabilities.
   `redevplugin.storage/sqlite(req_ptr, req_len, out_ptr, out_len) -> i32`, and
   `redevplugin.network/execute(req_ptr, req_len, out_ptr, out_len) -> i32`.
   The worker writes bounded JSON broker requests into WASM memory, the Rust
-  runtime injects Host-owned identity, policy, grant, and revoke context,
+  runtime injects Host-owned identity, surface/session stream audience, policy,
+  grant, and revoke context,
   executes the requests through the `storage_file`, `storage_kv`,
   `storage_sqlite`, and `network_execute` IPC paths, and writes JSON responses
-  back into worker-provided output buffers. Before each broker dispatch the
+  back into worker-provided output buffers. `network_execute.operation =
+  "http_stream"` is currently a Host stream-store bridge: the Go supervisor
+  streams HTTP response chunks into `stream.Store` and returns response
+  metadata plus `stream_id`; it is not yet the Rust hot-path persistent
+  stream/credit/resume transport. Before each broker dispatch the
   runtime verifies control-channel freshness and fails closed with
   `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
   stale. Runtime revoke ACKs now return a structured result with closed

@@ -2094,13 +2094,24 @@ fn network_execute_request(
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
+    let plugin_id = required_json_string(invocation_frame, "plugin_id")?;
     let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
     let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
     let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
     let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
     let management_revision = required_json_number(invocation_frame, "management_revision")?;
     let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    let stream_method = request_json_string(request_json, "stream_method")
+        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "method"))
+        .unwrap_or_default();
+    let stream_effect = request_json_string(request_json, "stream_effect")
+        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "effect"))
+        .unwrap_or_default();
+    let stream_execution = request_json_string(request_json, "stream_execution")
+        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "execution"))
+        .unwrap_or_default();
     Ok(redevplugin_ipc::NetworkExecuteRequest {
+        plugin_id,
         plugin_instance_id,
         active_fingerprint,
         runtime_instance_id,
@@ -2129,7 +2140,36 @@ fn network_execute_request(
             .unwrap_or(64 * 1024),
         max_response_bytes: request_json_number(request_json, "max_response_bytes")
             .unwrap_or(256 * 1024),
+        max_chunk_bytes: request_json_number(request_json, "max_chunk_bytes").unwrap_or(32 * 1024),
+        max_buffered_bytes: request_json_number(request_json, "max_buffered_bytes")
+            .unwrap_or(1024 * 1024),
         timeout_ms: request_json_number(request_json, "timeout_ms").unwrap_or(5_000),
+        stream_id: request_json_string(request_json, "stream_id").unwrap_or_default(),
+        stream_method,
+        stream_effect,
+        stream_execution,
+        surface_instance_id: request_json_string(request_json, "surface_instance_id")
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "surface_instance_id")
+            })
+            .unwrap_or_default(),
+        owner_session_hash: request_json_string(request_json, "owner_session_hash")
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "owner_session_hash")
+            })
+            .unwrap_or_default(),
+        owner_user_hash: request_json_string(request_json, "owner_user_hash")
+            .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "owner_user_hash"))
+            .unwrap_or_default(),
+        session_channel_id_hash: request_json_string(request_json, "session_channel_id_hash")
+            .or_else(|| {
+                redevplugin_ipc::extract_json_string(invocation_frame, "session_channel_id_hash")
+            })
+            .unwrap_or_default(),
+        bridge_channel_id: request_json_string(request_json, "bridge_channel_id")
+            .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "bridge_channel_id"))
+            .unwrap_or_default(),
+        content_type: request_json_string(request_json, "content_type").unwrap_or_default(),
     })
 }
 
@@ -2137,6 +2177,7 @@ fn network_http_request_demo(
     invocation_frame: &str,
     runtime_generation_id: &str,
 ) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
+    let plugin_id = required_json_string(invocation_frame, "plugin_id")?;
     let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
     let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
     let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
@@ -2146,6 +2187,7 @@ fn network_http_request_demo(
     let body_base64 = redevplugin_ipc::extract_json_string(invocation_frame, "network_body_base64")
         .unwrap_or_default();
     Ok(redevplugin_ipc::NetworkExecuteRequest {
+        plugin_id,
         plugin_instance_id,
         active_fingerprint,
         runtime_instance_id,
@@ -2167,7 +2209,19 @@ fn network_http_request_demo(
         payload_base64: String::new(),
         max_request_bytes: 1024,
         max_response_bytes: 4096,
+        max_chunk_bytes: 0,
+        max_buffered_bytes: 0,
         timeout_ms: 1000,
+        stream_id: String::new(),
+        stream_method: String::new(),
+        stream_effect: String::new(),
+        stream_execution: String::new(),
+        surface_instance_id: String::new(),
+        owner_session_hash: String::new(),
+        owner_user_hash: String::new(),
+        session_channel_id_hash: String::new(),
+        bridge_channel_id: String::new(),
+        content_type: String::new(),
     })
 }
 
@@ -2791,6 +2845,28 @@ mod tests {
                 r#"{"ok":true,"transport":"websocket","message_type":"text"}"#.to_string()
             )]
         );
+    }
+
+    #[test]
+    fn network_execute_request_inherits_stream_audience_from_invocation() {
+        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
+        let got = network_execute_request(invocation, "g1", request)
+            .expect("stream network execute request");
+
+        assert_eq!(got.plugin_id, "com.example.worker");
+        assert_eq!(got.operation, "http_stream");
+        assert_eq!(got.stream_method, "worker.echo");
+        assert_eq!(got.stream_effect, "read");
+        assert_eq!(got.stream_execution, "subscription");
+        assert_eq!(got.surface_instance_id, "surface_1");
+        assert_eq!(got.owner_session_hash, "session_hash");
+        assert_eq!(got.owner_user_hash, "user_hash");
+        assert_eq!(got.session_channel_id_hash, "channel_hash");
+        assert_eq!(got.bridge_channel_id, "bridge_1");
+        assert_eq!(got.max_chunk_bytes, 4);
+        assert_eq!(got.max_buffered_bytes, 65536);
+        assert_eq!(got.content_type, "text/plain");
     }
 
     #[test]

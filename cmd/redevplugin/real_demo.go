@@ -164,6 +164,22 @@ func (realDemoNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRe
 	}, nil
 }
 
+func (e realDemoNetworkExecutor) StreamHTTP(ctx context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
+	response, err := e.DoHTTP(ctx, req)
+	if err != nil {
+		return connectivity.HTTPStreamResponse{}, err
+	}
+	if err := onChunk(connectivity.HTTPResponseChunk{Data: append([]byte(nil), response.Body...)}); err != nil {
+		return connectivity.HTTPStreamResponse{}, err
+	}
+	return connectivity.HTTPStreamResponse{
+		StatusCode: response.StatusCode,
+		Headers:    response.Headers,
+		BytesRead:  int64(len(response.Body)),
+		ChunkCount: 1,
+	}, nil
+}
+
 func (realDemoNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
 	messageType := req.MessageType
 	if messageType == "" {

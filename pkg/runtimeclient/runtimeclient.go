@@ -21,6 +21,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -138,6 +139,7 @@ type ProcessSupervisorOptions struct {
 	StorageSQLite         storage.SQLiteBroker
 	Connectivity          connectivity.Broker
 	NetworkExecutor       connectivity.NetworkExecutor
+	Streams               stream.Store
 	Now                   func() time.Time
 	HandshakeTimeout      time.Duration
 	HeartbeatInterval     time.Duration
@@ -160,6 +162,7 @@ type ProcessSupervisor struct {
 	storageSQLite         storage.SQLiteBroker
 	connectivity          connectivity.Broker
 	networkExecutor       connectivity.NetworkExecutor
+	streams               stream.Store
 	now                   func() time.Time
 	handshakeTimeout      time.Duration
 	heartbeatInterval     time.Duration
@@ -213,6 +216,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		storageSQLite:         options.StorageSQLite,
 		connectivity:          options.Connectivity,
 		networkExecutor:       options.NetworkExecutor,
+		streams:               options.Streams,
 		now:                   now,
 		handshakeTimeout:      handshakeTimeout,
 		heartbeatInterval:     heartbeatInterval,
@@ -918,28 +922,41 @@ type networkGrantResponsePayload struct {
 }
 
 type networkExecuteRequestPayload struct {
-	PluginInstanceID    string                 `json:"plugin_instance_id"`
-	ActiveFingerprint   string                 `json:"active_fingerprint"`
-	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                 `json:"runtime_generation_id"`
-	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
-	PolicyRevision      uint64                 `json:"policy_revision"`
-	ManagementRevision  uint64                 `json:"management_revision"`
-	RevokeEpoch         uint64                 `json:"revoke_epoch"`
-	ConnectorID         string                 `json:"connector_id"`
-	Transport           connectivity.Transport `json:"transport"`
-	Destination         string                 `json:"destination"`
-	TTLMillis           int64                  `json:"ttl_ms,omitempty"`
-	Operation           string                 `json:"operation,omitempty"`
-	Method              string                 `json:"method,omitempty"`
-	Path                string                 `json:"path,omitempty"`
-	Headers             http.Header            `json:"headers,omitempty"`
-	MessageType         string                 `json:"message_type,omitempty"`
-	BodyBase64          string                 `json:"body_base64,omitempty"`
-	PayloadBase64       string                 `json:"payload_base64,omitempty"`
-	MaxRequestBytes     int64                  `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes    int64                  `json:"max_response_bytes,omitempty"`
-	TimeoutMillis       int64                  `json:"timeout_ms,omitempty"`
+	PluginID             string                 `json:"plugin_id,omitempty"`
+	PluginInstanceID     string                 `json:"plugin_instance_id"`
+	ActiveFingerprint    string                 `json:"active_fingerprint"`
+	RuntimeInstanceID    string                 `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID  string                 `json:"runtime_generation_id"`
+	RuntimeShardID       string                 `json:"runtime_shard_id,omitempty"`
+	PolicyRevision       uint64                 `json:"policy_revision"`
+	ManagementRevision   uint64                 `json:"management_revision"`
+	RevokeEpoch          uint64                 `json:"revoke_epoch"`
+	ConnectorID          string                 `json:"connector_id"`
+	Transport            connectivity.Transport `json:"transport"`
+	Destination          string                 `json:"destination"`
+	TTLMillis            int64                  `json:"ttl_ms,omitempty"`
+	Operation            string                 `json:"operation,omitempty"`
+	Method               string                 `json:"method,omitempty"`
+	Path                 string                 `json:"path,omitempty"`
+	Headers              http.Header            `json:"headers,omitempty"`
+	MessageType          string                 `json:"message_type,omitempty"`
+	BodyBase64           string                 `json:"body_base64,omitempty"`
+	PayloadBase64        string                 `json:"payload_base64,omitempty"`
+	MaxRequestBytes      int64                  `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes     int64                  `json:"max_response_bytes,omitempty"`
+	MaxChunkBytes        int64                  `json:"max_chunk_bytes,omitempty"`
+	MaxBufferedBytes     int64                  `json:"max_buffered_bytes,omitempty"`
+	TimeoutMillis        int64                  `json:"timeout_ms,omitempty"`
+	StreamID             string                 `json:"stream_id,omitempty"`
+	StreamMethod         string                 `json:"stream_method,omitempty"`
+	StreamEffect         string                 `json:"stream_effect,omitempty"`
+	StreamExecution      string                 `json:"stream_execution,omitempty"`
+	SurfaceInstanceID    string                 `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string                 `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string                 `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string                 `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string                 `json:"bridge_channel_id,omitempty"`
+	ContentType          string                 `json:"content_type,omitempty"`
 }
 
 type networkExecuteResponsePayload struct {
@@ -951,6 +968,9 @@ type networkExecuteResponsePayload struct {
 	MessageType       string                   `json:"message_type,omitempty"`
 	BodyBase64        string                   `json:"body_base64,omitempty"`
 	PayloadBase64     string                   `json:"payload_base64,omitempty"`
+	StreamID          string                   `json:"stream_id,omitempty"`
+	BytesRead         int64                    `json:"bytes_read,omitempty"`
+	ChunkCount        int                      `json:"chunk_count,omitempty"`
 	GrantID           string                   `json:"grant_id,omitempty"`
 	ConnectorID       string                   `json:"connector_id,omitempty"`
 	RuntimeGeneration string                   `json:"runtime_generation_id,omitempty"`
@@ -1031,6 +1051,14 @@ func randomIPCChannelNonce() (string, error) {
 		return "", fmt.Errorf("generate ipc channel nonce: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(nonce[:]), nil
+}
+
+func randomNetworkStreamID() (string, error) {
+	var raw [18]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate network stream id: %w", err)
+	}
+	return "stream_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedArtifact *ArtifactRequest) (ipcFrame, error) {
@@ -2178,7 +2206,7 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			Message: err.Error(),
 		})
 	}
-	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, grant, req, s.now())
+	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, s.streams, grant, req, s.now())
 	if payload.OK {
 		payload.GrantID = grant.GrantID
 		payload.ConnectorID = grant.ConnectorID
@@ -2289,37 +2317,56 @@ func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGene
 	if req.TimeoutMillis < 0 {
 		return errors.New("timeout_ms must not be negative")
 	}
-	if req.MaxRequestBytes < 0 || req.MaxResponseBytes < 0 {
-		return errors.New("max request and response bytes must not be negative")
+	if req.MaxRequestBytes < 0 || req.MaxResponseBytes < 0 || req.MaxChunkBytes < 0 || req.MaxBufferedBytes < 0 {
+		return errors.New("max request, response, chunk, and buffered bytes must not be negative")
 	}
+	operation := strings.TrimSpace(req.Operation)
 	switch req.Transport {
 	case connectivity.TransportHTTP:
-		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "http" {
-			return errors.New("http network execution operation must be http")
+		if operation != "" && operation != "http" && operation != "http_stream" {
+			return errors.New("http network execution operation must be http or http_stream")
+		}
+		if operation == "http_stream" {
+			if strings.TrimSpace(req.PluginID) == "" ||
+				strings.TrimSpace(req.StreamMethod) == "" ||
+				strings.TrimSpace(req.StreamExecution) == "" ||
+				strings.TrimSpace(req.SurfaceInstanceID) == "" ||
+				strings.TrimSpace(req.OwnerSessionHash) == "" ||
+				strings.TrimSpace(req.OwnerUserHash) == "" ||
+				strings.TrimSpace(req.SessionChannelIDHash) == "" ||
+				strings.TrimSpace(req.BridgeChannelID) == "" {
+				return errors.New("http_stream network execution requires plugin and stream audience fields")
+			}
 		}
 	case connectivity.TransportWebSocket:
-		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "websocket_round_trip" {
+		if operation != "" && operation != "websocket_round_trip" {
 			return errors.New("websocket network execution operation must be websocket_round_trip")
 		}
 	case connectivity.TransportTCP:
-		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "tcp_round_trip" {
+		if operation != "" && operation != "tcp_round_trip" {
 			return errors.New("tcp network execution operation must be tcp_round_trip")
 		}
 	case connectivity.TransportUDP:
-		if strings.TrimSpace(req.Operation) != "" && strings.TrimSpace(req.Operation) != "udp_round_trip" {
+		if operation != "" && operation != "udp_round_trip" {
 			return errors.New("udp network execution operation must be udp_round_trip")
 		}
 	}
 	return nil
 }
 
-func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkExecutor, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, now time.Time) networkExecuteResponsePayload {
+func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkExecutor, streams stream.Store, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, now time.Time) networkExecuteResponsePayload {
 	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
 	switch req.Transport {
 	case connectivity.TransportHTTP:
 		body, err := decodeOptionalBase64(req.BodyBase64)
 		if err != nil {
 			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
+		if strings.TrimSpace(req.Operation) == "http_stream" {
+			if streams == nil {
+				return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_STORE_UNAVAILABLE", Message: "runtime stream store is unavailable"}
+			}
+			return dispatchHTTPStreamExecute(ctx, executor, streams, grant, req, body, timeout, now)
 		}
 		result, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
 			Grant:            grant,
@@ -2394,6 +2441,92 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	}
 }
 
+func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.NetworkExecutor, streams stream.Store, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, body []byte, timeout time.Duration, now time.Time) networkExecuteResponsePayload {
+	streamID := strings.TrimSpace(req.StreamID)
+	if streamID == "" {
+		var err error
+		streamID, err = randomNetworkStreamID()
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_FAILED", Message: err.Error()}
+		}
+	}
+	expected := stream.RegisterRequest{
+		StreamID:             streamID,
+		PluginID:             strings.TrimSpace(req.PluginID),
+		PluginInstanceID:     strings.TrimSpace(req.PluginInstanceID),
+		Method:               strings.TrimSpace(req.StreamMethod),
+		Effect:               strings.TrimSpace(req.StreamEffect),
+		Execution:            strings.TrimSpace(req.StreamExecution),
+		SurfaceInstanceID:    strings.TrimSpace(req.SurfaceInstanceID),
+		OwnerSessionHash:     strings.TrimSpace(req.OwnerSessionHash),
+		OwnerUserHash:        strings.TrimSpace(req.OwnerUserHash),
+		SessionChannelIDHash: strings.TrimSpace(req.SessionChannelIDHash),
+		BridgeChannelID:      strings.TrimSpace(req.BridgeChannelID),
+		Direction:            stream.DirectionRead,
+		ContentType:          strings.TrimSpace(req.ContentType),
+		MaxBufferedBytes:     req.MaxBufferedBytes,
+		Now:                  now,
+	}
+	record, err := streams.Register(ctx, expected)
+	if err != nil {
+		return networkExecuteErrorResponse(fmt.Errorf("%w: %v", stream.ErrInvalidStream, err))
+	}
+	if !streamRecordMatchesRequest(record, expected) {
+		return networkExecuteErrorResponse(fmt.Errorf("%w: stream id already belongs to a different audience", stream.ErrInvalidStream))
+	}
+	result, err := executor.StreamHTTP(ctx, connectivity.HTTPRequest{
+		Grant:            grant,
+		Method:           req.Method,
+		Path:             req.Path,
+		Headers:          req.Headers,
+		Body:             body,
+		MaxRequestBytes:  req.MaxRequestBytes,
+		MaxResponseBytes: req.MaxResponseBytes,
+		MaxChunkBytes:    req.MaxChunkBytes,
+		Timeout:          timeout,
+		Now:              now,
+	}, func(chunk connectivity.HTTPResponseChunk) error {
+		_, appendErr := streams.Append(ctx, stream.AppendRequest{
+			StreamID: streamID,
+			Kind:     "data",
+			Data:     chunk.Data,
+			Now:      now,
+		})
+		return appendErr
+	})
+	if err != nil {
+		_, _ = streams.Append(ctx, stream.AppendRequest{StreamID: streamID, Kind: "error", Error: err.Error(), Now: now})
+		_, _ = streams.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusCanceled, Reason: err.Error(), Now: now})
+		return networkExecuteErrorResponse(err)
+	}
+	if _, err := streams.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusClosed, Now: now}); err != nil {
+		return networkExecuteErrorResponse(fmt.Errorf("%w: %v", stream.ErrInvalidStream, err))
+	}
+	return networkExecuteResponsePayload{
+		OK:         true,
+		StatusCode: result.StatusCode,
+		Headers:    result.Headers,
+		StreamID:   streamID,
+		BytesRead:  result.BytesRead,
+		ChunkCount: result.ChunkCount,
+	}
+}
+
+func streamRecordMatchesRequest(record stream.Record, req stream.RegisterRequest) bool {
+	return strings.TrimSpace(record.StreamID) == strings.TrimSpace(req.StreamID) &&
+		strings.TrimSpace(record.PluginID) == strings.TrimSpace(req.PluginID) &&
+		strings.TrimSpace(record.PluginInstanceID) == strings.TrimSpace(req.PluginInstanceID) &&
+		strings.TrimSpace(record.Method) == strings.TrimSpace(req.Method) &&
+		strings.TrimSpace(record.Effect) == strings.TrimSpace(req.Effect) &&
+		strings.TrimSpace(record.Execution) == strings.TrimSpace(req.Execution) &&
+		strings.TrimSpace(record.SurfaceInstanceID) == strings.TrimSpace(req.SurfaceInstanceID) &&
+		strings.TrimSpace(record.OwnerSessionHash) == strings.TrimSpace(req.OwnerSessionHash) &&
+		strings.TrimSpace(record.OwnerUserHash) == strings.TrimSpace(req.OwnerUserHash) &&
+		strings.TrimSpace(record.SessionChannelIDHash) == strings.TrimSpace(req.SessionChannelIDHash) &&
+		strings.TrimSpace(record.BridgeChannelID) == strings.TrimSpace(req.BridgeChannelID) &&
+		record.Direction == req.Direction
+}
+
 func runtimeHostcallContext(parent context.Context, requested time.Duration) (context.Context, context.CancelFunc) {
 	timeout := requested
 	if timeout <= 0 {
@@ -2449,6 +2582,14 @@ func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_CONNECTION_CLOSED", Message: err.Error()}
 	case errors.Is(err, connectivity.ErrWebSocketFailed):
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_WEBSOCKET_FAILED", Message: err.Error()}
+	case errors.Is(err, stream.ErrBackpressure):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_BACKPRESSURE", Message: err.Error()}
+	case errors.Is(err, stream.ErrInvalidStream):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_INVALID", Message: err.Error()}
+	case errors.Is(err, stream.ErrNotFound):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_NOT_FOUND", Message: err.Error()}
+	case errors.Is(err, stream.ErrStreamClosed):
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_CLOSED", Message: err.Error()}
 	default:
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: err.Error()}
 	}

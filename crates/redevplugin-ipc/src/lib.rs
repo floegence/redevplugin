@@ -21,6 +21,12 @@ pub const ERR_STORAGE_KV_FAILED: &str = "STORAGE_KV_FAILED";
 pub const ERR_STORAGE_SQLITE_FAILED: &str = "STORAGE_SQLITE_FAILED";
 pub const ERR_NETWORK_GRANT_FAILED: &str = "NETWORK_GRANT_FAILED";
 pub const ERR_NETWORK_EXECUTE_FAILED: &str = "NETWORK_EXECUTE_FAILED";
+pub const ERR_NETWORK_STREAM_STORE_UNAVAILABLE: &str = "NETWORK_STREAM_STORE_UNAVAILABLE";
+pub const ERR_NETWORK_STREAM_FAILED: &str = "NETWORK_STREAM_FAILED";
+pub const ERR_NETWORK_STREAM_BACKPRESSURE: &str = "NETWORK_STREAM_BACKPRESSURE";
+pub const ERR_NETWORK_STREAM_INVALID: &str = "NETWORK_STREAM_INVALID";
+pub const ERR_NETWORK_STREAM_NOT_FOUND: &str = "NETWORK_STREAM_NOT_FOUND";
+pub const ERR_NETWORK_STREAM_CLOSED: &str = "NETWORK_STREAM_CLOSED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_RUNTIME_CAPABILITY_REVOKED: &str = "RUNTIME_CAPABILITY_REVOKED";
 pub const ERR_RUNTIME_CONTROL_CHANNEL_STALE: &str = "RUNTIME_CONTROL_CHANNEL_STALE";
@@ -297,9 +303,12 @@ pub fn worker_success_result_json_with_network_results(
     let storage_sqlite = storage_sqlite_result_json
         .map(|result| format!(",\"storage_sqlite\":{result}"))
         .unwrap_or_default();
+    let stream_id = first_network_stream_id(&network_execute_result_jsons)
+        .map(|value| format!(",\"stream_id\":\"{}\"", escape_json_string(&value)))
+        .unwrap_or_default();
     let network_execute = network_success_fields(network_execute_result_jsons);
     format!(
-        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}{}{}{}}}}}",
+        "{{\"data\":{{\"method\":\"{}\",\"worker_id\":\"{}\",\"backend\":\"executed wasm worker scaffold\",\"transport\":\"rust runtime ipc\",\"wasm_abi\":\"{}\",\"wasm_byte_len\":{}{}{}{}{}}}{}}}",
         escape_json_string(&identity.method),
         escape_json_string(&identity.worker_id),
         WASM_ABI_VERSION,
@@ -307,7 +316,8 @@ pub fn worker_success_result_json_with_network_results(
         storage_file,
         storage_kv,
         storage_sqlite,
-        network_execute
+        network_execute,
+        stream_id
     )
 }
 
@@ -344,6 +354,13 @@ fn network_result_transport(result: &str) -> Option<String> {
             .trim_matches('_')
             .to_string()
     })
+}
+
+fn first_network_stream_id(results: &[&str]) -> Option<String> {
+    results
+        .iter()
+        .filter_map(|result| extract_json_string(result, "stream_id"))
+        .find(|stream_id| !stream_id.trim().is_empty())
 }
 
 pub fn extract_json_number_u64(input: &str, key: &str) -> Option<u64> {
@@ -846,6 +863,7 @@ pub fn validate_network_grant_response(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkExecuteRequest {
+    pub plugin_id: String,
     pub plugin_instance_id: String,
     pub active_fingerprint: String,
     pub runtime_instance_id: String,
@@ -867,7 +885,19 @@ pub struct NetworkExecuteRequest {
     pub payload_base64: String,
     pub max_request_bytes: u64,
     pub max_response_bytes: u64,
+    pub max_chunk_bytes: u64,
+    pub max_buffered_bytes: u64,
     pub timeout_ms: u64,
+    pub stream_id: String,
+    pub stream_method: String,
+    pub stream_effect: String,
+    pub stream_execution: String,
+    pub surface_instance_id: String,
+    pub owner_session_hash: String,
+    pub owner_user_hash: String,
+    pub session_channel_id_hash: String,
+    pub bridge_channel_id: String,
+    pub content_type: String,
 }
 
 pub fn network_execute_frame(
@@ -881,11 +911,12 @@ pub fn network_execute_frame(
         req.headers_json.trim()
     };
     format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"timeout_ms\":{}}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_id\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"max_chunk_bytes\":{},\"max_buffered_bytes\":{},\"timeout_ms\":{},\"stream_id\":\"{}\",\"stream_method\":\"{}\",\"stream_effect\":\"{}\",\"stream_execution\":\"{}\",\"surface_instance_id\":\"{}\",\"owner_session_hash\":\"{}\",\"owner_user_hash\":\"{}\",\"session_channel_id_hash\":\"{}\",\"bridge_channel_id\":\"{}\",\"content_type\":\"{}\"}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_NETWORK_EXECUTE,
         escape_json_string(request_id),
         escape_json_string(runtime_generation_id),
+        escape_json_string(&req.plugin_id),
         escape_json_string(&req.plugin_instance_id),
         escape_json_string(&req.active_fingerprint),
         escape_json_string(&req.runtime_instance_id),
@@ -907,7 +938,19 @@ pub fn network_execute_frame(
         escape_json_string(&req.payload_base64),
         req.max_request_bytes,
         req.max_response_bytes,
-        req.timeout_ms
+        req.max_chunk_bytes,
+        req.max_buffered_bytes,
+        req.timeout_ms,
+        escape_json_string(&req.stream_id),
+        escape_json_string(&req.stream_method),
+        escape_json_string(&req.stream_effect),
+        escape_json_string(&req.stream_execution),
+        escape_json_string(&req.surface_instance_id),
+        escape_json_string(&req.owner_session_hash),
+        escape_json_string(&req.owner_user_hash),
+        escape_json_string(&req.session_channel_id_hash),
+        escape_json_string(&req.bridge_channel_id),
+        escape_json_string(&req.content_type)
     )
 }
 
@@ -1474,12 +1517,13 @@ mod tests {
             Some(r#"{"ok":true,"path":"notes/from-wasm.txt","size_bytes":5}"#),
             Some(r#"{"ok":true,"key":"demo/last_broker_run","size_bytes":12}"#),
             Some(r#"{"ok":true,"database":"plugin.sqlite","rows_affected":1}"#),
-            Some(r#"{"ok":true,"transport":"http","status_code":201}"#),
+            Some(r#"{"ok":true,"transport":"http","status_code":201,"stream_id":"stream_http_1"}"#),
         );
         assert!(result.contains(r#""storage_file":{"ok":true"#));
         assert!(result.contains(r#""storage_kv":{"ok":true"#));
         assert!(result.contains(r#""storage_sqlite":{"ok":true"#));
         assert!(result.contains(r#""network_execute":{"ok":true"#));
+        assert!(result.contains(r#""stream_id":"stream_http_1""#));
         assert!(result.contains(r#""wasm_byte_len":42"#));
     }
 
@@ -1575,6 +1619,7 @@ mod tests {
     #[test]
     fn renders_network_execute_frame() {
         let req = NetworkExecuteRequest {
+            plugin_id: "com.example.worker".to_string(),
             plugin_instance_id: "plugini_1".to_string(),
             active_fingerprint: "sha256:active".to_string(),
             runtime_instance_id: "runtime_1".to_string(),
@@ -1596,13 +1641,28 @@ mod tests {
             payload_base64: "".to_string(),
             max_request_bytes: 1024,
             max_response_bytes: 2048,
+            max_chunk_bytes: 256,
+            max_buffered_bytes: 65536,
             timeout_ms: 2000,
+            stream_id: "stream_1".to_string(),
+            stream_method: "worker.echo".to_string(),
+            stream_effect: "read".to_string(),
+            stream_execution: "subscription".to_string(),
+            surface_instance_id: "surface_1".to_string(),
+            owner_session_hash: "session_hash".to_string(),
+            owner_user_hash: "user_hash".to_string(),
+            session_channel_id_hash: "channel_hash".to_string(),
+            bridge_channel_id: "bridge_1".to_string(),
+            content_type: "text/plain".to_string(),
         };
         let frame = network_execute_frame("r1:network_execute", "g1", &req);
         assert!(frame.contains(r#""frame_type":"network_execute""#));
         assert!(frame.contains(r#""operation":"http""#));
         assert!(frame.contains(r#""headers":{"X-Test":["ok"]}"#));
         assert!(frame.contains(r#""body_base64":"e30=""#));
+        assert!(frame.contains(r#""stream_id":"stream_1""#));
+        assert!(frame.contains(r#""owner_session_hash":"session_hash""#));
+        assert!(frame.contains(r#""max_chunk_bytes":256"#));
         assert!(frame.contains(r#""timeout_ms":2000"#));
     }
 

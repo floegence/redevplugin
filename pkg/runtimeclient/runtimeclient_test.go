@@ -18,6 +18,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -879,6 +880,108 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 	}
 	assertBoundedDeadline(t, "network grant mint", broker.lastCalledAt, broker.lastDeadline, broker.lastDeadlineOK, 2*time.Second)
 	assertBoundedDeadline(t, "network http execute", executor.lastHTTPCalledAt, executor.lastHTTPDeadline, executor.lastHTTPDeadlineOK, 2*time.Second)
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	broker := &recordingConnectivityBroker{
+		grant: connectivity.ConnectionGrant{
+			GrantID:                 "netgrant_00112233445566778899aabbccddeeff",
+			PluginInstanceID:        "plugini_1",
+			ActiveFingerprint:       "sha256:active",
+			PolicyRevision:          1,
+			ManagementRevision:      2,
+			RevokeEpoch:             3,
+			ConnectorID:             "api",
+			Transport:               connectivity.TransportHTTP,
+			Destination:             connectivity.Destination{Transport: connectivity.TransportHTTP, Scheme: "https", Host: "api.example.com", Port: 443},
+			RuntimeGenerationID:     "runtime_gen_test",
+			TargetClassifierVersion: version.TargetClassifierVersion,
+			ExpiresAt:               now.Add(30 * time.Second),
+		},
+	}
+	executor := &recordingNetworkExecutor{
+		streamResponse: connectivity.HTTPStreamResponse{
+			StatusCode: http.StatusAccepted,
+			Headers:    http.Header{"Content-Type": []string{"text/plain"}},
+		},
+		streamChunks: [][]byte{[]byte("alpha\n"), []byte("beta\n")},
+	}
+	streams := stream.NewMemoryStore()
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:     os.Args[0],
+		Args:            []string{"-test.run=TestMain"},
+		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http_stream"),
+		Connectivity:    broker,
+		NetworkExecutor: executor,
+		Streams:         streams,
+		Now:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
+	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixture())
+	if err != nil {
+		t.Fatalf("InvokeWorker() error = %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(rawResult, &decoded); err != nil {
+		t.Fatalf("decode worker result: %v", err)
+	}
+	networkExecute, ok := decoded["network_execute"].(map[string]any)
+	if !ok {
+		t.Fatalf("network execute result missing: %#v", decoded)
+	}
+	streamID, _ := networkExecute["stream_id"].(string)
+	if networkExecute["ok"] != true ||
+		networkExecute["status_code"] != float64(http.StatusAccepted) ||
+		streamID == "" ||
+		networkExecute["body_base64"] != nil ||
+		networkExecute["bytes_read"] != float64(len("alpha\nbeta\n")) ||
+		networkExecute["chunk_count"] != float64(2) {
+		t.Fatalf("stream network execute result mismatch: %#v", networkExecute)
+	}
+	record, events, err := streams.Read(context.Background(), stream.ReadRequest{StreamID: streamID})
+	if err != nil {
+		t.Fatalf("Streams.Read(%s) error = %v", streamID, err)
+	}
+	if record.PluginID != "com.example.worker" ||
+		record.PluginInstanceID != "plugini_1" ||
+		record.Method != "worker.echo" ||
+		record.SurfaceInstanceID != "surface_runtime" ||
+		record.OwnerSessionHash != "session_hash" ||
+		record.OwnerUserHash != "user_hash" ||
+		record.SessionChannelIDHash != "channel_hash" ||
+		record.BridgeChannelID != "bridge_runtime" ||
+		record.Status != stream.StatusClosed {
+		t.Fatalf("stream record audience mismatch: %#v", record)
+	}
+	if len(events) != 2 || string(events[0].Data) != "alpha\n" || string(events[1].Data) != "beta\n" {
+		t.Fatalf("stream events mismatch: %#v", events)
+	}
+	if executor.streamCalls != 1 ||
+		executor.lastStreamHTTP.MaxChunkBytes != 4 ||
+		executor.lastStreamHTTP.MaxResponseBytes != 1024 ||
+		executor.lastStreamHTTP.Timeout != 2*time.Second {
+		t.Fatalf("stream executor mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
+	}
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -2090,6 +2193,7 @@ func storageSQLiteRequestFromInvoke(request ipcFrame, operation string) storageS
 func networkExecuteRequestFromInvoke(request ipcFrame, operation string) networkExecuteRequestPayload {
 	grantReq := networkGrantRequestFromInvoke(request)
 	req := networkExecuteRequestPayload{
+		PluginID:            "com.example.worker",
 		PluginInstanceID:    grantReq.PluginInstanceID,
 		ActiveFingerprint:   grantReq.ActiveFingerprint,
 		RuntimeInstanceID:   grantReq.RuntimeInstanceID,
@@ -2111,7 +2215,43 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 		MaxResponseBytes:    1024,
 		TimeoutMillis:       2000,
 	}
+	if request.FrameType == ipcFrameTypeInvokeWorker {
+		var payload invokeWorkerRequestPayload
+		var invocation struct {
+			PluginID             string `json:"plugin_id"`
+			ActiveFingerprint    string `json:"active_fingerprint"`
+			Method               string `json:"method"`
+			Effect               string `json:"effect"`
+			Execution            string `json:"execution"`
+			SurfaceInstanceID    string `json:"surface_instance_id"`
+			OwnerSessionHash     string `json:"owner_session_hash"`
+			OwnerUserHash        string `json:"owner_user_hash"`
+			SessionChannelIDHash string `json:"session_channel_id_hash"`
+			BridgeChannelID      string `json:"bridge_channel_id"`
+		}
+		if err := json.Unmarshal(request.Payload, &payload); err == nil {
+			_ = json.Unmarshal(payload.Invocation, &invocation)
+			if strings.TrimSpace(invocation.PluginID) != "" {
+				req.PluginID = invocation.PluginID
+			}
+			if strings.TrimSpace(invocation.ActiveFingerprint) != "" {
+				req.ActiveFingerprint = invocation.ActiveFingerprint
+			}
+			req.StreamMethod = invocation.Method
+			req.StreamEffect = invocation.Effect
+			req.StreamExecution = invocation.Execution
+			req.SurfaceInstanceID = invocation.SurfaceInstanceID
+			req.OwnerSessionHash = invocation.OwnerSessionHash
+			req.OwnerUserHash = invocation.OwnerUserHash
+			req.SessionChannelIDHash = invocation.SessionChannelIDHash
+			req.BridgeChannelID = invocation.BridgeChannelID
+		}
+	}
 	switch operation {
+	case "http_stream":
+		req.MaxChunkBytes = 4
+		req.MaxBufferedBytes = 64 * 1024
+		req.ContentType = "text/plain"
 	case "websocket_round_trip":
 		req.Transport = connectivity.TransportWebSocket
 		req.Destination = "wss://stream.example.com"
@@ -2294,10 +2434,12 @@ type recordingConnectivityBroker struct {
 
 type recordingNetworkExecutor struct {
 	httpCalls          int
+	streamCalls        int
 	websocketCalls     int
 	tcpCalls           int
 	udpCalls           int
 	lastHTTP           connectivity.HTTPRequest
+	lastStreamHTTP     connectivity.HTTPRequest
 	lastWebSocket      connectivity.WebSocketRoundTripRequest
 	lastTCP            connectivity.TCPRoundTripRequest
 	lastUDP            connectivity.UDPRoundTripRequest
@@ -2305,6 +2447,8 @@ type recordingNetworkExecutor struct {
 	lastHTTPDeadline   time.Time
 	lastHTTPDeadlineOK bool
 	httpResponse       connectivity.HTTPResponse
+	streamResponse     connectivity.HTTPStreamResponse
+	streamChunks       [][]byte
 	wsResponse         connectivity.WebSocketRoundTripResponse
 	tcpResponse        connectivity.TCPRoundTripResponse
 	udpResponse        connectivity.UDPRoundTripResponse
@@ -2341,6 +2485,34 @@ func (e *recordingNetworkExecutor) DoHTTP(ctx context.Context, req connectivity.
 		return connectivity.HTTPResponse{}, e.err
 	}
 	return e.httpResponse, nil
+}
+
+func (e *recordingNetworkExecutor) StreamHTTP(ctx context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
+	e.streamCalls++
+	e.lastStreamHTTP = req
+	e.lastHTTPCalledAt = time.Now()
+	e.lastHTTPDeadline, e.lastHTTPDeadlineOK = ctx.Deadline()
+	if e.err != nil {
+		return connectivity.HTTPStreamResponse{}, e.err
+	}
+	var bytesRead int64
+	for index, chunk := range e.streamChunks {
+		if err := onChunk(connectivity.HTTPResponseChunk{Index: index, Data: append([]byte(nil), chunk...)}); err != nil {
+			return connectivity.HTTPStreamResponse{}, err
+		}
+		bytesRead += int64(len(chunk))
+	}
+	result := e.streamResponse
+	if result.StatusCode == 0 {
+		result.StatusCode = http.StatusOK
+	}
+	if result.BytesRead == 0 {
+		result.BytesRead = bytesRead
+	}
+	if result.ChunkCount == 0 {
+		result.ChunkCount = len(e.streamChunks)
+	}
+	return result, nil
 }
 
 func (e *recordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
@@ -2490,7 +2662,7 @@ func assertBoundedDeadline(t *testing.T, label string, calledAt time.Time, deadl
 }
 
 func workerInvocationFixture() []byte {
-	return []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":%q,"artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redevplugin_worker_invoke","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
+	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v1","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
 }
 
 func stopRuntimeSupervisor(t *testing.T, supervisor *ProcessSupervisor) {

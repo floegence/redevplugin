@@ -83,6 +83,13 @@ The Go supervisor derives a bounded context for runtime-origin hostcalls before
 entering host adapters. Storage SQLite and network execution use request
 `timeout_ms` within the platform cap; artifact reads, handle-grant validation,
 storage file/KV, and network grant minting use the default hostcall cap.
+For `network_execute.operation = "http_stream"`, the supervisor registers a
+Host-owned read stream with the worker invocation's surface/session audience,
+streams bounded HTTP response chunks into `stream.Store`, closes or cancels the
+stream, and returns response metadata plus `stream_id` over IPC. This is a
+Host stream-store bridge for runtime-origin HTTP responses, not the Rust
+hot-path persistent stream transport with credit, resume, or bidirectional flow
+control.
 
 The supervisor maintains the control channel with `heartbeat` IPC frames. The
 default interval is 2 seconds and the default max-staleness window is 5 seconds.

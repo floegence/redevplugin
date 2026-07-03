@@ -16,6 +16,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/stream"
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
@@ -116,6 +117,106 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 		executor.lastHTTP.Path != "/v1/worker" ||
 		string(executor.lastHTTP.Body) != "hello from host" {
 		t.Fatalf("network executor call mismatch: calls=%d req=%#v", executor.httpCalls, executor.lastHTTP)
+	}
+}
+
+func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
+	ctx := context.Background()
+	broker := connectivity.NewMemoryBroker()
+	executor := &recordingHostNetworkExecutor{
+		httpStatus:   http.StatusAccepted,
+		streamChunks: [][]byte{[]byte("line 1\n"), []byte("line 2\n")},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		storageBroker:      storage.NewMemoryBroker(),
+		connectivityBroker: broker,
+		networkExecutor:    executor,
+	})
+	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+		RuntimePath:     os.Args[0],
+		Args:            []string{"-test.run=TestMain"},
+		Env:             append(os.Environ(), hostRuntimeProcessHelperEnv+"=1", "REDEVPLUGIN_HOST_RUNTIME_HTTP_STREAM=1"),
+		Diagnostics:     h.adapters.Diagnostics,
+		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:    storageFilesBroker(h.adapters.Storage),
+		StorageKV:       storageKVBroker(h.adapters.Storage),
+		Connectivity:    broker,
+		NetworkExecutor: executor,
+		Streams:         h.adapters.Streams,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.adapters.RuntimeSupervisor = supervisor
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := supervisor.Stop(stopCtx); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	})
+	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.activity")
+
+	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{"message": "stream from host"},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if result.StreamID == "" || result.StreamTicket == "" || result.StreamTicketID == "" {
+		t.Fatalf("stream result missing ticket/id: %#v", result)
+	}
+	data, ok := result.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("worker result data = %#v, want map", result.Data)
+	}
+	networkExecute, ok := data["network_execute"].(map[string]any)
+	if !ok {
+		t.Fatalf("network_execute result missing: %#v", data)
+	}
+	if networkExecute["ok"] != true ||
+		networkExecute["status_code"] != float64(http.StatusAccepted) ||
+		networkExecute["stream_id"] != result.StreamID ||
+		networkExecute["bytes_read"] != float64(len("line 1\nline 2\n")) ||
+		networkExecute["chunk_count"] != float64(2) {
+		t.Fatalf("stream network_execute result mismatch: %#v", networkExecute)
+	}
+	streamResult, err := h.ReadStream(ctx, ReadStreamRequest{StreamID: result.StreamID, StreamTicket: result.StreamTicket})
+	if err != nil {
+		t.Fatalf("ReadStream() error = %v", err)
+	}
+	if streamResult.Record.Status != stream.StatusClosed ||
+		streamResult.Record.SurfaceInstanceID != "surface_rpc" ||
+		streamResult.Record.OwnerSessionHash != "session_hash" ||
+		streamResult.Record.OwnerUserHash != "user_hash" ||
+		streamResult.Record.SessionChannelIDHash != "channel_hash" ||
+		streamResult.Record.BridgeChannelID != "bridge_rpc" {
+		t.Fatalf("stream record mismatch: %#v", streamResult.Record)
+	}
+	if len(streamResult.Events) != 2 ||
+		string(streamResult.Events[0].Data) != "line 1\n" ||
+		string(streamResult.Events[1].Data) != "line 2\n" {
+		t.Fatalf("stream events mismatch: %#v", streamResult.Events)
+	}
+	if executor.streamCalls != 1 ||
+		executor.lastStreamHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
+		executor.lastStreamHTTP.Path != "/v1/worker" ||
+		executor.lastStreamHTTP.MaxChunkBytes != 4 {
+		t.Fatalf("stream executor call mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
 	}
 }
 
@@ -1047,26 +1148,38 @@ type hostRuntimeInvokePayload struct {
 }
 
 type hostRuntimeNetworkExecuteRequest struct {
-	PluginInstanceID    string                 `json:"plugin_instance_id"`
-	ActiveFingerprint   string                 `json:"active_fingerprint"`
-	RuntimeInstanceID   string                 `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string                 `json:"runtime_generation_id"`
-	RuntimeShardID      string                 `json:"runtime_shard_id,omitempty"`
-	PolicyRevision      uint64                 `json:"policy_revision"`
-	ManagementRevision  uint64                 `json:"management_revision"`
-	RevokeEpoch         uint64                 `json:"revoke_epoch"`
-	ConnectorID         string                 `json:"connector_id"`
-	Transport           connectivity.Transport `json:"transport"`
-	Destination         string                 `json:"destination"`
-	TTLMillis           int64                  `json:"ttl_ms,omitempty"`
-	Operation           string                 `json:"operation,omitempty"`
-	Method              string                 `json:"method,omitempty"`
-	Path                string                 `json:"path,omitempty"`
-	Headers             http.Header            `json:"headers,omitempty"`
-	BodyBase64          string                 `json:"body_base64,omitempty"`
-	MaxRequestBytes     int64                  `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes    int64                  `json:"max_response_bytes,omitempty"`
-	TimeoutMillis       int64                  `json:"timeout_ms,omitempty"`
+	PluginID             string                 `json:"plugin_id,omitempty"`
+	PluginInstanceID     string                 `json:"plugin_instance_id"`
+	ActiveFingerprint    string                 `json:"active_fingerprint"`
+	RuntimeInstanceID    string                 `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID  string                 `json:"runtime_generation_id"`
+	RuntimeShardID       string                 `json:"runtime_shard_id,omitempty"`
+	PolicyRevision       uint64                 `json:"policy_revision"`
+	ManagementRevision   uint64                 `json:"management_revision"`
+	RevokeEpoch          uint64                 `json:"revoke_epoch"`
+	ConnectorID          string                 `json:"connector_id"`
+	Transport            connectivity.Transport `json:"transport"`
+	Destination          string                 `json:"destination"`
+	TTLMillis            int64                  `json:"ttl_ms,omitempty"`
+	Operation            string                 `json:"operation,omitempty"`
+	Method               string                 `json:"method,omitempty"`
+	Path                 string                 `json:"path,omitempty"`
+	Headers              http.Header            `json:"headers,omitempty"`
+	BodyBase64           string                 `json:"body_base64,omitempty"`
+	MaxChunkBytes        int64                  `json:"max_chunk_bytes,omitempty"`
+	MaxBufferedBytes     int64                  `json:"max_buffered_bytes,omitempty"`
+	MaxRequestBytes      int64                  `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes     int64                  `json:"max_response_bytes,omitempty"`
+	TimeoutMillis        int64                  `json:"timeout_ms,omitempty"`
+	StreamMethod         string                 `json:"stream_method,omitempty"`
+	StreamEffect         string                 `json:"stream_effect,omitempty"`
+	StreamExecution      string                 `json:"stream_execution,omitempty"`
+	SurfaceInstanceID    string                 `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string                 `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string                 `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string                 `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string                 `json:"bridge_channel_id,omitempty"`
+	ContentType          string                 `json:"content_type,omitempty"`
 }
 
 type hostRuntimeNetworkExecuteResponse struct {
@@ -1074,6 +1187,7 @@ type hostRuntimeNetworkExecuteResponse struct {
 	Code       string `json:"code,omitempty"`
 	Message    string `json:"message,omitempty"`
 	StatusCode int    `json:"status_code,omitempty"`
+	StreamID   string `json:"stream_id,omitempty"`
 }
 
 func runHostRuntimeProcessHelper() {
@@ -1158,7 +1272,12 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 	}
 	message, _ := invoke.Invocation.Params["message"].(string)
 	body := base64.StdEncoding.EncodeToString([]byte(message))
-	rawRequest, _ := json.Marshal(hostRuntimeNetworkExecuteRequest{
+	operation := "http"
+	if os.Getenv("REDEVPLUGIN_HOST_RUNTIME_HTTP_STREAM") == "1" {
+		operation = "http_stream"
+	}
+	request := hostRuntimeNetworkExecuteRequest{
+		PluginID:            invoke.Invocation.PluginID,
 		PluginInstanceID:    invoke.Lease.PluginInstanceID,
 		ActiveFingerprint:   invoke.Invocation.ActiveFingerprint,
 		RuntimeGenerationID: invoke.Lease.RuntimeGenerationID,
@@ -1169,7 +1288,7 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		Transport:           connectivity.TransportHTTP,
 		Destination:         "https://api.example.com",
 		TTLMillis:           int64(time.Minute / time.Millisecond),
-		Operation:           "http",
+		Operation:           operation,
 		Method:              http.MethodPost,
 		Path:                "/v1/worker",
 		Headers:             http.Header{"Content-Type": []string{"text/plain"}},
@@ -1177,7 +1296,21 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		MaxRequestBytes:     1024,
 		MaxResponseBytes:    4096,
 		TimeoutMillis:       1000,
-	})
+	}
+	if operation == "http_stream" {
+		request.MaxChunkBytes = 4
+		request.MaxBufferedBytes = 64 * 1024
+		request.StreamMethod = invoke.Invocation.Method
+		request.StreamEffect = invoke.Invocation.Effect
+		request.StreamExecution = invoke.Invocation.Execution
+		request.SurfaceInstanceID = invoke.Invocation.SurfaceInstanceID
+		request.OwnerSessionHash = invoke.Invocation.OwnerSessionHash
+		request.OwnerUserHash = invoke.Invocation.OwnerUserHash
+		request.SessionChannelIDHash = invoke.Invocation.SessionChannelIDHash
+		request.BridgeChannelID = invoke.Invocation.BridgeChannelID
+		request.ContentType = "text/plain"
+	}
+	rawRequest, _ := json.Marshal(request)
 	networkRequestID := frame.RequestID + ":network_execute"
 	_ = encoder.Encode(hostRuntimeIPCFrame{
 		IPCVersion:          version.RustIPCVersion,
@@ -1212,13 +1345,17 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		})
 		return
 	}
+	result := map[string]any{
+		"data": map[string]any{
+			"network_execute": mustHostRuntimeMap(networkResponseFrame.Payload),
+		},
+	}
+	if networkResponse.StreamID != "" {
+		result["stream_id"] = networkResponse.StreamID
+	}
 	raw, _ := json.Marshal(hostRuntimeResponsePayload{
-		OK: true,
-		Result: mustHostRuntimeRaw(map[string]any{
-			"data": map[string]any{
-				"network_execute": mustHostRuntimeMap(networkResponseFrame.Payload),
-			},
-		}),
+		OK:     true,
+		Result: mustHostRuntimeRaw(result),
 	})
 	_ = encoder.Encode(hostRuntimeIPCFrame{
 		IPCVersion:          version.RustIPCVersion,

@@ -1356,6 +1356,25 @@ func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity
 	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
 }
 
+func (e *cliRecordingNetworkExecutor) StreamHTTP(_ context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
+	e.httpCalls++
+	e.lastHTTP = req
+	status := e.httpStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if len(e.httpBody) > 0 {
+		if err := onChunk(connectivity.HTTPResponseChunk{Data: append([]byte(nil), e.httpBody...)}); err != nil {
+			return connectivity.HTTPStreamResponse{}, err
+		}
+	}
+	chunkCount := 0
+	if len(e.httpBody) > 0 {
+		chunkCount = 1
+	}
+	return connectivity.HTTPStreamResponse{StatusCode: status, BytesRead: int64(len(e.httpBody)), ChunkCount: chunkCount}, nil
+}
+
 func (e *cliRecordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
 	e.wsCalls++
 	e.lastWS = req
