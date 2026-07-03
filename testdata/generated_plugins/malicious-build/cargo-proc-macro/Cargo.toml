@@ -1,0 +1,2 @@
+[lib]
+proc-macro = true

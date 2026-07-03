@@ -77,8 +77,10 @@ capabilities.
   assets before Host install can persist them. Surface icons must be packaged
   raster image assets, not SVG or external URLs, so product shells do not need
   to inline or sanitize plugin-provided SVG markup. The same validation path rejects
-  shell/shebang scripts, native executable or dynamic-library artifacts, and
-  package-manager install lifecycle scripts so third-party packages cannot smuggle
+  shell/shebang scripts, native executable or dynamic-library artifacts,
+  package-manager install lifecycle scripts, package-manager dependency fields,
+  Cargo `build.rs` / build scripts, proc-macro crates, native linker
+  configuration, and Cargo dependency sections so third-party packages cannot smuggle
   a native backend beside the sandbox UI and WASM workers. Package IO also
   rejects file counts, entry sizes, package-local path lengths, compression
   ratios, and total uncompressed sizes beyond configured limits. Validation failures

@@ -1,0 +1,23 @@
+{
+  "schema_version": "redevplugin.manifest.v1",
+  "publisher": {
+    "publisher_id": "example",
+    "display_name": "Example"
+  },
+  "plugin": {
+    "plugin_id": "com.example.malicious.postinstall",
+    "display_name": "Malicious Postinstall",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.1.0",
+    "ui_protocol_version": "plugin-ui-v1"
+  },
+  "surfaces": [
+    {
+      "surface_id": "malicious.postinstall.activity",
+      "kind": "activity",
+      "label": "Malicious Postinstall",
+      "entry": "ui/index.html"
+    }
+  ]
+}

@@ -644,6 +644,48 @@ func TestBuildRejectsForbiddenExecutablePackageArtifacts(t *testing.T) {
 			content:   []byte(`{"scripts":{"prepare":"node build.js"}}`),
 			wantErr:   `package manager lifecycle script "prepare" is not allowed`,
 		},
+		{
+			name:      "package json dependencies",
+			entryPath: "package.json",
+			content:   []byte(`{"dependencies":{"left-pad":"latest"}}`),
+			wantErr:   `package manager dependency field "dependencies" is not allowed`,
+		},
+		{
+			name:      "Cargo build rs",
+			entryPath: "build.rs",
+			content:   []byte(`fn main() { println!("cargo:rerun-if-changed=build.rs"); }`),
+			wantErr:   `Cargo build.rs scripts are not allowed`,
+		},
+		{
+			name:      "Cargo build script",
+			entryPath: "Cargo.toml",
+			content:   []byte("[package]\nname = \"malicious\"\nversion = \"0.1.0\"\nbuild = \"build.rs\"\n"),
+			wantErr:   `Cargo build scripts are not allowed`,
+		},
+		{
+			name:      "Cargo proc macro",
+			entryPath: "Cargo.toml",
+			content:   []byte("[lib]\nproc-macro = true\n"),
+			wantErr:   `Cargo proc macro crates are not allowed`,
+		},
+		{
+			name:      "Cargo native links",
+			entryPath: "Cargo.toml",
+			content:   []byte("[package]\nname = \"malicious\"\nversion = \"0.1.0\"\nlinks = \"ssl\"\n"),
+			wantErr:   `Cargo native linker configuration is not allowed`,
+		},
+		{
+			name:      "Cargo rustflags link arg",
+			entryPath: "Cargo.toml",
+			content:   []byte("[build]\nrustflags = [\"-C\", \"link-arg=-Wl,-rpath,/tmp/malicious\"]\n"),
+			wantErr:   `Cargo native linker configuration is not allowed`,
+		},
+		{
+			name:      "Cargo dependencies",
+			entryPath: "Cargo.toml",
+			content:   []byte("[dependencies]\nanyhow = \"1\"\n"),
+			wantErr:   `Cargo dependency section "dependencies" is not allowed`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,0 +1,23 @@
+{
+  "schema_version": "redevplugin.manifest.v1",
+  "publisher": {
+    "publisher_id": "example",
+    "display_name": "Example"
+  },
+  "plugin": {
+    "plugin_id": "com.example.malicious.cargo_build_script",
+    "display_name": "Malicious Cargo Build Script",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.1.0",
+    "ui_protocol_version": "plugin-ui-v1"
+  },
+  "surfaces": [
+    {
+      "surface_id": "malicious.cargo_build_script.activity",
+      "kind": "activity",
+      "label": "Malicious Cargo Build Script",
+      "entry": "ui/index.html"
+    }
+  ]
+}

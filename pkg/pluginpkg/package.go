@@ -598,8 +598,16 @@ func validatePackageArtifactBoundary(files map[string][]byte) error {
 		if err := validateNoForbiddenExecutableArtifact(entryPath, content); err != nil {
 			return err
 		}
+		if strings.EqualFold(path.Base(entryPath), "build.rs") {
+			return fmt.Errorf("%s: Cargo build.rs scripts are not allowed in plugin packages", entryPath)
+		}
 		if path.Base(entryPath) == "package.json" {
 			if err := validatePackageJSONLifecycleScripts(entryPath, content); err != nil {
+				return err
+			}
+		}
+		if strings.EqualFold(path.Base(entryPath), "Cargo.toml") {
+			if err := validateCargoBuildBoundary(entryPath, content); err != nil {
 				return err
 			}
 		}
@@ -627,7 +635,11 @@ func validateNoForbiddenExecutableArtifact(entryPath string, content []byte) err
 
 func validatePackageJSONLifecycleScripts(entryPath string, content []byte) error {
 	var doc struct {
-		Scripts map[string]any `json:"scripts"`
+		Scripts              map[string]any `json:"scripts"`
+		Dependencies         map[string]any `json:"dependencies"`
+		DevDependencies      map[string]any `json:"devDependencies"`
+		PeerDependencies     map[string]any `json:"peerDependencies"`
+		OptionalDependencies map[string]any `json:"optionalDependencies"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	if err := decoder.Decode(&doc); err != nil {
@@ -642,7 +654,83 @@ func validatePackageJSONLifecycleScripts(entryPath string, content []byte) error
 			return fmt.Errorf("%s: package manager lifecycle script %q is not allowed in plugin packages", entryPath, name)
 		}
 	}
+	for name, dependencies := range map[string]map[string]any{
+		"dependencies":         doc.Dependencies,
+		"devDependencies":      doc.DevDependencies,
+		"peerDependencies":     doc.PeerDependencies,
+		"optionalDependencies": doc.OptionalDependencies,
+	} {
+		if len(dependencies) > 0 {
+			return fmt.Errorf("%s: package manager dependency field %q is not allowed in plugin packages", entryPath, name)
+		}
+	}
 	return nil
+}
+
+func validateCargoBuildBoundary(entryPath string, content []byte) error {
+	section := ""
+	for _, rawLine := range strings.Split(string(content), "\n") {
+		line := strings.TrimSpace(stripTOMLComment(rawLine))
+		if line == "" {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		if strings.HasPrefix(lowerLine, "[") && strings.Contains(lowerLine, "]") {
+			section = strings.TrimSpace(strings.Trim(lowerLine, "[]"))
+			continue
+		}
+		key, value, ok := strings.Cut(lowerLine, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if cargoDependencySection(section) {
+			return fmt.Errorf("%s: Cargo dependency section %q is not allowed in plugin packages", entryPath, section)
+		}
+		switch key {
+		case "build":
+			return fmt.Errorf("%s: Cargo build scripts are not allowed in plugin packages", entryPath)
+		case "proc-macro":
+			if value == "true" {
+				return fmt.Errorf("%s: Cargo proc macro crates are not allowed in plugin packages", entryPath)
+			}
+		case "links", "linker", "rustflags":
+			return fmt.Errorf("%s: Cargo native linker configuration is not allowed in plugin packages", entryPath)
+		}
+		if strings.Contains(value, "link-arg") || strings.Contains(value, "linker") {
+			return fmt.Errorf("%s: Cargo native linker configuration is not allowed in plugin packages", entryPath)
+		}
+	}
+	return nil
+}
+
+func cargoDependencySection(section string) bool {
+	return section == "dependencies" ||
+		section == "dev-dependencies" ||
+		section == "build-dependencies" ||
+		section == "workspace.dependencies" ||
+		strings.HasSuffix(section, ".dependencies") ||
+		strings.HasSuffix(section, ".dev-dependencies") ||
+		strings.HasSuffix(section, ".build-dependencies")
+}
+
+func stripTOMLComment(line string) string {
+	inString := false
+	escaped := false
+	for i, r := range line {
+		if r == '"' && !escaped {
+			inString = !inString
+		}
+		if r == '#' && !inString {
+			return line[:i]
+		}
+		escaped = r == '\\' && !escaped
+		if r != '\\' {
+			escaped = false
+		}
+	}
+	return line
 }
 
 func hasShebang(content []byte) bool {

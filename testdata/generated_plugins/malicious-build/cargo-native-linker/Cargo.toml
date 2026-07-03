@@ -1,0 +1,4 @@
+[package]
+name = "malicious-cargo-native-linker"
+version = "0.1.0"
+links = "ssl"

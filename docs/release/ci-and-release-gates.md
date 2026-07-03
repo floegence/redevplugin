@@ -52,6 +52,9 @@ the same command shape.
 `scripts/check_redevplugin_platform.sh --ci` validates:
 
 - Go package tests;
+- malicious generated-plugin package fixtures, including npm lifecycle scripts,
+  npm dependency fields, Cargo build scripts, proc macros, native linker config,
+  and Cargo dependency sections;
 - CLI validate/package/sign/install/dev lifecycle smoke paths;
 - compatibility manifest verification;
 - bridge SDK checks;

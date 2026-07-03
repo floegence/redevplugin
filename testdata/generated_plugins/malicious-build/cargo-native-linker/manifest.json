@@ -1,0 +1,23 @@
+{
+  "schema_version": "redevplugin.manifest.v1",
+  "publisher": {
+    "publisher_id": "example",
+    "display_name": "Example"
+  },
+  "plugin": {
+    "plugin_id": "com.example.malicious.cargo_native_linker",
+    "display_name": "Malicious Cargo Native Linker",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.1.0",
+    "ui_protocol_version": "plugin-ui-v1"
+  },
+  "surfaces": [
+    {
+      "surface_id": "malicious.cargo_native_linker.activity",
+      "kind": "activity",
+      "label": "Malicious Cargo Native Linker",
+      "entry": "ui/index.html"
+    }
+  ]
+}

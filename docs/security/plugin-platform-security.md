@@ -37,8 +37,10 @@ ReDevPlugin rejects:
   `srcdoc`, `base`, `meta refresh`, or Service Worker dependencies in sandbox UI
   HTML/assets;
 - SVG or external surface icons; icons must be package-local raster assets;
-- shell/shebang scripts, native executable or dynamic-library artifacts, and
-  package-manager install lifecycle scripts;
+- shell/shebang scripts, native executable or dynamic-library artifacts,
+  package-manager install lifecycle scripts, package-manager dependency fields,
+  Cargo `build.rs` / build scripts, proc-macro crates, native linker
+  configuration, and Cargo dependency sections;
 - package sizes and paths that exceed configured limits.
 
 Validation errors expose stable platform error codes and structured

@@ -43,13 +43,30 @@ export GOWORK=off
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redevplugin")
   tmp_signed_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal-signed.XXXXXX.redevplugin")
+  tmp_malicious_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.redevplugin")
+  tmp_malicious_log=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.log")
   tmp_private_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-private.XXXXXX.json")
   tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
   tmp_storage_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-storage.XXXXXX")
   tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-state.XXXXXX")
-  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_private_key" "$tmp_public_key"' EXIT
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
   go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
   go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
+  malicious_fixture_count=0
+  for malicious_fixture in testdata/generated_plugins/malicious-build/*; do
+    [[ -d "$malicious_fixture" ]] || continue
+    malicious_fixture_count=$((malicious_fixture_count + 1))
+    rm -f "$tmp_malicious_package" "$tmp_malicious_log"
+    if go run ./cmd/redevplugin package "$malicious_fixture" "$tmp_malicious_package" >"$tmp_malicious_log" 2>&1; then
+      echo "malicious generated plugin fixture unexpectedly packaged: $malicious_fixture" >&2
+      exit 1
+    fi
+    grep -Eq 'package manager lifecycle script|package manager dependency field|Cargo build|Cargo proc macro|Cargo native linker|Cargo dependency section' "$tmp_malicious_log"
+  done
+  if [[ "$malicious_fixture_count" -eq 0 ]]; then
+    echo "missing malicious generated plugin fixtures" >&2
+    exit 1
+  fi
   go run ./cmd/redevplugin scaffold com.example.smoke "Smoke Plugin" "$tmp_scaffold_dir" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_scaffold_dir/manifest.json" >/dev/null
   go run ./cmd/redevplugin package "$tmp_scaffold_dir" "$tmp_package" >/dev/null
