@@ -52,7 +52,7 @@ export GOWORK=off
   trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
   go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
   go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
-  for generated_fixture in testdata/generated_plugins/minimal testdata/generated_plugins/networked testdata/generated_plugins/storage; do
+  for generated_fixture in testdata/generated_plugins/minimal testdata/generated_plugins/networked testdata/generated_plugins/storage testdata/generated_plugins/method-contract; do
     go run ./cmd/redevplugin validate "$generated_fixture/manifest.json" >/dev/null
     rm -f "$tmp_fixture_package"
     go run ./cmd/redevplugin package "$generated_fixture" "$tmp_fixture_package" >/dev/null

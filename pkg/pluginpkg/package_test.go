@@ -33,7 +33,7 @@ func TestBuildAndReadPackage(t *testing.T) {
 }
 
 func TestBuildGeneratedPluginFixtures(t *testing.T) {
-	for _, name := range []string{"minimal", "networked", "storage"} {
+	for _, name := range []string{"minimal", "networked", "storage", "method-contract"} {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join("..", "..", "testdata", "generated_plugins", name)
 			var buf bytes.Buffer
