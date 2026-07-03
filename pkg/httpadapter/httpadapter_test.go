@@ -969,6 +969,69 @@ func TestHandlerRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerRPCFlowRedactsCapabilityResponseData(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{
+		"containers": []any{
+			map[string]any{
+				"id":    "container_http_1",
+				"image": "redis:7",
+				"env": []any{
+					"PATH=/usr/bin",
+					"REDIS_PASSWORD=plaintext-password",
+				},
+				"labels": map[string]any{
+					"com.example.owner": "platform",
+					"secret_token":      "label-secret",
+				},
+				"mounts": []any{
+					map[string]any{"source": "/srv/cache", "target": "/cache"},
+					map[string]any{"source": "/run/secrets/redis_password", "target": "/run/secrets/redis_password"},
+				},
+			},
+		},
+	}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.activity", "surface_http_redaction", "bridge_http_redaction")
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_redaction",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_redaction",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "echo.ping",
+	})
+	raw, err := json.Marshal(result.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, leaked := range []string{"plaintext-password", "label-secret", "/run/secrets/redis_password"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("http rpc response leaked %q: %s", leaked, body)
+		}
+	}
+	for _, kept := range []string{"PATH=/usr/bin", "platform", "/srv/cache"} {
+		if !strings.Contains(body, kept) {
+			t.Fatalf("http rpc response dropped safe value %q: %s", kept, body)
+		}
+	}
+}
+
 func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{

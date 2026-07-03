@@ -3031,7 +3031,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
 			return CallMethodResult{}, err
 		}
-		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
+		return callMethodResultFromCapabilityResult(result), nil
 	case manifest.MethodRouteWorker:
 		result, err := h.invokeWorker(ctx, record, method, req)
 		if err != nil {
@@ -3046,7 +3046,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
 			return CallMethodResult{}, err
 		}
-		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
+		return callMethodResultFromCapabilityResult(result), nil
 	case manifest.MethodRouteCoreAction:
 		result, err := h.invokeCoreAction(ctx, record, method, req)
 		if err != nil {
@@ -3061,9 +3061,17 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
 			return CallMethodResult{}, err
 		}
-		return CallMethodResult{Data: result.Data, OperationID: result.OperationID, StreamID: result.StreamID}, nil
+		return callMethodResultFromCapabilityResult(result), nil
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
+	}
+}
+
+func callMethodResultFromCapabilityResult(result capability.Result) CallMethodResult {
+	return CallMethodResult{
+		Data:        capability.RedactResponseData(result.Data),
+		OperationID: result.OperationID,
+		StreamID:    result.StreamID,
 	}
 }
 

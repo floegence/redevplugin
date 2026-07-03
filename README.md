@@ -177,6 +177,12 @@ capabilities.
   `OperationCanceler` adapter with plugin, method, surface, bridge-channel, and
   reason context. If that dispatch fails, the cancel request remains recorded
   while HTTP callers receive `PLUGIN_RUNTIME_UNAVAILABLE`.
+- Capability, worker, and core-action method results pass through the Host-owned
+  `capability.DefaultResponseRedactionPolicy` before they are returned to the
+  plugin surface or HTTP adapter. The default policy clones structured
+  `data` payloads and redacts sensitive keys plus container-shaped env, label,
+  and mount secret values while preserving safe identifiers such as token IDs
+  and secret refs, hashes, and fingerprints.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, compatibility, release-manifest,

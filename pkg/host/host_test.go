@@ -757,6 +757,67 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodRedactsCapabilityResponseData(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{
+		"containers": []any{
+			map[string]any{
+				"id":    "container_1",
+				"image": "redis:7",
+				"env": []any{
+					"PATH=/usr/bin",
+					"REDIS_PASSWORD=plaintext-password",
+				},
+				"labels": map[string]any{
+					"com.example.owner":  "platform",
+					"com.example.secret": "label-secret",
+				},
+				"mounts": []any{
+					map[string]any{"source": "/srv/cache", "target": "/cache"},
+					map[string]any{"source": "/run/secrets/redis_password", "target": "/run/secrets/redis_password"},
+				},
+			},
+		},
+		"token_id":   "display_token_id",
+		"secret_ref": "redis_password",
+	}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	raw, err := json.Marshal(result.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, leaked := range []string{"plaintext-password", "label-secret", "/run/secrets/redis_password"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("capability response leaked %q: %s", leaked, body)
+		}
+	}
+	for _, kept := range []string{"PATH=/usr/bin", "platform", "/srv/cache", "display_token_id", "redis_password"} {
+		if !strings.Contains(body, kept) {
+			t.Fatalf("capability response dropped safe value %q: %s", kept, body)
+		}
+	}
+}
+
 func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{

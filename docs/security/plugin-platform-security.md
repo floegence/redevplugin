@@ -151,6 +151,21 @@ bound/test/delete metadata, and timestamps. They never store secret plaintext,
 tokens, passwords, or vault payloads. The concrete vault remains a host-owned
 adapter.
 
+## Capability Response Redaction
+
+Business capability adapters are host-owned, but their method result data leaves
+through ReDevPlugin. The Host applies `capability.DefaultResponseRedactionPolicy`
+to capability, worker, and core-action `data` before returning it to a sandbox
+surface or HTTP caller. The policy clones supported structured values and
+redacts sensitive keys, environment assignments, label values, and mount paths
+that look like secrets while preserving safe display identifiers such as
+`*_id`, `*_ref`, `*_name`, `*_hash`, and fingerprints.
+
+This redaction is a platform safety net. Capability adapters should still avoid
+returning raw vault payloads, Docker/Podman environment secrets, private mount
+paths, or credentials unless the response contract explicitly requires a
+redacted representation.
+
 ## Network Access
 
 Network access uses manifest-declared connector policies, target classification,

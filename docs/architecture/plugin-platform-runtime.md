@@ -201,6 +201,12 @@ Host has recorded the request but has no runtime/capability-specific cancel
 hook. A failing adapter returns a dispatch error to the caller while preserving
 the durable `cancel_requested` state for later retry or reconciliation.
 
+Method result `data` is also normalized at the Host boundary. Capability,
+worker, and core-action routes share the same `capability.DefaultResponseRedactionPolicy`
+before data is returned through `CallPluginMethod` or the mountable HTTP adapter,
+so product-owned adapters can rely on one platform response-safety pass for
+common env, label, mount, token, password, credential, and secret fields.
+
 The platform does not claim cross-store database transactions. When a workflow
 touches multiple stores, it must record durable stage, cleanup, audit, or
 diagnostic evidence so repair and retry behavior remains explicit.
