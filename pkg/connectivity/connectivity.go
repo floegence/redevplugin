@@ -869,6 +869,8 @@ func (e *Executor) WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTri
 		return WebSocketRoundTripResponse{}, err
 	}
 	defer conn.Close()
+	stopCancelWatch := closeConnectionOnContextDone(ctx, conn)
+	defer stopCancelWatch()
 	deadline, _ := ctx.Deadline()
 	if !deadline.IsZero() {
 		_ = conn.SetDeadline(deadline)
@@ -879,17 +881,17 @@ func (e *Executor) WebSocketRoundTrip(ctx context.Context, req WebSocketRoundTri
 		return WebSocketRoundTripResponse{}, err
 	}
 	if err := writeWebSocketHandshake(conn, req.Grant, path, key, req.Headers); err != nil {
-		return WebSocketRoundTripResponse{}, err
+		return WebSocketRoundTripResponse{}, contextOrNetworkError(ctx, err)
 	}
 	if err := readWebSocketHandshake(reader, key); err != nil {
-		return WebSocketRoundTripResponse{}, err
+		return WebSocketRoundTripResponse{}, contextOrNetworkError(ctx, err)
 	}
 	if err := writeWebSocketFrame(conn, opcode, req.Payload); err != nil {
-		return WebSocketRoundTripResponse{}, err
+		return WebSocketRoundTripResponse{}, contextOrNetworkError(ctx, err)
 	}
 	responseOpcode, payload, err := readWebSocketDataFrame(reader, responseLimit(req.MaxResponseBytes, e.maxResponseBytes))
 	if err != nil {
-		return WebSocketRoundTripResponse{}, err
+		return WebSocketRoundTripResponse{}, contextOrNetworkError(ctx, err)
 	}
 	responseType, err := websocketMessageTypeForOpcode(responseOpcode)
 	if err != nil {
@@ -1063,6 +1065,27 @@ func timeoutOrDefault(timeout time.Duration, fallback time.Duration) time.Durati
 
 func grantEndpoint(grant ConnectionGrant) string {
 	return net.JoinHostPort(grant.Destination.Host, strconv.Itoa(grant.Destination.Port))
+}
+
+func closeConnectionOnContextDone(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
+	}
+}
+
+func contextOrNetworkError(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, string) ([]net.IPAddr, error)) func(context.Context, string, string) (net.Conn, error) {

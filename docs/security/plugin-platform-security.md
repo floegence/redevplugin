@@ -145,7 +145,8 @@ adapter.
 Network access uses manifest-declared connector policies, target classification,
 short-lived grants, and bounded Host executors. HTTP, WebSocket, TCP, and UDP
 request paths revalidate transport, destination, grant expiry, target
-classifier, request size, response size, and timeouts at execution time.
+classifier, request size, response size, cancellation, and timeouts at execution
+time.
 
 Long-lived subscriptions belong to the stream envelope contract, not to
 unbounded one-shot network execution.

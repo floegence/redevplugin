@@ -568,6 +568,102 @@ func TestExecutorWebSocketRoundTripRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestExecutorWebSocketRoundTripRejectsOversizedRequestBeforeDial(t *testing.T) {
+	var dialed bool
+	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
+	_, err := NewExecutor(ExecutorOptions{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, errors.New("dial should not be called")
+		},
+	}).WebSocketRoundTrip(context.Background(), WebSocketRoundTripRequest{
+		Grant:           grant,
+		Payload:         []byte("too-large"),
+		MaxRequestBytes: 4,
+		Timeout:         time.Second,
+	})
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("WebSocketRoundTrip(large request) error = %v, want ErrRequestTooLarge", err)
+	}
+	if dialed {
+		t.Fatal("WebSocketRoundTrip dialed before rejecting oversized request")
+	}
+}
+
+func TestExecutorWebSocketRoundTripStopsWhenContextIsCanceled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestRead := make(chan struct{})
+	releaseServer := make(chan struct{})
+	serverReleased := false
+	release := func() {
+		if !serverReleased {
+			close(releaseServer)
+			serverReleased = true
+		}
+	}
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("ReadRequest() error = %v", err)
+			return
+		}
+		if err := writeTestWebSocketHandshake(conn, req.Header.Get("Sec-WebSocket-Key")); err != nil {
+			t.Errorf("write handshake error = %v", err)
+			return
+		}
+		if _, _, err := readWebSocketFrame(reader, 64); err != nil {
+			t.Errorf("read frame error = %v", err)
+			return
+		}
+		close(requestRead)
+		<-releaseServer
+	}()
+
+	grant := testGrant(t, TransportWebSocket, "ws://stream.example.com", time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).WebSocketRoundTrip(ctx, WebSocketRoundTripRequest{
+			Grant:            grant,
+			Payload:          []byte("hello"),
+			MaxResponseBytes: 32,
+			Timeout:          5 * time.Second,
+		})
+		errCh <- err
+	}()
+
+	select {
+	case <-requestRead:
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive websocket request frame")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WebSocketRoundTrip(canceled) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("WebSocketRoundTrip did not stop promptly after context cancellation")
+	}
+	release()
+	<-done
+}
+
 func TestExecutorTCPRoundTripUsesGrantEndpoint(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

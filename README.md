@@ -201,15 +201,15 @@ capabilities.
   connectors into grantable policies. The host-neutral network executor now
   consumes short-lived connection grants and performs bounded HTTP
   request/response calls plus WebSocket, TCP, and UDP round trips with explicit
-  timeout, request-size, and response-size limits. It revalidates grant expiry,
-  transport, destination, and the target classifier at execution time so UI
-  bridge calls and backend worker hostcalls can share the same fail-closed
-  network boundary. Grants whose `target_classifier_version` does not match the
-  current compatibility matrix are rejected before any dial or broker dispatch.
-  IPv4-mapped IPv6 literals and resolved addresses are unmapped before
-  blocked-range checks so mapped loopback/private/link-local targets cannot
-  bypass IPv4 CIDR policy. Long-lived WebSocket subscriptions remain tied to
-  the streaming envelope contract instead of the one-shot round trip API.
+  timeout, cancellation, request-size, and response-size limits. It revalidates
+  grant expiry, transport, destination, and the target classifier at execution
+  time so UI bridge calls and backend worker hostcalls can share the same
+  fail-closed network boundary. Grants whose `target_classifier_version` does
+  not match the current compatibility matrix are rejected before any dial or
+  broker dispatch. IPv4-mapped IPv6 literals and resolved addresses are unmapped
+  before blocked-range checks so mapped loopback/private/link-local targets
+  cannot bypass IPv4 CIDR policy. Long-lived WebSocket subscriptions remain tied
+  to the streaming envelope contract instead of the one-shot round trip API.
 - Host tests include a black-box runtime subprocess path that invokes a worker
   method, has the helper runtime request `network_execute` over IPC, mints the
   grant through the Host connectivity broker, and records HTTP, WebSocket, TCP,
@@ -406,8 +406,9 @@ Go classifier, Rust crate, and JSON contract cannot drift.
 field records structured counters from `pkg/stress`, including stream
 backpressure denials, connectivity grant/classifier denials, runtime revoke ACK
 p95 latency, redirect/DNS rebinding denials, HTTP proxy/CONNECT/header
-hardening, UDP source-pin mismatch drops, UDP rate-limit denials, KV byte quota
+hardening, UDP source-pin mismatch drops, UDP rate-limit denials, WebSocket
+round trips, WebSocket size denials, WebSocket cancelled reads, KV byte quota
 pressure, file-count quota pressure, SQLite sidecar/sparse bypass checks, and
 CSP report flood rate limiting. CI uploads that summary as release evidence for
-host-neutral broker/backpressure, runtime-control, storage, and sandbox telemetry
-behavior.
+host-neutral broker/backpressure, runtime-control, storage, and sandbox
+telemetry behavior.

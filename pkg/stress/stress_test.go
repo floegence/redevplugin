@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -169,6 +173,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 				{ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"}},
 				{ConnectorID: "api_plain", Transport: "http", Scope: "user", Destinations: []string{"http://api.example.com"}},
 				{ConnectorID: "stream", Transport: "websocket", Scope: "user", Destinations: []string{"wss://stream.example.com"}},
+				{ConnectorID: "stream_plain", Transport: "websocket", Scope: "user", Destinations: []string{"ws://stream.example.com"}},
 				{ConnectorID: "mysql", Transport: "tcp", Scope: "environment", Destinations: []string{"db.example.com:3306"}},
 				{ConnectorID: "metrics", Transport: "udp", Scope: "environment", Destinations: []string{"metrics.example.com:8125"}},
 			}},
@@ -186,6 +191,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 		grantRequest("api", connectivity.TransportHTTP, "https://api.example.com"),
 		grantRequest("api_plain", connectivity.TransportHTTP, "http://api.example.com"),
 		grantRequest("stream", connectivity.TransportWebSocket, "wss://stream.example.com"),
+		grantRequest("stream_plain", connectivity.TransportWebSocket, "ws://stream.example.com"),
 		grantRequest("mysql", connectivity.TransportTCP, "db.example.com:3306"),
 		grantRequest("metrics", connectivity.TransportUDP, "metrics.example.com:8125"),
 	}
@@ -243,6 +249,7 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	udpCounters := stressUDPSourcePinCounters(t, ctx, broker)
 	httpCounters := stressHTTPProxyDefenseCounters(t, ctx, broker)
 	dnsRedirectCounters := stressDNSRedirectCounters(t, ctx, broker)
+	webSocketCounters := stressWebSocketPressureCounters(t, ctx, broker)
 	logStressSummary(t, stressSummary{
 		Category: "connectivity_classifier",
 		Counters: map[string]int{
@@ -259,6 +266,10 @@ func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 			"udp_round_trips":             udpCounters.roundTrips,
 			"udp_source_mismatch_dropped": udpCounters.sourceMismatchDropped,
 			"udp_rate_limit_denials":      udpCounters.rateLimitDenials,
+			"websocket_round_trips":       webSocketCounters.roundTrips,
+			"websocket_request_denials":   webSocketCounters.requestDenials,
+			"websocket_response_denials":  webSocketCounters.responseDenials,
+			"websocket_cancelled_reads":   webSocketCounters.cancelledReads,
 		},
 	})
 }
@@ -392,6 +403,286 @@ func stressHTTPProxyDefenseCounters(t *testing.T, ctx context.Context, broker co
 	}
 	result.connectDenials = 1
 	return result
+}
+
+type webSocketPressureCounters struct {
+	roundTrips      int
+	requestDenials  int
+	responseDenials int
+	cancelledReads  int
+}
+
+func stressWebSocketPressureCounters(t *testing.T, ctx context.Context, broker connectivity.Broker) webSocketPressureCounters {
+	t.Helper()
+	grant, err := broker.MintConnectionGrant(ctx, grantRequest("stream_plain", connectivity.TransportWebSocket, "ws://stream.example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counters := webSocketPressureCounters{}
+
+	successAddr, stopSuccess := startStressWebSocketServer(t, func(reader *bufio.Reader, conn net.Conn) error {
+		opcode, payload, err := readStressWebSocketFrame(reader, 64)
+		if err != nil {
+			return err
+		}
+		if opcode != 0x1 || string(payload) != "hello" {
+			return fmt.Errorf("websocket round trip frame opcode=%d payload=%q", opcode, payload)
+		}
+		return writeStressWebSocketFrame(conn, 0x1, []byte("ws:hello"))
+	})
+	response, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(successAddr),
+	}).WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
+		Grant:            grant,
+		Payload:          []byte("hello"),
+		MaxResponseBytes: 32,
+		Timeout:          time.Second,
+	})
+	stopSuccess()
+	if err != nil {
+		t.Fatalf("WebSocketRoundTrip(stress success) error = %v", err)
+	}
+	if response.MessageType != connectivity.WebSocketMessageText || string(response.Payload) != "ws:hello" {
+		t.Fatalf("WebSocketRoundTrip(stress success) response = %#v payload=%q", response, response.Payload)
+	}
+	counters.roundTrips = 1
+
+	dialed := false
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, errors.New("dial should not be called for oversized websocket request")
+		},
+	}).WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
+		Grant:           grant,
+		Payload:         []byte("too-large"),
+		MaxRequestBytes: 4,
+		Timeout:         time.Second,
+	})
+	if !errors.Is(err, connectivity.ErrRequestTooLarge) {
+		t.Fatalf("WebSocketRoundTrip(stress request limit) error = %v, want ErrRequestTooLarge", err)
+	}
+	if dialed {
+		t.Fatal("WebSocketRoundTrip(stress request limit) dialed before rejecting oversized request")
+	}
+	counters.requestDenials = 1
+
+	largeAddr, stopLarge := startStressWebSocketServer(t, func(reader *bufio.Reader, conn net.Conn) error {
+		if _, _, err := readStressWebSocketFrame(reader, 64); err != nil {
+			return err
+		}
+		return writeStressWebSocketFrame(conn, 0x2, []byte("too-large"))
+	})
+	_, err = connectivity.NewExecutor(connectivity.ExecutorOptions{
+		DialContext: stressMappedDialer(largeAddr),
+	}).WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
+		Grant:            grant,
+		MessageType:      connectivity.WebSocketMessageBinary,
+		Payload:          []byte("ping"),
+		MaxResponseBytes: 4,
+		Timeout:          time.Second,
+	})
+	stopLarge()
+	if !errors.Is(err, connectivity.ErrResponseTooLarge) {
+		t.Fatalf("WebSocketRoundTrip(stress response limit) error = %v, want ErrResponseTooLarge", err)
+	}
+	counters.responseDenials = 1
+
+	requestRead := make(chan struct{})
+	releaseBlockedServer := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() {
+			close(releaseBlockedServer)
+		})
+	}
+	blockedAddr, stopBlocked := startStressWebSocketServer(t, func(reader *bufio.Reader, _ net.Conn) error {
+		if _, _, err := readStressWebSocketFrame(reader, 64); err != nil {
+			return err
+		}
+		close(requestRead)
+		<-releaseBlockedServer
+		return nil
+	})
+	cancelCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := connectivity.NewExecutor(connectivity.ExecutorOptions{
+			DialContext: stressMappedDialer(blockedAddr),
+		}).WebSocketRoundTrip(cancelCtx, connectivity.WebSocketRoundTripRequest{
+			Grant:            grant,
+			Payload:          []byte("cancel-me"),
+			MaxResponseBytes: 32,
+			Timeout:          5 * time.Second,
+		})
+		errCh <- err
+	}()
+	select {
+	case <-requestRead:
+	case <-time.After(time.Second):
+		cancel()
+		releaseServer()
+		stopBlocked()
+		t.Fatal("WebSocketRoundTrip(stress cancel) server did not receive request frame")
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			releaseServer()
+			stopBlocked()
+			t.Fatalf("WebSocketRoundTrip(stress cancel) error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		releaseServer()
+		stopBlocked()
+		t.Fatal("WebSocketRoundTrip(stress cancel) did not stop promptly")
+	}
+	releaseServer()
+	stopBlocked()
+	counters.cancelledReads = 1
+
+	return counters
+}
+
+func startStressWebSocketServer(t *testing.T, handler func(*bufio.Reader, net.Conn) error) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		defer listener.Close()
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			done <- err
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			done <- err
+			return
+		}
+		key := req.Header.Get("Sec-WebSocket-Key")
+		if key == "" {
+			done <- errors.New("websocket handshake missing Sec-WebSocket-Key")
+			return
+		}
+		if err := writeStressWebSocketHandshake(conn, key); err != nil {
+			done <- err
+			return
+		}
+		if err := handler(reader, conn); err != nil {
+			done <- err
+			return
+		}
+	}()
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			_ = listener.Close()
+			select {
+			case err, ok := <-done:
+				if ok && err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("websocket stress server did not stop")
+			}
+		})
+	}
+	return listener.Addr().String(), stop
+}
+
+func writeStressWebSocketHandshake(writer io.Writer, key string) error {
+	_, err := fmt.Fprintf(writer, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", stressWebSocketAcceptKey(key))
+	return err
+}
+
+func stressWebSocketAcceptKey(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func writeStressWebSocketFrame(writer io.Writer, opcode byte, payload []byte) error {
+	var header bytes.Buffer
+	header.WriteByte(0x80 | opcode)
+	switch {
+	case len(payload) < 126:
+		header.WriteByte(byte(len(payload)))
+	case len(payload) <= 65535:
+		header.WriteByte(126)
+		var ext [2]byte
+		binary.BigEndian.PutUint16(ext[:], uint16(len(payload)))
+		header.Write(ext[:])
+	default:
+		header.WriteByte(127)
+		var ext [8]byte
+		binary.BigEndian.PutUint64(ext[:], uint64(len(payload)))
+		header.Write(ext[:])
+	}
+	if _, err := writer.Write(header.Bytes()); err != nil {
+		return err
+	}
+	_, err := writer.Write(payload)
+	return err
+}
+
+func readStressWebSocketFrame(reader *bufio.Reader, maxBytes int64) (byte, []byte, error) {
+	first, err := reader.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	second, err := reader.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	if first&0x80 == 0 {
+		return 0, nil, errors.New("fragmented websocket stress frames are not supported")
+	}
+	opcode := first & 0x0f
+	masked := second&0x80 != 0
+	length := uint64(second & 0x7f)
+	switch length {
+	case 126:
+		var ext [2]byte
+		if _, err := io.ReadFull(reader, ext[:]); err != nil {
+			return 0, nil, err
+		}
+		length = uint64(binary.BigEndian.Uint16(ext[:]))
+	case 127:
+		var ext [8]byte
+		if _, err := io.ReadFull(reader, ext[:]); err != nil {
+			return 0, nil, err
+		}
+		length = binary.BigEndian.Uint64(ext[:])
+	}
+	if length > uint64(maxBytes) {
+		return 0, nil, fmt.Errorf("websocket stress frame exceeded %d bytes", maxBytes)
+	}
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(reader, mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, int(length))
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return opcode, payload, nil
 }
 
 type udpSourcePinCounters struct {
