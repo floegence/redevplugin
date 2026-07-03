@@ -207,6 +207,7 @@ if (summary.mode !== "release") {
 
 const requiredCategories = [
   "stream_backpressure",
+  "operation_cancel_dispatch",
   "connectivity_classifier",
   "runtime_revoke_ack",
   "storage_quota",
@@ -248,6 +249,21 @@ if (backpressureDenials < streamWorkers) {
   fail(`stream_backpressure backpressure_denials ${backpressureDenials} must cover workers ${streamWorkers}`);
 }
 requireAtLeast(evidenceByCategory, "stream_backpressure", "core_operation_checks", 1);
+
+const operationCancelRegistered = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "operations_registered", 2);
+const operationCancelRequested = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "cancel_requested_records", 2);
+if (operationCancelRequested !== operationCancelRegistered) {
+  fail(`operation_cancel_dispatch cancel_requested_records ${operationCancelRequested} must equal operations_registered ${operationCancelRegistered}`);
+}
+requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "successful_dispatches", 1);
+requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "failed_dispatches", 1);
+requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "http_503_failures", 1);
+requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "runtime_unavailable_errors", 1);
+const operationCancelAudits = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "audit_cancel_requested_events", 2);
+if (operationCancelAudits !== operationCancelRequested) {
+  fail(`operation_cancel_dispatch audit_cancel_requested_events ${operationCancelAudits} must equal cancel_requested_records ${operationCancelRequested}`);
+}
+requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "adapter_context_fields_checked", 8);
 
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "minted_grants", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "stale_grant_denials", 1);

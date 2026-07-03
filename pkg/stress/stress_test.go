@@ -157,6 +157,122 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 	})
 }
 
+func TestStressGateOperationCancelDispatchEvidence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events := observability.NewMemoryStore()
+	operations := operation.NewMemoryStore()
+	operationCanceler := &stressOperationCanceler{failOperationID: "op_stress_cancel_fail"}
+	pluginHost, err := host.New(host.Adapters{
+		SessionResolver:   stressSessionResolver{},
+		Policy:            stressPolicy{},
+		Audit:             events,
+		Diagnostics:       events,
+		Operations:        operations,
+		OperationCanceler: operationCanceler,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	for _, operationID := range []string{"op_stress_cancel_success", "op_stress_cancel_fail"} {
+		if _, err := operations.Register(ctx, operation.RegisterRequest{
+			OperationID:          operationID,
+			PluginID:             "com.example.stress.containers",
+			PluginInstanceID:     "plugini_stress_containers",
+			Method:               "images.pull",
+			Effect:               "execute",
+			Execution:            "operation",
+			SurfaceInstanceID:    "surface_stress_operation",
+			SessionChannelIDHash: "channel_hash_stress",
+			BridgeChannelID:      "bridge_stress_operation",
+			DisableBehavior:      operation.DisableBehaviorCancel,
+			UninstallBehavior:    operation.UninstallBehaviorCancelThenBlockDelete,
+			Now:                  now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	canceled, err := pluginHost.CancelOperation(ctx, host.CancelOperationRequest{
+		OperationID: "op_stress_cancel_success",
+		Reason:      "user",
+		Now:         now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("CancelOperation(success) error = %v", err)
+	}
+	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
+		t.Fatalf("CancelOperation(success) mismatch: %#v", canceled)
+	}
+	if len(operationCanceler.requests) != 1 {
+		t.Fatalf("operation cancel dispatch calls = %d, want 1", len(operationCanceler.requests))
+	}
+	assertStressCancelRequest(t, operationCanceler.requests[0], "op_stress_cancel_success", now.Add(time.Second))
+
+	handler := httpadapter.Handler{Host: pluginHost}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/operations/op_stress_cancel_fail/cancel", strings.NewReader(`{"reason":"user"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("cancel dispatch failure status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope httpadapter.Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.OK || envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("cancel dispatch failure envelope mismatch: %#v", envelope)
+	}
+
+	records, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_stress_containers"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancelRequested int
+	for _, record := range records {
+		if record.Status == operation.StatusCancelRequested {
+			cancelRequested++
+		}
+	}
+	if cancelRequested != 2 {
+		t.Fatalf("cancel_requested records = %d, want 2: %#v", cancelRequested, records)
+	}
+	if len(operationCanceler.requests) != 2 || operationCanceler.failureCalls != 1 {
+		t.Fatalf("operation cancel dispatch counters mismatch: requests=%d failures=%d", len(operationCanceler.requests), operationCanceler.failureCalls)
+	}
+	assertStressCancelRequest(t, operationCanceler.requests[1], "op_stress_cancel_fail", operationCanceler.requests[1].RequestedAt)
+
+	auditEvents, err := events.ListPluginAudit(ctx, observability.ListAuditRequest{
+		PluginInstanceID: "plugini_stress_containers",
+		Type:             "plugin.operation.cancel_requested",
+		Limit:            10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auditEvents) != 2 {
+		t.Fatalf("cancel audit events = %d, want 2: %#v", len(auditEvents), auditEvents)
+	}
+
+	logStressSummary(t, stressSummary{
+		Category: "operation_cancel_dispatch",
+		Counters: map[string]int{
+			"operations_registered":          len(records),
+			"successful_dispatches":          1,
+			"failed_dispatches":              operationCanceler.failureCalls,
+			"cancel_requested_records":       cancelRequested,
+			"http_503_failures":              1,
+			"runtime_unavailable_errors":     1,
+			"audit_cancel_requested_events":  len(auditEvents),
+			"adapter_context_fields_checked": 8,
+		},
+	})
+}
+
 func TestStressGateConnectivityGrantClassifierFlood(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1656,6 +1772,39 @@ type stressSessionResolver struct{}
 
 func (stressSessionResolver) ResolveSession(context.Context, string) (sessionctx.Context, error) {
 	return sessionctx.Context{}, nil
+}
+
+type stressOperationCanceler struct {
+	failOperationID string
+	failureCalls    int
+	requests        []host.OperationCancelAdapterRequest
+}
+
+func (c *stressOperationCanceler) RequestOperationCancel(_ context.Context, req host.OperationCancelAdapterRequest) error {
+	c.requests = append(c.requests, req)
+	if req.OperationID == c.failOperationID {
+		c.failureCalls++
+		return errors.New("stress runtime cancel dispatch failed")
+	}
+	return nil
+}
+
+func assertStressCancelRequest(t *testing.T, req host.OperationCancelAdapterRequest, operationID string, requestedAt time.Time) {
+	t.Helper()
+	if req.OperationID != operationID ||
+		req.PluginID != "com.example.stress.containers" ||
+		req.PluginInstanceID != "plugini_stress_containers" ||
+		req.Method != "images.pull" ||
+		req.SurfaceInstanceID != "surface_stress_operation" ||
+		req.SessionChannelIDHash != "channel_hash_stress" ||
+		req.BridgeChannelID != "bridge_stress_operation" ||
+		req.Reason != "user" ||
+		req.RequestedAt.IsZero() {
+		t.Fatalf("operation cancel adapter request mismatch: %#v", req)
+	}
+	if !requestedAt.IsZero() && !req.RequestedAt.Equal(requestedAt) {
+		t.Fatalf("operation cancel requested_at = %s, want %s", req.RequestedAt, requestedAt)
+	}
 }
 
 type stressPolicy struct{}

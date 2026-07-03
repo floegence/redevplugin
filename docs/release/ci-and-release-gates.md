@@ -70,11 +70,12 @@ and `--summary PATH`.
 - `--release` aliases full mode for release-blocking use.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
-counters for stream backpressure, connectivity classifier/grant denials, runtime
-revoke ACK p95 latency, KV and SQLite storage quota pressure, SQLite
-sidecar/sparse bypass checks, and CSP report flood rate limiting. CI uploads
-summaries as artifacts, and tagged release workflows include release-mode stress
-evidence in the published checksum and signature evidence chain.
+counters for stream backpressure, operation cancel dispatch success/failure
+persistence, connectivity classifier/grant denials, runtime revoke ACK p95
+latency, KV and SQLite storage quota pressure, SQLite sidecar/sparse bypass
+checks, and CSP report flood rate limiting. CI uploads summaries as artifacts,
+and tagged release workflows include release-mode stress evidence in the
+published checksum and signature evidence chain.
 
 ## Release Bundle
 
