@@ -486,6 +486,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		string(executor.lastHTTP.Body) != "hello from memory hostcall" {
 		t.Fatalf("network memory executor call mismatch: calls=%d req=%#v", executor.httpCalls, executor.lastHTTP)
 	}
+	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 1, 1, 0, 0)
 }
 
 func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRuntime(t *testing.T) {
@@ -1102,6 +1103,29 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	}
 	if len(query.Rows) != 1 || len(query.Rows[0]) != 1 || query.Rows[0][0].Text == nil || *query.Rows[0][0].Text != "worker_runs" {
 		t.Fatalf("sqlite table was not created through wasm hostcall: %#v", query.Rows)
+	}
+	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 1, 0, 0, 1)
+}
+
+type runtimeRevoker interface {
+	Revoke(context.Context, string, uint64) (runtimeclient.RevokeResult, error)
+}
+
+func assertRuntimeRevokeCounts(t *testing.T, supervisor runtimeRevoker, pluginInstanceID string, revokeEpoch uint64, actor, socket, stream, storageHandle int) {
+	t.Helper()
+	revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := supervisor.Revoke(revokeCtx, pluginInstanceID, revokeEpoch)
+	if err != nil {
+		t.Fatalf("Revoke() error = %v", err)
+	}
+	if result.PluginInstanceID != pluginInstanceID ||
+		result.RevokeEpoch != revokeEpoch ||
+		result.ClosedActorCount != actor ||
+		result.ClosedSocketCount != socket ||
+		result.ClosedStreamCount != stream ||
+		result.ClosedStorageHandleCount != storageHandle {
+		t.Fatalf("Revoke() result mismatch: got %#v, want actor=%d socket=%d stream=%d storage=%d", result, actor, socket, stream, storageHandle)
 	}
 }
 
