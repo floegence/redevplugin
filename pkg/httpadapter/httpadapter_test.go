@@ -1473,6 +1473,24 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	assertStreamSecurityHeaders(t, rec)
 
 	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
+	req.Header.Set("Origin", sandboxOrigin)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("stream document fetch destination status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrStreamTicketInvalid) {
+		t.Fatalf("stream document fetch destination error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
+	}
+	assertStreamSecurityHeaders(t, rec)
+
+	req = httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_http_1?ticket="+result.StreamTicket, nil)
 	req.Header.Set("Origin", "https://evil.example")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
@@ -1530,6 +1548,98 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 	assertStreamSecurityHeaders(t, rec)
 }
 
+func TestValidatePluginStreamFetchMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers map[string]string
+		wantErr string
+	}{
+		{
+			name:    "older browser without fetch metadata",
+			headers: map[string]string{},
+		},
+		{
+			name: "same-origin cors fetch",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-origin",
+				"Sec-Fetch-Mode": "cors",
+				"Sec-Fetch-Dest": "empty",
+			},
+		},
+		{
+			name: "same-origin mode",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-origin",
+				"Sec-Fetch-Mode": "same-origin",
+				"Sec-Fetch-Dest": "empty",
+			},
+		},
+		{
+			name: "same-site is not accepted",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-site",
+				"Sec-Fetch-Mode": "cors",
+				"Sec-Fetch-Dest": "empty",
+			},
+			wantErr: "fetch site",
+		},
+		{
+			name: "navigate mode is not accepted",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-origin",
+				"Sec-Fetch-Mode": "navigate",
+				"Sec-Fetch-Dest": "document",
+			},
+			wantErr: "fetch mode",
+		},
+		{
+			name: "websocket mode is not accepted",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-origin",
+				"Sec-Fetch-Mode": "websocket",
+				"Sec-Fetch-Dest": "empty",
+			},
+			wantErr: "fetch mode",
+		},
+		{
+			name: "document destination is not accepted",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-origin",
+				"Sec-Fetch-Mode": "cors",
+				"Sec-Fetch-Dest": "document",
+			},
+			wantErr: "fetch destination",
+		},
+		{
+			name: "script destination is not accepted",
+			headers: map[string]string{
+				"Sec-Fetch-Site": "same-origin",
+				"Sec-Fetch-Mode": "cors",
+				"Sec-Fetch-Dest": "script",
+			},
+			wantErr: "fetch destination",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/_redevplugin/stream/stream_test?ticket=st_test", nil)
+			for name, value := range tc.headers {
+				req.Header.Set(name, value)
+			}
+			err := validatePluginStreamFetchMetadata(req)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validatePluginStreamFetchMetadata() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("validatePluginStreamFetchMetadata() error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestStreamTokenValidationErrorsMapToInvalidCode(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1565,6 +1675,9 @@ func assertStreamSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("stream nosniff = %q", got)
+	}
+	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "same-origin" {
+		t.Fatalf("stream cross-origin resource policy = %q", got)
 	}
 }
 

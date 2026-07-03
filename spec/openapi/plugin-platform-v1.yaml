@@ -391,6 +391,19 @@ paths:
       responses:
         "200":
           description: Plugin stream events drained as newline-delimited JSON.
+          headers:
+            Cache-Control:
+              description: Always no-store because stream tickets are query credentials.
+              schema: { type: string }
+            Referrer-Policy:
+              description: Always no-referrer for stream ticket reads.
+              schema: { type: string }
+            X-Content-Type-Options:
+              description: Always nosniff for plugin stream responses.
+              schema: { type: string }
+            Cross-Origin-Resource-Policy:
+              description: Always same-origin for plugin stream responses.
+              schema: { type: string }
           content:
             application/x-ndjson:
               schema:

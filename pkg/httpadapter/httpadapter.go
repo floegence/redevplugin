@@ -1505,6 +1505,10 @@ func validatePluginStreamFetchMetadata(r *http.Request) error {
 	if fetchMode != "" && fetchMode != "cors" && fetchMode != "same-origin" {
 		return errors.New("stream request fetch mode is invalid")
 	}
+	fetchDest := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Dest")))
+	if fetchDest != "" && fetchDest != "empty" {
+		return errors.New("stream request fetch destination is invalid")
+	}
 	return nil
 }
 
@@ -1512,6 +1516,7 @@ func writePluginStreamSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 }
 
 func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {

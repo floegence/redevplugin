@@ -110,14 +110,19 @@ Sandbox bootstrap, package asset, and stream routes use token-specific stable
 error codes when their credentials fail validation: `PLUGIN_ASSET_TICKET_INVALID`,
 `PLUGIN_ASSET_SESSION_INVALID`, and `PLUGIN_STREAM_TICKET_INVALID`.
 
-Stream responses set `Cache-Control: no-store` and
-`Referrer-Policy: no-referrer` so `stream_ticket` query credentials are not
-cached or forwarded through referrer headers.
+Stream responses set `Cache-Control: no-store`, `Referrer-Policy:
+no-referrer`, `X-Content-Type-Options: nosniff`, and
+`Cross-Origin-Resource-Policy: same-origin` so `stream_ticket` query credentials
+are not cached or forwarded through referrer headers, and stream bodies cannot
+be reused as cross-origin subresources.
 
 Stream requests reject cross-site Fetch Metadata when browsers provide
-`Sec-Fetch-*` headers. When a sandbox origin has been registered for the
-surface, stream reads also bind the request `Origin` to that sandbox origin
-before consuming the stream ticket.
+`Sec-Fetch-*` headers. The route only accepts same-origin `Sec-Fetch-Site`,
+`cors` or `same-origin` `Sec-Fetch-Mode`, and an omitted or `empty`
+`Sec-Fetch-Dest`, so navigation, iframe, script, and other subresource-shaped
+requests fail closed. When a sandbox origin has been registered for the surface,
+stream reads also bind the request `Origin` to that sandbox origin before
+consuming the stream ticket.
 
 ## Permissions And Policy
 
