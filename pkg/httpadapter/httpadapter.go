@@ -142,8 +142,9 @@ type exchangeAssetTicketRequest struct {
 }
 
 type bridgeTokenRequest struct {
-	Handshake       pluginBridgeHandshake `json:"handshake"`
-	BridgeChannelID string                `json:"bridge_channel_id"`
+	Handshake                 pluginBridgeHandshake `json:"handshake"`
+	BridgeChannelID           string                `json:"bridge_channel_id"`
+	HandshakeTranscriptSHA256 string                `json:"handshake_transcript_sha256"`
 }
 
 type pluginBridgeHandshake struct {
@@ -778,8 +779,9 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.Host.MintBridgeToken(r.Context(), host.MintBridgeTokenRequest{
-		Handshake:       bridgeHandshake(req.Handshake),
-		BridgeChannelID: req.BridgeChannelID,
+		Handshake:                 bridgeHandshake(req.Handshake),
+		BridgeChannelID:           req.BridgeChannelID,
+		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
 	})
 	if err != nil {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})

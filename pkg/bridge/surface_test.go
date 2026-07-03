@@ -31,17 +31,12 @@ func TestSurfaceBootstrapExchangeAndGatewayToken(t *testing.T) {
 		t.Fatalf("assetSession = %#v", assetSession)
 	}
 
+	handshake := handshakeFromBootstrap(bootstrap)
 	gateway, err := service.MintGatewayToken(MintGatewayTokenRequest{
-		Handshake: Handshake{
-			PluginID:          bootstrap.PluginID,
-			SurfaceID:         bootstrap.SurfaceID,
-			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-			ActiveFingerprint: bootstrap.ActiveFingerprint,
-			BridgeNonce:       bootstrap.BridgeNonce,
-			UIProtocolVersion: "plugin-ui-v1",
-		},
-		BridgeChannelID: "bridge_1",
-		Now:             now.Add(2 * time.Second),
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_1",
+		HandshakeTranscriptSHA256: HandshakeTranscriptSHA256(handshake, "bridge_1"),
+		Now:                       now.Add(2 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintGatewayToken() error = %v", err)
@@ -69,9 +64,10 @@ func TestSurfaceGatewayRequiresAssetSession(t *testing.T) {
 	}
 
 	_, err = service.MintGatewayToken(MintGatewayTokenRequest{
-		Handshake:       handshakeFromBootstrap(bootstrap),
-		BridgeChannelID: "bridge_1",
-		Now:             now.Add(time.Second),
+		Handshake:                 handshakeFromBootstrap(bootstrap),
+		BridgeChannelID:           "bridge_1",
+		HandshakeTranscriptSHA256: HandshakeTranscriptSHA256(handshakeFromBootstrap(bootstrap), "bridge_1"),
+		Now:                       now.Add(time.Second),
 	})
 	if !errors.Is(err, ErrAssetSessionRequired) {
 		t.Fatalf("MintGatewayToken() error = %v, want %v", err, ErrAssetSessionRequired)
@@ -125,12 +121,58 @@ func TestSurfaceHandshakeMismatchFailsClosed(t *testing.T) {
 	handshake := handshakeFromBootstrap(bootstrap)
 	handshake.BridgeNonce = "wrong_nonce"
 	_, err = service.MintGatewayToken(MintGatewayTokenRequest{
-		Handshake:       handshake,
-		BridgeChannelID: "bridge_1",
-		Now:             now.Add(2 * time.Second),
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_1",
+		HandshakeTranscriptSHA256: HandshakeTranscriptSHA256(handshake, "bridge_1"),
+		Now:                       now.Add(2 * time.Second),
 	})
 	if !errors.Is(err, ErrHandshakeMismatch) {
 		t.Fatalf("MintGatewayToken() error = %v, want %v", err, ErrHandshakeMismatch)
+	}
+}
+
+func TestSurfaceGatewayRequiresHandshakeTranscript(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handshake := handshakeFromBootstrap(bootstrap)
+	req := MintGatewayTokenRequest{
+		Handshake:       handshake,
+		BridgeChannelID: "bridge_1",
+		Now:             now.Add(2 * time.Second),
+	}
+	if _, err := service.MintGatewayToken(req); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintGatewayToken() missing transcript error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	req.HandshakeTranscriptSHA256 = HandshakeTranscriptSHA256(handshake, "bridge_2")
+	if _, err := service.MintGatewayToken(req); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("MintGatewayToken() wrong transcript error = %v, want %v", err, ErrTokenAudience)
+	}
+}
+
+func TestHandshakeTranscriptSHA256StableVector(t *testing.T) {
+	got := HandshakeTranscriptSHA256(Handshake{
+		PluginID:          "com.example.plugin",
+		SurfaceID:         "example.activity",
+		SurfaceInstanceID: "surface_1",
+		ActiveFingerprint: "sha256:abc",
+		BridgeNonce:       "nonce_1",
+		UIProtocolVersion: "plugin-ui-v1",
+	}, "bridge_channel_1")
+	const want = "sha256:94393d8980a4e43e287bab18b98531cbd7025fc38c25beea5c4ad2b9170593f2"
+	if got != want {
+		t.Fatalf("HandshakeTranscriptSHA256() = %q, want %q", got, want)
 	}
 }
 
@@ -710,9 +752,10 @@ func mintTestGatewayToken(t *testing.T, service *SurfaceTokenService, now time.T
 		t.Fatal(err)
 	}
 	gateway, err := service.MintGatewayToken(MintGatewayTokenRequest{
-		Handshake:       handshakeFromBootstrap(bootstrap),
-		BridgeChannelID: "bridge_1",
-		Now:             now.Add(2 * time.Second),
+		Handshake:                 handshakeFromBootstrap(bootstrap),
+		BridgeChannelID:           "bridge_1",
+		HandshakeTranscriptSHA256: HandshakeTranscriptSHA256(handshakeFromBootstrap(bootstrap), "bridge_1"),
+		Now:                       now.Add(2 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)

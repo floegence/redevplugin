@@ -125,17 +125,19 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("ExchangeAssetTicket() error = %v", err)
 	}
+	handshake := bridge.Handshake{
+		PluginID:          bootstrap.PluginID,
+		SurfaceID:         bootstrap.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		ActiveFingerprint: bootstrap.ActiveFingerprint,
+		BridgeNonce:       bootstrap.BridgeNonce,
+		UIProtocolVersion: "plugin-ui-v1",
+	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
-		Handshake: bridge.Handshake{
-			PluginID:          bootstrap.PluginID,
-			SurfaceID:         bootstrap.SurfaceID,
-			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-			ActiveFingerprint: bootstrap.ActiveFingerprint,
-			BridgeNonce:       bootstrap.BridgeNonce,
-			UIProtocolVersion: "plugin-ui-v1",
-		},
-		BridgeChannelID: "bridge_update",
-		Now:             now.Add(3 * time.Second),
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_update",
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_update"),
+		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintBridgeToken() error = %v", err)
@@ -568,17 +570,19 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		t.Fatalf("ExchangeAssetTicket() error = %v", err)
 	}
 
+	handshake := bridge.Handshake{
+		PluginID:          bootstrap.PluginID,
+		SurfaceID:         bootstrap.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		ActiveFingerprint: bootstrap.ActiveFingerprint,
+		BridgeNonce:       bootstrap.BridgeNonce,
+		UIProtocolVersion: "plugin-ui-v1",
+	}
 	gateway, err := host.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
-		Handshake: bridge.Handshake{
-			PluginID:          bootstrap.PluginID,
-			SurfaceID:         bootstrap.SurfaceID,
-			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-			ActiveFingerprint: bootstrap.ActiveFingerprint,
-			BridgeNonce:       bootstrap.BridgeNonce,
-			UIProtocolVersion: "plugin-ui-v1",
-		},
-		BridgeChannelID: "bridge_channel",
-		Now:             now.Add(3 * time.Second),
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_channel",
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_channel"),
+		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintBridgeToken() error = %v", err)
@@ -5348,17 +5352,19 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 	}); err != nil {
 		t.Fatal(err)
 	}
+	handshake := bridge.Handshake{
+		PluginID:          bootstrap.PluginID,
+		SurfaceID:         bootstrap.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		ActiveFingerprint: bootstrap.ActiveFingerprint,
+		BridgeNonce:       bootstrap.BridgeNonce,
+		UIProtocolVersion: "plugin-ui-v1",
+	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
-		Handshake: bridge.Handshake{
-			PluginID:          bootstrap.PluginID,
-			SurfaceID:         bootstrap.SurfaceID,
-			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-			ActiveFingerprint: bootstrap.ActiveFingerprint,
-			BridgeNonce:       bootstrap.BridgeNonce,
-			UIProtocolVersion: "plugin-ui-v1",
-		},
-		BridgeChannelID: "bridge_rpc",
-		Now:             now.Add(3 * time.Second),
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_rpc",
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_rpc"),
+		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)

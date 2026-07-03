@@ -652,18 +652,7 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 		"asset_ticket": openResp.AssetTicket,
 	})
 
-	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http/bridge-token", map[string]any{
-		"bridge_channel_id": "bridge_http",
-		"handshake": map[string]any{
-			"type":                "redevplugin.bridge.handshake",
-			"plugin_id":           openResp.PluginID,
-			"surface_id":          openResp.SurfaceID,
-			"surface_instance_id": openResp.SurfaceInstanceID,
-			"active_fingerprint":  openResp.ActiveFingerprint,
-			"bridge_nonce":        openResp.BridgeNonce,
-			"ui_protocol_version": "plugin-ui-v1",
-		},
-	})
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http"))
 	if bridgeResp.GatewayToken == "" {
 		t.Fatalf("bridge token response is empty: %#v", bridgeResp)
 	}
@@ -703,6 +692,7 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 			"bridge_nonce":        openResp.BridgeNonce,
 			"ui_protocol_version": "plugin-ui-v1",
 		},
+		"handshake_transcript_sha256": bridge.HandshakeTranscriptSHA256(bridgeHandshakeFromBootstrap(openResp), "bridge_http"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -721,6 +711,37 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 	}
 	if envelope.OK || envelope.ErrorCode != string(security.ErrInvalidRequest) {
 		t.Fatalf("bridge token envelope = %#v", envelope)
+	}
+}
+
+func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
+	h := newHTTPTestHost(t)
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h}
+
+	openResp := postJSON[bridge.SurfaceBootstrap](t, handler, "/_redevplugin/api/plugins/surfaces/open", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_id":              "http.activity",
+		"surface_instance_id":     "surface_http_bad_transcript",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"session_channel_id_hash": "channel_hash",
+	})
+	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_transcript/bootstrap", map[string]any{
+		"asset_ticket": openResp.AssetTicket,
+	})
+	body := bridgeTokenRequestBody(openResp, "bridge_http_transcript")
+	body["handshake_transcript_sha256"] = bridge.HandshakeTranscriptSHA256(bridgeHandshakeFromBootstrap(openResp), "bridge_http_other")
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_bad_transcript/bridge-token", body, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+		t.Fatalf("transcript mismatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
 	}
 }
 
@@ -926,17 +947,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_rpc/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_rpc/bridge-token", map[string]any{
-		"bridge_channel_id": "bridge_http_rpc",
-		"handshake": map[string]any{
-			"plugin_id":           openResp.PluginID,
-			"surface_id":          openResp.SurfaceID,
-			"surface_instance_id": openResp.SurfaceInstanceID,
-			"active_fingerprint":  openResp.ActiveFingerprint,
-			"bridge_nonce":        openResp.BridgeNonce,
-			"ui_protocol_version": "plugin-ui-v1",
-		},
-	})
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_rpc/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http_rpc"))
 
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
@@ -1020,23 +1031,9 @@ func TestHandlerBridgeTokenDuplicateChannelUsesGatewayMismatchCode(t *testing.T)
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	handshake := map[string]any{
-		"plugin_id":           openResp.PluginID,
-		"surface_id":          openResp.SurfaceID,
-		"surface_instance_id": openResp.SurfaceInstanceID,
-		"active_fingerprint":  openResp.ActiveFingerprint,
-		"bridge_nonce":        openResp.BridgeNonce,
-		"ui_protocol_version": "plugin-ui-v1",
-	}
-	postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", map[string]any{
-		"bridge_channel_id": "bridge_http_a",
-		"handshake":         handshake,
-	})
+	postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http_a"))
 
-	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", map[string]any{
-		"bridge_channel_id": "bridge_http_b",
-		"handshake":         handshake,
-	}, http.StatusForbidden)
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_duplicate_channel/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http_b"), http.StatusForbidden)
 	if envelope.ErrorCode != string(security.ErrGatewayTokenChannelMismatch) {
 		t.Fatalf("duplicate bridge channel error_code = %s body = %#v", envelope.ErrorCode, envelope)
 	}
@@ -1188,17 +1185,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/bridge-token", map[string]any{
-		"bridge_channel_id": "bridge_http_danger",
-		"handshake": map[string]any{
-			"plugin_id":           openResp.PluginID,
-			"surface_id":          openResp.SurfaceID,
-			"surface_instance_id": openResp.SurfaceInstanceID,
-			"active_fingerprint":  openResp.ActiveFingerprint,
-			"bridge_nonce":        openResp.BridgeNonce,
-			"ui_protocol_version": "plugin-ui-v1",
-		},
-	})
+	bridgeResp := postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/bridge-token", bridgeTokenRequestBody(openResp, "bridge_http_danger"))
 	body := map[string]any{
 		"plugin_instance_id":      installed.PluginInstanceID,
 		"surface_instance_id":     "surface_http_danger",
@@ -3113,17 +3100,39 @@ func openHTTPBridgeWithSandboxOrigin(t *testing.T, handler http.Handler, pluginI
 	postJSON[bridge.AssetSessionResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/bootstrap", map[string]any{
 		"asset_ticket": openResp.AssetTicket,
 	})
-	return postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/bridge-token", map[string]any{
-		"bridge_channel_id": bridgeChannelID,
-		"handshake": map[string]any{
-			"plugin_id":           openResp.PluginID,
-			"surface_id":          openResp.SurfaceID,
-			"surface_instance_id": openResp.SurfaceInstanceID,
-			"active_fingerprint":  openResp.ActiveFingerprint,
-			"bridge_nonce":        openResp.BridgeNonce,
-			"ui_protocol_version": "plugin-ui-v1",
-		},
-	})
+	return postJSON[bridge.GatewayTokenResult](t, handler, "/_redevplugin/api/plugins/surfaces/"+surfaceInstanceID+"/bridge-token", bridgeTokenRequestBody(openResp, bridgeChannelID))
+}
+
+func bridgeTokenRequestBody(openResp bridge.SurfaceBootstrap, bridgeChannelID string) map[string]any {
+	handshake := bridgeHandshakeFromBootstrap(openResp)
+	return map[string]any{
+		"bridge_channel_id":           bridgeChannelID,
+		"handshake":                   bridgeHandshakeBody(handshake),
+		"handshake_transcript_sha256": bridge.HandshakeTranscriptSHA256(handshake, bridgeChannelID),
+	}
+}
+
+func bridgeHandshakeFromBootstrap(openResp bridge.SurfaceBootstrap) bridge.Handshake {
+	return bridge.Handshake{
+		PluginID:          openResp.PluginID,
+		SurfaceID:         openResp.SurfaceID,
+		SurfaceInstanceID: openResp.SurfaceInstanceID,
+		ActiveFingerprint: openResp.ActiveFingerprint,
+		BridgeNonce:       openResp.BridgeNonce,
+		UIProtocolVersion: "plugin-ui-v1",
+	}
+}
+
+func bridgeHandshakeBody(handshake bridge.Handshake) map[string]any {
+	return map[string]any{
+		"type":                "redevplugin.bridge.handshake",
+		"plugin_id":           handshake.PluginID,
+		"surface_id":          handshake.SurfaceID,
+		"surface_instance_id": handshake.SurfaceInstanceID,
+		"active_fingerprint":  handshake.ActiveFingerprint,
+		"bridge_nonce":        handshake.BridgeNonce,
+		"ui_protocol_version": handshake.UIProtocolVersion,
+	}
 }
 
 func grantHTTPDeclaredPermissions(t *testing.T, h *host.Host, record registry.PluginRecord) {

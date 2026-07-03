@@ -152,6 +152,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	text := string(raw)
 	for _, snippet := range []string{
 		"BridgeTokenRequest:",
+		"handshake_transcript_sha256:",
 		"plugin_gateway_token: { type: string, minLength: 1 }",
 		"delete_data: { type: boolean }",
 		"asset_ticket: { type: string, minLength: 1 }",

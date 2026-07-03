@@ -1,8 +1,11 @@
 package bridge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -95,9 +98,10 @@ type AssetSessionValidation struct {
 }
 
 type MintGatewayTokenRequest struct {
-	Handshake       Handshake `json:"handshake"`
-	BridgeChannelID string    `json:"bridge_channel_id"`
-	Now             time.Time `json:"now,omitempty"`
+	Handshake                 Handshake `json:"handshake"`
+	BridgeChannelID           string    `json:"bridge_channel_id"`
+	HandshakeTranscriptSHA256 string    `json:"handshake_transcript_sha256"`
+	Now                       time.Time `json:"now,omitempty"`
 }
 
 type GatewayTokenResult struct {
@@ -411,6 +415,12 @@ func (s *SurfaceTokenService) MintGatewayToken(req MintGatewayTokenRequest) (Gat
 	if strings.TrimSpace(req.BridgeChannelID) == "" {
 		return GatewayTokenResult{}, ErrMissingTokenAudience
 	}
+	if strings.TrimSpace(req.HandshakeTranscriptSHA256) == "" {
+		return GatewayTokenResult{}, ErrMissingTokenAudience
+	}
+	if req.HandshakeTranscriptSHA256 != HandshakeTranscriptSHA256(req.Handshake, req.BridgeChannelID) {
+		return GatewayTokenResult{}, ErrTokenAudience
+	}
 	now := req.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -451,6 +461,27 @@ func (s *SurfaceTokenService) MintGatewayToken(req MintGatewayTokenRequest) (Gat
 		IssuedAt:       minted.IssuedAt,
 		ExpiresAt:      minted.ExpiresAt,
 	}, nil
+}
+
+func HandshakeTranscriptSHA256(handshake Handshake, bridgeChannelID string) string {
+	hash := sha256.New()
+	for _, field := range []string{
+		"redevplugin.bridge.handshake.v1",
+		handshake.PluginID,
+		handshake.SurfaceID,
+		handshake.SurfaceInstanceID,
+		handshake.ActiveFingerprint,
+		handshake.BridgeNonce,
+		handshake.UIProtocolVersion,
+		bridgeChannelID,
+	} {
+		data := []byte(field)
+		hash.Write([]byte(strconv.Itoa(len(data))))
+		hash.Write([]byte{':'})
+		hash.Write(data)
+		hash.Write([]byte{0})
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func (s *SurfaceTokenService) ValidateGatewayToken(token string, audience Audience, revision RevisionBinding, now time.Time) (TokenRecord, error) {

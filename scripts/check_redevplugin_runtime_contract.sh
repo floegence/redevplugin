@@ -58,6 +58,7 @@ export GOWORK=off
   grep -q '"type": { "const": "redevplugin.bridge.response" }' spec/plugin/bridge-v1.schema.json
   grep -q '"type": { "const": "redevplugin.bridge.lifecycle" }' spec/plugin/bridge-v1.schema.json
   grep -q '"ui_protocol_version": { "const": "plugin-ui-v1" }' spec/plugin/bridge-v1.schema.json
+  grep -q 'handshake_transcript_sha256' spec/openapi/plugin-platform-v1.yaml
   grep -q '"schema_version": { "const": "redevplugin.compatibility.v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"bridge_schema_version": { "const": "bridge-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"network_grant_schema_version": { "const": "network-grant-v1" }' spec/plugin/compatibility-manifest-v1.schema.json

@@ -46,6 +46,14 @@ Bridge messaging requires exact target origins. Wildcard `postMessage`
 target origins are forbidden. Parent-to-plugin and plugin-to-parent messages
 must stay scoped to the sandbox origin and active surface session.
 
+The trusted parent computes `handshake_transcript_sha256` before it asks the Go
+Host for a parent-only `plugin_gateway_token`. The transcript is the SHA-256 of
+a length-prefixed `redevplugin.bridge.handshake.v1` field list containing the
+plugin ID, surface ID, surface instance ID, active fingerprint, bridge nonce,
+UI protocol version, and `bridge_channel_id`. The Go Host recomputes the same
+hash and refuses to mint a gateway token if the transcript is missing or
+mismatched.
+
 ## Management Client
 
 `PluginPlatformClient` is for trusted host pages. It wraps platform management

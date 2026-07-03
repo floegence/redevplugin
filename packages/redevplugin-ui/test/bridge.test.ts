@@ -12,6 +12,7 @@ import {
   PluginPlatformClient,
   PluginSurfaceHost,
   PluginSurfaceReloadLimiter,
+  pluginBridgeHandshakeTranscriptSHA256,
   readPluginStream,
   type FetchInitLike,
   type FetchResponseLike,
@@ -253,6 +254,11 @@ test("handshake posts exact-origin message", () => {
   client.dispose();
 });
 
+test("bridge handshake transcript hash is stable", async () => {
+  const got = await pluginBridgeHandshakeTranscriptSHA256(handshake, "bridge_channel_1");
+  assert.equal(got, "sha256:94393d8980a4e43e287bab18b98531cbd7025fc38c25beea5c4ad2b9170593f2");
+});
+
 test("call resolves only matching exact-origin response", async () => {
   const target = new FakeWindow();
   const receiver = new FakeWindow();
@@ -361,6 +367,7 @@ test("surface host mints parent-only gateway token after matching handshake", as
   assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
     bridge_channel_id: "bridge_channel_1",
     handshake,
+    handshake_transcript_sha256: await pluginBridgeHandshakeTranscriptSHA256(handshake, "bridge_channel_1"),
   });
   assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
   assert.deepEqual(iframe.sent, [

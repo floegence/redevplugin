@@ -396,9 +396,10 @@ type CSPViolationReport struct {
 }
 
 type MintBridgeTokenRequest struct {
-	Handshake       bridge.Handshake
-	BridgeChannelID string
-	Now             time.Time
+	Handshake                 bridge.Handshake
+	BridgeChannelID           string
+	HandshakeTranscriptSHA256 string
+	Now                       time.Time
 }
 
 type CallMethodRequest struct {
@@ -770,9 +771,10 @@ func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest
 
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (bridge.GatewayTokenResult, error) {
 	result, err := h.surfaceTokens.MintGatewayToken(bridge.MintGatewayTokenRequest{
-		Handshake:       req.Handshake,
-		BridgeChannelID: req.BridgeChannelID,
-		Now:             req.Now,
+		Handshake:                 req.Handshake,
+		BridgeChannelID:           req.BridgeChannelID,
+		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
+		Now:                       req.Now,
 	})
 	if err != nil {
 		return bridge.GatewayTokenResult{}, err

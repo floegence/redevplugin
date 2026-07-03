@@ -777,12 +777,15 @@ components:
         ui_protocol_version: { const: plugin-ui-v1 }
     BridgeTokenRequest:
       type: object
-      required: [handshake, bridge_channel_id]
+      required: [handshake, bridge_channel_id, handshake_transcript_sha256]
       additionalProperties: false
       properties:
         handshake:
           $ref: "#/components/schemas/BridgeHandshake"
         bridge_channel_id: { type: string, minLength: 1 }
+        handshake_transcript_sha256:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
     RPCRequest:
       type: object
       required: [plugin_instance_id, surface_instance_id, bridge_channel_id, plugin_gateway_token, method]

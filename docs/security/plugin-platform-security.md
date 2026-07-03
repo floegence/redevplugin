@@ -96,6 +96,12 @@ token-id namespace:
 Tokens are capabilities. A token that can be read by a different browser origin
 or reused across the wrong audience is a security bug.
 
+`plugin_gateway_token` is minted only after the trusted parent validates the
+iframe handshake and submits a `handshake_transcript_sha256` bound to the
+handshake fields and `bridge_channel_id`. The Go Host recomputes that transcript
+before minting, so a stale or cross-channel handshake cannot obtain a parent-only
+gateway token by replaying the visible handshake object alone.
+
 Plugin gateway token validation failures use gateway-specific stable error
 codes: `PLUGIN_GATEWAY_TOKEN_INVALID`, `PLUGIN_GATEWAY_TOKEN_REPLAYED`, and
 `PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH`.

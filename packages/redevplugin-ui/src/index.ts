@@ -75,6 +75,12 @@ export type PluginBridgeHandshake = {
   ui_protocol_version: "plugin-ui-v1";
 };
 
+export type PluginBridgeTokenRequest = {
+  bridge_channel_id: string;
+  handshake: PluginBridgeHandshake;
+  handshake_transcript_sha256: string;
+};
+
 export type PluginBridgeRequest = {
   id: string;
   method: string;
@@ -168,6 +174,42 @@ export class PluginBridgeError extends Error {
     this.data = data;
     this.details = details ?? data;
   }
+}
+
+export async function pluginBridgeHandshakeTranscriptSHA256(handshake: PluginBridgeHandshake, bridgeChannelID: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_FAILED", "Web Crypto SHA-256 is unavailable for plugin bridge handshake");
+  }
+  const encoder = new TextEncoder();
+  const fields = [
+    "redevplugin.bridge.handshake.v1",
+    handshake.plugin_id,
+    handshake.surface_id,
+    handshake.surface_instance_id,
+    handshake.active_fingerprint,
+    handshake.bridge_nonce,
+    handshake.ui_protocol_version,
+    bridgeChannelID,
+  ];
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  for (const field of fields) {
+    const data = encoder.encode(field);
+    const prefix = encoder.encode(`${data.byteLength}:`);
+    const terminator = new Uint8Array([0]);
+    chunks.push(prefix, data, terminator);
+    totalBytes += prefix.byteLength + data.byteLength + terminator.byteLength;
+  }
+  const transcript = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    transcript.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const digest = await subtle.digest("SHA-256", transcript);
+  const bytes = new Uint8Array(digest);
+  return `sha256:${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export class PluginSurfaceReloadLimiter {
@@ -1170,10 +1212,12 @@ export class PluginSurfaceHost {
       return;
     }
     try {
-      const token = await this.#postJSON<PluginGatewayTokenResult>(`/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`, {
+      const request: PluginBridgeTokenRequest = {
         bridge_channel_id: this.bridgeChannelId,
         handshake,
-      });
+        handshake_transcript_sha256: await pluginBridgeHandshakeTranscriptSHA256(handshake, this.bridgeChannelId),
+      };
+      const token = await this.#postJSON<PluginGatewayTokenResult>(`/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`, request);
       this.#gatewayToken = token.plugin_gateway_token;
       this.#postToIframe({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
     } catch (error) {

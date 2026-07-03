@@ -320,17 +320,19 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ExchangeAssetTicket() error = %v", err)
 	}
+	handshake := bridge.Handshake{
+		PluginID:          bootstrap.PluginID,
+		SurfaceID:         bootstrap.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		ActiveFingerprint: bootstrap.ActiveFingerprint,
+		BridgeNonce:       bootstrap.BridgeNonce,
+		UIProtocolVersion: "plugin-ui-v1",
+	}
 	gateway, err := h.MintBridgeToken(ctx, host.MintBridgeTokenRequest{
-		Handshake: bridge.Handshake{
-			PluginID:          bootstrap.PluginID,
-			SurfaceID:         bootstrap.SurfaceID,
-			SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-			ActiveFingerprint: bootstrap.ActiveFingerprint,
-			BridgeNonce:       bootstrap.BridgeNonce,
-			UIProtocolVersion: "plugin-ui-v1",
-		},
-		BridgeChannelID: "bridge_generated_runtime",
-		Now:             now.Add(3 * time.Second),
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_generated_runtime",
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_generated_runtime"),
+		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("MintBridgeToken() error = %v", err)
