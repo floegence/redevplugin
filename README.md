@@ -111,6 +111,10 @@ capabilities.
   Development harnesses can then run
   `redevplugin install-verified <signed.redevplugin> <public.json>` to prove
   the Host trust-verifier path accepts the signed package.
+- `testdata/generated_plugins/minimal`, `networked`, and `storage` are positive
+  generated-plugin fixtures that the platform gate validates and packages
+  through the same CLI path. `testdata/generated_plugins/malicious-build/*`
+  must fail packaging before any dependency install or build step can run.
 - Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
   and CSRF policy while keeping the concrete session and token semantics in the
   host product.

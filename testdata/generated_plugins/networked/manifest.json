@@ -1,0 +1,51 @@
+{
+  "schema_version": "redevplugin.manifest.v1",
+  "publisher": {
+    "publisher_id": "example.generated",
+    "display_name": "Example Generated"
+  },
+  "plugin": {
+    "plugin_id": "com.example.generated.networked",
+    "display_name": "Networked Generated Fixture",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.1.0",
+    "ui_protocol_version": "plugin-ui-v1"
+  },
+  "surfaces": [
+    {
+      "surface_id": "networked.activity",
+      "kind": "activity",
+      "label": "Networked",
+      "entry": "ui/index.html"
+    }
+  ],
+  "network_access": {
+    "connectors": [
+      {
+        "connector_id": "forecast_api",
+        "transport": "http",
+        "scope": "user",
+        "destinations": ["https://api.example.com"]
+      },
+      {
+        "connector_id": "live_updates",
+        "transport": "websocket",
+        "scope": "user",
+        "destinations": ["wss://stream.example.com"]
+      },
+      {
+        "connector_id": "database",
+        "transport": "tcp",
+        "scope": "environment",
+        "destinations": ["db.example.com:5432"]
+      },
+      {
+        "connector_id": "metrics",
+        "transport": "udp",
+        "scope": "environment",
+        "destinations": ["metrics.example.com:8125"]
+      }
+    ]
+  }
+}

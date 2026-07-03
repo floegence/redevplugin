@@ -38,10 +38,10 @@ export GOWORK=off
 (
   cd "$ROOT_DIR"
   go test ./...
-  go run ./cmd/redevplugin validate testdata/generated_plugins/minimal/manifest.json >/dev/null
   tmp_compatibility_manifest=$(mktemp "${TMPDIR:-/tmp}/redevplugin-compatibility.XXXXXX.json")
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
   tmp_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal.XXXXXX.redevplugin")
+  tmp_fixture_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-generated-fixture.XXXXXX.redevplugin")
   tmp_signed_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-minimal-signed.XXXXXX.redevplugin")
   tmp_malicious_package=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.redevplugin")
   tmp_malicious_log=$(mktemp "${TMPDIR:-/tmp}/redevplugin-malicious.XXXXXX.log")
@@ -49,9 +49,15 @@ export GOWORK=off
   tmp_public_key=$(mktemp "${TMPDIR:-/tmp}/redevplugin-public.XXXXXX.json")
   tmp_storage_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-storage.XXXXXX")
   tmp_dev_state_root=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-dev-state.XXXXXX")
-  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
+  trap 'rm -rf "$tmp_scaffold_dir" "$tmp_storage_root" "$tmp_dev_state_root"; rm -f "$tmp_compatibility_manifest" "$tmp_package" "$tmp_fixture_package" "$tmp_signed_package" "$tmp_malicious_package" "$tmp_malicious_log" "$tmp_private_key" "$tmp_public_key"' EXIT
   go run ./cmd/redevplugin version >"$tmp_compatibility_manifest"
   go run ./cmd/redevplugin verify-compatibility "$tmp_compatibility_manifest" . | grep -q '"ok": true'
+  for generated_fixture in testdata/generated_plugins/minimal testdata/generated_plugins/networked testdata/generated_plugins/storage; do
+    go run ./cmd/redevplugin validate "$generated_fixture/manifest.json" >/dev/null
+    rm -f "$tmp_fixture_package"
+    go run ./cmd/redevplugin package "$generated_fixture" "$tmp_fixture_package" >/dev/null
+    go run ./cmd/redevplugin validate "$tmp_fixture_package" >/dev/null
+  done
   malicious_fixture_count=0
   for malicious_fixture in testdata/generated_plugins/malicious-build/*; do
     [[ -d "$malicious_fixture" ]] || continue

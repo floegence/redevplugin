@@ -1,0 +1,110 @@
+{
+  "schema_version": "redevplugin.manifest.v1",
+  "publisher": {
+    "publisher_id": "example.generated",
+    "display_name": "Example Generated"
+  },
+  "plugin": {
+    "plugin_id": "com.example.generated.storage",
+    "display_name": "Storage Generated Fixture",
+    "version": "1.0.0",
+    "api_version": "plugin-v1",
+    "min_runtime_version": "0.1.0",
+    "ui_protocol_version": "plugin-ui-v1"
+  },
+  "surfaces": [
+    {
+      "surface_id": "storage.activity",
+      "kind": "activity",
+      "label": "Storage",
+      "entry": "ui/index.html"
+    }
+  ],
+  "storage": {
+    "stores": [
+      {
+        "store_id": "workspace",
+        "kind": "files",
+        "scope": "user",
+        "quota_bytes": 1048576,
+        "quota_files": 64,
+        "schema_version": 1,
+        "migration": {
+          "from_version": 0,
+          "to_version": 1,
+          "reversible": true,
+          "requires_worker": false,
+          "estimated_bytes": 0,
+          "max_duration_ms": 1000,
+          "data_loss_risk": false,
+          "steps_hash": "sha256:generated-storage-workspace-v1"
+        }
+      },
+      {
+        "store_id": "preferences",
+        "kind": "kv",
+        "scope": "user",
+        "quota_bytes": 262144,
+        "quota_files": 32,
+        "schema_version": 1,
+        "migration": {
+          "from_version": 0,
+          "to_version": 1,
+          "reversible": true,
+          "requires_worker": false,
+          "estimated_bytes": 0,
+          "max_duration_ms": 1000,
+          "data_loss_risk": false,
+          "steps_hash": "sha256:generated-storage-preferences-v1"
+        }
+      },
+      {
+        "store_id": "local_db",
+        "kind": "sqlite",
+        "scope": "environment",
+        "quota_bytes": 1048576,
+        "quota_files": 32,
+        "schema_version": 1,
+        "migration": {
+          "from_version": 0,
+          "to_version": 1,
+          "reversible": true,
+          "requires_worker": false,
+          "estimated_bytes": 0,
+          "max_duration_ms": 1000,
+          "data_loss_risk": false,
+          "steps_hash": "sha256:generated-storage-sqlite-v1"
+        }
+      }
+    ]
+  },
+  "settings": {
+    "schema_version": 1,
+    "migration": {
+      "from_version": 0,
+      "to_version": 1,
+      "reversible": true,
+      "requires_worker": false,
+      "estimated_bytes": 0,
+      "max_duration_ms": 1000,
+      "data_loss_risk": false,
+      "steps_hash": "sha256:generated-storage-settings-v1"
+    },
+    "fields": [
+      {
+        "key": "retention_days",
+        "type": "integer",
+        "scope": "user",
+        "label": "Retention days",
+        "default": 30
+      },
+      {
+        "key": "sync_enabled",
+        "type": "boolean",
+        "scope": "environment",
+        "label": "Enable sync",
+        "default": false
+      }
+    ]
+  }
+}

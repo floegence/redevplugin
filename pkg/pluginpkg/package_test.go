@@ -32,6 +32,29 @@ func TestBuildAndReadPackage(t *testing.T) {
 	}
 }
 
+func TestBuildGeneratedPluginFixtures(t *testing.T) {
+	for _, name := range []string{"minimal", "networked", "storage"} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join("..", "..", "testdata", "generated_plugins", name)
+			var buf bytes.Buffer
+			built, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err != nil {
+				t.Fatalf("BuildFromDir(%s) error = %v", name, err)
+			}
+			read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions())
+			if err != nil {
+				t.Fatalf("Read(%s) error = %v", name, err)
+			}
+			if read.PackageHash != built.PackageHash {
+				t.Fatalf("PackageHash(%s) mismatch: got %s want %s", name, read.PackageHash, built.PackageHash)
+			}
+			if read.Manifest.PluginID() == "" {
+				t.Fatalf("generated fixture %s has empty plugin_id", name)
+			}
+		})
+	}
+}
+
 func TestBuildPackageIsDeterministic(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var first bytes.Buffer
