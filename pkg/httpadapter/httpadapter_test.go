@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1352,9 +1353,11 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 
 func TestHandlerOperationManagementFlow(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_http_1"}}
+	operationCanceler := &httpRecordingOperationCanceler{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
+		operationCanceler: operationCanceler,
 	})
 	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
 	if err != nil {
@@ -1398,6 +1401,65 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 	})
 	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
 		t.Fatalf("cancel response mismatch: %#v", canceled)
+	}
+	if operationCanceler.calls != 1 ||
+		operationCanceler.last.OperationID != "op_http_1" ||
+		operationCanceler.last.Method != "images.pull" ||
+		operationCanceler.last.SurfaceInstanceID != "surface_http_operation" ||
+		operationCanceler.last.BridgeChannelID != "bridge_http_operation" ||
+		operationCanceler.last.Reason != "user" {
+		t.Fatalf("operation canceler request mismatch: calls=%d req=%#v", operationCanceler.calls, operationCanceler.last)
+	}
+}
+
+func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{OperationID: "op_http_cancel_fail"}}
+	operationCanceler := &httpRecordingOperationCanceler{err: errors.New("runtime is down")}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+		operationCanceler: operationCanceler,
+	})
+	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.activity", "surface_http_operation", "bridge_http_operation")
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":      installed.PluginInstanceID,
+		"surface_instance_id":     "surface_http_operation",
+		"session_channel_id_hash": "channel_hash",
+		"owner_session_hash":      "session_hash",
+		"owner_user_hash":         "user_hash",
+		"bridge_channel_id":       "bridge_http_operation",
+		"plugin_gateway_token":    bridgeResp.GatewayToken,
+		"method":                  "images.pull",
+	})
+	if result.OperationID != "op_http_cancel_fail" {
+		t.Fatalf("rpc operation result mismatch: %#v", result)
+	}
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/operations/op_http_cancel_fail/cancel", map[string]any{
+		"reason": "user",
+	}, http.StatusServiceUnavailable)
+	if envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
+		t.Fatalf("cancel dispatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	}
+	if operationCanceler.calls != 1 {
+		t.Fatalf("operation canceler calls = %d, want 1", operationCanceler.calls)
+	}
+	stored, err := h.GetOperation(context.Background(), "op_http_cancel_fail")
+	if err != nil {
+		t.Fatalf("GetOperation() error = %v", err)
+	}
+	if stored.Status != operation.StatusCancelRequested || stored.Reason != "user" {
+		t.Fatalf("stored operation after failed dispatch mismatch: %#v", stored)
 	}
 }
 
@@ -2492,6 +2554,7 @@ type httpTestHostOptions struct {
 	capabilityID      string
 	capabilityAdapter capability.Adapter
 	coreActions       host.CoreActionAdapter
+	operationCanceler host.OperationCanceler
 }
 
 func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
@@ -2512,6 +2575,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		RuntimeSupervisor:    opts.runtimeSupervisor,
 		Capabilities:         capabilities,
 		CoreActions:          opts.coreActions,
+		OperationCanceler:    opts.operationCanceler,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3150,6 +3214,12 @@ type httpRecordingCoreActionAdapter struct {
 	result capability.Result
 }
 
+type httpRecordingOperationCanceler struct {
+	calls int
+	last  host.OperationCancelAdapterRequest
+	err   error
+}
+
 type httpRecordingSecretStore struct {
 	bind   host.SecretBindRequest
 	test   host.SecretTestRequest
@@ -3279,6 +3349,12 @@ func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req
 func (a *httpRecordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	a.last = req
 	return a.result, nil
+}
+
+func (c *httpRecordingOperationCanceler) RequestOperationCancel(_ context.Context, req host.OperationCancelAdapterRequest) error {
+	c.calls++
+	c.last = req
+	return c.err
 }
 
 func (s *httpRecordingSecretStore) BindSecretRef(_ context.Context, req host.SecretBindRequest) error {

@@ -1345,11 +1345,13 @@ func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
 
 func TestCancelOperationRequestsCancel(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_cancel_1"}}
+	operationCanceler := &recordingOperationCanceler{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
+		operationCanceler: operationCanceler,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
@@ -1365,12 +1367,66 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
 
-	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: "op_cancel_1", Reason: "user"})
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: "op_cancel_1", Reason: "user", Now: now})
 	if err != nil {
 		t.Fatalf("CancelOperation() error = %v", err)
 	}
 	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
 		t.Fatalf("cancel operation mismatch: %#v", canceled)
+	}
+	if operationCanceler.calls != 1 {
+		t.Fatalf("operation canceler calls = %d, want 1", operationCanceler.calls)
+	}
+	if operationCanceler.last.OperationID != "op_cancel_1" ||
+		operationCanceler.last.PluginInstanceID != installed.PluginInstanceID ||
+		operationCanceler.last.Method != "images.pull" ||
+		operationCanceler.last.SurfaceInstanceID != "surface_rpc" ||
+		operationCanceler.last.SessionChannelIDHash != "channel_hash" ||
+		operationCanceler.last.BridgeChannelID != "bridge_rpc" ||
+		operationCanceler.last.Reason != "user" ||
+		!operationCanceler.last.RequestedAt.Equal(now) {
+		t.Fatalf("operation canceler request mismatch: %#v", operationCanceler.last)
+	}
+	if !audits.hasEvent("plugin.operation.cancel_requested") {
+		t.Fatalf("missing cancel audit event: %#v", audits.events)
+	}
+}
+
+func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_cancel_fail_1"}}
+	operationCanceler := &recordingOperationCanceler{err: errors.New("runtime unavailable")}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+		operationCanceler: operationCanceler,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "images.pull",
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+
+	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: "op_cancel_fail_1", Reason: "user"})
+	if !errors.Is(err, ErrOperationCancelDispatchFailed) {
+		t.Fatalf("CancelOperation() error = %v, want %v", err, ErrOperationCancelDispatchFailed)
+	}
+	if canceled.Status != operation.StatusCancelRequested {
+		t.Fatalf("returned operation status = %s, want %s: %#v", canceled.Status, operation.StatusCancelRequested, canceled)
+	}
+	assertHostOperationStatus(t, h, "op_cancel_fail_1", operation.StatusCancelRequested)
+	if operationCanceler.calls != 1 {
+		t.Fatalf("operation canceler calls = %d, want 1", operationCanceler.calls)
 	}
 	if !audits.hasEvent("plugin.operation.cancel_requested") {
 		t.Fatalf("missing cancel audit event: %#v", audits.events)
@@ -4021,6 +4077,7 @@ type testHostOptions struct {
 	capabilityID            string
 	capabilityAdapter       capability.Adapter
 	coreActions             CoreActionAdapter
+	operationCanceler       OperationCanceler
 }
 
 func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
@@ -4064,6 +4121,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Secrets:                 opts.secrets,
 		Capabilities:            capabilities,
 		CoreActions:             opts.coreActions,
+		OperationCanceler:       opts.operationCanceler,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -5535,6 +5593,12 @@ type recordingCoreActionAdapter struct {
 	err    error
 }
 
+type recordingOperationCanceler struct {
+	calls int
+	last  OperationCancelAdapterRequest
+	err   error
+}
+
 type recordingSecretStore struct {
 	bind           SecretBindRequest
 	test           SecretTestRequest
@@ -5615,6 +5679,12 @@ func (a *recordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req cap
 		return capability.Result{}, a.err
 	}
 	return a.result, nil
+}
+
+func (c *recordingOperationCanceler) RequestOperationCancel(_ context.Context, req OperationCancelAdapterRequest) error {
+	c.calls++
+	c.last = req
+	return c.err
 }
 
 func (s *recordingSecretStore) BindSecretRef(_ context.Context, req SecretBindRequest) error {

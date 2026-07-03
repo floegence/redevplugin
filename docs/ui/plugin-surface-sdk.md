@@ -71,6 +71,13 @@ routes exposed by `pkg/httpadapter`, including:
 - host-mediated intent list/invoke;
 - audit and diagnostic event list.
 
+`cancelOperation` is a trusted host-page command. It records
+`cancel_requested` in the Host operation store and, when the host registered an
+`OperationCanceler`, dispatches the request to the runtime or capability adapter
+with the operation context and reason. Dispatch failures are surfaced to the
+host page, but the durable cancel request remains available through
+`getOperation` and `listOperations`.
+
 List helpers preserve the same data wrapper fields returned by the Go HTTP
 adapter, such as `operations`, `permissions`, `audit_events`, and
 `diagnostic_events`, so host pages can consume the SDK and raw HTTP contract

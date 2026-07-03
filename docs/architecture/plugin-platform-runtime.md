@@ -193,6 +193,14 @@ ReDevPlugin uses explicit stores instead of implicit process memory:
 - retained-data and cleanup stores make keep-data/delete-data outcomes auditable;
 - observability stores persist audit and diagnostic events.
 
+Operation cancellation is recorded before execution-side dispatch. The Host
+marks the operation `cancel_requested`, writes audit evidence, then calls the
+optional `OperationCanceler` adapter with the operation, plugin, method, surface,
+bridge-channel, reason, and requested-at context. A missing adapter means the
+Host has recorded the request but has no runtime/capability-specific cancel
+hook. A failing adapter returns a dispatch error to the caller while preserving
+the durable `cancel_requested` state for later retry or reconciliation.
+
 The platform does not claim cross-store database transactions. When a workflow
 touches multiple stores, it must record durable stage, cleanup, audit, or
 diagnostic evidence so repair and retry behavior remains explicit.

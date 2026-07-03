@@ -56,15 +56,16 @@ type ListAuditEventsRequest = observability.ListAuditRequest
 type ListDiagnosticEventsRequest = observability.ListDiagnosticRequest
 
 var (
-	ErrStreamTicketRequired      = errors.New("stream ticket is required")
-	ErrPluginDataNotDeclared     = errors.New("plugin does not declare exportable data")
-	ErrPluginDataArchiveRequired = errors.New("archive_ref or settings_archive_ref is required")
-	ErrPluginStorageNotDeclared  = errors.New("target plugin does not declare storage")
-	ErrPluginSettingsNotDeclared = errors.New("target plugin does not declare settings")
-	ErrPluginMigrationPreflight  = errors.New("plugin migration preflight failed")
-	ErrRetainedDataCleanupFailed = errors.New("retained data cleanup failed")
-	ErrRetainedDataBindFailed    = errors.New("retained data bind failed")
-	ErrRetainedDataUnsafePayload = errors.New("retained data payload is not safe to delete")
+	ErrStreamTicketRequired          = errors.New("stream ticket is required")
+	ErrPluginDataNotDeclared         = errors.New("plugin does not declare exportable data")
+	ErrPluginDataArchiveRequired     = errors.New("archive_ref or settings_archive_ref is required")
+	ErrPluginStorageNotDeclared      = errors.New("target plugin does not declare storage")
+	ErrPluginSettingsNotDeclared     = errors.New("target plugin does not declare settings")
+	ErrPluginMigrationPreflight      = errors.New("plugin migration preflight failed")
+	ErrOperationCancelDispatchFailed = errors.New("operation cancel dispatch failed")
+	ErrRetainedDataCleanupFailed     = errors.New("retained data cleanup failed")
+	ErrRetainedDataBindFailed        = errors.New("retained data bind failed")
+	ErrRetainedDataUnsafePayload     = errors.New("retained data payload is not safe to delete")
 )
 
 type PolicyAdapter interface {
@@ -124,6 +125,24 @@ type CoreActionAdapter interface {
 	InvokeCoreAction(ctx context.Context, req capability.Invocation) (capability.Result, error)
 }
 
+type OperationCanceler interface {
+	RequestOperationCancel(ctx context.Context, req OperationCancelAdapterRequest) error
+}
+
+type OperationCancelAdapterRequest struct {
+	OperationID          string    `json:"operation_id"`
+	PluginID             string    `json:"plugin_id"`
+	PluginInstanceID     string    `json:"plugin_instance_id"`
+	Method               string    `json:"method"`
+	Effect               string    `json:"effect,omitempty"`
+	Execution            string    `json:"execution"`
+	SurfaceInstanceID    string    `json:"surface_instance_id,omitempty"`
+	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string    `json:"bridge_channel_id,omitempty"`
+	Reason               string    `json:"reason,omitempty"`
+	RequestedAt          time.Time `json:"requested_at"`
+}
+
 type RuntimeTarget struct {
 	OS   string `json:"os"`
 	Arch string `json:"arch"`
@@ -165,6 +184,7 @@ type Adapters struct {
 	InstallStages           installstage.Store
 	Capabilities            *capability.Registry
 	CoreActions             CoreActionAdapter
+	OperationCanceler       OperationCanceler
 	SurfaceTokens           *bridge.SurfaceTokenService
 	Storage                 storage.Broker
 	Connectivity            connectivity.Broker
@@ -2009,6 +2029,11 @@ func (h *Host) CancelOperation(ctx context.Context, req CancelOperationRequest) 
 		return operation.Record{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.operation.cancel_requested", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
+	if h.adapters.OperationCanceler != nil {
+		if err := h.adapters.OperationCanceler.RequestOperationCancel(ctx, operationCancelAdapterRequest(record, req)); err != nil {
+			return record, fmt.Errorf("%w: %w", ErrOperationCancelDispatchFailed, err)
+		}
+	}
 	return record, nil
 }
 
@@ -3265,6 +3290,26 @@ func operationsBlockDelete(records []operation.Record) bool {
 		}
 	}
 	return false
+}
+
+func operationCancelAdapterRequest(record operation.Record, req CancelOperationRequest) OperationCancelAdapterRequest {
+	requestedAt := record.UpdatedAt
+	if record.CancelRequestedAt != nil {
+		requestedAt = *record.CancelRequestedAt
+	}
+	return OperationCancelAdapterRequest{
+		OperationID:          record.OperationID,
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		Method:               record.Method,
+		Effect:               record.Effect,
+		Execution:            record.Execution,
+		SurfaceInstanceID:    record.SurfaceInstanceID,
+		SessionChannelIDHash: record.SessionChannelIDHash,
+		BridgeChannelID:      record.BridgeChannelID,
+		Reason:               req.Reason,
+		RequestedAt:          requestedAt,
+	}
 }
 
 func cancelPolicyDisableBehavior(policy *manifest.CancelPolicySpec) string {

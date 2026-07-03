@@ -172,6 +172,11 @@ capabilities.
   credentials to the sandboxed iframe. Host pages can also use
   `PluginSurfaceReloadLimiter` to cap consecutive automatic iframe reloads
   after crashes or load failures before showing a host-owned error state.
+- Operation cancel requests are durable Host decisions: `CancelOperation` records
+  `cancel_requested`, emits audit evidence, and dispatches the optional
+  `OperationCanceler` adapter with plugin, method, surface, bridge-channel, and
+  reason context. If that dispatch fails, the cancel request remains recorded
+  while HTTP callers receive `PLUGIN_RUNTIME_UNAVAILABLE`.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, token/ticket, bridge, compatibility, release-manifest,

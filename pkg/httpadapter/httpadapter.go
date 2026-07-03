@@ -2105,6 +2105,8 @@ func httpStatusForManagementError(err error) int {
 
 func errorCodeForOperationError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
+		return security.ErrRuntimeUnavailable
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return security.ErrInvalidRequest
 	default:
@@ -2114,6 +2116,8 @@ func errorCodeForOperationError(err error) security.ErrorCode {
 
 func httpStatusForOperationError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
+		return http.StatusServiceUnavailable
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return http.StatusBadRequest
 	default:
