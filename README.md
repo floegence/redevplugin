@@ -272,8 +272,13 @@ capabilities.
   runtime verifies control-channel freshness and fails closed with
   `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
   stale. Runtime revoke ACKs now return a structured result with closed
-  actor/socket/stream/storage-handle counters; the current runtime reports zero
-  for resource classes that are not yet owned by the Rust hot path. The earlier fixed
+  actor/socket/stream/storage-handle counters. The Rust runtime now keeps an
+  in-process registry for worker actor entries, brokered storage handles,
+  network socket leases, and Host stream-store bridge stream IDs; revoke epochs
+  clear matching registry entries and report the actual closed counts. Resource
+  classes that are still purely Host-owned, including the persistent
+  credit/resume stream transport that is not yet in the Rust hot path, still
+  report zero until Rust owns those handles. The earlier fixed
   `*_demo` imports and `redevplugin.network/http_request` alias remain covered only as legacy runtime compatibility fixtures,
   not as the scaffolded plugin backend contract. Host integration tests build
   and exercise the real Rust runtime whenever a local Cargo toolchain is

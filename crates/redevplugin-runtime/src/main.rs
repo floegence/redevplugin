@@ -41,6 +41,7 @@ fn run() -> Result<(), String> {
 
     let mut revocations = RuntimeRevocations::default();
     let mut lease_replays = RuntimeLeaseReplayCache::default();
+    let mut resources = RuntimeResourceRegistry::default();
     let mut control = ControlChannelState::new();
     loop {
         line.clear();
@@ -65,6 +66,7 @@ fn run() -> Result<(), String> {
                 &mut WorkerInvocationState {
                     revocations: &revocations,
                     lease_replays: &mut lease_replays,
+                    resources: &mut resources,
                     control: &control,
                 },
                 &request_id,
@@ -73,6 +75,7 @@ fn run() -> Result<(), String> {
             )?,
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => handle_revoke_epoch(
                 &mut revocations,
+                &mut resources,
                 &mut control,
                 &request_id,
                 &runtime_generation_id,
@@ -251,6 +254,7 @@ fn duration_millis_u64(duration: Duration) -> u64 {
 struct WorkerInvocationState<'a> {
     revocations: &'a RuntimeRevocations,
     lease_replays: &'a mut RuntimeLeaseReplayCache,
+    resources: &'a mut RuntimeResourceRegistry,
     control: &'a ControlChannelState,
 }
 
@@ -412,6 +416,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
+                    state.resources,
                 )
             }
             WorkerHostcallRequest::StorageKV(request_json) => {
@@ -426,6 +431,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
+                    state.resources,
                 )
             }
             WorkerHostcallRequest::StorageSQLite(request_json) => {
@@ -440,6 +446,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
+                    state.resources,
                 )
             }
             WorkerHostcallRequest::NetworkExecute(request_json) => {
@@ -454,6 +461,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
+                    state.resources,
                 )
             }
         }) {
@@ -470,6 +478,14 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 ));
             }
         };
+    if let Ok(plugin_instance_id) = required_json_string(line, "plugin_instance_id") {
+        state.resources.track_actor(
+            &plugin_instance_id,
+            &identity.worker_id,
+            &identity.artifact,
+            &identity.export,
+        );
+    }
     let mut memory_network_results = Vec::new();
     if execution.network_execute_requested {
         for result in execution.network_execute_results {
@@ -614,6 +630,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 request_id,
                 runtime_generation_id,
                 line,
+                state.resources,
             ) {
                 Ok(result) => Some(result),
                 Err(err) => {
@@ -653,6 +670,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 request_id,
                 runtime_generation_id,
                 line,
+                state.resources,
             ) {
                 Ok(result) => Some(result),
                 Err(err) => {
@@ -692,6 +710,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 request_id,
                 runtime_generation_id,
                 line,
+                state.resources,
             ) {
                 Ok(result) => Some(result),
                 Err(err) => {
@@ -730,6 +749,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                 request_id,
                 runtime_generation_id,
                 line,
+                state.resources,
             ) {
                 Ok(result) => Some(result),
                 Err(err) => {
@@ -802,6 +822,94 @@ impl RuntimeRevocations {
             _ => Ok(()),
         }
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RuntimeResourceCloseCounts {
+    actor: u64,
+    socket: u64,
+    stream: u64,
+    storage_handle: u64,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct RuntimeResourceKey {
+    plugin_instance_id: String,
+    resource_id: String,
+}
+
+impl RuntimeResourceKey {
+    fn new(plugin_instance_id: &str, resource_id: String) -> Self {
+        Self {
+            plugin_instance_id: plugin_instance_id.to_string(),
+            resource_id,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RuntimeResourceRegistry {
+    actors: HashSet<RuntimeResourceKey>,
+    sockets: HashSet<RuntimeResourceKey>,
+    streams: HashSet<RuntimeResourceKey>,
+    storage_handles: HashSet<RuntimeResourceKey>,
+}
+
+impl RuntimeResourceRegistry {
+    fn track_actor(
+        &mut self,
+        plugin_instance_id: &str,
+        worker_id: &str,
+        artifact: &str,
+        export: &str,
+    ) {
+        self.actors.insert(RuntimeResourceKey::new(
+            plugin_instance_id,
+            format!("worker:{worker_id}:{artifact}:{export}"),
+        ));
+    }
+
+    fn track_storage_handle(&mut self, plugin_instance_id: &str, handle_id: &str, method: &str) {
+        self.storage_handles.insert(RuntimeResourceKey::new(
+            plugin_instance_id,
+            format!("{method}:{handle_id}"),
+        ));
+    }
+
+    fn track_socket(&mut self, req: &redevplugin_ipc::NetworkExecuteRequest) {
+        self.sockets.insert(RuntimeResourceKey::new(
+            &req.plugin_instance_id,
+            format!("{}:{}:{}", req.transport, req.connector_id, req.destination),
+        ));
+    }
+
+    fn track_stream(&mut self, req: &redevplugin_ipc::NetworkExecuteRequest, stream_id: &str) {
+        if stream_id.trim().is_empty() {
+            return;
+        }
+        self.streams.insert(RuntimeResourceKey::new(
+            &req.plugin_instance_id,
+            format!("{}:{}:{stream_id}", req.transport, req.connector_id),
+        ));
+    }
+
+    fn revoke_plugin(&mut self, plugin_instance_id: &str) -> RuntimeResourceCloseCounts {
+        RuntimeResourceCloseCounts {
+            actor: remove_plugin_resources(&mut self.actors, plugin_instance_id),
+            socket: remove_plugin_resources(&mut self.sockets, plugin_instance_id),
+            stream: remove_plugin_resources(&mut self.streams, plugin_instance_id),
+            storage_handle: remove_plugin_resources(&mut self.storage_handles, plugin_instance_id),
+        }
+    }
+}
+
+fn remove_plugin_resources(
+    resources: &mut HashSet<RuntimeResourceKey>,
+    plugin_instance_id: &str,
+) -> u64 {
+    let before = resources.len();
+    resources.retain(|resource| resource.plugin_instance_id != plugin_instance_id);
+    u64::try_from(before.saturating_sub(resources.len())).unwrap_or(u64::MAX)
 }
 
 #[derive(Default)]
@@ -897,6 +1005,7 @@ impl std::fmt::Display for RuntimeRevocationError {
 
 fn handle_revoke_epoch(
     revocations: &mut RuntimeRevocations,
+    resources: &mut RuntimeResourceRegistry,
     control: &mut ControlChannelState,
     request_id: &str,
     runtime_generation_id: &str,
@@ -931,14 +1040,15 @@ fn handle_revoke_epoch(
         }
     };
     revocations.revoke_plugin(&plugin_instance_id, revoke_epoch);
+    let closed = resources.revoke_plugin(&plugin_instance_id);
     control.refresh_without_staleness_change();
     let result_json = redevplugin_ipc::revoke_epoch_ack_result_json(
         &plugin_instance_id,
         revoke_epoch,
-        0,
-        0,
-        0,
-        0,
+        closed.actor,
+        closed.socket,
+        closed.stream,
+        closed.storage_handle,
     );
     redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
@@ -1566,9 +1676,13 @@ fn perform_storage_file_write_demo<R: BufRead, W: Write>(
     request_id: &str,
     runtime_generation_id: &str,
     invocation_frame: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_file_write_demo_request(invocation_frame, runtime_generation_id)?;
-    dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, req)
+    let result =
+        dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, &req)?;
+    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
+    Ok(result)
 }
 
 fn perform_storage_file_request<R: BufRead, W: Write>(
@@ -1578,9 +1692,13 @@ fn perform_storage_file_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_file_request(invocation_frame, runtime_generation_id, request_json)?;
-    dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, req)
+    let result =
+        dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, &req)?;
+    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
+    Ok(result)
 }
 
 fn perform_storage_kv_put_demo<R: BufRead, W: Write>(
@@ -1589,9 +1707,13 @@ fn perform_storage_kv_put_demo<R: BufRead, W: Write>(
     request_id: &str,
     runtime_generation_id: &str,
     invocation_frame: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_kv_put_demo_request(invocation_frame, runtime_generation_id)?;
-    dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, req)
+    let result =
+        dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, &req)?;
+    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
+    Ok(result)
 }
 
 fn perform_storage_kv_request<R: BufRead, W: Write>(
@@ -1601,9 +1723,13 @@ fn perform_storage_kv_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_kv_request(invocation_frame, runtime_generation_id, request_json)?;
-    dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, req)
+    let result =
+        dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, &req)?;
+    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
+    Ok(result)
 }
 
 fn perform_storage_sqlite_exec_demo<R: BufRead, W: Write>(
@@ -1612,9 +1738,13 @@ fn perform_storage_sqlite_exec_demo<R: BufRead, W: Write>(
     request_id: &str,
     runtime_generation_id: &str,
     invocation_frame: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_sqlite_exec_demo_request(invocation_frame, runtime_generation_id)?;
-    dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, req)
+    let result =
+        dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, &req)?;
+    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
+    Ok(result)
 }
 
 fn perform_storage_sqlite_request<R: BufRead, W: Write>(
@@ -1624,9 +1754,13 @@ fn perform_storage_sqlite_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_sqlite_request(invocation_frame, runtime_generation_id, request_json)?;
-    dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, req)
+    let result =
+        dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, &req)?;
+    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
+    Ok(result)
 }
 
 fn dispatch_storage_file_request<R: BufRead, W: Write>(
@@ -1634,11 +1768,11 @@ fn dispatch_storage_file_request<R: BufRead, W: Write>(
     stdout: &mut W,
     request_id: &str,
     runtime_generation_id: &str,
-    req: redevplugin_ipc::StorageFileRequest,
+    req: &redevplugin_ipc::StorageFileRequest,
 ) -> Result<String, String> {
     let storage_request_id = format!("{request_id}:storage_file");
     let frame =
-        redevplugin_ipc::storage_file_frame(&storage_request_id, runtime_generation_id, &req);
+        redevplugin_ipc::storage_file_frame(&storage_request_id, runtime_generation_id, req);
     stdout
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.write_all(b"\n"))
@@ -1664,10 +1798,10 @@ fn dispatch_storage_kv_request<R: BufRead, W: Write>(
     stdout: &mut W,
     request_id: &str,
     runtime_generation_id: &str,
-    req: redevplugin_ipc::StorageKVRequest,
+    req: &redevplugin_ipc::StorageKVRequest,
 ) -> Result<String, String> {
     let storage_request_id = format!("{request_id}:storage_kv");
-    let frame = redevplugin_ipc::storage_kv_frame(&storage_request_id, runtime_generation_id, &req);
+    let frame = redevplugin_ipc::storage_kv_frame(&storage_request_id, runtime_generation_id, req);
     stdout
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.write_all(b"\n"))
@@ -1693,11 +1827,11 @@ fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
     stdout: &mut W,
     request_id: &str,
     runtime_generation_id: &str,
-    req: redevplugin_ipc::StorageSQLiteRequest,
+    req: &redevplugin_ipc::StorageSQLiteRequest,
 ) -> Result<String, String> {
     let storage_request_id = format!("{request_id}:storage_sqlite");
     let frame =
-        redevplugin_ipc::storage_sqlite_frame(&storage_request_id, runtime_generation_id, &req);
+        redevplugin_ipc::storage_sqlite_frame(&storage_request_id, runtime_generation_id, req);
     stdout
         .write_all(frame.as_bytes())
         .and_then(|_| stdout.write_all(b"\n"))
@@ -2024,6 +2158,7 @@ fn perform_network_http_request_demo<R: BufRead, W: Write>(
     request_id: &str,
     runtime_generation_id: &str,
     invocation_frame: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = network_http_request_demo(invocation_frame, runtime_generation_id)?;
     let network_request_id = format!("{request_id}:network_execute");
@@ -2048,7 +2183,12 @@ fn perform_network_http_request_demo<R: BufRead, W: Write>(
         "api",
         "http",
     )?;
-    redevplugin_ipc::network_execute_payload_json(&response)
+    let result = redevplugin_ipc::network_execute_payload_json(&response)?;
+    resources.track_socket(&req);
+    if let Some(stream_id) = request_json_string(&result, "stream_id") {
+        resources.track_stream(&req, &stream_id);
+    }
+    Ok(result)
 }
 
 fn perform_network_execute_request<R: BufRead, W: Write>(
@@ -2058,6 +2198,7 @@ fn perform_network_execute_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
+    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = network_execute_request(invocation_frame, runtime_generation_id, request_json)?;
     let network_request_id = format!("{request_id}:network_execute");
@@ -2086,7 +2227,12 @@ fn perform_network_execute_request<R: BufRead, W: Write>(
         &connector_id,
         &transport,
     )?;
-    redevplugin_ipc::network_execute_payload_json(&response)
+    let result = redevplugin_ipc::network_execute_payload_json(&response)?;
+    resources.track_socket(&req);
+    if let Some(stream_id) = request_json_string(&result, "stream_id") {
+        resources.track_stream(&req, &stream_id);
+    }
+    Ok(result)
 }
 
 fn network_execute_request(
@@ -2373,11 +2519,13 @@ mod tests {
     fn worker_invocation_state<'a>(
         revocations: &'a RuntimeRevocations,
         lease_replays: &'a mut RuntimeLeaseReplayCache,
+        resources: &'a mut RuntimeResourceRegistry,
         control: &'a ControlChannelState,
     ) -> WorkerInvocationState<'a> {
         WorkerInvocationState {
             revocations,
             lease_replays,
+            resources,
             control,
         }
     }
@@ -2487,10 +2635,12 @@ mod tests {
     #[test]
     fn handle_revoke_epoch_updates_runtime_revocation_state() {
         let mut revocations = RuntimeRevocations::default();
+        let mut resources = RuntimeResourceRegistry::default();
         let mut control = ControlChannelState::new();
         control.force_stale_for_test();
         let response = handle_revoke_epoch(
             &mut revocations,
+            &mut resources,
             &mut control,
             "r1",
             "g1",
@@ -2511,6 +2661,146 @@ mod tests {
         control
             .validate_fresh()
             .expect("valid revoke control frame should refresh control freshness");
+    }
+
+    #[test]
+    fn handle_revoke_epoch_closes_registered_runtime_resources() {
+        let mut revocations = RuntimeRevocations::default();
+        let mut resources = RuntimeResourceRegistry::default();
+        resources.track_actor(
+            "plugini_1",
+            "backend",
+            "workers/backend.wasm",
+            "redevplugin_worker_invoke",
+        );
+        resources.track_storage_handle("plugini_1", "storage:db", "storage.sqlite");
+        resources.track_storage_handle("plugini_1", "storage:db", "storage.sqlite");
+        resources.track_socket(&network_execute_request_for_test(
+            "plugini_1",
+            "http",
+            "api",
+            "https://api.example.com",
+        ));
+        resources.track_stream(
+            &network_execute_request_for_test(
+                "plugini_1",
+                "http",
+                "api",
+                "https://api.example.com",
+            ),
+            "stream_1",
+        );
+        resources.track_actor(
+            "plugini_2",
+            "backend",
+            "workers/backend.wasm",
+            "redevplugin_worker_invoke",
+        );
+
+        let mut control = ControlChannelState::new();
+        let response = handle_revoke_epoch(
+            &mut revocations,
+            &mut resources,
+            &mut control,
+            "r1",
+            "g1",
+            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+        );
+
+        assert!(response.contains(r#""ok":true"#));
+        assert!(response.contains(r#""closed_actor_count":1"#));
+        assert!(response.contains(r#""closed_socket_count":1"#));
+        assert!(response.contains(r#""closed_stream_count":1"#));
+        assert!(response.contains(r#""closed_storage_handle_count":1"#));
+        assert_eq!(resources.actors.len(), 1);
+        assert!(resources.sockets.is_empty());
+        assert!(resources.streams.is_empty());
+        assert!(resources.storage_handles.is_empty());
+
+        let second = handle_revoke_epoch(
+            &mut revocations,
+            &mut resources,
+            &mut control,
+            "r2",
+            "g1",
+            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r2","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":8}}"#,
+        );
+        assert!(second.contains(r#""closed_actor_count":0"#));
+        assert!(second.contains(r#""closed_socket_count":0"#));
+        assert!(second.contains(r#""closed_stream_count":0"#));
+        assert!(second.contains(r#""closed_storage_handle_count":0"#));
+    }
+
+    #[test]
+    fn successful_storage_request_registers_runtime_storage_handle() {
+        let mut resources = RuntimeResourceRegistry::default();
+        let mut input = std::io::Cursor::new(
+            br#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34}}"#
+                .iter()
+                .copied()
+                .chain(std::iter::once(b'\n'))
+                .collect::<Vec<u8>>(),
+        );
+        let mut output = Vec::<u8>::new();
+
+        let result = perform_storage_file_request(
+            &mut input,
+            &mut output,
+            "r1",
+            "g1",
+            &broker_invocation_frame("plugini_1"),
+            r#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8="}"#,
+            &mut resources,
+        )
+        .expect("storage request should succeed");
+
+        assert!(result.contains(r#""path":"notes/from-memory.txt""#));
+        let request = String::from_utf8(output).expect("storage request utf8");
+        assert!(
+            request.contains(r#""frame_type":"storage_file""#),
+            "{request}"
+        );
+        let closed = resources.revoke_plugin("plugini_1");
+        assert_eq!(closed.storage_handle, 1);
+        assert_eq!(closed.actor, 0);
+        assert_eq!(closed.socket, 0);
+        assert_eq!(closed.stream, 0);
+    }
+
+    #[test]
+    fn successful_network_stream_request_registers_socket_and_stream() {
+        let mut resources = RuntimeResourceRegistry::default();
+        let mut input = std::io::Cursor::new(
+            br#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"connector_id":"api","transport":"http","status_code":200,"stream_id":"stream_1"}}"#
+                .iter()
+                .copied()
+                .chain(std::iter::once(b'\n'))
+                .collect::<Vec<u8>>(),
+        );
+        let mut output = Vec::<u8>::new();
+
+        let result = perform_network_execute_request(
+            &mut input,
+            &mut output,
+            "r1",
+            "g1",
+            &broker_invocation_frame("plugini_1"),
+            r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"GET","path":"/v1/stream","max_chunk_bytes":1024,"max_buffered_bytes":4096}"#,
+            &mut resources,
+        )
+        .expect("network stream request should succeed");
+
+        assert!(result.contains(r#""stream_id":"stream_1""#));
+        let request = String::from_utf8(output).expect("network request utf8");
+        assert!(
+            request.contains(r#""frame_type":"network_execute""#),
+            "{request}"
+        );
+        let closed = resources.revoke_plugin("plugini_1");
+        assert_eq!(closed.socket, 1);
+        assert_eq!(closed.stream, 1);
+        assert_eq!(closed.actor, 0);
+        assert_eq!(closed.storage_handle, 0);
     }
 
     #[test]
@@ -2549,9 +2839,11 @@ mod tests {
     #[test]
     fn handle_revoke_epoch_fails_closed_for_invalid_frame() {
         let mut revocations = RuntimeRevocations::default();
+        let mut resources = RuntimeResourceRegistry::default();
         let mut control = ControlChannelState::new();
         let response = handle_revoke_epoch(
             &mut revocations,
+            &mut resources,
             &mut control,
             "r1",
             "g1",
@@ -2570,6 +2862,7 @@ mod tests {
         let mut revocations = RuntimeRevocations::default();
         revocations.revoke_plugin("plugini_1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
         let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
@@ -2577,7 +2870,12 @@ mod tests {
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
+            &mut worker_invocation_state(
+                &revocations,
+                &mut lease_replays,
+                &mut resources,
+                &control,
+            ),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 4),
@@ -2597,6 +2895,7 @@ mod tests {
     fn worker_invocation_rejects_stale_control_before_opening_artifact() {
         let revocations = RuntimeRevocations::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
         let mut control = ControlChannelState::new();
         control.force_stale_for_test();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
@@ -2605,7 +2904,12 @@ mod tests {
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
+            &mut worker_invocation_state(
+                &revocations,
+                &mut lease_replays,
+                &mut resources,
+                &control,
+            ),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 1),
@@ -2626,6 +2930,7 @@ mod tests {
         let mut revocations = RuntimeRevocations::default();
         revocations.revoke_plugin("plugini_1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
         let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
@@ -2633,7 +2938,12 @@ mod tests {
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
+            &mut worker_invocation_state(
+                &revocations,
+                &mut lease_replays,
+                &mut resources,
+                &control,
+            ),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 5),
@@ -2652,6 +2962,7 @@ mod tests {
     fn worker_invocation_rejects_replayed_lease_before_opening_artifact() {
         let revocations = RuntimeRevocations::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
         let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
@@ -2660,7 +2971,12 @@ mod tests {
         let first = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
+            &mut worker_invocation_state(
+                &revocations,
+                &mut lease_replays,
+                &mut resources,
+                &control,
+            ),
             "r1",
             "g1",
             &frame,
@@ -2677,7 +2993,12 @@ mod tests {
         let replay = handle_worker_invocation(
             &mut replay_input,
             &mut replay_output,
-            &mut worker_invocation_state(&revocations, &mut lease_replays, &control),
+            &mut worker_invocation_state(
+                &revocations,
+                &mut lease_replays,
+                &mut resources,
+                &control,
+            ),
             "r2",
             "g1",
             &frame,
@@ -2920,6 +3241,12 @@ mod tests {
         worker_invocation_frame_with_lease(plugin_instance_id, revoke_epoch, "lease_1", "nonce_1")
     }
 
+    fn broker_invocation_frame(plugin_instance_id: &str) -> String {
+        format!(
+            r#"{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grant_token":"handle_grant.secret","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}"#
+        )
+    }
+
     fn worker_invocation_frame_with_lease(
         plugin_instance_id: &str,
         revoke_epoch: u64,
@@ -2929,6 +3256,51 @@ mod tests {
         format!(
             r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
         )
+    }
+
+    fn network_execute_request_for_test(
+        plugin_instance_id: &str,
+        transport: &str,
+        connector_id: &str,
+        destination: &str,
+    ) -> redevplugin_ipc::NetworkExecuteRequest {
+        redevplugin_ipc::NetworkExecuteRequest {
+            plugin_id: "com.example.worker".to_string(),
+            plugin_instance_id: plugin_instance_id.to_string(),
+            active_fingerprint: "sha256:active".to_string(),
+            runtime_instance_id: "runtime_1".to_string(),
+            runtime_generation_id: "g1".to_string(),
+            runtime_shard_id: String::new(),
+            policy_revision: 1,
+            management_revision: 1,
+            revoke_epoch: 1,
+            connector_id: connector_id.to_string(),
+            transport: transport.to_string(),
+            destination: destination.to_string(),
+            ttl_ms: 30_000,
+            operation: "http_stream".to_string(),
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            headers_json: "{}".to_string(),
+            message_type: String::new(),
+            body_base64: String::new(),
+            payload_base64: String::new(),
+            max_request_bytes: 1024,
+            max_response_bytes: 4096,
+            max_chunk_bytes: 1024,
+            max_buffered_bytes: 4096,
+            timeout_ms: 1000,
+            stream_id: String::new(),
+            stream_method: "worker.echo".to_string(),
+            stream_effect: "read".to_string(),
+            stream_execution: "subscription".to_string(),
+            surface_instance_id: "surface_1".to_string(),
+            owner_session_hash: "session_hash".to_string(),
+            owner_user_hash: "user_hash".to_string(),
+            session_channel_id_hash: "channel_hash".to_string(),
+            bridge_channel_id: "bridge_1".to_string(),
+            content_type: "text/plain".to_string(),
+        }
     }
 
     fn minimal_worker_wasm(export_name: &str) -> Vec<u8> {

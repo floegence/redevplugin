@@ -103,9 +103,14 @@ before dispatching Host IO.
 
 Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
 payloads return a structured result containing the plugin instance, revoke
-epoch, and closed actor/socket/stream/storage-handle counters. The current Rust
-runtime reports zero for counters whose resources are still served by Host-owned
-brokers rather than Rust-owned hot-path handles.
+epoch, and closed actor/socket/stream/storage-handle counters. The Rust runtime
+maintains an in-process registry for worker actor entries, brokered storage
+handles, network socket leases, and Host stream-store bridge stream IDs. A
+revoke epoch removes the matching plugin resources from that registry and
+reports the actual close counts. Counters remain zero for resource classes that
+are still purely Host-owned or not yet implemented as Rust hot-path handles,
+such as the future persistent stream transport with credit, resume, and
+bidirectional flow control.
 
 The runtime contract is versioned by:
 

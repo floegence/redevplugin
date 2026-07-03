@@ -224,7 +224,11 @@ with `RUNTIME_CONTROL_CHANNEL_STALE` before opening artifacts or dispatching
 Host IO.
 Successful runtime revocation ACKs include structured close counters so the
 audit trail can distinguish a control-plane revoke from the runtime resources
-that were actually closed.
+that were actually closed. The current Rust runtime backs these counters with
+an in-process registry for worker actor entries, brokered storage handles,
+network socket leases, and Host stream-store bridge stream IDs; counters remain
+zero for future Rust hot-path resource classes that do not yet have runtime-owned
+handles.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
 compatibility manifests are versioned contracts. Drift must fail closed through
