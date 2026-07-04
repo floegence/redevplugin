@@ -101,6 +101,15 @@ frame. Once that max-staleness window is exceeded, it rejects new worker
 invocations before opening artifacts and rejects new storage/network hostcalls
 before dispatching Host IO.
 
+`Health` includes the Host-side runtime instance ID, runtime generation ID, IPC
+channel ID, and handshake `connection_nonce` needed to mint a
+`RuntimeExecutionLease` for the active process. When a host configures
+`ProcessSupervisorOptions.RuntimeLeaseVerifier`, the supervisor requires a
+worker lease to carry that exact audience before verifying the Ed25519
+signature. The canonical signing payload excludes the bearer token and covers
+the method, target descriptor hashes, policy revisions, revoke epoch, expiry,
+`lease_nonce`, `key_id`, and runtime audience fields.
+
 Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
 payloads return a structured result containing the plugin instance, revoke
 epoch, and closed actor/socket/stream/storage-handle counters. The Rust runtime

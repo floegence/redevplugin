@@ -179,6 +179,24 @@ func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {
 		if leaseNonce["type"] != "string" || leaseNonce["minLength"] != float64(16) {
 			t.Fatalf("invoke_worker lease_nonce schema = %#v", leaseNonce)
 		}
+		props := requireNestedObject(t, lease, "properties")
+		for _, name := range []string{
+			"target_descriptor_hashes",
+			"runtime_shard_id",
+			"runtime_instance_id",
+			"ipc_channel_id",
+			"connection_nonce",
+			"key_id",
+			"signature",
+		} {
+			if _, ok := props[name].(map[string]any); !ok {
+				t.Fatalf("invoke_worker lease schema missing %s", name)
+			}
+		}
+		signature := requireNestedObject(t, lease, "properties", "signature")
+		if signature["pattern"] != "^ed25519:.+" {
+			t.Fatalf("invoke_worker lease signature schema = %#v", signature)
+		}
 		return
 	}
 	t.Fatal("ipc schema missing invoke_worker block")

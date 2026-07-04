@@ -162,6 +162,15 @@ capabilities.
   memory and SQLite stores that record only a hash of `lease_id + lease_nonce`;
   `ProcessSupervisor` consumes the ledger before sending worker IPC and emits a
   replay diagnostic without opening the artifact on duplicate use.
+- Runtime lease signatures can be verified by the Go supervisor before worker
+  IPC. `runtimeclient` exposes an Ed25519 verifier, static signing-key keyring,
+  canonical signing payload, and signing helper for Host-issued
+  `runtime_execution_lease` values. The canonical payload excludes
+  `lease_token` and `signature`, covers the method, descriptor hashes, policy
+  and management revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and
+  runtime audience fields, and requires the lease audience to match the current
+  runtime instance, IPC channel, and handshake nonce when the supervisor verifier
+  is configured.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and

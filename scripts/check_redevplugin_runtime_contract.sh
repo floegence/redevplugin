@@ -263,6 +263,10 @@ JSON
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
+  grep -q '"target_descriptor_hashes"' spec/plugin/ipc-v1.schema.json
+  grep -q '"runtime_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
+  grep -q '"ipc_channel_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
+  grep -q '"signature": { "type": "string", "pattern": "^ed25519:.+" }' spec/plugin/ipc-v1.schema.json
   grep -q '"content_base64": { "type": "string", "contentEncoding": "base64" }' spec/plugin/ipc-v1.schema.json
   grep -q '"handle_grant_token": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
   grep -q '"package_hash": { "$ref": "#/$defs/sha256" }' spec/plugin/worker-invocation-v1.schema.json

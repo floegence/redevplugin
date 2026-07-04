@@ -221,6 +221,15 @@ consumed `lease_id + lease_nonce` hash across runtime restarts until the lease
 expires. A duplicate lease is rejected before worker IPC or artifact reads and
 records a `plugin.runtime.lease.replayed` diagnostic. The stores do not persist
 the raw lease token or raw nonce.
+Hosts can additionally configure an Ed25519 runtime lease verifier on the Go
+supervisor. The verifier checks a canonical `runtime_execution_lease` payload
+that excludes the bearer `lease_token` and the signature itself, while covering
+the worker method, descriptor hashes, policy and management revisions, revoke
+epoch, expiry, `lease_nonce`, `key_id`, and runtime audience. Before the
+signature check, the supervisor requires the lease audience to match the current
+runtime instance, IPC channel ID, and handshake `connection_nonce`. Rejected
+signatures record `plugin.runtime.lease.signature_rejected` and fail before
+worker IPC or artifact reads.
 When the Rust runtime asks the Go supervisor to serve artifact, handle-grant,
 storage, or network hostcalls, the supervisor derives a bounded context before
 calling host adapters. Request-level `timeout_ms` controls storage SQLite and

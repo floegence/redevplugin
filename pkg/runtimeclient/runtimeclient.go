@@ -31,21 +31,30 @@ type Target struct {
 }
 
 type Lease struct {
-	LeaseID             string    `json:"lease_id"`
-	LeaseToken          string    `json:"lease_token"`
-	LeaseNonce          string    `json:"lease_nonce"`
-	RuntimeGenerationID string    `json:"runtime_generation_id"`
-	PluginInstanceID    string    `json:"plugin_instance_id"`
-	Method              string    `json:"method,omitempty"`
-	PolicyRevision      uint64    `json:"policy_revision"`
-	ManagementRevision  uint64    `json:"management_revision"`
-	RevokeEpoch         uint64    `json:"revoke_epoch"`
-	ExpiresAt           time.Time `json:"expires_at"`
+	LeaseID                string    `json:"lease_id"`
+	LeaseToken             string    `json:"lease_token"`
+	LeaseNonce             string    `json:"lease_nonce"`
+	RuntimeGenerationID    string    `json:"runtime_generation_id"`
+	PluginInstanceID       string    `json:"plugin_instance_id"`
+	Method                 string    `json:"method,omitempty"`
+	TargetDescriptorHashes []string  `json:"target_descriptor_hashes,omitempty"`
+	PolicyRevision         uint64    `json:"policy_revision"`
+	ManagementRevision     uint64    `json:"management_revision"`
+	RevokeEpoch            uint64    `json:"revoke_epoch"`
+	RuntimeShardID         string    `json:"runtime_shard_id,omitempty"`
+	RuntimeInstanceID      string    `json:"runtime_instance_id,omitempty"`
+	IPCChannelID           string    `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string    `json:"connection_nonce,omitempty"`
+	KeyID                  string    `json:"key_id,omitempty"`
+	Signature              string    `json:"signature,omitempty"`
+	ExpiresAt              time.Time `json:"expires_at"`
 }
 
 type Health struct {
 	RuntimeInstanceID   string `json:"runtime_instance_id"`
 	RuntimeGenerationID string `json:"runtime_generation_id"`
+	IPCChannelID        string `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce     string `json:"connection_nonce,omitempty"`
 	RuntimeVersion      string `json:"runtime_version,omitempty"`
 	RustIPCVersion      string `json:"rust_ipc_version,omitempty"`
 	WASMABIVersion      string `json:"wasm_abi_version,omitempty"`
@@ -136,6 +145,7 @@ type ProcessSupervisorOptions struct {
 	Artifacts             ArtifactProvider
 	HandleGrants          HandleGrantValidator
 	RuntimeLeaseReplays   RuntimeLeaseReplayStore
+	RuntimeLeaseVerifier  RuntimeLeaseVerifier
 	StorageFiles          storage.FilesBroker
 	StorageKV             storage.KVBroker
 	StorageSQLite         storage.SQLiteBroker
@@ -160,6 +170,7 @@ type ProcessSupervisor struct {
 	artifacts             ArtifactProvider
 	handleGrants          HandleGrantValidator
 	runtimeLeaseReplays   RuntimeLeaseReplayStore
+	runtimeLeaseVerifier  RuntimeLeaseVerifier
 	storageFiles          storage.FilesBroker
 	storageKV             storage.KVBroker
 	storageSQLite         storage.SQLiteBroker
@@ -215,6 +226,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		artifacts:             options.Artifacts,
 		handleGrants:          options.HandleGrants,
 		runtimeLeaseReplays:   options.RuntimeLeaseReplays,
+		runtimeLeaseVerifier:  options.RuntimeLeaseVerifier,
 		storageFiles:          options.StorageFiles,
 		storageKV:             options.StorageKV,
 		storageSQLite:         options.StorageSQLite,
@@ -283,6 +295,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	health := Health{
 		RuntimeInstanceID:   fmt.Sprintf("runtime_%d", cmd.Process.Pid),
 		RuntimeGenerationID: generationID,
+		IPCChannelID:        fmt.Sprintf("ipc_%d_%d", cmd.Process.Pid, s.seq),
 	}
 	done := make(chan error, 1)
 	s.cmd = cmd
@@ -326,6 +339,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		health.RuntimeVersion = ack.RuntimeVersion
 		health.RustIPCVersion = ack.RustIPCVersion
 		health.WASMABIVersion = ack.WASMABIVersion
+		health.ConnectionNonce = ack.ChannelNonce
 		health.Ready = true
 		s.health = health
 	} else {
@@ -453,6 +467,9 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if s == nil || !s.isReady() {
 		return nil, ErrRuntimeNotReady
 	}
+	if err := s.verifyRuntimeLease(ctx, lease, method); err != nil {
+		return nil, err
+	}
 	invocation := json.RawMessage(payload)
 	if len(invocation) == 0 {
 		invocation = json.RawMessage("null")
@@ -546,6 +563,72 @@ func (s *ProcessSupervisor) consumeRuntimeLease(ctx context.Context, lease Lease
 		})
 	}
 	return err
+}
+
+func (s *ProcessSupervisor) verifyRuntimeLease(ctx context.Context, lease Lease, method string) error {
+	if s == nil || s.runtimeLeaseVerifier == nil {
+		return nil
+	}
+	if err := validateRuntimeLeaseAudience(lease, s.healthSnapshot()); err != nil {
+		s.emit("plugin.runtime.lease.signature_rejected", "error", "runtime execution lease audience was rejected", map[string]any{
+			"lease_id":              lease.LeaseID,
+			"plugin_instance_id":    lease.PluginInstanceID,
+			"runtime_generation_id": lease.RuntimeGenerationID,
+			"runtime_instance_id":   lease.RuntimeInstanceID,
+			"ipc_channel_id":        lease.IPCChannelID,
+			"key_id":                lease.KeyID,
+			"method":                method,
+			"revoke_epoch":          lease.RevokeEpoch,
+		})
+		return err
+	}
+	err := s.runtimeLeaseVerifier.VerifyRuntimeLease(ctx, RuntimeLeaseVerificationRequest{
+		Lease:  lease,
+		Method: method,
+		Now:    s.now(),
+	})
+	if err == nil {
+		return nil
+	}
+	s.emit("plugin.runtime.lease.signature_rejected", "error", "runtime execution lease signature was rejected", map[string]any{
+		"lease_id":              lease.LeaseID,
+		"plugin_instance_id":    lease.PluginInstanceID,
+		"runtime_generation_id": lease.RuntimeGenerationID,
+		"runtime_instance_id":   lease.RuntimeInstanceID,
+		"ipc_channel_id":        lease.IPCChannelID,
+		"key_id":                lease.KeyID,
+		"method":                method,
+		"revoke_epoch":          lease.RevokeEpoch,
+	})
+	return err
+}
+
+func (s *ProcessSupervisor) healthSnapshot() Health {
+	if s == nil {
+		return Health{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.health
+}
+
+func validateRuntimeLeaseAudience(lease Lease, health Health) error {
+	if !health.Ready {
+		return ErrRuntimeNotReady
+	}
+	if strings.TrimSpace(lease.RuntimeGenerationID) != health.RuntimeGenerationID {
+		return ErrRuntimeLeaseInvalid
+	}
+	if strings.TrimSpace(lease.RuntimeInstanceID) != health.RuntimeInstanceID {
+		return ErrRuntimeLeaseInvalid
+	}
+	if strings.TrimSpace(lease.IPCChannelID) != health.IPCChannelID {
+		return ErrRuntimeLeaseInvalid
+	}
+	if strings.TrimSpace(lease.ConnectionNonce) != health.ConnectionNonce {
+		return ErrRuntimeLeaseInvalid
+	}
+	return nil
 }
 
 type revokeResultPayload struct {

@@ -97,9 +97,20 @@
                   "lease_nonce": { "type": "string", "minLength": 16 },
                   "runtime_generation_id": { "type": "string", "minLength": 1 },
                   "plugin_instance_id": { "type": "string", "minLength": 1 },
+                  "target_descriptor_hashes": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 },
+                    "uniqueItems": true
+                  },
                   "policy_revision": { "type": "integer", "minimum": 0 },
                   "management_revision": { "type": "integer", "minimum": 0 },
                   "revoke_epoch": { "type": "integer", "minimum": 0 },
+                  "runtime_shard_id": { "type": "string", "minLength": 1 },
+                  "runtime_instance_id": { "type": "string", "minLength": 1 },
+                  "ipc_channel_id": { "type": "string", "minLength": 1 },
+                  "connection_nonce": { "type": "string", "minLength": 16 },
+                  "key_id": { "type": "string", "minLength": 1 },
+                  "signature": { "type": "string", "pattern": "^ed25519:.+" },
                   "expires_at": { "type": "string", "format": "date-time" }
                 }
               },
