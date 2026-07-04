@@ -3,6 +3,7 @@ package runtimeclient
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1600,6 +1601,17 @@ func runRuntimeClientHelper() {
 	channelNonce := hello.ChannelNonce
 	if strings.TrimSpace(channelNonce) == "" {
 		os.Exit(6)
+	}
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_LEASE_PUBLIC_KEY") == "1" {
+		if len(hello.RuntimeLeasePublicKeys) != 1 ||
+			hello.RuntimeLeasePublicKeys[0].Algorithm != RuntimeLeaseSignatureAlgorithm ||
+			hello.RuntimeLeasePublicKeys[0].KeyID != "host_ephemeral_key_1" {
+			os.Exit(60)
+		}
+		rawKey, err := base64.StdEncoding.DecodeString(hello.RuntimeLeasePublicKeys[0].PublicKeyBase64)
+		if err != nil || len(rawKey) != ed25519.PublicKeySize {
+			os.Exit(61)
+		}
 	}
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE") == "1" {
 		channelNonce = "wrong_channel_nonce"

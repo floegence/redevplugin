@@ -109,6 +109,10 @@ worker lease to carry that exact audience before verifying the Ed25519
 signature. The canonical signing payload excludes the bearer token and covers
 the method, target descriptor hashes, policy revisions, revoke epoch, expiry,
 `lease_nonce`, `key_id`, and runtime audience fields.
+`ProcessSupervisorOptions.RuntimeLeasePublicKeys` sends the matching public keys
+to Rust in the startup `hello` frame. A runtime that receives at least one key
+verifies worker lease signatures before replay-cache consumption and before
+artifact open; failures use `RUNTIME_LEASE_SIGNATURE_INVALID`.
 
 Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
 payloads return a structured result containing the plugin instance, revoke

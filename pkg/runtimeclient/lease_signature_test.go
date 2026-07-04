@@ -160,6 +160,30 @@ func TestProcessSupervisorRuntimeLeaseVerifierRejectsInvalidSignatureBeforeIPC(t
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorSendsRuntimeLeasePublicKeysInHello(t *testing.T) {
+	privateKey := runtimeLeaseSignatureTestPrivateKey(17)
+	publicKey, err := RuntimeLeasePublicKeyFromEd25519("host_ephemeral_key_1", privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		t.Fatalf("RuntimeLeasePublicKeyFromEd25519() error = %v", err)
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env: append(os.Environ(),
+			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_LEASE_PUBLIC_KEY=1",
+		),
+		RuntimeLeasePublicKeys: []RuntimeLeasePublicKey{publicKey},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 	return Lease{
 		LeaseID:             "rel_lease_signature",

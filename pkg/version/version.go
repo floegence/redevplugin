@@ -201,13 +201,13 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "error-codes-schema",
 				Path:    "spec/plugin/error-codes-v1.schema.json",
 				Version: ErrorCodesSchemaVersion,
-				SHA256:  "b58f0a408c07fbf8f15a6c522b7ff31477587fa12c67970406a7265373483dec",
+				SHA256:  "5141acf2d500992f6c64ee30cb8ef6b68afc0c2d13f6520e44923cde2d5b13b6",
 			},
 			{
 				ID:      "rust-ipc-schema",
 				Path:    "spec/plugin/ipc-v1.schema.json",
 				Version: RustIPCVersion,
-				SHA256:  "cb4b4ad3b3336ef2db2e1d2d7999eebe5084fa3cfff4a5a44930c1901c856053",
+				SHA256:  "8dc0f301e2eae79dddcda7bdefbc9c381f3d32d64d18d10d7d435547df3534d8",
 			},
 			{
 				ID:      "wasm-worker-schema",

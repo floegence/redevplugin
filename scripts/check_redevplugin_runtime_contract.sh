@@ -67,6 +67,7 @@ export GOWORK=off
   grep -q '"title": "ReDevPlugin stable error codes v1"' spec/plugin/error-codes-v1.schema.json
   grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v1.schema.json
   grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v1.schema.json
+  grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v1.schema.json
   grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.release_manifest.v1" }' spec/plugin/release-manifest-v1.schema.json
   grep -q '"runtime_target"' spec/plugin/release-manifest-v1.schema.json
@@ -224,6 +225,9 @@ JSON
   grep -q 'network_execute_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_network_execute_response' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_RUNTIME_CAPABILITY_REVOKED' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_RUNTIME_LEASE_SIGNATURE_INVALID' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'parse_runtime_lease_public_keys' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'verify_worker_runtime_lease_signature' crates/redevplugin-ipc/src/lib.rs
   grep -q 'RuntimeRevocations' crates/redevplugin-runtime/src/main.rs
   grep -q 'handle_revoke_epoch' crates/redevplugin-runtime/src/main.rs
   grep -q 'worker_invocation_rejects_stale_epoch_before_opening_artifact' crates/redevplugin-runtime/src/main.rs
@@ -262,6 +266,7 @@ JSON
   grep -q '"host_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"rust_ipc_version": { "const": "rust-ipc-v1" }' spec/plugin/ipc-v1.schema.json
   grep -q '"wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" }' spec/plugin/ipc-v1.schema.json
+  grep -q '"runtime_lease_public_keys"' spec/plugin/ipc-v1.schema.json
   grep -q '"plugin_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json
   grep -q '"target_descriptor_hashes"' spec/plugin/ipc-v1.schema.json
   grep -q '"runtime_instance_id": { "type": "string", "minLength": 1 }' spec/plugin/ipc-v1.schema.json

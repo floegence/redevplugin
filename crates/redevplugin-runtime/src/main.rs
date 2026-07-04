@@ -23,6 +23,8 @@ fn run() -> Result<(), String> {
         .map_err(|err| format!("read hello frame: {err}"))?;
     let (request_id, runtime_generation_id, channel_nonce) =
         redevplugin_ipc::validate_hello_frame(&line).map_err(|err| err.to_string())?;
+    let runtime_lease_public_keys =
+        redevplugin_ipc::parse_runtime_lease_public_keys(&line).map_err(|err| err.to_string())?;
     let runtime_version =
         option_env!("REDEVPLUGIN_RUNTIME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let ack = redevplugin_ipc::hello_ack_frame(
@@ -68,6 +70,7 @@ fn run() -> Result<(), String> {
                     lease_replays: &mut lease_replays,
                     resources: &mut resources,
                     control: &control,
+                    runtime_lease_public_keys: &runtime_lease_public_keys,
                 },
                 &request_id,
                 &runtime_generation_id,
@@ -256,6 +259,7 @@ struct WorkerInvocationState<'a> {
     lease_replays: &'a mut RuntimeLeaseReplayCache,
     resources: &'a mut RuntimeResourceRegistry,
     control: &'a ControlChannelState,
+    runtime_lease_public_keys: &'a [redevplugin_ipc::RuntimeLeasePublicKey],
 }
 
 fn handle_worker_invocation<R: BufRead, W: Write>(
@@ -304,6 +308,20 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             None,
             Some(code),
             Some(message.as_str()),
+        ));
+    }
+    if let Err(err) = redevplugin_ipc::verify_worker_runtime_lease_signature(
+        line,
+        state.runtime_lease_public_keys,
+    ) {
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID),
+            Some(err.as_str()),
         ));
     }
     if let Err(err) = state.lease_replays.consume_invocation_frame(line) {
@@ -2527,6 +2545,7 @@ mod tests {
             lease_replays,
             resources,
             control,
+            runtime_lease_public_keys: &[],
         }
     }
 
@@ -2923,6 +2942,44 @@ mod tests {
         assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(response.contains(r#""ok":false"#));
         assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE));
+    }
+
+    #[test]
+    fn worker_invocation_rejects_unsigned_lease_before_opening_artifact_when_keys_configured() {
+        let revocations = RuntimeRevocations::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
+        let control = ControlChannelState::new();
+        let runtime_lease_public_keys = vec![redevplugin_ipc::RuntimeLeasePublicKey {
+            key_id: "host_ephemeral_key_1".to_string(),
+            public_key: [7u8; 32],
+        }];
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut WorkerInvocationState {
+                revocations: &revocations,
+                lease_replays: &mut lease_replays,
+                resources: &mut resources,
+                control: &control,
+                runtime_lease_public_keys: &runtime_lease_public_keys,
+            },
+            "r1",
+            "g1",
+            &worker_invocation_frame("plugini_1", 1),
+        )
+        .expect("worker invocation response");
+
+        assert!(
+            output.is_empty(),
+            "unsigned lease must not request an artifact when runtime keys are configured"
+        );
+        assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
+        assert!(response.contains(r#""ok":false"#));
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID));
     }
 
     #[test]

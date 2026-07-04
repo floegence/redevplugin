@@ -1,5 +1,13 @@
+use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use std::collections::HashSet;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
 pub const RUST_IPC_VERSION: &str = "rust-ipc-v1";
 pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
+pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
+pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
+pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_HEARTBEAT: &str = "heartbeat";
@@ -30,6 +38,7 @@ pub const ERR_NETWORK_STREAM_CLOSED: &str = "NETWORK_STREAM_CLOSED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_RUNTIME_CAPABILITY_REVOKED: &str = "RUNTIME_CAPABILITY_REVOKED";
 pub const ERR_RUNTIME_CONTROL_CHANNEL_STALE: &str = "RUNTIME_CONTROL_CHANNEL_STALE";
+pub const ERR_RUNTIME_LEASE_SIGNATURE_INVALID: &str = "RUNTIME_LEASE_SIGNATURE_INVALID";
 pub const ERR_LEASE_REPLAYED: &str = "PLUGIN_LEASE_REPLAYED";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 pub const ERR_WASM_WORKER_INVALID: &str = "WASM_WORKER_INVALID";
@@ -108,6 +117,289 @@ pub fn escape_json_string(input: &str) -> String {
         }
     }
     out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeLeasePublicKey {
+    pub key_id: String,
+    pub public_key: [u8; 32],
+}
+
+pub fn parse_runtime_lease_public_keys(input: &str) -> Result<Vec<RuntimeLeasePublicKey>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(input).map_err(|err| format!("decode hello frame: {err}"))?;
+    let payload = value
+        .get("payload")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing hello payload".to_string())?;
+    let Some(keys_value) = payload.get("runtime_lease_public_keys") else {
+        return Ok(Vec::new());
+    };
+    let keys = keys_value
+        .as_array()
+        .ok_or_else(|| "runtime_lease_public_keys must be an array".to_string())?;
+    let mut seen = HashSet::new();
+    let mut parsed = Vec::with_capacity(keys.len());
+    for key in keys {
+        let key = key
+            .as_object()
+            .ok_or_else(|| "runtime lease public key must be an object".to_string())?;
+        let key_id = json_object_string(key, "key_id")?;
+        if key_id.trim().is_empty() {
+            return Err("runtime lease public key key_id is empty".to_string());
+        }
+        if !seen.insert(key_id.clone()) {
+            return Err("runtime lease public key key_id is duplicated".to_string());
+        }
+        let algorithm = key
+            .get("algorithm")
+            .and_then(|value| value.as_str())
+            .unwrap_or(RUNTIME_LEASE_SIGNATURE_ALGORITHM);
+        if algorithm != RUNTIME_LEASE_SIGNATURE_ALGORITHM {
+            return Err("runtime lease public key algorithm is unsupported".to_string());
+        }
+        let encoded_key = json_object_string(key, "public_key_base64")?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded_key.as_bytes())
+            .map_err(|_| "runtime lease public key is not valid base64".to_string())?;
+        let public_key: [u8; 32] = decoded
+            .try_into()
+            .map_err(|_| "runtime lease public key length is invalid".to_string())?;
+        parsed.push(RuntimeLeasePublicKey { key_id, public_key });
+    }
+    Ok(parsed)
+}
+
+pub fn verify_worker_runtime_lease_signature(
+    input: &str,
+    public_keys: &[RuntimeLeasePublicKey],
+) -> Result<(), String> {
+    if public_keys.is_empty() {
+        return Ok(());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
+    let payload = value
+        .get("payload")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing worker invocation payload".to_string())?;
+    let method = json_object_string(payload, "method")?;
+    let lease = payload
+        .get("lease")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing runtime execution lease".to_string())?;
+    let key_id = json_object_string(lease, "key_id")?;
+    let public_key = public_keys
+        .iter()
+        .find(|key| key.key_id == key_id)
+        .ok_or_else(|| "runtime lease signing key not found".to_string())?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key.public_key)
+        .map_err(|_| "runtime lease public key is invalid".to_string())?;
+    let payload = runtime_lease_signature_payload_json(lease, &method)?;
+    let signature = decode_runtime_lease_signature(&json_object_string(lease, "signature")?)?;
+    verifying_key
+        .verify(payload.as_bytes(), &signature)
+        .map_err(|_| "runtime lease signature is invalid".to_string())
+}
+
+fn decode_runtime_lease_signature(input: &str) -> Result<Signature, String> {
+    let raw = input.trim();
+    let prefix = format!("{RUNTIME_LEASE_SIGNATURE_ALGORITHM}:");
+    let encoded = raw
+        .strip_prefix(prefix.as_str())
+        .ok_or_else(|| "runtime lease signature algorithm is unsupported".to_string())?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|_| "runtime lease signature is not valid base64".to_string())?;
+    Signature::from_slice(&decoded)
+        .map_err(|_| "runtime lease signature length is invalid".to_string())
+}
+
+fn runtime_lease_signature_payload_json(
+    lease: &serde_json::Map<String, serde_json::Value>,
+    method: &str,
+) -> Result<String, String> {
+    let lease_method = lease.get("method").and_then(|value| value.as_str());
+    if let Some(lease_method) = lease_method {
+        if !lease_method.trim().is_empty() && lease_method.trim() != method.trim() {
+            return Err("runtime lease method mismatch".to_string());
+        }
+    }
+    let expires_at_unix_ms = runtime_lease_expires_at_unix_ms(lease)?;
+    let mut out = String::new();
+    out.push('{');
+    append_json_string_field(
+        &mut out,
+        "schema_version",
+        RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION,
+        false,
+    );
+    append_json_string_field(&mut out, "token_kind", RUNTIME_LEASE_TOKEN_KIND, true);
+    append_json_string_field(
+        &mut out,
+        "lease_id",
+        &json_object_string(lease, "lease_id")?,
+        true,
+    );
+    append_json_string_field(
+        &mut out,
+        "lease_nonce",
+        &json_object_string(lease, "lease_nonce")?,
+        true,
+    );
+    append_json_string_field(
+        &mut out,
+        "plugin_instance_id",
+        &json_object_string(lease, "plugin_instance_id")?,
+        true,
+    );
+    append_json_string_field(&mut out, "method", method.trim(), true);
+    if let Some(target_hashes) = lease.get("target_descriptor_hashes") {
+        let hashes = target_hashes
+            .as_array()
+            .ok_or_else(|| "target_descriptor_hashes must be an array".to_string())?;
+        if !hashes.is_empty() {
+            out.push_str(",\"target_descriptor_hashes\":[");
+            for (index, hash) in hashes.iter().enumerate() {
+                let hash = hash
+                    .as_str()
+                    .ok_or_else(|| "target_descriptor_hashes item must be a string".to_string())?;
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push('"');
+                out.push_str(&escape_json_string(hash));
+                out.push('"');
+            }
+            out.push(']');
+        }
+    }
+    append_json_u64_field(
+        &mut out,
+        "policy_revision",
+        json_object_u64(lease, "policy_revision").unwrap_or(0),
+    );
+    append_json_u64_field(
+        &mut out,
+        "management_revision",
+        json_object_u64(lease, "management_revision").unwrap_or(0),
+    );
+    append_json_u64_field(
+        &mut out,
+        "revoke_epoch",
+        json_object_u64(lease, "revoke_epoch").unwrap_or(0),
+    );
+    append_json_i64_field(&mut out, "expires_at_unix_ms", expires_at_unix_ms);
+    append_json_optional_string_field(
+        &mut out,
+        "runtime_shard_id",
+        lease
+            .get("runtime_shard_id")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "runtime_instance_id",
+        lease
+            .get("runtime_instance_id")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_string_field(
+        &mut out,
+        "runtime_generation_id",
+        &json_object_string(lease, "runtime_generation_id")?,
+        true,
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "ipc_channel_id",
+        lease.get("ipc_channel_id").and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "connection_nonce",
+        lease
+            .get("connection_nonce")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_string_field(
+        &mut out,
+        "key_id",
+        &json_object_string(lease, "key_id")?,
+        true,
+    );
+    out.push('}');
+    Ok(out)
+}
+
+fn runtime_lease_expires_at_unix_ms(
+    lease: &serde_json::Map<String, serde_json::Value>,
+) -> Result<i64, String> {
+    if let Some(value) = lease.get("expires_at_unix_ms") {
+        if let Some(value) = value.as_i64() {
+            return Ok(value);
+        }
+        if let Some(value) = value.as_u64() {
+            return i64::try_from(value).map_err(|_| "expires_at_unix_ms is too large".to_string());
+        }
+        return Err("expires_at_unix_ms must be an integer".to_string());
+    }
+    let expires_at = json_object_string(lease, "expires_at")?;
+    let parsed = OffsetDateTime::parse(&expires_at, &Rfc3339)
+        .map_err(|_| "expires_at is not valid RFC3339".to_string())?;
+    Ok((parsed.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+fn json_object_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<String, String> {
+    object
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("missing {key}"))
+}
+
+fn json_object_u64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<u64> {
+    object.get(key).and_then(|value| value.as_u64())
+}
+
+fn append_json_string_field(out: &mut String, key: &str, value: &str, comma: bool) {
+    if comma {
+        out.push(',');
+    }
+    out.push('"');
+    out.push_str(key);
+    out.push_str("\":\"");
+    out.push_str(&escape_json_string(value));
+    out.push('"');
+}
+
+fn append_json_optional_string_field(out: &mut String, key: &str, value: Option<&str>) {
+    let Some(value) = value else {
+        return;
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    append_json_string_field(out, key, value, true);
+}
+
+fn append_json_u64_field(out: &mut String, key: &str, value: u64) {
+    out.push_str(",\"");
+    out.push_str(key);
+    out.push_str("\":");
+    out.push_str(value.to_string().as_str());
+}
+
+fn append_json_i64_field(out: &mut String, key: &str, value: i64) {
+    out.push_str(",\"");
+    out.push_str(key);
+    out.push_str("\":");
+    out.push_str(value.to_string().as_str());
 }
 
 pub fn hello_ack_frame(
@@ -1150,6 +1442,7 @@ fn is_worker_artifact_path(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use serde_json::Value;
     use std::fs;
     use std::path::PathBuf;
@@ -1168,6 +1461,99 @@ mod tests {
     fn rejects_hello_frame_without_channel_nonce() {
         let input = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{}}"#;
         assert_eq!(validate_hello_frame(input), Err("missing channel_nonce"));
+    }
+
+    #[test]
+    fn parses_runtime_lease_public_keys_from_hello() {
+        let public_key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let input = format!(
+            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"channel_nonce":"nonce_1234567890","runtime_lease_public_keys":[{{"algorithm":"ed25519","key_id":"host_ephemeral_key_1","public_key_base64":"{public_key}"}}]}}}}"#
+        );
+        let keys = parse_runtime_lease_public_keys(&input).expect("keys");
+        assert_eq!(
+            keys,
+            vec![RuntimeLeasePublicKey {
+                key_id: "host_ephemeral_key_1".to_string(),
+                public_key: [7u8; 32],
+            }]
+        );
+    }
+
+    #[test]
+    fn verifies_worker_runtime_lease_signature() {
+        let signing_key = runtime_lease_signing_key_for_test(7);
+        let frame = signed_runtime_lease_invocation_for_test(&signing_key, None);
+        let key = RuntimeLeasePublicKey {
+            key_id: "host_ephemeral_key_1".to_string(),
+            public_key: signing_key.verifying_key().to_bytes(),
+        };
+        verify_worker_runtime_lease_signature(&frame, &[key]).expect("signed lease");
+    }
+
+    #[test]
+    fn rejects_tampered_worker_runtime_lease_signature() {
+        let signing_key = runtime_lease_signing_key_for_test(7);
+        let frame =
+            signed_runtime_lease_invocation_for_test(&signing_key, Some(("revoke_epoch", "14")));
+        let key = RuntimeLeasePublicKey {
+            key_id: "host_ephemeral_key_1".to_string(),
+            public_key: signing_key.verifying_key().to_bytes(),
+        };
+        let err = verify_worker_runtime_lease_signature(&frame, &[key])
+            .expect_err("tampered lease should fail");
+        assert!(err.contains("signature"));
+    }
+
+    #[test]
+    fn rejects_unsigned_worker_runtime_lease_when_keys_are_configured() {
+        let signing_key = runtime_lease_signing_key_for_test(7);
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{"lease":{"lease_id":"rel_1","lease_token":"token_1","lease_nonce":"nonce_1234567890","runtime_generation_id":"rtgen_1","plugin_instance_id":"plugini_1","key_id":"host_ephemeral_key_1","expires_at":"2026-07-04T10:45:30Z"},"method":"worker.echo","invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
+        let err = verify_worker_runtime_lease_signature(
+            frame,
+            &[RuntimeLeasePublicKey {
+                key_id: "host_ephemeral_key_1".to_string(),
+                public_key: signing_key.verifying_key().to_bytes(),
+            }],
+        )
+        .expect_err("missing signature should fail");
+        assert!(err.contains("signature"));
+    }
+
+    #[test]
+    fn runtime_lease_signature_payload_matches_go_canonical_order() {
+        let lease = serde_json::json!({
+            "lease_id": "rel_lease_signature",
+            "lease_token": "runtime_execution_lease.rel_lease_signature.secret",
+            "lease_nonce": "nonce_1234567890",
+            "runtime_generation_id": "rtgen_1",
+            "plugin_instance_id": "plugini_1",
+            "method": "worker.echo",
+            "target_descriptor_hashes": [
+                "method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "policy_revision": 11,
+            "management_revision": 12,
+            "revoke_epoch": 13,
+            "runtime_shard_id": "rtshard_1",
+            "runtime_instance_id": "rtinst_1",
+            "ipc_channel_id": "ipc_1",
+            "connection_nonce": "connection_nonce_1234567890",
+            "key_id": "host_ephemeral_key_1",
+            "signature": "ed25519:not-part-of-the-payload",
+            "expires_at": "2026-07-04T10:45:30Z"
+        });
+        let payload = runtime_lease_signature_payload_json(
+            lease.as_object().expect("lease object"),
+            "worker.echo",
+        )
+        .expect("payload");
+        assert_eq!(
+            payload,
+            r#"{"schema_version":"redevplugin.runtime_execution_lease.v1","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","method":"worker.echo","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
+        );
+        assert!(!payload.contains("lease_token"));
+        assert!(!payload.contains("not-part-of-the-payload"));
     }
 
     #[test]
@@ -1715,5 +2101,54 @@ mod tests {
         let err = parse_worker_lease_replay_key(r#"{"payload":{"lease":{"lease_id":"lease_1"}}}"#)
             .expect_err("missing nonce should fail");
         assert_eq!(err, "missing lease_nonce");
+    }
+
+    fn runtime_lease_signing_key_for_test(seed_byte: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed_byte; 32])
+    }
+
+    fn signed_runtime_lease_invocation_for_test(
+        signing_key: &SigningKey,
+        replace: Option<(&str, &str)>,
+    ) -> String {
+        let mut lease = serde_json::json!({
+            "lease_id": "rel_lease_signature",
+            "lease_token": "runtime_execution_lease.rel_lease_signature.secret",
+            "lease_nonce": "nonce_1234567890",
+            "runtime_generation_id": "rtgen_1",
+            "plugin_instance_id": "plugini_1",
+            "method": "worker.echo",
+            "target_descriptor_hashes": [
+                "method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ],
+            "policy_revision": 11,
+            "management_revision": 12,
+            "revoke_epoch": 13,
+            "runtime_shard_id": "rtshard_1",
+            "runtime_instance_id": "rtinst_1",
+            "ipc_channel_id": "ipc_1",
+            "connection_nonce": "connection_nonce_1234567890",
+            "key_id": "host_ephemeral_key_1",
+            "expires_at": "2026-07-04T10:45:30Z"
+        });
+        let payload = runtime_lease_signature_payload_json(
+            lease.as_object().expect("lease object"),
+            "worker.echo",
+        )
+        .expect("payload");
+        let signature = signing_key.sign(payload.as_bytes());
+        lease["signature"] = serde_json::Value::String(format!(
+            "ed25519:{}",
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes())
+        ));
+        if let Some((key, value)) = replace {
+            let parsed = value.parse::<u64>().expect("numeric replacement");
+            lease[key] = serde_json::Value::Number(parsed.into());
+        }
+        format!(
+            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#,
+            serde_json::to_string(&lease).expect("lease json")
+        )
     }
 }

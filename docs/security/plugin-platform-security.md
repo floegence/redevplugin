@@ -230,6 +230,11 @@ signature check, the supervisor requires the lease audience to match the current
 runtime instance, IPC channel ID, and handshake `connection_nonce`. Rejected
 signatures record `plugin.runtime.lease.signature_rejected` and fail before
 worker IPC or artifact reads.
+The supervisor can include the matching runtime lease public keys in the startup
+`hello` frame. Once the Rust runtime receives a non-empty keyring, it verifies
+worker lease signatures with the same canonical payload and rejects unsigned,
+tampered, or unknown-key leases with `RUNTIME_LEASE_SIGNATURE_INVALID` before
+consuming the in-process replay cache or opening artifacts.
 When the Rust runtime asks the Go supervisor to serve artifact, handle-grant,
 storage, or network hostcalls, the supervisor derives a bounded context before
 calling host adapters. Request-level `timeout_ms` controls storage SQLite and

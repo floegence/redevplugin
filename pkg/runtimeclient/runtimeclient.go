@@ -137,52 +137,54 @@ var (
 )
 
 type ProcessSupervisorOptions struct {
-	RuntimePath           string
-	Args                  []string
-	Env                   []string
-	Dir                   string
-	Diagnostics           observability.DiagnosticsSink
-	Artifacts             ArtifactProvider
-	HandleGrants          HandleGrantValidator
-	RuntimeLeaseReplays   RuntimeLeaseReplayStore
-	RuntimeLeaseVerifier  RuntimeLeaseVerifier
-	StorageFiles          storage.FilesBroker
-	StorageKV             storage.KVBroker
-	StorageSQLite         storage.SQLiteBroker
-	Connectivity          connectivity.Broker
-	NetworkExecutor       connectivity.NetworkExecutor
-	Streams               stream.Store
-	Now                   func() time.Time
-	HandshakeTimeout      time.Duration
-	HeartbeatInterval     time.Duration
-	MaxHeartbeatStaleness time.Duration
+	RuntimePath            string
+	Args                   []string
+	Env                    []string
+	Dir                    string
+	Diagnostics            observability.DiagnosticsSink
+	Artifacts              ArtifactProvider
+	HandleGrants           HandleGrantValidator
+	RuntimeLeaseReplays    RuntimeLeaseReplayStore
+	RuntimeLeaseVerifier   RuntimeLeaseVerifier
+	RuntimeLeasePublicKeys []RuntimeLeasePublicKey
+	StorageFiles           storage.FilesBroker
+	StorageKV              storage.KVBroker
+	StorageSQLite          storage.SQLiteBroker
+	Connectivity           connectivity.Broker
+	NetworkExecutor        connectivity.NetworkExecutor
+	Streams                stream.Store
+	Now                    func() time.Time
+	HandshakeTimeout       time.Duration
+	HeartbeatInterval      time.Duration
+	MaxHeartbeatStaleness  time.Duration
 }
 
 type ProcessSupervisor struct {
-	startMu               sync.Mutex
-	ipcMu                 sync.Mutex
-	mu                    sync.Mutex
-	path                  string
-	args                  []string
-	env                   []string
-	dir                   string
-	diagnostics           observability.DiagnosticsSink
-	artifacts             ArtifactProvider
-	handleGrants          HandleGrantValidator
-	runtimeLeaseReplays   RuntimeLeaseReplayStore
-	runtimeLeaseVerifier  RuntimeLeaseVerifier
-	storageFiles          storage.FilesBroker
-	storageKV             storage.KVBroker
-	storageSQLite         storage.SQLiteBroker
-	connectivity          connectivity.Broker
-	networkExecutor       connectivity.NetworkExecutor
-	streams               stream.Store
-	now                   func() time.Time
-	handshakeTimeout      time.Duration
-	heartbeatInterval     time.Duration
-	maxHeartbeatStaleness time.Duration
-	seq                   uint64
-	requestSeq            uint64
+	startMu                sync.Mutex
+	ipcMu                  sync.Mutex
+	mu                     sync.Mutex
+	path                   string
+	args                   []string
+	env                    []string
+	dir                    string
+	diagnostics            observability.DiagnosticsSink
+	artifacts              ArtifactProvider
+	handleGrants           HandleGrantValidator
+	runtimeLeaseReplays    RuntimeLeaseReplayStore
+	runtimeLeaseVerifier   RuntimeLeaseVerifier
+	runtimeLeasePublicKeys []RuntimeLeasePublicKey
+	storageFiles           storage.FilesBroker
+	storageKV              storage.KVBroker
+	storageSQLite          storage.SQLiteBroker
+	connectivity           connectivity.Broker
+	networkExecutor        connectivity.NetworkExecutor
+	streams                stream.Store
+	now                    func() time.Time
+	handshakeTimeout       time.Duration
+	heartbeatInterval      time.Duration
+	maxHeartbeatStaleness  time.Duration
+	seq                    uint64
+	requestSeq             uint64
 
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
@@ -217,26 +219,31 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	if maxHeartbeatStaleness < heartbeatInterval {
 		maxHeartbeatStaleness = heartbeatInterval
 	}
+	runtimeLeasePublicKeys, err := NormalizeRuntimeLeasePublicKeys(options.RuntimeLeasePublicKeys)
+	if err != nil {
+		return nil, err
+	}
 	return &ProcessSupervisor{
-		path:                  path,
-		args:                  append([]string(nil), options.Args...),
-		env:                   append([]string(nil), options.Env...),
-		dir:                   strings.TrimSpace(options.Dir),
-		diagnostics:           options.Diagnostics,
-		artifacts:             options.Artifacts,
-		handleGrants:          options.HandleGrants,
-		runtimeLeaseReplays:   options.RuntimeLeaseReplays,
-		runtimeLeaseVerifier:  options.RuntimeLeaseVerifier,
-		storageFiles:          options.StorageFiles,
-		storageKV:             options.StorageKV,
-		storageSQLite:         options.StorageSQLite,
-		connectivity:          options.Connectivity,
-		networkExecutor:       options.NetworkExecutor,
-		streams:               options.Streams,
-		now:                   now,
-		handshakeTimeout:      handshakeTimeout,
-		heartbeatInterval:     heartbeatInterval,
-		maxHeartbeatStaleness: maxHeartbeatStaleness,
+		path:                   path,
+		args:                   append([]string(nil), options.Args...),
+		env:                    append([]string(nil), options.Env...),
+		dir:                    strings.TrimSpace(options.Dir),
+		diagnostics:            options.Diagnostics,
+		artifacts:              options.Artifacts,
+		handleGrants:           options.HandleGrants,
+		runtimeLeaseReplays:    options.RuntimeLeaseReplays,
+		runtimeLeaseVerifier:   options.RuntimeLeaseVerifier,
+		runtimeLeasePublicKeys: runtimeLeasePublicKeys,
+		storageFiles:           options.StorageFiles,
+		storageKV:              options.StorageKV,
+		storageSQLite:          options.StorageSQLite,
+		connectivity:           options.Connectivity,
+		networkExecutor:        options.NetworkExecutor,
+		streams:                options.Streams,
+		now:                    now,
+		handshakeTimeout:       handshakeTimeout,
+		heartbeatInterval:      heartbeatInterval,
+		maxHeartbeatStaleness:  maxHeartbeatStaleness,
 	}, nil
 }
 
@@ -821,12 +828,13 @@ type ipcFrame struct {
 }
 
 type helloRequestPayload struct {
-	Target          Target `json:"target"`
-	HostProcessID   int    `json:"host_process_id"`
-	HostIPCVersion  string `json:"host_ipc_version"`
-	HostWASMABI     string `json:"host_wasm_abi"`
-	StartedUnixNano int64  `json:"started_unix_nano"`
-	ChannelNonce    string `json:"channel_nonce"`
+	Target                 Target                  `json:"target"`
+	HostProcessID          int                     `json:"host_process_id"`
+	HostIPCVersion         string                  `json:"host_ipc_version"`
+	HostWASMABI            string                  `json:"host_wasm_abi"`
+	StartedUnixNano        int64                   `json:"started_unix_nano"`
+	ChannelNonce           string                  `json:"channel_nonce"`
+	RuntimeLeasePublicKeys []RuntimeLeasePublicKey `json:"runtime_lease_public_keys,omitempty"`
 }
 
 type helloAckPayload struct {
@@ -1116,12 +1124,13 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 		return helloAckPayload{}, err
 	}
 	payload, err := json.Marshal(helloRequestPayload{
-		Target:          target,
-		HostProcessID:   os.Getpid(),
-		HostIPCVersion:  version.RustIPCVersion,
-		HostWASMABI:     version.WASMABIVersion,
-		StartedUnixNano: s.now().UnixNano(),
-		ChannelNonce:    channelNonce,
+		Target:                 target,
+		HostProcessID:          os.Getpid(),
+		HostIPCVersion:         version.RustIPCVersion,
+		HostWASMABI:            version.WASMABIVersion,
+		StartedUnixNano:        s.now().UnixNano(),
+		ChannelNonce:           channelNonce,
+		RuntimeLeasePublicKeys: append([]RuntimeLeasePublicKey(nil), s.runtimeLeasePublicKeys...),
 	})
 	if err != nil {
 		return helloAckPayload{}, err

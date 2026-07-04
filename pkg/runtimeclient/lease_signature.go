@@ -27,6 +27,12 @@ var (
 	ErrRuntimeLeaseSignatureInvalid         = errors.New("runtime execution lease signature is invalid")
 )
 
+type RuntimeLeasePublicKey struct {
+	Algorithm       string `json:"algorithm"`
+	KeyID           string `json:"key_id"`
+	PublicKeyBase64 string `json:"public_key_base64"`
+}
+
 type RuntimeLeaseVerifier interface {
 	VerifyRuntimeLease(ctx context.Context, req RuntimeLeaseVerificationRequest) error
 }
@@ -99,6 +105,49 @@ func (k StaticRuntimeLeaseSigningKeyring) LookupRuntimeLeaseSigningKey(ctx conte
 type Ed25519RuntimeLeaseVerifier struct {
 	Keyring RuntimeLeaseSigningKeyring
 	Now     func() time.Time
+}
+
+func RuntimeLeasePublicKeyFromEd25519(keyID string, publicKey ed25519.PublicKey) (RuntimeLeasePublicKey, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return RuntimeLeasePublicKey{}, ErrRuntimeLeasePublicKeyInvalid
+	}
+	return RuntimeLeasePublicKey{
+		Algorithm:       RuntimeLeaseSignatureAlgorithm,
+		KeyID:           strings.TrimSpace(keyID),
+		PublicKeyBase64: base64.StdEncoding.EncodeToString(publicKey),
+	}, nil
+}
+
+func NormalizeRuntimeLeasePublicKeys(keys []RuntimeLeasePublicKey) ([]RuntimeLeasePublicKey, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	normalized := make([]RuntimeLeasePublicKey, 0, len(keys))
+	for _, key := range keys {
+		keyID := strings.TrimSpace(key.KeyID)
+		algorithm := strings.TrimSpace(key.Algorithm)
+		if algorithm == "" {
+			algorithm = RuntimeLeaseSignatureAlgorithm
+		}
+		if keyID == "" || algorithm != RuntimeLeaseSignatureAlgorithm {
+			return nil, ErrRuntimeLeasePublicKeyInvalid
+		}
+		if _, exists := seen[keyID]; exists {
+			return nil, ErrRuntimeLeasePublicKeyInvalid
+		}
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(key.PublicKeyBase64))
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			return nil, ErrRuntimeLeasePublicKeyInvalid
+		}
+		seen[keyID] = struct{}{}
+		normalized = append(normalized, RuntimeLeasePublicKey{
+			Algorithm:       algorithm,
+			KeyID:           keyID,
+			PublicKeyBase64: base64.StdEncoding.EncodeToString(raw),
+		})
+	}
+	return normalized, nil
 }
 
 func (v Ed25519RuntimeLeaseVerifier) VerifyRuntimeLease(ctx context.Context, req RuntimeLeaseVerificationRequest) error {

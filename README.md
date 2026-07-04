@@ -170,7 +170,10 @@ capabilities.
   and management revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and
   runtime audience fields, and requires the lease audience to match the current
   runtime instance, IPC channel, and handshake nonce when the supervisor verifier
-  is configured.
+  is configured. Hosts can also pass the runtime lease public keys in the
+  startup `hello` frame; when Rust receives that keyring, it verifies the same
+  canonical payload and rejects unsigned, tampered, or unknown-key leases before
+  consuming the replay cache or opening worker artifacts.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and

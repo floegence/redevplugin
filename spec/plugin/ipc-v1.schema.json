@@ -38,7 +38,21 @@
               "host_ipc_version": { "const": "rust-ipc-v1" },
               "host_wasm_abi": { "const": "redevplugin-wasm-worker-v1" },
               "started_unix_nano": { "type": "integer", "minimum": 1 },
-              "channel_nonce": { "type": "string", "minLength": 16 }
+              "channel_nonce": { "type": "string", "minLength": 16 },
+              "runtime_lease_public_keys": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["algorithm", "key_id", "public_key_base64"],
+                  "properties": {
+                    "algorithm": { "const": "ed25519" },
+                    "key_id": { "type": "string", "minLength": 1 },
+                    "public_key_base64": { "type": "string", "contentEncoding": "base64" }
+                  }
+                },
+                "uniqueItems": true
+              }
             }
           }
         }

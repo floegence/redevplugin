@@ -89,6 +89,19 @@ func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 			if channelNonce["type"] != "string" || channelNonce["minLength"] != float64(16) {
 				t.Fatalf("%s channel_nonce schema = %#v", frameType, channelNonce)
 			}
+			if frameType == "hello" {
+				keys := requireNestedObject(t, props, "runtime_lease_public_keys")
+				if keys["type"] != "array" {
+					t.Fatalf("hello runtime_lease_public_keys schema = %#v", keys)
+				}
+				items := requireNestedObject(t, keys, "items")
+				keyProps := requireNestedObject(t, items, "properties")
+				for _, name := range []string{"algorithm", "key_id", "public_key_base64"} {
+					if _, ok := keyProps[name].(map[string]any); !ok {
+						t.Fatalf("hello runtime_lease_public_keys missing %s", name)
+					}
+				}
+			}
 			return
 		}
 		t.Fatalf("ipc schema missing %s block", frameType)
