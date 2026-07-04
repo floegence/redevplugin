@@ -330,8 +330,13 @@ func testAudienceForTokenKind(kind TokenKind) Audience {
 		audience.RequestHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		audience.PlanHash = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	case TokenKindRuntimeExecutionLease:
-		audience.SurfaceInstanceID = ""
+		audience.SurfaceInstanceID = "surface_runtime"
+		audience.BridgeChannelID = "bridge_runtime"
+		audience.RuntimeInstanceID = "runtime_test"
 		audience.RuntimeGenerationID = "generation_test"
+		audience.RuntimeShardID = "runtime_shard_test"
+		audience.IPCChannelID = "ipc_test"
+		audience.ConnectionNonce = "connection_nonce_1234567890"
 		audience.Method = "runtime.execute"
 	case TokenKindHandleGrant:
 		audience.SurfaceInstanceID = ""

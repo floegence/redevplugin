@@ -49,6 +49,9 @@ export GOWORK=off
   grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"handle_grant"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"runtime_generation_id",' spec/plugin/token-ticket-v1.schema.json
+  grep -q '"runtime_instance_id",' spec/plugin/token-ticket-v1.schema.json
+  grep -q '"ipc_channel_id",' spec/plugin/token-ticket-v1.schema.json
+  grep -q '"connection_nonce",' spec/plugin/token-ticket-v1.schema.json
   grep -q '"handle_id",' spec/plugin/token-ticket-v1.schema.json
   grep -q '"stream_id",' spec/plugin/token-ticket-v1.schema.json
   grep -q '"stream_direction"' spec/plugin/token-ticket-v1.schema.json
@@ -175,6 +178,16 @@ JSON
   test -f testdata/contracts/ipc/runtime_generation_mismatch.json
   grep -q '"hello_ack"' spec/plugin/ipc-v1.schema.json
   grep -q '"invoke_worker_result"' spec/plugin/ipc-v1.schema.json
+  grep -q '"token_id"' spec/plugin/ipc-v1.schema.json
+  grep -q '"issued_at_unix_ms"' spec/plugin/ipc-v1.schema.json
+  grep -q '"plugin_id"' spec/plugin/ipc-v1.schema.json
+  grep -q '"plugin_version"' spec/plugin/ipc-v1.schema.json
+  grep -q '"active_fingerprint"' spec/plugin/ipc-v1.schema.json
+  grep -q '"effect": { "enum": \["read", "write", "execute", "delete", "admin"\] }' spec/plugin/ipc-v1.schema.json
+  grep -q '"execution": { "enum": \["sync", "operation", "subscription"\] }' spec/plugin/ipc-v1.schema.json
+  grep -q '"limits"' spec/plugin/ipc-v1.schema.json
+  grep -q '"max_stream_bytes_per_sec"' spec/plugin/ipc-v1.schema.json
+  grep -q 'plugin.runtime.lease.issued' pkg/host/host.go
   grep -q '"open_handle_request_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"open_handle_response_payload"' spec/plugin/ipc-v1.schema.json
   grep -q '"validate_handle_grant_request_payload"' spec/plugin/ipc-v1.schema.json
@@ -228,6 +241,8 @@ JSON
   grep -q 'ERR_RUNTIME_LEASE_SIGNATURE_INVALID' crates/redevplugin-ipc/src/lib.rs
   grep -q 'parse_runtime_lease_public_keys' crates/redevplugin-ipc/src/lib.rs
   grep -q 'verify_worker_runtime_lease_signature' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'runtime_lease_optional_unix_ms' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'append_runtime_lease_limits_field' crates/redevplugin-ipc/src/lib.rs
   grep -q 'RuntimeRevocations' crates/redevplugin-runtime/src/main.rs
   grep -q 'handle_revoke_epoch' crates/redevplugin-runtime/src/main.rs
   grep -q 'worker_invocation_rejects_stale_epoch_before_opening_artifact' crates/redevplugin-runtime/src/main.rs

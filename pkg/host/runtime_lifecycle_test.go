@@ -19,7 +19,7 @@ import (
 
 func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 	supervisor := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,

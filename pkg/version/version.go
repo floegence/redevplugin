@@ -171,7 +171,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "token-ticket-schema",
 				Path:    "spec/plugin/token-ticket-v1.schema.json",
 				Version: TokenTicketSchemaVersion,
-				SHA256:  "745f77201594b78c213bd1add2b75331be14e81a0a8f013b5c0b63efb7e320c3",
+				SHA256:  "b2abad67cc4637a4978b48a446372fdc0da339fe8b19268c8db7f697e7aa1106",
 			},
 			{
 				ID:      "iframe-bridge-schema",
@@ -207,7 +207,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "rust-ipc-schema",
 				Path:    "spec/plugin/ipc-v1.schema.json",
 				Version: RustIPCVersion,
-				SHA256:  "8dc0f301e2eae79dddcda7bdefbc9c381f3d32d64d18d10d7d435547df3534d8",
+				SHA256:  "4e3a9556392b06b805f36fe80c5690408d702a72d71ac6f6e3edcb31f2fd0e91",
 			},
 			{
 				ID:      "wasm-worker-schema",

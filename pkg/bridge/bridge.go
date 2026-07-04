@@ -110,6 +110,8 @@ type Audience struct {
 	RuntimeInstanceID    string `json:"runtime_instance_id,omitempty"`
 	RuntimeGenerationID  string `json:"runtime_generation_id,omitempty"`
 	RuntimeShardID       string `json:"runtime_shard_id,omitempty"`
+	IPCChannelID         string `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce      string `json:"connection_nonce,omitempty"`
 	StreamID             string `json:"stream_id,omitempty"`
 	StreamDirection      string `json:"stream_direction,omitempty"`
 	HandleID             string `json:"handle_id,omitempty"`
@@ -526,6 +528,8 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.RuntimeInstanceID == got.RuntimeInstanceID &&
 		expected.RuntimeGenerationID == got.RuntimeGenerationID &&
 		expected.RuntimeShardID == got.RuntimeShardID &&
+		expected.IPCChannelID == got.IPCChannelID &&
+		expected.ConnectionNonce == got.ConnectionNonce &&
 		expected.StreamID == got.StreamID &&
 		expected.StreamDirection == got.StreamDirection &&
 		expected.HandleID == got.HandleID &&

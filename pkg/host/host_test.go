@@ -908,7 +908,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 
 func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
 			ClosedActorCount:         2,
 			ClosedSocketCount:        3,
@@ -1114,7 +1114,7 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 
 func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
@@ -1142,13 +1142,38 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	if result.Data == nil || runtime.calls != 1 {
 		t.Fatalf("worker result/calls mismatch: result=%#v calls=%d", result, runtime.calls)
 	}
-	if runtime.lastLease.LeaseToken == "" ||
-		runtime.lastLease.LeaseNonce == "" ||
-		runtime.lastLease.RuntimeGenerationID != "runtime_gen_1" ||
-		runtime.lastLease.PolicyRevision != installed.PolicyRevision ||
-		runtime.lastMethod != "worker.echo" {
-		t.Fatalf("runtime lease/method mismatch: lease=%#v method=%s", runtime.lastLease, runtime.lastMethod)
+	current, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatalf("GetPlugin() after worker call error = %v", err)
 	}
+	assertRuntimeLeaseField(t, "lease_token", runtime.lastLease.LeaseToken != "")
+	assertRuntimeLeaseField(t, "lease_id_prefix", strings.HasPrefix(runtime.lastLease.LeaseID, "lease_"))
+	assertRuntimeLeaseField(t, "token_id_prefix", strings.HasPrefix(runtime.lastLease.TokenID, "rel_"))
+	assertRuntimeLeaseField(t, "distinct_token_id", runtime.lastLease.TokenID != runtime.lastLease.LeaseID)
+	assertRuntimeLeaseField(t, "lease_nonce", runtime.lastLease.LeaseNonce != "")
+	assertRuntimeLeaseEqual(t, "plugin_id", runtime.lastLease.PluginID, current.PluginID)
+	assertRuntimeLeaseEqual(t, "plugin_version", runtime.lastLease.PluginVersion, current.Version)
+	assertRuntimeLeaseEqual(t, "active_fingerprint", runtime.lastLease.ActiveFingerprint, current.ActiveFingerprint)
+	assertRuntimeLeaseEqual(t, "surface_instance_id", runtime.lastLease.SurfaceInstanceID, "surface_rpc")
+	assertRuntimeLeaseEqual(t, "owner_session_hash", runtime.lastLease.OwnerSessionHash, "session_hash")
+	assertRuntimeLeaseEqual(t, "owner_user_hash", runtime.lastLease.OwnerUserHash, "user_hash")
+	assertRuntimeLeaseEqual(t, "session_channel_id_hash", runtime.lastLease.SessionChannelIDHash, "channel_hash")
+	assertRuntimeLeaseEqual(t, "bridge_channel_id", runtime.lastLease.BridgeChannelID, "bridge_rpc")
+	assertRuntimeLeaseEqual(t, "runtime_instance_id", runtime.lastLease.RuntimeInstanceID, "runtime_1")
+	assertRuntimeLeaseEqual(t, "runtime_generation_id", runtime.lastLease.RuntimeGenerationID, "runtime_gen_1")
+	assertRuntimeLeaseEqual(t, "ipc_channel_id", runtime.lastLease.IPCChannelID, "ipc_1")
+	assertRuntimeLeaseEqual(t, "connection_nonce", runtime.lastLease.ConnectionNonce, "connection_nonce_1234567890")
+	assertRuntimeLeaseEqual(t, "method", runtime.lastLease.Method, "worker.echo")
+	assertRuntimeLeaseEqual(t, "effect", runtime.lastLease.Effect, "read")
+	assertRuntimeLeaseEqual(t, "execution", runtime.lastLease.Execution, "sync")
+	assertRuntimeLeaseField(t, "target_descriptor_hashes", len(runtime.lastLease.TargetDescriptorHashes) >= 4)
+	assertRuntimeLeaseField(t, "memory_limit", runtime.lastLease.Limits.MemoryBytes != 0)
+	assertRuntimeLeaseEqual(t, "policy_revision", runtime.lastLease.PolicyRevision, current.PolicyRevision)
+	assertRuntimeLeaseEqual(t, "management_revision", runtime.lastLease.ManagementRevision, current.ManagementRevision)
+	assertRuntimeLeaseEqual(t, "revoke_epoch", runtime.lastLease.RevokeEpoch, current.RevokeEpoch)
+	assertRuntimeLeaseField(t, "issued_at", !runtime.lastLease.IssuedAt.IsZero())
+	assertRuntimeLeaseField(t, "issued_at_unix_ms", runtime.lastLease.IssuedAtUnixMillis != 0)
+	assertRuntimeLeaseEqual(t, "runtime method", runtime.lastMethod, "worker.echo")
 	var payload WorkerInvocationPayload
 	if err := json.Unmarshal(runtime.lastPayload, &payload); err != nil {
 		t.Fatal(err)
@@ -1174,11 +1199,38 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	if !audits.hasEvent("plugin.method.called") {
 		t.Fatalf("missing method audit event: %#v", audits.events)
 	}
+	leaseAudit, ok := audits.lastEvent("plugin.runtime.lease.issued")
+	if !ok {
+		t.Fatalf("missing runtime lease audit event: %#v", audits.events)
+	}
+	if leaseAudit.PluginID != installed.PluginID ||
+		leaseAudit.PluginInstanceID != installed.PluginInstanceID ||
+		leaseAudit.SurfaceInstanceID != "surface_rpc" {
+		t.Fatalf("runtime lease audit identity mismatch: %#v", leaseAudit)
+	}
+	assertAuditDetail(t, leaseAudit, "lease_id", runtime.lastLease.LeaseID)
+	assertAuditDetail(t, leaseAudit, "token_id", runtime.lastLease.TokenID)
+	assertAuditDetail(t, leaseAudit, "method", "worker.echo")
+	assertAuditDetail(t, leaseAudit, "effect", "read")
+	assertAuditDetail(t, leaseAudit, "execution", "sync")
+	assertAuditDetail(t, leaseAudit, "runtime_instance_id", "runtime_1")
+	assertAuditDetail(t, leaseAudit, "runtime_generation_id", "runtime_gen_1")
+	assertAuditDetail(t, leaseAudit, "ipc_channel_id", "ipc_1")
+	assertAuditDetail(t, leaseAudit, "policy_revision", current.PolicyRevision)
+	assertAuditDetail(t, leaseAudit, "management_revision", current.ManagementRevision)
+	assertAuditDetail(t, leaseAudit, "revoke_epoch", current.RevokeEpoch)
+	assertAuditDetail(t, leaseAudit, "expires_at_unix_ms", runtime.lastLease.ExpiresAt.UnixMilli())
+	if hashes, ok := leaseAudit.Details["target_descriptor_hashes"].([]string); !ok || len(hashes) < 4 {
+		t.Fatalf("runtime lease audit target_descriptor_hashes mismatch: %#v", leaseAudit.Details)
+	}
+	if _, leaked := leaseAudit.Details["lease_token"]; leaked {
+		t.Fatalf("runtime lease audit leaked cleartext token: %#v", leaseAudit.Details)
+	}
 }
 
 func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -1231,7 +1283,7 @@ func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
 
 func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -1265,7 +1317,7 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
 
 func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		result: capability.Result{Data: map[string]any{"from_worker": true}},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -1858,7 +1910,7 @@ func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 
 func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 	}
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
@@ -1931,7 +1983,7 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 	ctx := context.Background()
 	runtime := &recordingRuntimeSupervisor{
-		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeErr: errors.New("runtime pipe closed"),
 	}
 	connectivityBroker := connectivity.NewMemoryBroker()
@@ -3420,7 +3472,7 @@ func TestDeleteRetainedDataRefusesActiveStoragePayload(t *testing.T) {
 
 func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
 			ClosedActorCount:         7,
 			ClosedSocketCount:        8,
@@ -5783,6 +5835,20 @@ func assertAuditDetail(t *testing.T, event AuditEvent, key string, want any) {
 	}
 }
 
+func assertRuntimeLeaseField(t *testing.T, name string, ok bool) {
+	t.Helper()
+	if !ok {
+		t.Fatalf("runtime lease field %s mismatch", name)
+	}
+}
+
+func assertRuntimeLeaseEqual[T comparable](t *testing.T, name string, got T, want T) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("runtime lease field %s = %#v, want %#v", name, got, want)
+	}
+}
+
 type cleanupPhaseSet map[cleanup.Phase]struct{}
 
 func cleanupPhases(records []cleanup.ExecutionRecord) cleanupPhaseSet {
@@ -5983,7 +6049,7 @@ func (r *recordingRuntimeSupervisor) Start(_ context.Context, target runtimeclie
 	r.startCalls++
 	r.startedTarget = target
 	if r.health == (runtimeclient.Health{}) {
-		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", Ready: true}
+		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
 	}
 	return nil
 }
@@ -5996,7 +6062,7 @@ func (r *recordingRuntimeSupervisor) Stop(context.Context) error {
 
 func (r *recordingRuntimeSupervisor) Health(context.Context) (runtimeclient.Health, error) {
 	if r.health == (runtimeclient.Health{}) {
-		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", Ready: true}
+		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
 	}
 	return r.health, nil
 }
@@ -6006,7 +6072,7 @@ func (r *recordingRuntimeSupervisor) Heartbeat(context.Context) (runtimeclient.H
 		return runtimeclient.HeartbeatResult{}, r.err
 	}
 	if r.health == (runtimeclient.Health{}) {
-		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", Ready: true}
+		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
 	}
 	return runtimeclient.HeartbeatResult{
 		RuntimeGenerationID:  r.health.RuntimeGenerationID,

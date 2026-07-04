@@ -225,7 +225,16 @@ fn runtime_lease_signature_payload_json(
             return Err("runtime lease method mismatch".to_string());
         }
     }
+    let lease_id = json_object_string(lease, "lease_id")?;
+    let token_id = lease
+        .get("token_id")
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| lease_id.clone());
     let expires_at_unix_ms = runtime_lease_expires_at_unix_ms(lease)?;
+    let issued_at_unix_ms =
+        runtime_lease_optional_unix_ms(lease, "issued_at_unix_ms", "issued_at")?;
     let mut out = String::new();
     out.push('{');
     append_json_string_field(
@@ -235,12 +244,8 @@ fn runtime_lease_signature_payload_json(
         false,
     );
     append_json_string_field(&mut out, "token_kind", RUNTIME_LEASE_TOKEN_KIND, true);
-    append_json_string_field(
-        &mut out,
-        "lease_id",
-        &json_object_string(lease, "lease_id")?,
-        true,
-    );
+    append_json_string_field(&mut out, "lease_id", &lease_id, true);
+    append_json_string_field(&mut out, "token_id", &token_id, true);
     append_json_string_field(
         &mut out,
         "lease_nonce",
@@ -253,7 +258,72 @@ fn runtime_lease_signature_payload_json(
         &json_object_string(lease, "plugin_instance_id")?,
         true,
     );
+    append_json_optional_string_field(
+        &mut out,
+        "plugin_id",
+        lease.get("plugin_id").and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "plugin_version",
+        lease.get("plugin_version").and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "active_fingerprint",
+        lease
+            .get("active_fingerprint")
+            .and_then(|value| value.as_str()),
+    );
+    if let Some(value) = issued_at_unix_ms {
+        append_json_i64_field(&mut out, "issued_at_unix_ms", value);
+    }
     append_json_string_field(&mut out, "method", method.trim(), true);
+    append_json_optional_string_field(
+        &mut out,
+        "effect",
+        lease.get("effect").and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "execution",
+        lease.get("execution").and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "surface_instance_id",
+        lease
+            .get("surface_instance_id")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "owner_session_hash",
+        lease
+            .get("owner_session_hash")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "owner_user_hash",
+        lease
+            .get("owner_user_hash")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "session_channel_id_hash",
+        lease
+            .get("session_channel_id_hash")
+            .and_then(|value| value.as_str()),
+    );
+    append_json_optional_string_field(
+        &mut out,
+        "bridge_channel_id",
+        lease
+            .get("bridge_channel_id")
+            .and_then(|value| value.as_str()),
+    );
     if let Some(target_hashes) = lease.get("target_descriptor_hashes") {
         let hashes = target_hashes
             .as_array()
@@ -274,6 +344,7 @@ fn runtime_lease_signature_payload_json(
             out.push(']');
         }
     }
+    append_runtime_lease_limits_field(&mut out, lease.get("limits"))?;
     append_json_u64_field(
         &mut out,
         "policy_revision",
@@ -332,17 +403,43 @@ fn runtime_lease_signature_payload_json(
     Ok(out)
 }
 
+fn runtime_lease_optional_unix_ms(
+    lease: &serde_json::Map<String, serde_json::Value>,
+    unix_key: &str,
+    rfc3339_key: &str,
+) -> Result<Option<i64>, String> {
+    if let Some(value) = lease.get(unix_key) {
+        let value = json_value_i64(value, unix_key)?;
+        if value == 0 {
+            return Ok(None);
+        }
+        return Ok(Some(value));
+    }
+    let Some(value) = lease.get(rfc3339_key).and_then(|value| value.as_str()) else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.starts_with("0001-01-01T00:00:00") {
+        return Ok(None);
+    }
+    let parsed = OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|_| format!("{rfc3339_key} is not valid RFC3339"))?;
+    let unix_ms = (parsed.unix_timestamp_nanos() / 1_000_000) as i64;
+    if unix_ms == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(unix_ms))
+    }
+}
+
 fn runtime_lease_expires_at_unix_ms(
     lease: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<i64, String> {
     if let Some(value) = lease.get("expires_at_unix_ms") {
-        if let Some(value) = value.as_i64() {
-            return Ok(value);
-        }
-        if let Some(value) = value.as_u64() {
-            return i64::try_from(value).map_err(|_| "expires_at_unix_ms is too large".to_string());
-        }
-        return Err("expires_at_unix_ms must be an integer".to_string());
+        return json_value_i64(value, "expires_at_unix_ms");
     }
     let expires_at = json_object_string(lease, "expires_at")?;
     let parsed = OffsetDateTime::parse(&expires_at, &Rfc3339)
@@ -364,6 +461,16 @@ fn json_object_string(
 
 fn json_object_u64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<u64> {
     object.get(key).and_then(|value| value.as_u64())
+}
+
+fn json_value_i64(value: &serde_json::Value, key: &str) -> Result<i64, String> {
+    if let Some(value) = value.as_i64() {
+        return Ok(value);
+    }
+    if let Some(value) = value.as_u64() {
+        return i64::try_from(value).map_err(|_| format!("{key} is too large"));
+    }
+    Err(format!("{key} must be an integer"))
 }
 
 fn append_json_string_field(out: &mut String, key: &str, value: &str, comma: bool) {
@@ -400,6 +507,41 @@ fn append_json_i64_field(out: &mut String, key: &str, value: i64) {
     out.push_str(key);
     out.push_str("\":");
     out.push_str(value.to_string().as_str());
+}
+
+fn append_runtime_lease_limits_field(
+    out: &mut String,
+    limits: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let Some(limits) = limits else {
+        return Ok(());
+    };
+    let limits = limits
+        .as_object()
+        .ok_or_else(|| "limits must be an object".to_string())?;
+    let mut rendered = Vec::new();
+    for key in [
+        "timeout_ms",
+        "memory_bytes",
+        "max_payload_bytes",
+        "max_stream_bytes_per_sec",
+    ] {
+        let Some(value) = limits.get(key) else {
+            continue;
+        };
+        let value = json_value_i64(value, key)?;
+        if value == 0 {
+            continue;
+        }
+        rendered.push(format!("\"{key}\":{value}"));
+    }
+    if rendered.is_empty() {
+        return Ok(());
+    }
+    out.push_str(",\"limits\":{");
+    out.push_str(&rendered.join(","));
+    out.push('}');
+    Ok(())
 }
 
 pub fn hello_ack_frame(
@@ -1523,15 +1665,33 @@ mod tests {
     fn runtime_lease_signature_payload_matches_go_canonical_order() {
         let lease = serde_json::json!({
             "lease_id": "rel_lease_signature",
+            "token_id": "rel_token_signature",
             "lease_token": "runtime_execution_lease.rel_lease_signature.secret",
             "lease_nonce": "nonce_1234567890",
             "runtime_generation_id": "rtgen_1",
             "plugin_instance_id": "plugini_1",
+            "plugin_id": "com.example.worker",
+            "plugin_version": "1.2.3",
+            "active_fingerprint": "sha256:active",
+            "issued_at": "2026-07-04T10:45:00Z",
             "method": "worker.echo",
+            "effect": "read",
+            "execution": "sync",
+            "surface_instance_id": "surface_runtime",
+            "owner_session_hash": "session_hash",
+            "owner_user_hash": "user_hash",
+            "session_channel_id_hash": "channel_hash",
+            "bridge_channel_id": "bridge_runtime",
             "target_descriptor_hashes": [
                 "method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             ],
+            "limits": {
+                "timeout_ms": 2000,
+                "memory_bytes": 65536,
+                "max_payload_bytes": 4096,
+                "max_stream_bytes_per_sec": 1024
+            },
             "policy_revision": 11,
             "management_revision": 12,
             "revoke_epoch": 13,
@@ -1550,7 +1710,7 @@ mod tests {
         .expect("payload");
         assert_eq!(
             payload,
-            r#"{"schema_version":"redevplugin.runtime_execution_lease.v1","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","method":"worker.echo","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
+            r#"{"schema_version":"redevplugin.runtime_execution_lease.v1","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","token_id":"rel_token_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","plugin_id":"com.example.worker","plugin_version":"1.2.3","active_fingerprint":"sha256:active","issued_at_unix_ms":1783161900000,"method":"worker.echo","effect":"read","execution":"sync","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"limits":{"timeout_ms":2000,"memory_bytes":65536,"max_payload_bytes":4096,"max_stream_bytes_per_sec":1024},"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
         );
         assert!(!payload.contains("lease_token"));
         assert!(!payload.contains("not-part-of-the-payload"));
@@ -2113,15 +2273,33 @@ mod tests {
     ) -> String {
         let mut lease = serde_json::json!({
             "lease_id": "rel_lease_signature",
+            "token_id": "rel_token_signature",
             "lease_token": "runtime_execution_lease.rel_lease_signature.secret",
             "lease_nonce": "nonce_1234567890",
             "runtime_generation_id": "rtgen_1",
             "plugin_instance_id": "plugini_1",
+            "plugin_id": "com.example.worker",
+            "plugin_version": "1.2.3",
+            "active_fingerprint": "sha256:active",
+            "issued_at": "2026-07-04T10:45:00Z",
             "method": "worker.echo",
+            "effect": "read",
+            "execution": "sync",
+            "surface_instance_id": "surface_runtime",
+            "owner_session_hash": "session_hash",
+            "owner_user_hash": "user_hash",
+            "session_channel_id_hash": "channel_hash",
+            "bridge_channel_id": "bridge_runtime",
             "target_descriptor_hashes": [
                 "method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             ],
+            "limits": {
+                "timeout_ms": 2000,
+                "memory_bytes": 65536,
+                "max_payload_bytes": 4096,
+                "max_stream_bytes_per_sec": 1024
+            },
             "policy_revision": 11,
             "management_revision": 12,
             "revoke_epoch": 13,

@@ -67,7 +67,10 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 	assertTokenTicketCondition(t, conditions, "runtime_execution_lease", "reusable", []string{
 		"plugin_instance_id",
 		"active_fingerprint",
+		"runtime_instance_id",
 		"runtime_generation_id",
+		"ipc_channel_id",
+		"connection_nonce",
 		"method",
 	}, "^rel_[A-Za-z0-9_-]+$")
 	assertTokenTicketCondition(t, conditions, "handle_grant", "reusable", []string{

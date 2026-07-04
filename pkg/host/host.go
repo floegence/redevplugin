@@ -3122,22 +3122,6 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		ManagementRevision: record.ManagementRevision,
 		RevokeEpoch:        record.RevokeEpoch,
 	}
-	lease, err := h.surfaceTokens.MintRuntimeExecutionLease(bridge.MintRuntimeExecutionLeaseRequest{
-		PluginInstanceID:    record.PluginInstanceID,
-		ActiveFingerprint:   record.ActiveFingerprint,
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		Method:              method.Method,
-		Revision:            revision,
-		Now:                 now,
-	})
-	if err != nil {
-		return capability.Result{}, err
-	}
-	params := cloneParams(req.Params)
-	if params == nil {
-		params = map[string]any{}
-	}
 	if h.adapters.Assets == nil {
 		return capability.Result{}, errors.New("package asset store is required for worker methods")
 	}
@@ -3147,6 +3131,63 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	}
 	if strings.TrimSpace(workerAsset.Entry.SHA256) == "" {
 		return capability.Result{}, fmt.Errorf("worker artifact %q is missing sha256", worker.Artifact)
+	}
+	targetDescriptorHashes, err := runtimeLeaseTargetDescriptorHashes(record, method, worker, workerAsset.Entry.SHA256)
+	if err != nil {
+		return capability.Result{}, err
+	}
+	lease, err := h.surfaceTokens.MintRuntimeExecutionLease(bridge.MintRuntimeExecutionLeaseRequest{
+		PluginInstanceID:       record.PluginInstanceID,
+		PluginID:               record.PluginID,
+		PluginVersion:          record.Version,
+		ActiveFingerprint:      record.ActiveFingerprint,
+		SurfaceInstanceID:      req.SurfaceInstanceID,
+		OwnerSessionHash:       req.OwnerSessionHash,
+		OwnerUserHash:          req.OwnerUserHash,
+		SessionChannelIDHash:   req.SessionChannelIDHash,
+		BridgeChannelID:        req.BridgeChannelID,
+		RuntimeInstanceID:      health.RuntimeInstanceID,
+		RuntimeGenerationID:    health.RuntimeGenerationID,
+		IPCChannelID:           health.IPCChannelID,
+		ConnectionNonce:        health.ConnectionNonce,
+		Method:                 method.Method,
+		Effect:                 string(method.Effect),
+		Execution:              string(method.Execution),
+		TargetDescriptorHashes: targetDescriptorHashes,
+		Limits: bridge.RuntimeExecutionLeaseLimits{
+			MemoryBytes: worker.MemoryLimitBytes,
+		},
+		Revision: revision,
+		Now:      now,
+	})
+	if err != nil {
+		return capability.Result{}, err
+	}
+	h.audit(ctx, AuditEvent{
+		Type:              "plugin.runtime.lease.issued",
+		PluginID:          record.PluginID,
+		PluginInstanceID:  record.PluginInstanceID,
+		SurfaceInstanceID: req.SurfaceInstanceID,
+		Actor:             "host",
+		Details: map[string]any{
+			"lease_id":                 lease.LeaseID,
+			"token_id":                 lease.TokenID,
+			"method":                   lease.Method,
+			"effect":                   lease.Effect,
+			"execution":                lease.Execution,
+			"runtime_instance_id":      lease.RuntimeInstanceID,
+			"runtime_generation_id":    lease.RuntimeGenerationID,
+			"ipc_channel_id":           lease.IPCChannelID,
+			"policy_revision":          lease.PolicyRevision,
+			"management_revision":      lease.ManagementRevision,
+			"revoke_epoch":             lease.RevokeEpoch,
+			"target_descriptor_hashes": append([]string(nil), lease.TargetDescriptorHashes...),
+			"expires_at_unix_ms":       lease.ExpiresAtUnixMillis,
+		},
+	})
+	params := cloneParams(req.Params)
+	if params == nil {
+		params = map[string]any{}
 	}
 	payload := WorkerInvocationPayload{
 		PluginID:             record.PluginID,
@@ -3177,15 +3218,40 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		return capability.Result{}, err
 	}
 	rawResult, err := h.adapters.RuntimeSupervisor.InvokeWorker(ctx, runtimeclient.Lease{
-		LeaseID:             lease.LeaseID,
-		LeaseToken:          lease.LeaseToken,
-		LeaseNonce:          lease.LeaseNonce,
-		RuntimeGenerationID: lease.RuntimeGenerationID,
-		PluginInstanceID:    record.PluginInstanceID,
-		PolicyRevision:      record.PolicyRevision,
-		ManagementRevision:  record.ManagementRevision,
-		RevokeEpoch:         record.RevokeEpoch,
-		ExpiresAt:           lease.ExpiresAt,
+		LeaseID:                lease.LeaseID,
+		TokenID:                lease.TokenID,
+		LeaseToken:             lease.LeaseToken,
+		LeaseNonce:             lease.LeaseNonce,
+		PluginID:               lease.PluginID,
+		PluginVersion:          lease.PluginVersion,
+		ActiveFingerprint:      lease.ActiveFingerprint,
+		SurfaceInstanceID:      lease.SurfaceInstanceID,
+		OwnerSessionHash:       lease.OwnerSessionHash,
+		OwnerUserHash:          lease.OwnerUserHash,
+		SessionChannelIDHash:   lease.SessionChannelIDHash,
+		BridgeChannelID:        lease.BridgeChannelID,
+		RuntimeGenerationID:    lease.RuntimeGenerationID,
+		PluginInstanceID:       lease.PluginInstanceID,
+		Method:                 lease.Method,
+		Effect:                 lease.Effect,
+		Execution:              lease.Execution,
+		TargetDescriptorHashes: append([]string(nil), lease.TargetDescriptorHashes...),
+		Limits: runtimeclient.LeaseLimits{
+			TimeoutMillis:           lease.Limits.TimeoutMillis,
+			MemoryBytes:             lease.Limits.MemoryBytes,
+			MaxPayloadBytes:         lease.Limits.MaxPayloadBytes,
+			MaxStreamBytesPerSecond: lease.Limits.MaxStreamBytesPerSecond,
+		},
+		PolicyRevision:     lease.PolicyRevision,
+		ManagementRevision: lease.ManagementRevision,
+		RevokeEpoch:        lease.RevokeEpoch,
+		RuntimeShardID:     lease.RuntimeShardID,
+		RuntimeInstanceID:  lease.RuntimeInstanceID,
+		IPCChannelID:       lease.IPCChannelID,
+		ConnectionNonce:    lease.ConnectionNonce,
+		IssuedAt:           lease.IssuedAt,
+		IssuedAtUnixMillis: lease.IssuedAtUnixMillis,
+		ExpiresAt:          lease.ExpiresAt,
 	}, method.Method, rawPayload)
 	if err != nil {
 		return capability.Result{}, err
@@ -3414,6 +3480,55 @@ func manifestWorker(m manifest.Manifest, workerID string) (manifest.WorkerSpec, 
 		}
 	}
 	return manifest.WorkerSpec{}, false
+}
+
+func runtimeLeaseTargetDescriptorHashes(record registry.PluginRecord, method manifest.MethodSpec, worker manifest.WorkerSpec, artifactSHA256 string) ([]string, error) {
+	methodHash, err := runtimeLeaseDescriptorHash("method", method)
+	if err != nil {
+		return nil, err
+	}
+	workerHash, err := runtimeLeaseDescriptorHash("worker", struct {
+		Worker         manifest.WorkerSpec `json:"worker"`
+		ArtifactSHA256 string              `json:"artifact_sha256"`
+	}{
+		Worker:         worker,
+		ArtifactSHA256: strings.TrimSpace(artifactSHA256),
+	})
+	if err != nil {
+		return nil, err
+	}
+	hashes := []string{
+		"package:" + strings.TrimSpace(record.PackageHash),
+		"manifest:" + strings.TrimSpace(record.ManifestHash),
+		methodHash,
+		workerHash,
+	}
+	if artifactSHA256 = strings.TrimSpace(artifactSHA256); artifactSHA256 != "" {
+		hashes = append(hashes, "artifact:"+artifactSHA256)
+	}
+	out := make([]string, 0, len(hashes))
+	seen := map[string]struct{}{}
+	for _, hash := range hashes {
+		hash = strings.TrimSpace(hash)
+		if hash == "" {
+			continue
+		}
+		if _, exists := seen[hash]; exists {
+			continue
+		}
+		seen[hash] = struct{}{}
+		out = append(out, hash)
+	}
+	return out, nil
+}
+
+func runtimeLeaseDescriptorHash(prefix string, value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal runtime lease %s descriptor: %w", prefix, err)
+	}
+	sum := sha256.Sum256(raw)
+	return prefix + ":sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func normalizeStringSet(values []string) []string {

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -387,14 +388,30 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 	now := testNow()
 	revision := testRevision(8)
 	result, err := service.MintRuntimeExecutionLease(MintRuntimeExecutionLeaseRequest{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_a",
-		Method:              "worker.echo",
-		Revision:            revision,
-		Now:                 now,
+		PluginInstanceID:     "plugini_test",
+		PluginID:             "com.example.worker",
+		PluginVersion:        "1.2.3",
+		ActiveFingerprint:    "sha256:package",
+		SurfaceInstanceID:    "surface_runtime",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_runtime",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  "runtime_gen_1",
+		RuntimeShardID:       "runtime_shard_a",
+		IPCChannelID:         "ipc_1",
+		ConnectionNonce:      "connection_nonce_1234567890",
+		Method:               "worker.echo",
+		Effect:               "read",
+		Execution:            "sync",
+		TargetDescriptorHashes: []string{
+			"method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+		Limits:   RuntimeExecutionLeaseLimits{MemoryBytes: 65536, MaxPayloadBytes: 4096},
+		Revision: revision,
+		Now:      now,
 	})
 	if err != nil {
 		t.Fatalf("MintRuntimeExecutionLease() error = %v", err)
@@ -402,14 +419,49 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 	if result.LeaseToken == "" || result.LeaseID == "" || result.LeaseNonce == "" || result.RuntimeGenerationID != "runtime_gen_1" {
 		t.Fatalf("runtime lease result mismatch: %#v", result)
 	}
+	if !strings.HasPrefix(result.LeaseID, "lease_") || !strings.HasPrefix(result.TokenID, "rel_") || result.TokenID == result.LeaseID {
+		t.Fatalf("runtime lease ids mismatch: lease_id=%q token_id=%q", result.LeaseID, result.TokenID)
+	}
+	if result.PluginID != "com.example.worker" ||
+		result.PluginVersion != "1.2.3" ||
+		result.ActiveFingerprint != "sha256:package" ||
+		result.SurfaceInstanceID != "surface_runtime" ||
+		result.OwnerSessionHash != "session_hash" ||
+		result.OwnerUserHash != "user_hash" ||
+		result.SessionChannelIDHash != "channel_hash" ||
+		result.BridgeChannelID != "bridge_runtime" ||
+		result.RuntimeInstanceID != "runtime_1" ||
+		result.RuntimeShardID != "runtime_shard_a" ||
+		result.IPCChannelID != "ipc_1" ||
+		result.ConnectionNonce != "connection_nonce_1234567890" ||
+		result.Method != "worker.echo" ||
+		result.Effect != "read" ||
+		result.Execution != "sync" ||
+		result.PolicyRevision != revision.PolicyRevision ||
+		result.ManagementRevision != revision.ManagementRevision ||
+		result.RevokeEpoch != revision.RevokeEpoch ||
+		result.IssuedAtUnixMillis != unixMillis(result.IssuedAt) ||
+		result.ExpiresAtUnixMillis != unixMillis(result.ExpiresAt) ||
+		len(result.TargetDescriptorHashes) != 2 ||
+		result.Limits.MemoryBytes != 65536 ||
+		result.Limits.MaxPayloadBytes != 4096 {
+		t.Fatalf("runtime lease metadata mismatch: %#v", result)
+	}
 
 	managerRecordAudience := Audience{
-		PluginInstanceID:    "plugini_test",
-		ActiveFingerprint:   "sha256:package",
-		RuntimeInstanceID:   "runtime_1",
-		RuntimeGenerationID: "runtime_gen_1",
-		RuntimeShardID:      "runtime_shard_a",
-		Method:              "worker.echo",
+		PluginInstanceID:     "plugini_test",
+		ActiveFingerprint:    "sha256:package",
+		SurfaceInstanceID:    "surface_runtime",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_runtime",
+		RuntimeInstanceID:    "runtime_1",
+		RuntimeGenerationID:  "runtime_gen_1",
+		RuntimeShardID:       "runtime_shard_a",
+		IPCChannelID:         "ipc_1",
+		ConnectionNonce:      "connection_nonce_1234567890",
+		Method:               "worker.echo",
 	}
 	record, err := service.tokens.Validate(ValidateRequest{
 		Kind:     TokenKindRuntimeExecutionLease,
@@ -454,6 +506,9 @@ func TestRuntimeExecutionLeaseRequiresGenerationAndMethod(t *testing.T) {
 		t.Fatalf("MintRuntimeExecutionLease() missing generation error = %v, want %v", err, ErrMissingTokenAudience)
 	}
 	req.RuntimeGenerationID = "runtime_gen_1"
+	req.RuntimeInstanceID = "runtime_1"
+	req.IPCChannelID = "ipc_1"
+	req.ConnectionNonce = "connection_nonce_1234567890"
 	req.Method = ""
 	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintRuntimeExecutionLease() missing method error = %v, want %v", err, ErrMissingTokenAudience)
@@ -466,7 +521,10 @@ func TestRuntimeExecutionLeaseTTLIsClamped(t *testing.T) {
 	result, err := service.MintRuntimeExecutionLease(MintRuntimeExecutionLeaseRequest{
 		PluginInstanceID:    "plugini_test",
 		ActiveFingerprint:   "sha256:package",
+		RuntimeInstanceID:   "runtime_1",
 		RuntimeGenerationID: "runtime_gen_1",
+		IPCChannelID:        "ipc_1",
+		ConnectionNonce:     "connection_nonce_1234567890",
 		Method:              "worker.echo",
 		Revision:            testRevision(8),
 		Now:                 now,

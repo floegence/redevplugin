@@ -40,10 +40,31 @@ func TestCanonicalRuntimeLeaseSignaturePayloadExcludesSecrets(t *testing.T) {
 	}
 	if decoded["schema_version"] != RuntimeLeaseSignatureSchemaVersion ||
 		decoded["token_kind"] != RuntimeLeaseTokenKind ||
+		decoded["lease_id"] != lease.LeaseID ||
+		decoded["token_id"] != lease.TokenID ||
+		decoded["plugin_id"] != lease.PluginID ||
+		decoded["plugin_version"] != lease.PluginVersion ||
+		decoded["active_fingerprint"] != lease.ActiveFingerprint ||
+		decoded["issued_at_unix_ms"] != float64(lease.IssuedAtUnixMillis) ||
 		decoded["key_id"] != lease.KeyID ||
 		decoded["method"] != "worker.echo" ||
+		decoded["effect"] != lease.Effect ||
+		decoded["execution"] != lease.Execution ||
+		decoded["surface_instance_id"] != lease.SurfaceInstanceID ||
+		decoded["owner_session_hash"] != lease.OwnerSessionHash ||
+		decoded["owner_user_hash"] != lease.OwnerUserHash ||
+		decoded["session_channel_id_hash"] != lease.SessionChannelIDHash ||
+		decoded["bridge_channel_id"] != lease.BridgeChannelID ||
 		decoded["expires_at_unix_ms"] != float64(unixMillis(lease.ExpiresAt)) {
 		t.Fatalf("canonical payload mismatch: %#v", decoded)
+	}
+	limits, ok := decoded["limits"].(map[string]any)
+	if !ok ||
+		limits["timeout_ms"] != float64(2000) ||
+		limits["memory_bytes"] != float64(65536) ||
+		limits["max_payload_bytes"] != float64(4096) ||
+		limits["max_stream_bytes_per_sec"] != float64(1024) {
+		t.Fatalf("canonical payload limits mismatch: %#v", decoded["limits"])
 	}
 }
 
@@ -186,16 +207,28 @@ func TestProcessSupervisorSendsRuntimeLeasePublicKeysInHello(t *testing.T) {
 
 func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 	return Lease{
-		LeaseID:             "rel_lease_signature",
-		LeaseToken:          "runtime_execution_lease.rel_lease_signature.secret",
-		LeaseNonce:          "nonce_1234567890",
-		RuntimeGenerationID: "rtgen_1",
-		PluginInstanceID:    "plugini_1",
-		Method:              "worker.echo",
+		LeaseID:              "rel_lease_signature",
+		TokenID:              "rel_token_signature",
+		LeaseToken:           "runtime_execution_lease.rel_lease_signature.secret",
+		LeaseNonce:           "nonce_1234567890",
+		PluginID:             "com.example.worker",
+		PluginVersion:        "1.2.3",
+		ActiveFingerprint:    "sha256:active",
+		SurfaceInstanceID:    "surface_runtime",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_runtime",
+		RuntimeGenerationID:  "rtgen_1",
+		PluginInstanceID:     "plugini_1",
+		Method:               "worker.echo",
+		Effect:               "read",
+		Execution:            "sync",
 		TargetDescriptorHashes: []string{
 			"method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		},
+		Limits:             LeaseLimits{TimeoutMillis: 2000, MemoryBytes: 65536, MaxPayloadBytes: 4096, MaxStreamBytesPerSecond: 1024},
 		PolicyRevision:     11,
 		ManagementRevision: 12,
 		RevokeEpoch:        13,
@@ -204,6 +237,8 @@ func runtimeLeaseSignatureTestLease(now time.Time) Lease {
 		IPCChannelID:       "ipc_1",
 		ConnectionNonce:    "connection_nonce_1234567890",
 		KeyID:              "host_ephemeral_key_1",
+		IssuedAt:           now,
+		IssuedAtUnixMillis: unixMillis(now),
 		ExpiresAt:          now.Add(30 * time.Second),
 	}
 }

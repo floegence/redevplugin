@@ -153,7 +153,7 @@ func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 	}
 }
 
-func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {
+func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 	root := repoRoot(t)
 	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
 	if err != nil {
@@ -178,15 +178,38 @@ func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {
 		}
 		lease := requireNestedObject(t, block, "then", "properties", "payload", "properties", "lease")
 		required := requireStringSlice(t, lease["required"], "invoke_worker lease required")
-		hasLeaseNonce := false
-		for _, name := range required {
-			if name == "lease_nonce" {
-				hasLeaseNonce = true
-				break
+		for _, name := range []string{
+			"lease_id",
+			"token_id",
+			"lease_token",
+			"lease_nonce",
+			"runtime_generation_id",
+			"plugin_instance_id",
+			"plugin_id",
+			"plugin_version",
+			"active_fingerprint",
+			"issued_at",
+			"issued_at_unix_ms",
+			"method",
+			"effect",
+			"execution",
+			"surface_instance_id",
+			"owner_session_hash",
+			"owner_user_hash",
+			"session_channel_id_hash",
+			"bridge_channel_id",
+			"target_descriptor_hashes",
+			"policy_revision",
+			"management_revision",
+			"revoke_epoch",
+			"runtime_instance_id",
+			"ipc_channel_id",
+			"connection_nonce",
+			"expires_at",
+		} {
+			if !containsRequiredString(required, name) {
+				t.Fatalf("invoke_worker lease required missing %s: %#v", name, required)
 			}
-		}
-		if !hasLeaseNonce {
-			t.Fatalf("invoke_worker lease required missing lease_nonce: %#v", required)
 		}
 		leaseNonce := requireNestedObject(t, lease, "properties", "lease_nonce")
 		if leaseNonce["type"] != "string" || leaseNonce["minLength"] != float64(16) {
@@ -194,7 +217,22 @@ func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {
 		}
 		props := requireNestedObject(t, lease, "properties")
 		for _, name := range []string{
+			"token_id",
+			"plugin_id",
+			"plugin_version",
+			"active_fingerprint",
+			"issued_at",
+			"issued_at_unix_ms",
+			"method",
+			"effect",
+			"execution",
+			"surface_instance_id",
+			"owner_session_hash",
+			"owner_user_hash",
+			"session_channel_id_hash",
+			"bridge_channel_id",
 			"target_descriptor_hashes",
+			"limits",
 			"runtime_shard_id",
 			"runtime_instance_id",
 			"ipc_channel_id",
@@ -209,6 +247,13 @@ func TestIPCSchemaRequiresWorkerLeaseNonce(t *testing.T) {
 		signature := requireNestedObject(t, lease, "properties", "signature")
 		if signature["pattern"] != "^ed25519:.+" {
 			t.Fatalf("invoke_worker lease signature schema = %#v", signature)
+		}
+		limits := requireNestedObject(t, lease, "properties", "limits", "properties")
+		for _, name := range []string{"timeout_ms", "memory_bytes", "max_payload_bytes", "max_stream_bytes_per_sec"} {
+			field := requireNestedObject(t, limits, name)
+			if field["type"] != "integer" || field["minimum"] != float64(0) {
+				t.Fatalf("invoke_worker lease limits %s schema = %#v", name, field)
+			}
 		}
 		return
 	}

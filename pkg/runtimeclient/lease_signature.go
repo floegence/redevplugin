@@ -201,6 +201,7 @@ func SignRuntimeLease(lease Lease, method string, keyID string, privateKey ed255
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return Lease{}, errors.New("runtime lease signing private key is invalid")
 	}
+	lease = normalizeRuntimeLeaseForIPC(lease)
 	lease.KeyID = strings.TrimSpace(keyID)
 	lease.Signature = ""
 	payload, err := CanonicalRuntimeLeaseSignaturePayload(lease, method)
@@ -212,23 +213,36 @@ func SignRuntimeLease(lease Lease, method string, keyID string, privateKey ed255
 }
 
 type runtimeLeaseSignaturePayload struct {
-	SchemaVersion          string   `json:"schema_version"`
-	TokenKind              string   `json:"token_kind"`
-	LeaseID                string   `json:"lease_id"`
-	LeaseNonce             string   `json:"lease_nonce"`
-	PluginInstanceID       string   `json:"plugin_instance_id"`
-	Method                 string   `json:"method"`
-	TargetDescriptorHashes []string `json:"target_descriptor_hashes,omitempty"`
-	PolicyRevision         uint64   `json:"policy_revision"`
-	ManagementRevision     uint64   `json:"management_revision"`
-	RevokeEpoch            uint64   `json:"revoke_epoch"`
-	ExpiresAtUnixMillis    int64    `json:"expires_at_unix_ms"`
-	RuntimeShardID         string   `json:"runtime_shard_id,omitempty"`
-	RuntimeInstanceID      string   `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID    string   `json:"runtime_generation_id"`
-	IPCChannelID           string   `json:"ipc_channel_id,omitempty"`
-	ConnectionNonce        string   `json:"connection_nonce,omitempty"`
-	KeyID                  string   `json:"key_id"`
+	SchemaVersion          string       `json:"schema_version"`
+	TokenKind              string       `json:"token_kind"`
+	LeaseID                string       `json:"lease_id"`
+	TokenID                string       `json:"token_id,omitempty"`
+	LeaseNonce             string       `json:"lease_nonce"`
+	PluginInstanceID       string       `json:"plugin_instance_id"`
+	PluginID               string       `json:"plugin_id,omitempty"`
+	PluginVersion          string       `json:"plugin_version,omitempty"`
+	ActiveFingerprint      string       `json:"active_fingerprint,omitempty"`
+	IssuedAtUnixMillis     int64        `json:"issued_at_unix_ms,omitempty"`
+	Method                 string       `json:"method"`
+	Effect                 string       `json:"effect,omitempty"`
+	Execution              string       `json:"execution,omitempty"`
+	SurfaceInstanceID      string       `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash       string       `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string       `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash   string       `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string       `json:"bridge_channel_id,omitempty"`
+	TargetDescriptorHashes []string     `json:"target_descriptor_hashes,omitempty"`
+	Limits                 *LeaseLimits `json:"limits,omitempty"`
+	PolicyRevision         uint64       `json:"policy_revision"`
+	ManagementRevision     uint64       `json:"management_revision"`
+	RevokeEpoch            uint64       `json:"revoke_epoch"`
+	ExpiresAtUnixMillis    int64        `json:"expires_at_unix_ms"`
+	RuntimeShardID         string       `json:"runtime_shard_id,omitempty"`
+	RuntimeInstanceID      string       `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID    string       `json:"runtime_generation_id"`
+	IPCChannelID           string       `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string       `json:"connection_nonce,omitempty"`
+	KeyID                  string       `json:"key_id"`
 }
 
 func CanonicalRuntimeLeaseSignaturePayload(lease Lease, method string) ([]byte, error) {
@@ -240,10 +254,23 @@ func CanonicalRuntimeLeaseSignaturePayload(lease Lease, method string) ([]byte, 
 		SchemaVersion:          RuntimeLeaseSignatureSchemaVersion,
 		TokenKind:              RuntimeLeaseTokenKind,
 		LeaseID:                strings.TrimSpace(lease.LeaseID),
+		TokenID:                strings.TrimSpace(runtimeLeaseTokenID(lease)),
 		LeaseNonce:             strings.TrimSpace(lease.LeaseNonce),
 		PluginInstanceID:       strings.TrimSpace(lease.PluginInstanceID),
+		PluginID:               strings.TrimSpace(lease.PluginID),
+		PluginVersion:          strings.TrimSpace(lease.PluginVersion),
+		ActiveFingerprint:      strings.TrimSpace(lease.ActiveFingerprint),
+		IssuedAtUnixMillis:     runtimeLeaseIssuedAtUnixMillis(lease),
 		Method:                 resolvedMethod,
+		Effect:                 strings.TrimSpace(lease.Effect),
+		Execution:              strings.TrimSpace(lease.Execution),
+		SurfaceInstanceID:      strings.TrimSpace(lease.SurfaceInstanceID),
+		OwnerSessionHash:       strings.TrimSpace(lease.OwnerSessionHash),
+		OwnerUserHash:          strings.TrimSpace(lease.OwnerUserHash),
+		SessionChannelIDHash:   strings.TrimSpace(lease.SessionChannelIDHash),
+		BridgeChannelID:        strings.TrimSpace(lease.BridgeChannelID),
 		TargetDescriptorHashes: append([]string(nil), lease.TargetDescriptorHashes...),
+		Limits:                 runtimeLeaseLimitsPointer(lease.Limits),
 		PolicyRevision:         lease.PolicyRevision,
 		ManagementRevision:     lease.ManagementRevision,
 		RevokeEpoch:            lease.RevokeEpoch,
@@ -280,6 +307,30 @@ func validateRuntimeLeaseSignatureInput(lease Lease, method string, now time.Tim
 		return err
 	}
 	return nil
+}
+
+func runtimeLeaseTokenID(lease Lease) string {
+	if trimmed := strings.TrimSpace(lease.TokenID); trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(lease.LeaseID)
+}
+
+func runtimeLeaseIssuedAtUnixMillis(lease Lease) int64 {
+	if lease.IssuedAtUnixMillis != 0 {
+		return lease.IssuedAtUnixMillis
+	}
+	return unixMillis(lease.IssuedAt)
+}
+
+func runtimeLeaseLimitsPointer(limits LeaseLimits) *LeaseLimits {
+	if limits.TimeoutMillis == 0 &&
+		limits.MemoryBytes == 0 &&
+		limits.MaxPayloadBytes == 0 &&
+		limits.MaxStreamBytesPerSecond == 0 {
+		return nil
+	}
+	return &limits
 }
 
 func decodeRuntimeLeaseSignature(value string) ([]byte, error) {

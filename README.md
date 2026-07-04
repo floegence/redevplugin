@@ -166,14 +166,19 @@ capabilities.
   IPC. `runtimeclient` exposes an Ed25519 verifier, static signing-key keyring,
   canonical signing payload, and signing helper for Host-issued
   `runtime_execution_lease` values. The canonical payload excludes
-  `lease_token` and `signature`, covers the method, descriptor hashes, policy
-  and management revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and
+  `lease_token` and `signature`, covers the display token ID, plugin metadata,
+  active package fingerprint, issued timestamp, method, effect, execution mode,
+  surface and owner context, descriptor hashes, quota limits, policy and
+  management revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and
   runtime audience fields, and requires the lease audience to match the current
   runtime instance, IPC channel, and handshake nonce when the supervisor verifier
   is configured. Hosts can also pass the runtime lease public keys in the
   startup `hello` frame; when Rust receives that keyring, it verifies the same
   canonical payload and rejects unsigned, tampered, or unknown-key leases before
-  consuming the replay cache or opening worker artifacts.
+  consuming the replay cache or opening worker artifacts. Worker-route dispatch
+  emits a `plugin.runtime.lease.issued` Host audit event with lease/token IDs,
+  runtime IDs, revision bindings, descriptor hashes, and expiry metadata, but not
+  the bearer `lease_token`.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and

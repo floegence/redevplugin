@@ -31,23 +31,44 @@ type Target struct {
 }
 
 type Lease struct {
-	LeaseID                string    `json:"lease_id"`
-	LeaseToken             string    `json:"lease_token"`
-	LeaseNonce             string    `json:"lease_nonce"`
-	RuntimeGenerationID    string    `json:"runtime_generation_id"`
-	PluginInstanceID       string    `json:"plugin_instance_id"`
-	Method                 string    `json:"method,omitempty"`
-	TargetDescriptorHashes []string  `json:"target_descriptor_hashes,omitempty"`
-	PolicyRevision         uint64    `json:"policy_revision"`
-	ManagementRevision     uint64    `json:"management_revision"`
-	RevokeEpoch            uint64    `json:"revoke_epoch"`
-	RuntimeShardID         string    `json:"runtime_shard_id,omitempty"`
-	RuntimeInstanceID      string    `json:"runtime_instance_id,omitempty"`
-	IPCChannelID           string    `json:"ipc_channel_id,omitempty"`
-	ConnectionNonce        string    `json:"connection_nonce,omitempty"`
-	KeyID                  string    `json:"key_id,omitempty"`
-	Signature              string    `json:"signature,omitempty"`
-	ExpiresAt              time.Time `json:"expires_at"`
+	LeaseID                string      `json:"lease_id"`
+	TokenID                string      `json:"token_id,omitempty"`
+	LeaseToken             string      `json:"lease_token"`
+	LeaseNonce             string      `json:"lease_nonce"`
+	PluginID               string      `json:"plugin_id,omitempty"`
+	PluginVersion          string      `json:"plugin_version,omitempty"`
+	ActiveFingerprint      string      `json:"active_fingerprint,omitempty"`
+	SurfaceInstanceID      string      `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash       string      `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string      `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash   string      `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string      `json:"bridge_channel_id,omitempty"`
+	RuntimeGenerationID    string      `json:"runtime_generation_id"`
+	PluginInstanceID       string      `json:"plugin_instance_id"`
+	Method                 string      `json:"method,omitempty"`
+	Effect                 string      `json:"effect,omitempty"`
+	Execution              string      `json:"execution,omitempty"`
+	TargetDescriptorHashes []string    `json:"target_descriptor_hashes,omitempty"`
+	Limits                 LeaseLimits `json:"limits,omitempty"`
+	PolicyRevision         uint64      `json:"policy_revision"`
+	ManagementRevision     uint64      `json:"management_revision"`
+	RevokeEpoch            uint64      `json:"revoke_epoch"`
+	RuntimeShardID         string      `json:"runtime_shard_id,omitempty"`
+	RuntimeInstanceID      string      `json:"runtime_instance_id,omitempty"`
+	IPCChannelID           string      `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string      `json:"connection_nonce,omitempty"`
+	KeyID                  string      `json:"key_id,omitempty"`
+	Signature              string      `json:"signature,omitempty"`
+	IssuedAt               time.Time   `json:"issued_at,omitempty"`
+	IssuedAtUnixMillis     int64       `json:"issued_at_unix_ms,omitempty"`
+	ExpiresAt              time.Time   `json:"expires_at"`
+}
+
+type LeaseLimits struct {
+	TimeoutMillis           int64 `json:"timeout_ms,omitempty"`
+	MemoryBytes             int64 `json:"memory_bytes,omitempty"`
+	MaxPayloadBytes         int64 `json:"max_payload_bytes,omitempty"`
+	MaxStreamBytesPerSecond int64 `json:"max_stream_bytes_per_sec,omitempty"`
 }
 
 type Health struct {
@@ -474,6 +495,7 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if s == nil || !s.isReady() {
 		return nil, ErrRuntimeNotReady
 	}
+	lease = normalizeRuntimeLeaseForIPC(lease)
 	if err := s.verifyRuntimeLease(ctx, lease, method); err != nil {
 		return nil, err
 	}
@@ -511,6 +533,16 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 		return []byte("{}"), nil
 	}
 	return append([]byte(nil), response.Result...), nil
+}
+
+func normalizeRuntimeLeaseForIPC(lease Lease) Lease {
+	if lease.TokenID == "" {
+		lease.TokenID = runtimeLeaseTokenID(lease)
+	}
+	if lease.IssuedAtUnixMillis == 0 {
+		lease.IssuedAtUnixMillis = unixMillis(lease.IssuedAt)
+	}
+	return lease
 }
 
 func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {

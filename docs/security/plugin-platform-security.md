@@ -224,12 +224,16 @@ the raw lease token or raw nonce.
 Hosts can additionally configure an Ed25519 runtime lease verifier on the Go
 supervisor. The verifier checks a canonical `runtime_execution_lease` payload
 that excludes the bearer `lease_token` and the signature itself, while covering
-the worker method, descriptor hashes, policy and management revisions, revoke
-epoch, expiry, `lease_nonce`, `key_id`, and runtime audience. Before the
-signature check, the supervisor requires the lease audience to match the current
-runtime instance, IPC channel ID, and handshake `connection_nonce`. Rejected
-signatures record `plugin.runtime.lease.signature_rejected` and fail before
-worker IPC or artifact reads.
+the display token ID, plugin metadata, active package fingerprint, issued
+timestamp, worker method, effect, execution mode, surface and owner context,
+descriptor hashes, quota limits, policy and management revisions, revoke epoch,
+expiry, `lease_nonce`, `key_id`, and runtime audience. Before the signature
+check, the supervisor requires the lease audience to match the current runtime
+instance, IPC channel ID, and handshake `connection_nonce`. Rejected signatures
+record `plugin.runtime.lease.signature_rejected` and fail before worker IPC or
+artifact reads. Worker-route dispatch records `plugin.runtime.lease.issued` with
+lease/token IDs, runtime IDs, revision bindings, descriptor hashes, and expiry
+metadata; the cleartext bearer `lease_token` is never written to audit details.
 The supervisor can include the matching runtime lease public keys in the startup
 `hello` frame. Once the Rust runtime receives a non-empty keyring, it verifies
 worker lease signatures with the same canonical payload and rejects unsigned,

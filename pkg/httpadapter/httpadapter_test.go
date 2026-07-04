@@ -1840,7 +1840,7 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 
 func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 	runtime := &httpRecordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
 		err:    runtimeclient.ErrRuntimeRequestFailed,
 	}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: runtime})
@@ -2373,7 +2373,7 @@ func TestHandlerListsAuditEvents(t *testing.T) {
 
 func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 	supervisor := &httpRecordingRuntimeSupervisor{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", Ready: true},
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
 	}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: supervisor})
 	handler := Handler{Host: h}
@@ -3438,7 +3438,7 @@ func (s *httpRecordingSecretStore) DeleteSecretRef(_ context.Context, req host.S
 func (s *httpRecordingRuntimeSupervisor) Start(_ context.Context, target runtimeclient.Target) error {
 	s.startedTarget = target
 	if s.health == (runtimeclient.Health{}) {
-		s.health = runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", Ready: true}
+		s.health = runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true}
 	}
 	return nil
 }

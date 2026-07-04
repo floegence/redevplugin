@@ -107,8 +107,13 @@ channel ID, and handshake `connection_nonce` needed to mint a
 `ProcessSupervisorOptions.RuntimeLeaseVerifier`, the supervisor requires a
 worker lease to carry that exact audience before verifying the Ed25519
 signature. The canonical signing payload excludes the bearer token and covers
-the method, target descriptor hashes, policy revisions, revoke epoch, expiry,
-`lease_nonce`, `key_id`, and runtime audience fields.
+the display token ID, plugin metadata, active package fingerprint, issued
+timestamp, method, effect, execution mode, surface and owner context, target
+descriptor hashes, quota limits, policy revisions, revoke epoch, expiry,
+`lease_nonce`, `key_id`, and runtime audience fields. `MintRuntimeExecutionLease`
+returns separate `lease_id` and display `token_id` values plus the same metadata,
+and worker-route dispatch records a `plugin.runtime.lease.issued` Host audit
+event without persisting the bearer lease token.
 `ProcessSupervisorOptions.RuntimeLeasePublicKeys` sends the matching public keys
 to Rust in the startup `hello` frame. A runtime that receives at least one key
 verifies worker lease signatures before replay-cache consumption and before

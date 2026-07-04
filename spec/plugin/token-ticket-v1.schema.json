@@ -74,6 +74,8 @@
         "runtime_instance_id": { "type": "string" },
         "runtime_generation_id": { "type": "string" },
         "runtime_shard_id": { "type": "string" },
+        "ipc_channel_id": { "type": "string" },
+        "connection_nonce": { "type": "string", "minLength": 16 },
         "stream_id": { "type": "string" },
         "stream_direction": { "enum": ["read", "write", "duplex"] },
         "handle_id": { "type": "string" },
@@ -185,7 +187,10 @@
             "required": [
               "plugin_instance_id",
               "active_fingerprint",
+              "runtime_instance_id",
               "runtime_generation_id",
+              "ipc_channel_id",
+              "connection_nonce",
               "method"
             ]
           }

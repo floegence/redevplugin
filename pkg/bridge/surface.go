@@ -152,24 +152,69 @@ type ValidateConfirmationTokenIDRequest struct {
 }
 
 type MintRuntimeExecutionLeaseRequest struct {
-	PluginInstanceID    string          `json:"plugin_instance_id"`
-	ActiveFingerprint   string          `json:"active_fingerprint"`
-	RuntimeInstanceID   string          `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID string          `json:"runtime_generation_id"`
-	RuntimeShardID      string          `json:"runtime_shard_id,omitempty"`
-	Method              string          `json:"method"`
-	Revision            RevisionBinding `json:"revision"`
-	Now                 time.Time       `json:"now,omitempty"`
-	ExpiresAt           time.Time       `json:"expires_at,omitempty"`
+	PluginInstanceID       string                      `json:"plugin_instance_id"`
+	PluginID               string                      `json:"plugin_id,omitempty"`
+	PluginVersion          string                      `json:"plugin_version,omitempty"`
+	ActiveFingerprint      string                      `json:"active_fingerprint"`
+	SurfaceInstanceID      string                      `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash       string                      `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string                      `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash   string                      `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string                      `json:"bridge_channel_id,omitempty"`
+	RuntimeInstanceID      string                      `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID    string                      `json:"runtime_generation_id"`
+	RuntimeShardID         string                      `json:"runtime_shard_id,omitempty"`
+	IPCChannelID           string                      `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string                      `json:"connection_nonce,omitempty"`
+	Method                 string                      `json:"method"`
+	Effect                 string                      `json:"effect,omitempty"`
+	Execution              string                      `json:"execution,omitempty"`
+	TargetDescriptorHashes []string                    `json:"target_descriptor_hashes,omitempty"`
+	Limits                 RuntimeExecutionLeaseLimits `json:"limits,omitempty"`
+	Revision               RevisionBinding             `json:"revision"`
+	Now                    time.Time                   `json:"now,omitempty"`
+	ExpiresAt              time.Time                   `json:"expires_at,omitempty"`
+}
+
+type RuntimeExecutionLeaseLimits struct {
+	TimeoutMillis           int64 `json:"timeout_ms,omitempty"`
+	MemoryBytes             int64 `json:"memory_bytes,omitempty"`
+	MaxPayloadBytes         int64 `json:"max_payload_bytes,omitempty"`
+	MaxStreamBytesPerSecond int64 `json:"max_stream_bytes_per_sec,omitempty"`
 }
 
 type RuntimeExecutionLeaseResult struct {
-	LeaseToken          string    `json:"lease_token"`
-	LeaseID             string    `json:"lease_id"`
-	LeaseNonce          string    `json:"lease_nonce"`
-	RuntimeGenerationID string    `json:"runtime_generation_id"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
+	TokenKind              TokenKind                   `json:"token_kind"`
+	TokenID                string                      `json:"token_id"`
+	LeaseToken             string                      `json:"lease_token"`
+	LeaseID                string                      `json:"lease_id"`
+	LeaseNonce             string                      `json:"lease_nonce"`
+	PluginInstanceID       string                      `json:"plugin_instance_id"`
+	PluginID               string                      `json:"plugin_id,omitempty"`
+	PluginVersion          string                      `json:"plugin_version,omitempty"`
+	ActiveFingerprint      string                      `json:"active_fingerprint"`
+	SurfaceInstanceID      string                      `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash       string                      `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string                      `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash   string                      `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string                      `json:"bridge_channel_id,omitempty"`
+	RuntimeInstanceID      string                      `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID    string                      `json:"runtime_generation_id"`
+	RuntimeShardID         string                      `json:"runtime_shard_id,omitempty"`
+	IPCChannelID           string                      `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string                      `json:"connection_nonce,omitempty"`
+	Method                 string                      `json:"method"`
+	Effect                 string                      `json:"effect,omitempty"`
+	Execution              string                      `json:"execution,omitempty"`
+	TargetDescriptorHashes []string                    `json:"target_descriptor_hashes,omitempty"`
+	Limits                 RuntimeExecutionLeaseLimits `json:"limits,omitempty"`
+	PolicyRevision         uint64                      `json:"policy_revision"`
+	ManagementRevision     uint64                      `json:"management_revision"`
+	RevokeEpoch            uint64                      `json:"revoke_epoch"`
+	IssuedAt               time.Time                   `json:"issued_at"`
+	IssuedAtUnixMillis     int64                       `json:"issued_at_unix_ms"`
+	ExpiresAt              time.Time                   `json:"expires_at"`
+	ExpiresAtUnixMillis    int64                       `json:"expires_at_unix_ms"`
 }
 
 type MintHandleGrantRequest struct {
@@ -595,7 +640,10 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 	}
 	if strings.TrimSpace(req.PluginInstanceID) == "" ||
 		strings.TrimSpace(req.ActiveFingerprint) == "" ||
+		strings.TrimSpace(req.RuntimeInstanceID) == "" ||
 		strings.TrimSpace(req.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(req.IPCChannelID) == "" ||
+		strings.TrimSpace(req.ConnectionNonce) == "" ||
 		strings.TrimSpace(req.Method) == "" {
 		return RuntimeExecutionLeaseResult{}, ErrMissingTokenAudience
 	}
@@ -610,15 +658,26 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 	if expiresAt.After(now.Add(MaxRuntimeLeaseTTL)) {
 		expiresAt = now.Add(MaxRuntimeLeaseTTL)
 	}
+	leaseID, err := runtimeExecutionLeaseID()
+	if err != nil {
+		return RuntimeExecutionLeaseResult{}, err
+	}
 	minted, err := s.tokens.Mint(MintRequest{
 		Kind: TokenKindRuntimeExecutionLease,
 		Audience: Audience{
-			PluginInstanceID:    req.PluginInstanceID,
-			ActiveFingerprint:   req.ActiveFingerprint,
-			RuntimeInstanceID:   req.RuntimeInstanceID,
-			RuntimeGenerationID: req.RuntimeGenerationID,
-			RuntimeShardID:      req.RuntimeShardID,
-			Method:              req.Method,
+			PluginInstanceID:     req.PluginInstanceID,
+			ActiveFingerprint:    req.ActiveFingerprint,
+			SurfaceInstanceID:    req.SurfaceInstanceID,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			BridgeChannelID:      req.BridgeChannelID,
+			RuntimeInstanceID:    req.RuntimeInstanceID,
+			RuntimeGenerationID:  req.RuntimeGenerationID,
+			RuntimeShardID:       req.RuntimeShardID,
+			IPCChannelID:         req.IPCChannelID,
+			ConnectionNonce:      req.ConnectionNonce,
+			Method:               req.Method,
 		},
 		Revision:  req.Revision,
 		ExpiresAt: expiresAt,
@@ -628,12 +687,37 @@ func (s *SurfaceTokenService) MintRuntimeExecutionLease(req MintRuntimeExecution
 		return RuntimeExecutionLeaseResult{}, err
 	}
 	return RuntimeExecutionLeaseResult{
-		LeaseToken:          minted.Token,
-		LeaseID:             minted.TokenID,
-		LeaseNonce:          minted.Nonce,
-		RuntimeGenerationID: req.RuntimeGenerationID,
-		IssuedAt:            minted.IssuedAt,
-		ExpiresAt:           minted.ExpiresAt,
+		TokenKind:              minted.Kind,
+		TokenID:                minted.TokenID,
+		LeaseToken:             minted.Token,
+		LeaseID:                leaseID,
+		LeaseNonce:             minted.Nonce,
+		PluginInstanceID:       strings.TrimSpace(req.PluginInstanceID),
+		PluginID:               strings.TrimSpace(req.PluginID),
+		PluginVersion:          strings.TrimSpace(req.PluginVersion),
+		ActiveFingerprint:      strings.TrimSpace(req.ActiveFingerprint),
+		SurfaceInstanceID:      strings.TrimSpace(req.SurfaceInstanceID),
+		OwnerSessionHash:       strings.TrimSpace(req.OwnerSessionHash),
+		OwnerUserHash:          strings.TrimSpace(req.OwnerUserHash),
+		SessionChannelIDHash:   strings.TrimSpace(req.SessionChannelIDHash),
+		BridgeChannelID:        strings.TrimSpace(req.BridgeChannelID),
+		RuntimeInstanceID:      strings.TrimSpace(req.RuntimeInstanceID),
+		RuntimeGenerationID:    strings.TrimSpace(req.RuntimeGenerationID),
+		RuntimeShardID:         strings.TrimSpace(req.RuntimeShardID),
+		IPCChannelID:           strings.TrimSpace(req.IPCChannelID),
+		ConnectionNonce:        strings.TrimSpace(req.ConnectionNonce),
+		Method:                 strings.TrimSpace(req.Method),
+		Effect:                 strings.TrimSpace(req.Effect),
+		Execution:              strings.TrimSpace(req.Execution),
+		TargetDescriptorHashes: normalizeStringSlice(req.TargetDescriptorHashes),
+		Limits:                 req.Limits,
+		PolicyRevision:         minted.Revision.PolicyRevision,
+		ManagementRevision:     minted.Revision.ManagementRevision,
+		RevokeEpoch:            minted.Revision.RevokeEpoch,
+		IssuedAt:               minted.IssuedAt,
+		IssuedAtUnixMillis:     unixMillis(minted.IssuedAt),
+		ExpiresAt:              minted.ExpiresAt,
+		ExpiresAtUnixMillis:    unixMillis(minted.ExpiresAt),
 	}, nil
 }
 
@@ -707,6 +791,42 @@ func (s *SurfaceTokenService) ValidateHandleGrant(req ValidateHandleGrantRequest
 		Revision: req.Revision,
 		Now:      req.Now,
 	})
+}
+
+func runtimeExecutionLeaseID() (string, error) {
+	suffix, err := randomString(18)
+	if err != nil {
+		return "", err
+	}
+	return "lease_" + suffix, nil
+}
+
+func normalizeStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func unixMillis(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	utc := value.UTC()
+	return utc.Unix()*1000 + int64(utc.Nanosecond()/int(time.Millisecond))
 }
 
 func (s *SurfaceTokenService) MintStreamTicket(req MintStreamTicketRequest) (StreamTicketResult, error) {
