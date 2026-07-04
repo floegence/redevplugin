@@ -30,6 +30,9 @@ done
 if [[ -z "$VERSION" ]]; then
   VERSION="$(git -C "$ROOT_DIR" describe --tags --always --dirty)"
 fi
+if [[ "$OUT_DIR" != /* ]]; then
+  OUT_DIR="$ROOT_DIR/$OUT_DIR"
+fi
 
 if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
   PATH="$HOME/.cargo/bin:$PATH"

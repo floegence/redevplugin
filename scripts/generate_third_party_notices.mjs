@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 
 const [rawRootDir, rawOutFile] = process.argv.slice(2);
@@ -117,14 +127,49 @@ function readGoModules(root) {
     encoding: "utf8",
     env: { ...process.env, GOWORK: "off" },
   });
+  const downloadedModules = readGoModuleDownloads(root);
   return parseGoListJSON(raw)
     .filter((mod) => !mod.Main)
     .map((mod) => ({
       path: mod.Path,
       version: mod.Version || "",
-      license_files: scanLicenseFiles(mod.Dir),
+      license_files: scanLicenseFiles(
+        mod.Dir || downloadedModules.get(moduleCacheKey(mod.Path, mod.Version || "")),
+      ),
     }))
     .sort(compareBy("path", "version"));
+}
+
+function readGoModuleDownloads(root) {
+  const tempDir = mkdtempSync(join(tmpdir(), "redevplugin-go-mod-"));
+  try {
+    copyFileSync(join(root, "go.mod"), join(tempDir, "go.mod"));
+    if (existsSync(join(root, "go.sum"))) {
+      copyFileSync(join(root, "go.sum"), join(tempDir, "go.sum"));
+    }
+    const raw = execFileSync(
+      "go",
+      ["mod", "download", "-json", `-modfile=${join(tempDir, "go.mod")}`, "all"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, GOWORK: "off" },
+      },
+    );
+    const modules = new Map();
+    for (const mod of parseGoListJSON(raw)) {
+      if (mod.Path && mod.Version && mod.Dir) {
+        modules.set(moduleCacheKey(mod.Path, mod.Version), mod.Dir);
+      }
+    }
+    return modules;
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function moduleCacheKey(path, version) {
+  return `${path}@${version}`;
 }
 
 function parseGoListJSON(raw) {

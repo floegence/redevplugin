@@ -119,7 +119,15 @@ function verifyRuntimeHello(bundleDir, expectedVersion) {
   if (process.env.REDEVPLUGIN_SKIP_RUNTIME_EXEC === "1") {
     return;
   }
-  const hello = '{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"hello-1","runtime_generation_id":"gen-1","payload":{}}\n';
+  const channelNonce = "release_bundle_nonce_1";
+  const hello =
+    JSON.stringify({
+      ipc_version: "rust-ipc-v1",
+      frame_type: "hello",
+      request_id: "hello-1",
+      runtime_generation_id: "gen-1",
+      payload: { channel_nonce: channelNonce },
+    }) + "\n";
   const output = execFileSync(join(bundleDir, "bin/redevplugin-runtime"), {
     input: hello,
     encoding: "utf8",
@@ -129,6 +137,7 @@ function verifyRuntimeHello(bundleDir, expectedVersion) {
   assertEqual(ack.payload?.runtime_version, expectedVersion, "runtime hello version");
   assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v1", "runtime hello rust_ipc_version");
   assertEqual(ack.payload?.wasm_abi_version, "redevplugin-wasm-worker-v1", "runtime hello wasm_abi_version");
+  assertEqual(ack.payload?.channel_nonce, channelNonce, "runtime hello channel_nonce");
 }
 
 function verifyNpmTarball(bundleDir, expectedVersion) {
