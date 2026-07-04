@@ -157,6 +157,11 @@ capabilities.
   Host/Rust IPC version mismatch, WASM ABI mismatch, missing required fields,
   replayed request IDs, unknown frame types, and runtime-generation mismatch
   fail-closed paths.
+- Runtime lease replay stores let hosts extend the Rust in-process replay check
+  across runtime restarts and the full lease TTL window. `runtimeclient` provides
+  memory and SQLite stores that record only a hash of `lease_id + lease_nonce`;
+  `ProcessSupervisor` consumes the ledger before sending worker IPC and emits a
+  replay diagnostic without opening the artifact on duplicate use.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and

@@ -215,6 +215,12 @@ handshake by replaying only the generation and version fields. Worker invocation
 frames must carry the Host-issued runtime lease nonce, and the runtime consumes
 `lease_id + lease_nonce` before opening the worker artifact. Reusing the same
 lease in a running runtime generation fails closed with `PLUGIN_LEASE_REPLAYED`.
+The Go supervisor can also be configured with a runtime lease replay store. The
+memory store protects one host process, while the SQLite store persists the
+consumed `lease_id + lease_nonce` hash across runtime restarts until the lease
+expires. A duplicate lease is rejected before worker IPC or artifact reads and
+records a `plugin.runtime.lease.replayed` diagnostic. The stores do not persist
+the raw lease token or raw nonce.
 When the Rust runtime asks the Go supervisor to serve artifact, handle-grant,
 storage, or network hostcalls, the supervisor derives a bounded context before
 calling host adapters. Request-level `timeout_ms` controls storage SQLite and

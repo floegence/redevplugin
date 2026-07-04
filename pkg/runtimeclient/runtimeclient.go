@@ -36,6 +36,7 @@ type Lease struct {
 	LeaseNonce          string    `json:"lease_nonce"`
 	RuntimeGenerationID string    `json:"runtime_generation_id"`
 	PluginInstanceID    string    `json:"plugin_instance_id"`
+	Method              string    `json:"method,omitempty"`
 	PolicyRevision      uint64    `json:"policy_revision"`
 	ManagementRevision  uint64    `json:"management_revision"`
 	RevokeEpoch         uint64    `json:"revoke_epoch"`
@@ -134,6 +135,7 @@ type ProcessSupervisorOptions struct {
 	Diagnostics           observability.DiagnosticsSink
 	Artifacts             ArtifactProvider
 	HandleGrants          HandleGrantValidator
+	RuntimeLeaseReplays   RuntimeLeaseReplayStore
 	StorageFiles          storage.FilesBroker
 	StorageKV             storage.KVBroker
 	StorageSQLite         storage.SQLiteBroker
@@ -157,6 +159,7 @@ type ProcessSupervisor struct {
 	diagnostics           observability.DiagnosticsSink
 	artifacts             ArtifactProvider
 	handleGrants          HandleGrantValidator
+	runtimeLeaseReplays   RuntimeLeaseReplayStore
 	storageFiles          storage.FilesBroker
 	storageKV             storage.KVBroker
 	storageSQLite         storage.SQLiteBroker
@@ -211,6 +214,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		diagnostics:           options.Diagnostics,
 		artifacts:             options.Artifacts,
 		handleGrants:          options.HandleGrants,
+		runtimeLeaseReplays:   options.RuntimeLeaseReplays,
 		storageFiles:          options.StorageFiles,
 		storageKV:             options.StorageKV,
 		storageSQLite:         options.StorageSQLite,
@@ -465,6 +469,9 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if err != nil {
 		return nil, err
 	}
+	if err := s.consumeRuntimeLease(ctx, lease, method); err != nil {
+		return nil, err
+	}
 	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload, &allowedArtifact)
 	if err != nil {
 		return nil, err
@@ -515,6 +522,30 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string,
 		return RevokeResult{}, fmt.Errorf("%w: revoke ack missing result", ErrRuntimeRequestFailed)
 	}
 	return decodeRevokeResult(response.Result, pluginInstanceID, revokeEpoch)
+}
+
+func (s *ProcessSupervisor) consumeRuntimeLease(ctx context.Context, lease Lease, method string) error {
+	if s == nil || s.runtimeLeaseReplays == nil {
+		return nil
+	}
+	_, err := s.runtimeLeaseReplays.ConsumeRuntimeLease(ctx, RuntimeLeaseReplayConsumeRequest{
+		Lease:  lease,
+		Method: method,
+		Now:    s.now(),
+	})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrRuntimeLeaseReplay) {
+		s.emit("plugin.runtime.lease.replayed", "error", "runtime execution lease was already consumed", map[string]any{
+			"lease_id":              lease.LeaseID,
+			"plugin_instance_id":    lease.PluginInstanceID,
+			"runtime_generation_id": lease.RuntimeGenerationID,
+			"method":                method,
+			"revoke_epoch":          lease.RevokeEpoch,
+		})
+	}
+	return err
 }
 
 type revokeResultPayload struct {

@@ -112,6 +112,47 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	}
 }
 
+func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *testing.T) {
+	diagnostics := observability.NewMemoryStore()
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:         os.Args[0],
+		Args:                []string{"-test.run=TestMain"},
+		Env:                 append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		Diagnostics:         diagnostics,
+		RuntimeLeaseReplays: NewMemoryRuntimeLeaseReplayStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := Lease{
+		LeaseID:             "rel_replay",
+		LeaseToken:          "runtime_execution_lease.rel_replay.secret",
+		LeaseNonce:          "nonce_replay",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		Method:              "worker.echo",
+		PolicyRevision:      11,
+		ManagementRevision:  12,
+		RevokeEpoch:         13,
+		ExpiresAt:           time.Now().Add(time.Minute),
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), lease, "worker.echo", workerInvocationFixture()); err != nil {
+		t.Fatalf("InvokeWorker(first) error = %v", err)
+	}
+	if _, err := supervisor.InvokeWorker(context.Background(), lease, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeLeaseReplay) {
+		t.Fatalf("InvokeWorker(replay) error = %v, want %v", err, ErrRuntimeLeaseReplay)
+	}
+	waitForDiagnostic(t, diagnostics, "plugin.runtime.lease.replayed")
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],

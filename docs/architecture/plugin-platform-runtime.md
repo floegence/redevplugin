@@ -117,9 +117,10 @@ The runtime contract is versioned by:
 - `plugin_host_protocol_version`;
 - `rust_ipc_version`;
 - `wasm_abi_version`;
-- `runtime_generation_id`, Host-issued IPC channel nonce, runtime lease nonce
-  replay cache, runtime-enforced heartbeat max-staleness, and revoke epoch
-  state;
+- `runtime_generation_id`, Host-issued IPC channel nonce, Rust in-process
+  runtime lease nonce replay cache, optional Go supervisor memory/SQLite replay
+  ledger for runtime restart and lease-TTL coverage, runtime-enforced heartbeat
+  max-staleness, and revoke epoch state;
 - compatibility manifest contract hashes.
 
 The runtime IPC contract also has executable golden fixtures in
