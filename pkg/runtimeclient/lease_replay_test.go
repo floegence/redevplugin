@@ -115,7 +115,7 @@ func TestSQLiteRuntimeLeaseReplayStoreFailsClosedOnNewerSchema(t *testing.T) {
 }
 
 func runtimeLeaseReplayTestNow() time.Time {
-	return time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	return time.Now().UTC().Truncate(time.Second)
 }
 
 func runtimeLeaseReplayTestLease(now time.Time) Lease {
