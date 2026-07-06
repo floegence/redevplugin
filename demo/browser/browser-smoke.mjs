@@ -135,8 +135,8 @@ try {
   await gameFrame.getByRole("button", { name: "Power-up" }).click();
   await gameFrame.getByRole("button", { name: "Sync run" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "game.run.sync");
+  await expectText(gameFrame.locator("#plugin-result"), "\"synced\": true");
   await expectText(gameFrame.locator("#plugin-result"), "game/runs/latest");
-  await expectText(gameFrame.locator("#game-event-feed"), "synced");
   await gameFrame.getByRole("button", { name: "Save score" }).click();
   await expectText(gameFrame.locator("#plugin-result"), "game.score.save");
   await expectText(gameFrame.locator("#plugin-result"), "host-backed kv store");
