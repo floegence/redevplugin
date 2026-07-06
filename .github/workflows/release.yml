@@ -107,6 +107,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: runtime
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -156,7 +159,7 @@ jobs:
       - name: Publish @floegence/redevplugin-ui
         if: steps.redevplugin_ui_exists.outputs.exists != 'true'
         working-directory: dist/npm-publish/redevplugin-ui
-        run: npm publish --access public
+        run: npm publish --access public --provenance
 
   publish:
     name: Publish GitHub Release

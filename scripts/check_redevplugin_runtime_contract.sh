@@ -160,8 +160,14 @@ JSON
   fi
   grep -q 'name: Publish npm Package' .github/workflows/release.yml
   grep -q '@floegence/redevplugin-ui' .github/workflows/release.yml
-  grep -q 'npm publish --access public' .github/workflows/release.yml
+  grep -q 'permissions:' .github/workflows/release.yml
+  grep -q 'npm publish --access public --provenance' .github/workflows/release.yml
   grep -q 'registry-url: https://registry.npmjs.org' .github/workflows/release.yml
+  grep -q '"repository"' packages/redevplugin-ui/package.json
+  grep -q 'git+https://github.com/floegence/redevplugin.git' packages/redevplugin-ui/package.json
+  grep -q '"directory": "packages/redevplugin-ui"' packages/redevplugin-ui/package.json
+  grep -q '"publishConfig"' packages/redevplugin-ui/package.json
+  grep -q '"access": "public"' packages/redevplugin-ui/package.json
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'

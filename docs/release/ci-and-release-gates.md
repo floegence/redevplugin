@@ -108,11 +108,14 @@ version, required contract files, and generated license evidence.
 
 Tagged release workflows also publish `@floegence/redevplugin-ui` to the npm
 registry with the same version as the Git tag. The job waits for the runtime
-release matrix, uses the npm registry from `actions/setup-node`, verifies that
-the target version is not already published, builds the TypeScript package,
-rewrites the package version only inside a temporary publish directory, and runs
-`npm publish --access public`. Reruns are safe because an already-published
-version is skipped.
+release matrix, declares job-local `id-token: write` permission for npm trusted
+publishing, uses the npm registry from `actions/setup-node`, verifies that the
+target version is not already published, builds the TypeScript package, rewrites
+the package version only inside a temporary publish directory, and runs
+`npm publish --access public --provenance`. The package metadata includes the
+canonical GitHub repository URL and public publish config so npm can bind the
+published artifact to the trusted publisher configuration. Reruns are safe
+because an already-published version is skipped.
 
 ## Release Manifest And Compatibility
 
