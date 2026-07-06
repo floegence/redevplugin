@@ -8,6 +8,9 @@ release evidence set.
 ## Local And CI Gates
 
 Go checks that can be affected by a workspace must run with `GOWORK=off`.
+The CI Go job initializes the Rust toolchain with `rustup show` before
+`go test ./...` because the CLI scaffold integration test builds the released
+Rust runtime as part of the Go package test suite.
 
 Core local checks:
 
