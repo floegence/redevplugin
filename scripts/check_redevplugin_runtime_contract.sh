@@ -158,6 +158,10 @@ JSON
     echo "release artifact verifier accepted an unchecked tarball" >&2
     exit 1
   fi
+  grep -q 'name: Publish npm Package' .github/workflows/release.yml
+  grep -q '@floegence/redevplugin-ui' .github/workflows/release.yml
+  grep -q 'npm publish --access public' .github/workflows/release.yml
+  grep -q 'registry-url: https://registry.npmjs.org' .github/workflows/release.yml
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'

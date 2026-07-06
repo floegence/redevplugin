@@ -102,6 +102,62 @@ jobs:
           path: dist/redevplugin-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  publish-npm:
+    name: Publish npm Package
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: Ensure npm supports trusted publishing
+        run: |
+          set -euo pipefail
+          npm i -g npm@^11.5.1
+          npm --version
+      - name: Check if @floegence/redevplugin-ui is already published
+        id: redevplugin_ui_exists
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "@floegence/redevplugin-ui@${version}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install dependencies
+        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
+        run: npm ci
+      - name: Build UI package
+        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
+        run: npm run build
+      - name: Prepare versioned UI package
+        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          pkg_dir="dist/npm-publish/redevplugin-ui"
+          rm -rf "$pkg_dir"
+          mkdir -p "$pkg_dir"
+          cp packages/redevplugin-ui/package.json "$pkg_dir/package.json"
+          cp -R packages/redevplugin-ui/dist "$pkg_dir/dist"
+          node --input-type=module - "$pkg_dir/package.json" "$version" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const [filename, version] = process.argv.slice(2);
+          const pkg = JSON.parse(readFileSync(filename, "utf8"));
+          pkg.version = version;
+          writeFileSync(filename, JSON.stringify(pkg, null, 2) + "\n");
+          NODE
+      - name: Publish @floegence/redevplugin-ui
+        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
+        working-directory: dist/npm-publish/redevplugin-ui
+        run: npm publish --access public
+
   publish:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')

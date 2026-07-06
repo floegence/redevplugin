@@ -448,6 +448,11 @@ artifact. Use
 downloading a release artifact set; the GitHub Release workflow runs the same
 verifier before publishing.
 
+Tagged releases also publish the matching `@floegence/redevplugin-ui` npm
+package version. The release bundle still includes the npm tarball as checksum
+evidence, but host products should consume the UI SDK from the npm registry by
+semver instead of copying the bundled tarball or using a local checkout.
+
 ## Local Checks
 
 ```bash
