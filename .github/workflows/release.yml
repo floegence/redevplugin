@@ -261,9 +261,11 @@ jobs:
           console.log(`sha512-${createHash("sha512").update(bytes).digest("base64")}`);
           NODE
           )
-          published_integrity=$(npm view "@floegence/redevplugin-ui@${version}" dist.integrity --json 2>/dev/null | tr -d '"' || true)
-          if [[ -n "$published_integrity" ]]; then
-            test "$published_integrity" = "$expected_integrity"
+          if published_integrity=$(npm view "@floegence/redevplugin-ui@${version}" dist.integrity 2>/dev/null); then
+            if [[ "$published_integrity" != "$expected_integrity" ]]; then
+              echo "published npm integrity does not match the immutable package bytes" >&2
+              exit 1
+            fi
           else
             npm publish "$package" --access public --provenance
           fi

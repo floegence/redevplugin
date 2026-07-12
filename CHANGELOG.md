@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.1
+
+### Fixed
+
+- npm trusted publishing now distinguishes a missing package version by the
+  `npm view` exit status before comparing registry integrity, so npm 11 E404
+  JSON cannot be mistaken for an already-published tarball.
+- The release workflow contract rejects the faulty `--json || true` probe that
+  prevented `v0.2.0` from publishing. The `v0.2.0` tag produced no npm package
+  or GitHub Release; `v0.2.1` is the first published A2 release.
+
 ## v0.2.0
 
 ### Added

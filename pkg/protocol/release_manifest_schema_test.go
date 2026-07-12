@@ -270,6 +270,7 @@ func assertReleaseWorkflowContract(t *testing.T, path string) {
 		"gh release create",
 		"node scripts/verify_go_module_readback.mjs",
 		"npm@11.18.0",
+		`if published_integrity=$(npm view "@floegence/redevplugin-ui@${version}" dist.integrity 2>/dev/null); then`,
 	} {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("%s missing hardened release workflow snippet %q", path, snippet)
@@ -280,6 +281,7 @@ func assertReleaseWorkflowContract(t *testing.T, path string) {
 		"if: startsWith(github.ref, 'refs/tags/')",
 		"govulncheck@latest",
 		"cargo install cargo-deny --locked",
+		`dist.integrity --json 2>/dev/null | tr -d '"' || true`,
 	} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("%s retains mutable or overbroad release workflow snippet %q", path, forbidden)
