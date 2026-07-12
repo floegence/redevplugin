@@ -1,7 +1,8 @@
 # A2 Opaque Plugin Surface TDD Evidence
 
 This document records the test-driven evidence for the A2 opaque plugin
-surface host delivered in ReDevPlugin v0.2.0. A2 owns the host-neutral iframe,
+surface host implemented from ReDevPlugin v0.2.0 and first completely published
+in v0.2.2. A2 owns the host-neutral iframe,
 asset session, transferred `MessageChannel`, trusted renderer, plugin worker,
 surface lifecycle, and release-gate behavior. Product navigation, Electron
 policy, and business capability adapters remain host-product responsibilities.
@@ -27,7 +28,7 @@ fixtures that must be rejected on every run.
 | Bridge source scan | Extended `scripts/check_redevplugin_ui_bridge.sh` | Generated demos, scaffold assets, and generated-plugin fixtures were outside the wildcard-message scan | `./scripts/check_redevplugin_ui_bridge.sh` allows only the secret-free internal bootstrap transfer and rejects trusted-parent imports or wildcard `postMessage` in plugin code |
 | Real runtime integration | `demo/browser/real-runtime-smoke.mjs` | The real demo depended on v1 plugin pages, subdomain/cookie bootstrap, and direct route-shaped plugin logic | `npm run test:demo:browser` runs the Go Host, HTTP adapter, Rust runtime, opaque iframe, classic worker, parent-only assets/streams, storage broker, and network broker together |
 | Bounded opening | `surface opening deadline revokes server state, tears down locally, and remains retryable` in `opaque-surface.test.ts` | Before the total deadline was implemented, the test failed with `Missing expected rejection` because individually bounded prepare/token stages could exceed the aggregate opening budget | `npm run test:ui` proves timeout error identity, server revoke, local iframe/port teardown, one bounded retry charge, and healthy retry reset |
-| Release identity | Release artifact fixtures plus `test_published_release_verifier.mjs` and `test_npm_registry_release_verifier.mjs` | Mutation fixtures alter target sets, extra assets, npm tarball bytes, SLSA subject digest, repository, workflow path/ref, and source commit; every mutation must fail | The runtime contract gate verifies the exact four-target signed asset set, npm export set, compatibility/license evidence, actual registry tarball SHA-512, and SLSA DSSE source identity |
+| Release identity | Release artifact fixtures plus `test_published_release_verifier.mjs` and `test_npm_registry_release_verifier.mjs` | The valid npm 11 fixture deliberately omits optional `gitHead`; mutation fixtures alter target sets, extra assets, npm tarball bytes, a supplied `gitHead`, SLSA subject digest, repository, workflow path/ref, and source commit; every conflicting mutation must fail | The runtime contract gate verifies the exact four-target signed asset set, npm export set, compatibility/license evidence, actual registry tarball SHA-512, optional metadata consistency, and mandatory SLSA DSSE source identity |
 
 ## Contract And Generated Artifact Evidence
 

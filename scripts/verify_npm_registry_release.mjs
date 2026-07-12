@@ -27,7 +27,9 @@ export async function verifyNpmRegistryRelease({
   assertRecord(metadata, "npm package metadata");
   assertEqual(metadata.name, packageName, "npm package name");
   assertEqual(metadata.version, version, "npm package version");
-  assertEqual(metadata.gitHead, sourceCommit, "npm package gitHead");
+  if (metadata.gitHead !== undefined) {
+    assertEqual(metadata.gitHead, sourceCommit, "npm package gitHead");
+  }
   assertRecord(metadata.repository, "npm repository metadata");
   assertEqual(metadata.repository.type, "git", "npm repository type");
   assertEqual(metadata.repository.url, `git+${repositoryURL}.git`, "npm repository URL");

@@ -59,6 +59,9 @@ try {
   await rejected("npm SLSA source commit", (state) => {
     if (state.statement) state.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit = "f".repeat(40);
   });
+  await rejected("npm package gitHead", (state) => {
+    if (state.metadata) state.metadata.gitHead = "f".repeat(40);
+  });
   await rejected("npm tarball URL", (state) => {
     if (state.metadata) state.metadata.dist.tarball = "https://attacker.example/package.tgz";
   });
@@ -87,7 +90,6 @@ function npmMetadata(origin) {
   return {
     name: "@floegence/redevplugin-ui",
     version,
-    gitHead: sourceCommit,
     repository: {
       type: "git",
       url: "git+https://github.com/floegence/redevplugin.git",

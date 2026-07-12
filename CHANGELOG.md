@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.2
+
+### Fixed
+
+- npm release verification now accepts the npm 11 tarball-publication metadata
+  shape where the optional `gitHead` field is absent, while still rejecting a
+  conflicting `gitHead` when npm supplies one.
+- Source identity remains mandatory and is verified from the signed SLSA
+  provenance source digest, together with the immutable public tarball bytes,
+  repository, workflow, and tag identity. The `v0.2.1` tag published the npm
+  package with valid provenance but did not produce a GitHub Release because
+  the obsolete mandatory `gitHead` check failed; `v0.2.2` is the first complete
+  A2 release.
+
 ## v0.2.1
 
 ### Fixed
@@ -9,7 +23,9 @@
   JSON cannot be mistaken for an already-published tarball.
 - The release workflow contract rejects the faulty `--json || true` probe that
   prevented `v0.2.0` from publishing. The `v0.2.0` tag produced no npm package
-  or GitHub Release; `v0.2.1` is the first published A2 release.
+  or GitHub Release. The `v0.2.1` tag published the npm package but did not
+  produce a GitHub Release because its registry verifier required npm's optional
+  `gitHead` metadata.
 
 ## v0.2.0
 
