@@ -13,12 +13,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 2
 
 const retainedDataSelectColumns = `
 SELECT retained_id, source_plugin_instance_id, bound_plugin_instance_id,
-       publisher_id, plugin_id, version, package_hash, manifest_hash, state,
-       storage_retained, settings_retained, browser_site_retained, usage_bytes,
+	   publisher_id, plugin_id, version, package_hash, manifest_hash, state,
+	   storage_retained, settings_retained, usage_bytes,
        delete_after, delete_error, metadata_json, retained_at, updated_at,
        bound_at, deleted_at, last_accessed_at`
 
@@ -371,30 +371,15 @@ CREATE TABLE IF NOT EXISTS plugin_retained_data_schema_migrations (
 	if maxVersion > sqliteSchemaVersion {
 		return fmt.Errorf("sqlite retained data schema version %d is newer than supported version %d", maxVersion, sqliteSchemaVersion)
 	}
-	if _, err := tx.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS plugin_retained_data_records (
-	retained_id TEXT PRIMARY KEY,
-	source_plugin_instance_id TEXT NOT NULL,
-	bound_plugin_instance_id TEXT NOT NULL,
-	publisher_id TEXT NOT NULL,
-	plugin_id TEXT NOT NULL,
-	version TEXT NOT NULL,
-	package_hash TEXT NOT NULL,
-	manifest_hash TEXT NOT NULL,
-	state TEXT NOT NULL,
-	storage_retained INTEGER NOT NULL,
-	settings_retained INTEGER NOT NULL,
-	browser_site_retained INTEGER NOT NULL,
-	usage_bytes INTEGER NOT NULL,
-	delete_after INTEGER,
-	delete_error TEXT NOT NULL,
-	metadata_json TEXT NOT NULL,
-	retained_at INTEGER NOT NULL,
-	updated_at INTEGER NOT NULL,
-	bound_at INTEGER,
-	deleted_at INTEGER,
-	last_accessed_at INTEGER
-)`); err != nil {
+	legacyBrowserColumn, err := retainedDataTableHasColumn(ctx, tx, "browser_site_retained")
+	if err != nil {
+		return err
+	}
+	if maxVersion == 1 || legacyBrowserColumn {
+		if err := migrateRetainedDataV2(ctx, tx); err != nil {
+			return err
+		}
+	} else if _, err := tx.ExecContext(ctx, retainedDataV2TableSQL("plugin_retained_data_records")); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_retained_data_identity ON plugin_retained_data_records(publisher_id, plugin_id, state)`); err != nil {
@@ -412,6 +397,92 @@ CREATE TABLE IF NOT EXISTS plugin_retained_data_records (
 		}
 	}
 	return tx.Commit()
+}
+
+func retainedDataV2TableSQL(tableName string) string {
+	return fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	retained_id TEXT PRIMARY KEY,
+	source_plugin_instance_id TEXT NOT NULL,
+	bound_plugin_instance_id TEXT NOT NULL,
+	publisher_id TEXT NOT NULL,
+	plugin_id TEXT NOT NULL,
+	version TEXT NOT NULL,
+	package_hash TEXT NOT NULL,
+	manifest_hash TEXT NOT NULL,
+	state TEXT NOT NULL,
+	storage_retained INTEGER NOT NULL,
+	settings_retained INTEGER NOT NULL,
+	usage_bytes INTEGER NOT NULL,
+	delete_after INTEGER,
+	delete_error TEXT NOT NULL,
+	metadata_json TEXT NOT NULL,
+	retained_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	bound_at INTEGER,
+	deleted_at INTEGER,
+	last_accessed_at INTEGER
+)`, tableName)
+}
+
+func retainedDataTableHasColumn(ctx context.Context, tx *sql.Tx, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_retained_data_records)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func migrateRetainedDataV2(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS plugin_retained_data_records_v2`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, retainedDataV2TableSQL("plugin_retained_data_records_v2")); err != nil {
+		return err
+	}
+	now := time.Now().UTC().UnixNano()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_retained_data_records_v2(
+	retained_id, source_plugin_instance_id, bound_plugin_instance_id,
+	publisher_id, plugin_id, version, package_hash, manifest_hash, state,
+	storage_retained, settings_retained, usage_bytes, delete_after, delete_error,
+	metadata_json, retained_at, updated_at, bound_at, deleted_at, last_accessed_at
+)
+SELECT retained_id, source_plugin_instance_id, bound_plugin_instance_id,
+	publisher_id, plugin_id, version, package_hash, manifest_hash,
+	CASE WHEN storage_retained = 0 AND settings_retained = 0 THEN 'deleted' ELSE state END,
+	storage_retained, settings_retained, usage_bytes, delete_after,
+	CASE WHEN storage_retained = 0 AND settings_retained = 0 THEN '' ELSE delete_error END,
+	metadata_json, retained_at,
+	CASE WHEN storage_retained = 0 AND settings_retained = 0 THEN ? ELSE updated_at END,
+	bound_at,
+	CASE WHEN storage_retained = 0 AND settings_retained = 0 THEN COALESCE(deleted_at, ?) ELSE deleted_at END,
+	last_accessed_at
+FROM plugin_retained_data_records`, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE plugin_retained_data_records`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_retained_data_records_v2 RENAME TO plugin_retained_data_records`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func getSQLiteRecord(ctx context.Context, q sqliteQuerier, retainedID string) (Record, bool, error) {
@@ -435,10 +506,10 @@ func upsertSQLiteRecord(ctx context.Context, tx *sql.Tx, record Record) error {
 INSERT INTO plugin_retained_data_records(
 	retained_id, source_plugin_instance_id, bound_plugin_instance_id,
 	publisher_id, plugin_id, version, package_hash, manifest_hash, state,
-	storage_retained, settings_retained, browser_site_retained, usage_bytes,
+	storage_retained, settings_retained, usage_bytes,
 	delete_after, delete_error, metadata_json, retained_at, updated_at,
 	bound_at, deleted_at, last_accessed_at
-) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(retained_id) DO UPDATE SET
 	source_plugin_instance_id = excluded.source_plugin_instance_id,
 	bound_plugin_instance_id = excluded.bound_plugin_instance_id,
@@ -450,7 +521,6 @@ ON CONFLICT(retained_id) DO UPDATE SET
 	state = excluded.state,
 	storage_retained = excluded.storage_retained,
 	settings_retained = excluded.settings_retained,
-	browser_site_retained = excluded.browser_site_retained,
 	usage_bytes = excluded.usage_bytes,
 	delete_after = excluded.delete_after,
 	delete_error = excluded.delete_error,
@@ -471,7 +541,6 @@ ON CONFLICT(retained_id) DO UPDATE SET
 		string(record.State),
 		boolToInt(record.StorageRetained),
 		boolToInt(record.SettingsRetained),
-		boolToInt(record.BrowserSiteRetained),
 		record.UsageBytes,
 		nullableTimeToUnix(record.DeleteAfter),
 		record.DeleteError,
@@ -490,7 +559,6 @@ func scanSQLiteRecord(scanner sqliteScanner) (Record, error) {
 	var state string
 	var storageRetained int
 	var settingsRetained int
-	var browserSiteRetained int
 	var metadataJSON string
 	var deleteAfter sql.NullInt64
 	var retainedAt int64
@@ -510,7 +578,6 @@ func scanSQLiteRecord(scanner sqliteScanner) (Record, error) {
 		&state,
 		&storageRetained,
 		&settingsRetained,
-		&browserSiteRetained,
 		&record.UsageBytes,
 		&deleteAfter,
 		&record.DeleteError,
@@ -529,7 +596,6 @@ func scanSQLiteRecord(scanner sqliteScanner) (Record, error) {
 	}
 	record.StorageRetained = storageRetained != 0
 	record.SettingsRetained = settingsRetained != 0
-	record.BrowserSiteRetained = browserSiteRetained != 0
 	record.RetainedAt = time.Unix(0, retainedAt).UTC()
 	record.UpdatedAt = time.Unix(0, updatedAt).UTC()
 	record.DeleteAfter = unixToNullableTime(deleteAfter)

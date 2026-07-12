@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -25,50 +23,45 @@ import (
 )
 
 const (
-	devStateSchemaVersion = "redevplugin.dev_state.v1"
+	devStateSchemaVersion = "redevplugin.dev_state.v2"
 	devStateFile          = "redevplugin-dev-state.json"
 	devPackageFile        = "installed.redevplugin"
 	devStorageDir         = "storage"
-	devDefaultSandbox     = "http://127.0.0.1:4174"
 )
 
 var errDevStateNotInstalled = errors.New("dev plugin is not installed")
 
 type devLifecycleState struct {
-	SchemaVersion  string                     `json:"schema_version"`
-	PackageFile    string                     `json:"package_file,omitempty"`
-	Record         registry.PluginRecord      `json:"record"`
-	BrowserOrigins []browsersite.OriginRecord `json:"browser_origins,omitempty"`
-	Settings       settings.MemoryState       `json:"settings,omitempty"`
-	Secrets        secrets.MemoryState        `json:"secrets,omitempty"`
-	Permissions    permissions.MemoryState    `json:"permissions,omitempty"`
-	UpdatedAt      time.Time                  `json:"updated_at"`
+	SchemaVersion string                  `json:"schema_version"`
+	PackageFile   string                  `json:"package_file,omitempty"`
+	Record        registry.PluginRecord   `json:"record"`
+	Settings      settings.MemoryState    `json:"settings,omitempty"`
+	Secrets       secrets.MemoryState     `json:"secrets,omitempty"`
+	Permissions   permissions.MemoryState `json:"permissions,omitempty"`
+	UpdatedAt     time.Time               `json:"updated_at"`
 }
 
 type devLifecycleSummary struct {
 	lifecycleSummary
-	StateRoot          string `json:"state_root"`
-	StorageRoot        string `json:"storage_root"`
-	BrowserOriginCount int    `json:"browser_origin_count"`
-	PackageRetained    bool   `json:"package_retained"`
+	StateRoot       string `json:"state_root"`
+	StorageRoot     string `json:"storage_root"`
+	PackageRetained bool   `json:"package_retained"`
 }
 
 type devOpenSurfaceSummary struct {
-	OK                 bool      `json:"ok"`
-	Action             string    `json:"action"`
-	StateRoot          string    `json:"state_root"`
-	PluginInstanceID   string    `json:"plugin_instance_id"`
-	PluginID           string    `json:"plugin_id"`
-	Version            string    `json:"version"`
-	SurfaceID          string    `json:"surface_id"`
-	SurfaceInstanceID  string    `json:"surface_instance_id"`
-	ActiveFingerprint  string    `json:"active_fingerprint"`
-	BridgeNonce        string    `json:"bridge_nonce"`
-	AssetTicketID      string    `json:"asset_ticket_id"`
-	SandboxOrigin      string    `json:"sandbox_origin"`
-	BrowserOriginCount int       `json:"browser_origin_count"`
-	IssuedAt           time.Time `json:"issued_at"`
-	ExpiresAt          time.Time `json:"expires_at"`
+	OK                bool      `json:"ok"`
+	Action            string    `json:"action"`
+	StateRoot         string    `json:"state_root"`
+	PluginInstanceID  string    `json:"plugin_instance_id"`
+	PluginID          string    `json:"plugin_id"`
+	Version           string    `json:"version"`
+	SurfaceID         string    `json:"surface_id"`
+	SurfaceInstanceID string    `json:"surface_instance_id"`
+	ActiveFingerprint string    `json:"active_fingerprint"`
+	BridgeNonce       string    `json:"bridge_nonce"`
+	AssetTicketID     string    `json:"asset_ticket_id"`
+	IssuedAt          time.Time `json:"issued_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 type devSecretSummary struct {
@@ -126,7 +119,7 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string) error
 	if err != nil {
 		return err
 	}
-	h, _, err := newDevInstallHost(stateRoot)
+	h, err := newDevInstallHost(stateRoot)
 	if err != nil {
 		return err
 	}
@@ -161,13 +154,15 @@ func devEnable(ctx context.Context, stateRoot string) error {
 	if err != nil {
 		return err
 	}
-	record, err := harness.host.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: state.Record.PluginInstanceID})
+	record, err := harness.host.EnablePlugin(ctx, host.EnableRequest{
+		PluginInstanceID:   state.Record.PluginInstanceID,
+		PluginStateVersion: state.Record.ManagementRevision,
+	})
 	if err != nil {
 		return err
 	}
 	state.Record = record
 	state.UpdatedAt = time.Now().UTC()
-	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
 	state.Permissions = harness.permissionStore.State()
@@ -177,7 +172,7 @@ func devEnable(ctx context.Context, stateRoot string) error {
 	return writeDevLifecycle("dev-enable", harness.stateRoot, state)
 }
 
-func devOpen(ctx context.Context, stateRoot string, surfaceID string, sandboxOrigin string) error {
+func devOpen(ctx context.Context, stateRoot string, surfaceID string) error {
 	harness, state, err := loadDevHarness(ctx, stateRoot)
 	if err != nil {
 		return err
@@ -189,25 +184,17 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string, sandboxOri
 	if surfaceID == "" {
 		return errors.New("surface_id is required")
 	}
-	sandboxOrigin = strings.TrimRight(strings.TrimSpace(sandboxOrigin), "/")
-	if sandboxOrigin == "" {
-		sandboxOrigin = devDefaultSandbox
-	}
-	if err := validateDevOrigin(sandboxOrigin); err != nil {
-		return err
-	}
 	bootstrap, err := harness.host.OpenSurface(ctx, host.OpenSurfaceRequest{
 		PluginInstanceID:     state.Record.PluginInstanceID,
+		PluginStateVersion:   state.Record.ManagementRevision,
 		SurfaceID:            surfaceID,
 		OwnerSessionHash:     "dev_owner_session",
 		OwnerUserHash:        "dev_owner_user",
 		SessionChannelIDHash: "dev_session_channel",
-		SandboxOrigin:        sandboxOrigin,
 	})
 	if err != nil {
 		return err
 	}
-	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
 	state.Permissions = harness.permissionStore.State()
@@ -216,21 +203,19 @@ func devOpen(ctx context.Context, stateRoot string, surfaceID string, sandboxOri
 		return err
 	}
 	return writeJSON(devOpenSurfaceSummary{
-		OK:                 true,
-		Action:             "dev-open",
-		StateRoot:          harness.stateRoot,
-		PluginInstanceID:   state.Record.PluginInstanceID,
-		PluginID:           state.Record.PluginID,
-		Version:            state.Record.Version,
-		SurfaceID:          bootstrap.SurfaceID,
-		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
-		ActiveFingerprint:  bootstrap.ActiveFingerprint,
-		BridgeNonce:        bootstrap.BridgeNonce,
-		AssetTicketID:      bootstrap.AssetTicketID,
-		SandboxOrigin:      sandboxOrigin,
-		BrowserOriginCount: len(state.BrowserOrigins),
-		IssuedAt:           bootstrap.IssuedAt,
-		ExpiresAt:          bootstrap.ExpiresAt,
+		OK:                true,
+		Action:            "dev-open",
+		StateRoot:         harness.stateRoot,
+		PluginInstanceID:  state.Record.PluginInstanceID,
+		PluginID:          state.Record.PluginID,
+		Version:           state.Record.Version,
+		SurfaceID:         bootstrap.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		ActiveFingerprint: bootstrap.ActiveFingerprint,
+		BridgeNonce:       bootstrap.BridgeNonce,
+		AssetTicketID:     bootstrap.AssetTicketID,
+		IssuedAt:          bootstrap.IssuedAt,
+		ExpiresAt:         bootstrap.ExpiresAt,
 	})
 }
 
@@ -240,14 +225,14 @@ func devDisable(ctx context.Context, stateRoot string) error {
 		return err
 	}
 	record, err := harness.host.DisablePlugin(ctx, host.DisableRequest{
-		PluginInstanceID: state.Record.PluginInstanceID,
-		Reason:           "dev-cli",
+		PluginInstanceID:   state.Record.PluginInstanceID,
+		PluginStateVersion: state.Record.ManagementRevision,
+		Reason:             "dev-cli",
 	})
 	if err != nil {
 		return err
 	}
 	state.Record = record
-	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
 	state.Permissions = harness.permissionStore.State()
@@ -265,14 +250,14 @@ func devUninstall(ctx context.Context, stateRoot string, deleteData bool) error 
 	}
 	pluginInstanceID := state.Record.PluginInstanceID
 	record, err := harness.host.UninstallPlugin(ctx, host.UninstallRequest{
-		PluginInstanceID: pluginInstanceID,
-		DeleteData:       deleteData,
+		PluginInstanceID:   pluginInstanceID,
+		PluginStateVersion: state.Record.ManagementRevision,
+		DeleteData:         deleteData,
 	})
 	if err != nil {
 		return err
 	}
 	state.Record = record
-	state.BrowserOrigins = harness.browserSite.recordsList()
 	state.Settings = harness.settingsStore.State()
 	state.Secrets = harness.secretStore.State()
 	state.Permissions = harness.permissionStore.State()
@@ -533,10 +518,9 @@ func writeDevLifecycle(action string, stateRoot string, state devLifecycleState)
 			ManagementRevision: state.Record.ManagementRevision,
 			RevokeEpoch:        state.Record.RevokeEpoch,
 		},
-		StateRoot:          stateRoot,
-		StorageRoot:        filepath.Join(stateRoot, devStorageDir),
-		BrowserOriginCount: len(state.BrowserOrigins),
-		PackageRetained:    packageErr == nil,
+		StateRoot:       stateRoot,
+		StorageRoot:     filepath.Join(stateRoot, devStorageDir),
+		PackageRetained: packageErr == nil,
 	})
 }
 
@@ -559,7 +543,6 @@ type devHarness struct {
 	stateRoot       string
 	host            *host.Host
 	registryStore   *devRegistryStore
-	browserSite     *devBrowserSiteStore
 	settingsStore   *settings.MemoryStore
 	secretStore     *secrets.MemoryStore
 	permissionStore *permissions.MemoryStore
@@ -593,7 +576,6 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 	if err != nil {
 		return devHarness{}, devLifecycleState{}, err
 	}
-	browserSite := newDevBrowserSiteStore(state.BrowserOrigins)
 	settingsStore := settings.NewMemoryStoreFromState(state.Settings)
 	secretStore := secrets.NewMemoryStoreFromState(state.Secrets)
 	permissionStore := permissions.NewMemoryStoreFromState(state.Permissions)
@@ -604,7 +586,6 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 		Registry:        registryStore,
 		Assets:          assets,
 		Storage:         storageBroker,
-		BrowserSite:     browserSite,
 		Settings:        settingsStore,
 		Secrets:         secretStore,
 		Permissions:     permissionStore,
@@ -616,32 +597,29 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 		stateRoot:       stateRoot,
 		host:            h,
 		registryStore:   registryStore,
-		browserSite:     browserSite,
 		settingsStore:   settingsStore,
 		secretStore:     secretStore,
 		permissionStore: permissionStore,
 	}, state, nil
 }
 
-func newDevInstallHost(stateRoot string) (*host.Host, *devBrowserSiteStore, error) {
+func newDevInstallHost(stateRoot string) (*host.Host, error) {
 	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	browserSite := newDevBrowserSiteStore(nil)
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
 		Storage:         storageBroker,
-		BrowserSite:     browserSite,
 		Settings:        settings.NewMemoryStore(),
 		Secrets:         secrets.NewMemoryStore(),
 		Permissions:     permissions.NewMemoryStore(),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return h, browserSite, nil
+	return h, nil
 }
 
 func prepareDevStateRoot(stateRoot string) (string, error) {
@@ -694,25 +672,7 @@ func loadDevState(stateRoot string) (devLifecycleState, error) {
 
 func saveDevState(stateRoot string, state devLifecycleState) error {
 	state.SchemaVersion = devStateSchemaVersion
-	state.BrowserOrigins = cloneDevBrowserOrigins(state.BrowserOrigins)
-	sort.Slice(state.BrowserOrigins, func(i, j int) bool {
-		return state.BrowserOrigins[i].OriginKey < state.BrowserOrigins[j].OriginKey
-	})
 	return writeJSONFile(filepath.Join(stateRoot, devStateFile), state, 0o600)
-}
-
-func validateDevOrigin(origin string) error {
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return err
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("sandbox origin must use http or https")
-	}
-	if parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("sandbox origin must be an origin without credentials, path, query, or fragment")
-	}
-	return nil
 }
 
 type devRegistryStore struct {
@@ -882,200 +842,6 @@ func (s *devRegistryStore) record() registry.PluginRecord {
 	return registry.PluginRecord{}
 }
 
-type devBrowserSiteStore struct {
-	mu      sync.Mutex
-	records map[string]browsersite.OriginRecord
-}
-
-func newDevBrowserSiteStore(records []browsersite.OriginRecord) *devBrowserSiteStore {
-	store := &devBrowserSiteStore{records: map[string]browsersite.OriginRecord{}}
-	for _, record := range records {
-		if record.OriginKey == "" {
-			record.OriginKey = devBrowserOriginKey(record.PluginInstanceID, record.ActiveFingerprint, record.OwnerSessionHash, record.Origin)
-		}
-		store.records[record.OriginKey] = record
-	}
-	return store
-}
-
-func (s *devBrowserSiteStore) RegisterOrigin(_ context.Context, req browsersite.RegisterRequest) (browsersite.OriginRecord, error) {
-	if s == nil {
-		return browsersite.OriginRecord{}, errors.New("browser site store is nil")
-	}
-	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
-	req.PluginID = strings.TrimSpace(req.PluginID)
-	req.ActiveFingerprint = strings.TrimSpace(req.ActiveFingerprint)
-	req.SurfaceID = strings.TrimSpace(req.SurfaceID)
-	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
-	req.OwnerSessionHash = strings.TrimSpace(req.OwnerSessionHash)
-	req.OwnerUserHash = strings.TrimSpace(req.OwnerUserHash)
-	req.Origin = strings.TrimRight(strings.TrimSpace(req.Origin), "/")
-	if req.PluginInstanceID == "" || req.ActiveFingerprint == "" || req.Origin == "" {
-		return browsersite.OriginRecord{}, fmt.Errorf("%w: plugin_instance_id, active_fingerprint, and origin are required", browsersite.ErrInvalidOrigin)
-	}
-	if err := validateDevOrigin(req.Origin); err != nil {
-		return browsersite.OriginRecord{}, fmt.Errorf("%w: %v", browsersite.ErrInvalidOrigin, err)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	key := devBrowserOriginKey(req.PluginInstanceID, req.ActiveFingerprint, req.OwnerSessionHash, req.Origin)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if existing, ok := s.records[key]; ok {
-		existing.PluginID = req.PluginID
-		existing.SurfaceID = req.SurfaceID
-		existing.SurfaceInstanceID = req.SurfaceInstanceID
-		existing.OwnerUserHash = req.OwnerUserHash
-		existing.State = browsersite.StateActive
-		existing.CleanupReason = ""
-		existing.CleanupError = ""
-		existing.UpdatedAt = now
-		existing.LastSeenAt = now
-		existing.CleanupRequestedAt = nil
-		existing.CleanedAt = nil
-		existing.RetainedAt = nil
-		s.records[key] = existing
-		return cloneDevBrowserOrigin(existing), nil
-	}
-	record := browsersite.OriginRecord{
-		OriginKey:         key,
-		PluginInstanceID:  req.PluginInstanceID,
-		PluginID:          req.PluginID,
-		ActiveFingerprint: req.ActiveFingerprint,
-		SurfaceID:         req.SurfaceID,
-		SurfaceInstanceID: req.SurfaceInstanceID,
-		Origin:            req.Origin,
-		OwnerSessionHash:  req.OwnerSessionHash,
-		OwnerUserHash:     req.OwnerUserHash,
-		State:             browsersite.StateActive,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		LastSeenAt:        now,
-	}
-	s.records[key] = record
-	return cloneDevBrowserOrigin(record), nil
-}
-
-func (s *devBrowserSiteStore) CleanupPluginOrigins(_ context.Context, req browsersite.CleanupRequest) (browsersite.CleanupResult, error) {
-	if s == nil {
-		return browsersite.CleanupResult{}, errors.New("browser site store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	if pluginInstanceID == "" {
-		return browsersite.CleanupResult{}, fmt.Errorf("%w: plugin_instance_id is required", browsersite.ErrInvalidOrigin)
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	reason := strings.TrimSpace(req.Reason)
-	if reason == "" {
-		if req.DeleteData {
-			reason = "delete_data"
-		} else {
-			reason = "retain_data"
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	records := make([]browsersite.OriginRecord, 0)
-	for key, record := range s.records {
-		if record.PluginInstanceID != pluginInstanceID {
-			continue
-		}
-		record.UpdatedAt = now
-		record.CleanupReason = reason
-		record.CleanupError = ""
-		if req.DeleteData {
-			record.State = browsersite.StateCleanupComplete
-			record.CleanupRequestedAt = &now
-			record.CleanedAt = &now
-			record.RetainedAt = nil
-		} else {
-			record.State = browsersite.StateRetained
-			record.CleanupRequestedAt = nil
-			record.CleanedAt = nil
-			record.RetainedAt = &now
-		}
-		s.records[key] = record
-		records = append(records, cloneDevBrowserOrigin(record))
-	}
-	sortDevBrowserOrigins(records)
-	return browsersite.CleanupResult{Records: records}, nil
-}
-
-func (s *devBrowserSiteStore) ListOrigins(_ context.Context, req browsersite.ListRequest) ([]browsersite.OriginRecord, error) {
-	if s == nil {
-		return nil, errors.New("browser site store is nil")
-	}
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	state := browsersite.OriginState(strings.TrimSpace(req.State))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	records := make([]browsersite.OriginRecord, 0, len(s.records))
-	for _, record := range s.records {
-		if pluginInstanceID != "" && record.PluginInstanceID != pluginInstanceID {
-			continue
-		}
-		if state != "" && record.State != state {
-			continue
-		}
-		records = append(records, cloneDevBrowserOrigin(record))
-	}
-	sortDevBrowserOrigins(records)
-	return records, nil
-}
-
-func (s *devBrowserSiteStore) recordsList() []browsersite.OriginRecord {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	records := make([]browsersite.OriginRecord, 0, len(s.records))
-	for _, record := range s.records {
-		records = append(records, cloneDevBrowserOrigin(record))
-	}
-	sortDevBrowserOrigins(records)
-	return records
-}
-
-func devBrowserOriginKey(pluginInstanceID string, activeFingerprint string, ownerSessionHash string, origin string) string {
-	return pluginInstanceID + "\x00" + activeFingerprint + "\x00" + ownerSessionHash + "\x00" + origin
-}
-
-func cloneDevBrowserOrigins(records []browsersite.OriginRecord) []browsersite.OriginRecord {
-	cloned := make([]browsersite.OriginRecord, len(records))
-	for i, record := range records {
-		cloned[i] = cloneDevBrowserOrigin(record)
-	}
-	return cloned
-}
-
-func cloneDevBrowserOrigin(record browsersite.OriginRecord) browsersite.OriginRecord {
-	if record.CleanupRequestedAt != nil {
-		value := *record.CleanupRequestedAt
-		record.CleanupRequestedAt = &value
-	}
-	if record.CleanedAt != nil {
-		value := *record.CleanedAt
-		record.CleanedAt = &value
-	}
-	if record.RetainedAt != nil {
-		value := *record.RetainedAt
-		record.RetainedAt = &value
-	}
-	return record
-}
-
-func sortDevBrowserOrigins(records []browsersite.OriginRecord) {
-	sort.Slice(records, func(i, j int) bool {
-		return records[i].OriginKey < records[j].OriginKey
-	})
-}
-
 func devSecretRecordFor(store *secrets.MemoryStore, req host.SecretBindRequest, fallback time.Time) secrets.Record {
 	normalized, err := normalizeDevSecretRequest(req)
 	if err != nil {
@@ -1112,5 +878,4 @@ func normalizeDevSecretRequest(req host.SecretBindRequest) (host.SecretBindReque
 }
 
 var _ registry.Store = (*devRegistryStore)(nil)
-var _ browsersite.Store = (*devBrowserSiteStore)(nil)
 var _ host.SecretStoreAdapter = (*secrets.MemoryStore)(nil)

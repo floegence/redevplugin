@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/token-ticket-v2.schema.json",
+  "title": "ReDevPlugin token and ticket v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "token_kind",
+    "token_id",
+    "audience",
+    "revision",
+    "issued_at",
+    "expires_at",
+    "nonce",
+    "use"
+  ],
+  "properties": {
+    "token_kind": { "$ref": "#/$defs/token_kind" },
+    "token_id": { "$ref": "#/$defs/token_id" },
+    "token_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Server-side record only. Cleartext token is returned exactly once and must not be persisted."
+    },
+    "audience": { "$ref": "#/$defs/audience" },
+    "revision": { "$ref": "#/$defs/revision" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "nonce": { "type": "string", "minLength": 16 },
+    "use": { "enum": ["single_use", "reusable"] },
+    "consumed": { "type": "boolean" },
+    "consumed_at": { "type": ["string", "null"], "format": "date-time" },
+    "revoked": { "type": "boolean" },
+    "revoked_at": { "type": ["string", "null"], "format": "date-time" },
+    "bound_bridge_channel_id": { "type": "string" },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_bytes_per_second": { "type": "integer", "minimum": 0 },
+        "max_total_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "token_kind": {
+      "enum": [
+        "asset_ticket",
+        "asset_session",
+        "plugin_gateway_token",
+        "confirmation_token",
+        "runtime_execution_lease",
+        "handle_grant",
+        "stream_ticket"
+      ]
+    },
+    "token_id": {
+      "type": "string",
+      "description": "Opaque token or ticket identifier. Prefixes are stable namespaces: at_ asset tickets, as_ asset sessions, pgt_ plugin gateway tokens, ct_ confirmation tokens, rel_ runtime execution leases, hg_ handle grants, and st_ stream tickets.",
+      "pattern": "^(at|as|pgt|ct|rel|hg|st)_[A-Za-z0-9_-]+$"
+    },
+    "audience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plugin_instance_id", "active_fingerprint"],
+      "properties": {
+        "plugin_id": { "type": "string", "minLength": 1 },
+        "plugin_instance_id": { "type": "string", "minLength": 1 },
+        "plugin_version": { "type": "string", "minLength": 1 },
+        "active_fingerprint": { "type": "string", "minLength": 1 },
+        "surface_id": { "type": "string", "minLength": 1 },
+        "surface_instance_id": { "type": "string" },
+        "entry_path": { "type": "string", "minLength": 1 },
+        "entry_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "asset_session_nonce": { "type": "string", "minLength": 16 },
+        "route_role": { "enum": ["trusted_parent", "trusted_intent"] },
+        "owner_session_hash": { "type": "string" },
+        "owner_user_hash": { "type": "string" },
+        "session_channel_id_hash": { "type": "string" },
+        "bridge_channel_id": { "type": "string" },
+        "runtime_instance_id": { "type": "string" },
+        "runtime_generation_id": { "type": "string" },
+        "runtime_shard_id": { "type": "string" },
+        "ipc_channel_id": { "type": "string" },
+        "connection_nonce": { "type": "string", "minLength": 16 },
+        "stream_id": { "type": "string" },
+        "stream_direction": { "enum": ["read", "write", "duplex"] },
+        "handle_id": { "type": "string" },
+        "confirmation_id": { "type": "string" },
+        "method": { "type": "string" },
+        "request_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "plan_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_revision", "management_revision", "revoke_epoch"],
+      "properties": {
+        "policy_revision": { "type": "integer", "minimum": 0 },
+        "management_revision": { "type": "integer", "minimum": 0 },
+        "revoke_epoch": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "token_kind": { "const": "asset_ticket" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^at_[A-Za-z0-9_-]+$" },
+          "use": { "const": "single_use" },
+          "audience": {
+            "required": [
+              "plugin_id",
+              "plugin_instance_id",
+              "plugin_version",
+              "active_fingerprint",
+              "surface_id",
+              "surface_instance_id",
+              "entry_path",
+              "entry_sha256",
+              "asset_session_nonce",
+              "route_role",
+              "owner_session_hash",
+              "session_channel_id_hash",
+              "runtime_generation_id"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "asset_session" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^as_[A-Za-z0-9_-]+$" },
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_id",
+              "plugin_instance_id",
+              "plugin_version",
+              "active_fingerprint",
+              "surface_id",
+              "surface_instance_id",
+              "entry_path",
+              "entry_sha256",
+              "asset_session_nonce",
+              "route_role",
+              "owner_session_hash",
+              "session_channel_id_hash",
+              "runtime_generation_id"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "plugin_gateway_token" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^pgt_[A-Za-z0-9_-]+$" },
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_id",
+              "plugin_instance_id",
+              "plugin_version",
+              "active_fingerprint",
+              "surface_id",
+              "surface_instance_id",
+              "entry_path",
+              "entry_sha256",
+              "asset_session_nonce",
+              "route_role",
+              "owner_session_hash",
+              "session_channel_id_hash",
+              "bridge_channel_id",
+              "runtime_generation_id"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "confirmation_token" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^ct_[A-Za-z0-9_-]+$" },
+          "use": { "const": "single_use" },
+          "audience": {
+            "required": [
+              "plugin_id",
+              "plugin_instance_id",
+              "plugin_version",
+              "active_fingerprint",
+              "surface_id",
+              "surface_instance_id",
+              "entry_path",
+              "entry_sha256",
+              "asset_session_nonce",
+              "route_role",
+              "owner_session_hash",
+              "session_channel_id_hash",
+              "confirmation_id",
+              "bridge_channel_id",
+              "method",
+              "request_hash",
+              "plan_hash",
+              "runtime_generation_id"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "runtime_execution_lease" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^rel_[A-Za-z0-9_-]+$" },
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "runtime_instance_id",
+              "runtime_generation_id",
+              "ipc_channel_id",
+              "connection_nonce",
+              "method"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "handle_grant" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^hg_[A-Za-z0-9_-]+$" },
+          "use": { "const": "reusable" },
+          "audience": {
+            "required": [
+              "plugin_instance_id",
+              "active_fingerprint",
+              "runtime_generation_id",
+              "handle_id",
+              "method"
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    },
+    {
+      "if": { "properties": { "token_kind": { "const": "stream_ticket" } }, "required": ["token_kind"] },
+      "then": {
+        "properties": {
+          "token_id": { "pattern": "^st_[A-Za-z0-9_-]+$" },
+          "use": { "const": "single_use" },
+          "audience": {
+            "required": [
+              "plugin_id",
+              "plugin_instance_id",
+              "plugin_version",
+              "active_fingerprint",
+              "route_role",
+              "owner_session_hash",
+              "session_channel_id_hash",
+              "stream_id",
+              "stream_direction",
+              "method"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": { "route_role": { "const": "trusted_parent" } },
+                  "required": ["route_role"]
+                },
+                "then": {
+                  "required": [
+                    "surface_id",
+                    "surface_instance_id",
+                    "entry_path",
+                    "entry_sha256",
+                    "asset_session_nonce",
+                    "bridge_channel_id",
+                    "runtime_generation_id"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "required": ["token_kind", "audience", "revision", "use"]
+      }
+    }
+  ]
+}

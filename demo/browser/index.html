@@ -3,72 +3,56 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ReDevPlugin Browser Demo</title>
+    <title>ReDevPlugin Opaque Surface Demo</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="host-shell">
-      <section class="host-panel" aria-label="Host console">
-        <div class="brand-row">
+      <aside class="host-console" aria-label="Trusted host controls">
+        <header class="console-header">
           <div>
-            <p class="eyebrow">ReDevPlugin demo</p>
-            <h1>Sandbox bridge lab</h1>
+            <p class="eyebrow">ReDevPlugin A2</p>
+            <h1>Opaque surface host</h1>
           </div>
-          <span id="host-status" class="status-pill">starting</span>
+          <span id="host-status" class="status-pill" data-state="opening">opening</span>
+        </header>
+
+        <dl class="metrics">
+          <div><dt>Sandbox</dt><dd id="sandbox-mode">opaque</dd></div>
+          <div><dt>Credentialless</dt><dd id="credentialless-mode">detecting</dd></div>
+          <div><dt>Opening progress</dt><dd id="opening-progress">0</dd></div>
+          <div><dt>Confirmations</dt><dd id="confirmation-count">0</dd></div>
+        </dl>
+
+        <div class="button-row">
+          <button id="send-visible" type="button">Visible</button>
+          <button id="send-hidden" type="button" class="secondary">Hidden</button>
+          <button id="dispose-surface" type="button" class="danger">Dispose</button>
+          <button id="reopen-surface" type="button" class="secondary">Reopen</button>
         </div>
 
-        <div class="metric-grid" aria-label="Runtime counters">
-          <div>
-            <span class="metric-label">handshakes</span>
-            <strong id="handshake-count">0</strong>
-          </div>
-          <div>
-            <span class="metric-label">rpc calls</span>
-            <strong id="rpc-count">0</strong>
-          </div>
-          <div>
-            <span class="metric-label">confirmations</span>
-            <strong id="confirmation-count">0</strong>
-          </div>
-        </div>
-
-        <div class="demo-picker" id="demo-picker" aria-label="Demo plugin picker"></div>
-
-        <section class="platform-client-panel" aria-label="Host platform client state">
-          <span class="metric-label">platform client</span>
-          <strong id="platform-client-status">idle</strong>
-          <span id="platform-client-detail">waiting for plugin selection</span>
-        </section>
-
-        <div id="confirmation-panel" class="confirmation-panel" hidden>
-          <div>
-            <span class="metric-label">pending confirmation</span>
-            <strong id="confirmation-method">-</strong>
-            <code id="confirmation-hash">-</code>
-          </div>
+        <section id="confirmation-panel" class="confirmation-panel" aria-label="Confirmation request" hidden>
+          <p class="eyebrow">Confirmation required</p>
+          <strong id="confirmation-method">-</strong>
+          <code id="confirmation-hash">-</code>
           <div class="button-row">
-            <button id="deny-confirmation" type="button" class="ghost-button">Deny</button>
+            <button id="deny-confirmation" type="button" class="secondary">Deny</button>
             <button id="approve-confirmation" type="button">Approve</button>
           </div>
-        </div>
+        </section>
 
-        <ol id="event-log" class="event-log" aria-label="Bridge event log"></ol>
-      </section>
+        <ol id="event-log" class="event-log" aria-label="Sanitized host event log"></ol>
+      </aside>
 
-      <section class="surface-panel" aria-label="Sandboxed plugin surface">
-        <div class="surface-toolbar">
+      <section class="surface-stage" aria-label="Sandboxed plugin surface">
+        <header class="surface-header">
           <div>
-            <p class="eyebrow">sandboxed iframe</p>
+            <p class="eyebrow">Trusted renderer + Dedicated Worker</p>
             <h2>Plugin surface</h2>
           </div>
-          <button id="send-visible" type="button" class="ghost-button">Visible</button>
-        </div>
-        <iframe
-          id="plugin-frame"
-          title="ReDevPlugin demo plugin"
-          sandbox="allow-scripts allow-same-origin"
-          src="about:blank"
-        ></iframe>
+          <span>MessagePort only</span>
+        </header>
+        <div id="plugin-surface-mount"></div>
       </section>
     </main>
     <script type="module" src="./host.mjs"></script>

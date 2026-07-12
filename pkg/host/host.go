@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
@@ -70,6 +69,9 @@ var (
 	ErrRetainedDataCleanupFailed     = errors.New("retained data cleanup failed")
 	ErrRetainedDataBindFailed        = errors.New("retained data bind failed")
 	ErrRetainedDataUnsafePayload     = errors.New("retained data payload is not safe to delete")
+	ErrMethodRequestContract         = errors.New("plugin method request contract validation failed")
+	ErrMethodResponseContract        = errors.New("plugin method response contract validation failed")
+	ErrPluginStateVersionMismatch    = errors.New("plugin state version mismatch")
 )
 
 type PolicyAdapter interface {
@@ -481,41 +483,48 @@ type Adapters struct {
 	ConfirmationIntents     security.ConfirmationIntentStore
 	Cleanup                 cleanup.Orchestrator
 	RetainedData            retaineddata.Store
-	BrowserSite             browsersite.Store
 	Settings                settings.Store
 	Streams                 stream.Store
 }
 
 type Host struct {
-	adapters      Adapters
-	surfaceTokens *bridge.SurfaceTokenService
-	runtimeMu     sync.Mutex
+	adapters            Adapters
+	surfaceTokens       *bridge.SurfaceTokenService
+	surfaceDocuments    *surfaceDocumentCache
+	methodSchemas       *methodSchemaCache
+	surfaceGenerationID string
+	runtimeMu           sync.Mutex
+	managementMu        sync.Mutex
 }
 
 type ImportLocalPackageRequest struct {
-	PackageReader    io.ReaderAt
-	PackageSize      int64
-	PluginInstanceID string
-	Now              time.Time
+	PackageReader      io.ReaderAt
+	PackageSize        int64
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	Now                time.Time
 }
 
 type UpdateLocalPackageRequest struct {
-	PluginInstanceID string
-	PackageReader    io.ReaderAt
-	PackageSize      int64
-	Now              time.Time
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	PackageReader      io.ReaderAt
+	PackageSize        int64
+	Now                time.Time
 }
 
 type InstallReleaseRefRequest struct {
-	ReleaseRef       PluginReleaseRef
-	PluginInstanceID string
-	Now              time.Time
+	ReleaseRef         PluginReleaseRef
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	Now                time.Time
 }
 
 type UpdateReleaseRefRequest struct {
-	PluginInstanceID string
-	ReleaseRef       PluginReleaseRef
-	Now              time.Time
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	ReleaseRef         PluginReleaseRef
+	Now                time.Time
 }
 
 type packageTrustInput struct {
@@ -526,27 +535,31 @@ type packageTrustInput struct {
 }
 
 type DowngradeRequest struct {
-	PluginInstanceID string
-	Version          string
-	PackageHash      string
-	Now              time.Time
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	Version            string
+	PackageHash        string
+	Now                time.Time
 }
 
 type EnableRequest struct {
-	PluginInstanceID string
-	Now              time.Time
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	Now                time.Time
 }
 
 type DisableRequest struct {
-	PluginInstanceID string
-	Reason           string
-	Now              time.Time
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	Reason             string
+	Now                time.Time
 }
 
 type UninstallRequest struct {
-	PluginInstanceID string
-	DeleteData       bool
-	Now              time.Time
+	PluginInstanceID   string
+	PluginStateVersion uint64
+	DeleteData         bool
+	Now                time.Time
 }
 
 type ListRetainedDataRequest = retaineddata.ListRequest
@@ -655,26 +668,48 @@ type SettingsResult struct {
 
 type OpenSurfaceRequest struct {
 	PluginInstanceID     string
+	PluginStateVersion   uint64
 	SurfaceID            string
 	SurfaceInstanceID    string
 	OwnerSessionHash     string
 	OwnerUserHash        string
 	SessionChannelIDHash string
-	SandboxOrigin        string
 	Now                  time.Time
 }
 
 type ExchangeAssetTicketRequest struct {
-	SurfaceInstanceID string
-	AssetTicket       string
-	Now               time.Time
+	SurfaceInstanceID    string
+	AssetTicket          string
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	SessionChannelIDHash string
+	Now                  time.Time
 }
 
 type ReadSurfaceAssetRequest struct {
-	AssetSession   string
-	AssetSessionID string
-	AssetPath      string
-	Now            time.Time
+	AssetSession         string
+	AssetSessionID       string
+	BindingID            string
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	SessionChannelIDHash string
+	Now                  time.Time
+}
+
+type DisposeSurfaceRequest struct {
+	SurfaceInstanceID    string
+	BridgeNonce          string
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	SessionChannelIDHash string
+	Now                  time.Time
+}
+
+type RevokeSurfaceScopeRequest struct {
+	OwnerSessionHash     string
+	OwnerUserHash        string
+	SessionChannelIDHash string
+	Now                  time.Time
 }
 
 type ReadSurfaceAssetResult struct {
@@ -683,30 +718,19 @@ type ReadSurfaceAssetResult struct {
 	Session bridge.SurfaceSession
 }
 
-type CSPViolationReport struct {
-	PluginID           string         `json:"plugin_id,omitempty"`
-	PluginInstanceID   string         `json:"plugin_instance_id,omitempty"`
-	SurfaceID          string         `json:"surface_id,omitempty"`
-	SurfaceInstanceID  string         `json:"surface_instance_id,omitempty"`
-	SandboxOrigin      string         `json:"sandbox_origin,omitempty"`
-	ActiveFingerprint  string         `json:"active_fingerprint,omitempty"`
-	BlockedURI         string         `json:"blocked_uri,omitempty"`
-	DocumentURI        string         `json:"document_uri,omitempty"`
-	EffectiveDirective string         `json:"effective_directive,omitempty"`
-	ViolatedDirective  string         `json:"violated_directive,omitempty"`
-	OriginalPolicy     string         `json:"original_policy,omitempty"`
-	Disposition        string         `json:"disposition,omitempty"`
-	LineNumber         int            `json:"line_number,omitempty"`
-	ColumnNumber       int            `json:"column_number,omitempty"`
-	SourceFile         string         `json:"source_file,omitempty"`
-	Sample             string         `json:"sample,omitempty"`
-	Raw                map[string]any `json:"raw,omitempty"`
+type PrepareSurfaceResult struct {
+	bridge.AssetSessionResult
+	Document pluginpkg.OpaqueSurfaceDocument `json:"document"`
 }
 
 type MintBridgeTokenRequest struct {
 	Handshake                 bridge.Handshake
 	BridgeChannelID           string
 	HandshakeTranscriptSHA256 string
+	PreviousGatewayToken      string
+	OwnerSessionHash          string
+	OwnerUserHash             string
+	SessionChannelIDHash      string
 	Now                       time.Time
 }
 
@@ -725,15 +749,16 @@ type CallMethodRequest struct {
 }
 
 type CallMethodResult struct {
-	Data                 any    `json:"data,omitempty"`
-	OperationID          string `json:"operation_id,omitempty"`
-	StreamID             string `json:"stream_id,omitempty"`
-	StreamTicket         string `json:"stream_ticket,omitempty"`
-	StreamTicketID       string `json:"stream_ticket_id,omitempty"`
-	ConfirmationRequired bool   `json:"confirmation_required,omitempty"`
-	ConfirmationTokenID  string `json:"confirmation_token_id,omitempty"`
-	RequestHash          string `json:"request_hash,omitempty"`
-	PlanHash             string `json:"plan_hash,omitempty"`
+	Data                 any        `json:"data,omitempty"`
+	OperationID          string     `json:"operation_id,omitempty"`
+	StreamID             string     `json:"stream_id,omitempty"`
+	StreamTicket         string     `json:"stream_ticket,omitempty"`
+	StreamTicketID       string     `json:"stream_ticket_id,omitempty"`
+	StreamExpiresAt      *time.Time `json:"stream_expires_at,omitempty"`
+	ConfirmationRequired bool       `json:"confirmation_required,omitempty"`
+	ConfirmationTokenID  string     `json:"confirmation_token_id,omitempty"`
+	RequestHash          string     `json:"request_hash,omitempty"`
+	PlanHash             string     `json:"plan_hash,omitempty"`
 }
 
 type IntentRecord struct {
@@ -840,11 +865,15 @@ type AppendStreamEventRequest struct {
 }
 
 type ReadStreamRequest struct {
-	StreamID      string `json:"stream_id"`
-	StreamTicket  string `json:"stream_ticket,omitempty"`
-	SandboxOrigin string `json:"sandbox_origin,omitempty"`
-	MaxEvents     int    `json:"max_events,omitempty"`
-	MaxBytes      int64  `json:"max_bytes,omitempty"`
+	StreamID             string `json:"stream_id"`
+	StreamTicket         string `json:"stream_ticket,omitempty"`
+	SurfaceInstanceID    string `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string `json:"session_channel_id_hash,omitempty"`
+	MaxEvents            int    `json:"max_events,omitempty"`
+	MaxBytes             int64  `json:"max_bytes,omitempty"`
+	Now                  time.Time
 }
 
 type ReadStreamResult struct {
@@ -940,9 +969,6 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.RetainedData == nil {
 		adapters.RetainedData = retaineddata.NewMemoryStore()
 	}
-	if adapters.BrowserSite == nil {
-		adapters.BrowserSite = browsersite.NewMemoryStore()
-	}
 	if adapters.Settings == nil {
 		adapters.Settings = settings.NewMemoryStore()
 	}
@@ -955,9 +981,16 @@ func New(adapters Adapters) (*Host, error) {
 	if adapters.InstallStages == nil {
 		adapters.InstallStages = installstage.NewMemoryStore()
 	}
+	surfaceGenerationID, err := newHostSurfaceGenerationID()
+	if err != nil {
+		return nil, err
+	}
 	return &Host{
-		adapters:      adapters,
-		surfaceTokens: adapters.SurfaceTokens,
+		adapters:            adapters,
+		surfaceTokens:       adapters.SurfaceTokens,
+		surfaceDocuments:    newSurfaceDocumentCache(defaultSurfaceDocumentCacheEntries, defaultSurfaceDocumentCacheBytes),
+		methodSchemas:       newMethodSchemaCache(defaultMethodSchemaCacheEntries),
+		surfaceGenerationID: surfaceGenerationID,
 	}, nil
 }
 
@@ -965,9 +998,34 @@ func (h *Host) Capabilities() *capability.Registry {
 	return h.adapters.Capabilities
 }
 
+func requirePluginStateVersion(record registry.PluginRecord, expected uint64) error {
+	if expected == 0 {
+		return fmt.Errorf(
+			"%w: plugin %q requires a positive expected version",
+			ErrPluginStateVersionMismatch,
+			record.PluginInstanceID,
+		)
+	}
+	if record.ManagementRevision != expected {
+		return fmt.Errorf(
+			"%w: plugin %q is at version %d, request expected %d",
+			ErrPluginStateVersionMismatch,
+			record.PluginInstanceID,
+			record.ManagementRevision,
+			expected,
+		)
+	}
+	return nil
+}
+
 func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.SurfaceBootstrap, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
 	if record.EnableState != registry.EnableEnabled {
@@ -976,18 +1034,35 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 	if err := h.canRun(ctx, record); err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	if !manifestHasSurface(record.Manifest, req.SurfaceID) {
+	surface, ok := manifestSurfaceByID(record.Manifest, req.SurfaceID)
+	if !ok {
 		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q is not declared", req.SurfaceID)
 	}
+	entry, ok := packageEntryByPath(record.PackageEntries, surface.Entry)
+	if !ok || strings.TrimSpace(entry.SHA256) == "" {
+		return bridge.SurfaceBootstrap{}, fmt.Errorf("surface %q entry metadata is unavailable", req.SurfaceID)
+	}
 	if req.SurfaceInstanceID == "" {
-		req.SurfaceInstanceID = defaultSurfaceInstanceID(record, req.SurfaceID, req.OwnerSessionHash)
+		req.SurfaceInstanceID, err = newSurfaceInstanceID()
+		if err != nil {
+			return bridge.SurfaceBootstrap{}, err
+		}
+	}
+	runtimeGenerationID, err := h.currentRuntimeGeneration(ctx)
+	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
 	}
 	bootstrap, err := h.surfaceTokens.OpenSurface(bridge.OpenSurfaceRequest{
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
+		PluginVersion:        record.Version,
 		SurfaceID:            req.SurfaceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
+		EntryPath:            surface.Entry,
+		EntrySHA256:          entry.SHA256,
+		RouteRole:            bridge.RouteRoleTrustedParent,
+		RuntimeGenerationID:  runtimeGenerationID,
 		OwnerSessionHash:     req.OwnerSessionHash,
 		OwnerUserHash:        req.OwnerUserHash,
 		SessionChannelIDHash: req.SessionChannelIDHash,
@@ -1001,50 +1076,18 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	if err := h.registerBrowserOrigin(ctx, record, req, bootstrap); err != nil {
-		return bridge.SurfaceBootstrap{}, err
-	}
 	h.audit(ctx, AuditEvent{Type: "plugin.surface.opened", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	return bootstrap, nil
 }
 
-func (h *Host) registerBrowserOrigin(ctx context.Context, record registry.PluginRecord, req OpenSurfaceRequest, bootstrap bridge.SurfaceBootstrap) error {
-	if h.adapters.BrowserSite == nil || strings.TrimSpace(req.SandboxOrigin) == "" {
-		return nil
-	}
-	origin, err := h.adapters.BrowserSite.RegisterOrigin(ctx, browsersite.RegisterRequest{
-		PluginInstanceID:  record.PluginInstanceID,
-		PluginID:          record.PluginID,
-		ActiveFingerprint: record.ActiveFingerprint,
-		SurfaceID:         req.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		Origin:            req.SandboxOrigin,
-		OwnerSessionHash:  req.OwnerSessionHash,
-		OwnerUserHash:     req.OwnerUserHash,
-		Now:               req.Now,
-	})
-	if err != nil {
-		return err
-	}
-	h.audit(ctx, AuditEvent{
-		Type:             "plugin.browser_origin.registered",
-		PluginID:         record.PluginID,
-		PluginInstanceID: record.PluginInstanceID,
-		SurfaceID:        req.SurfaceID,
-		Details: map[string]any{
-			"origin":              origin.Origin,
-			"surface_instance_id": origin.SurfaceInstanceID,
-			"origin_state":        string(origin.State),
-		},
-	})
-	return nil
-}
-
 func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketRequest) (bridge.AssetSessionResult, error) {
 	result, err := h.surfaceTokens.ExchangeAssetTicket(bridge.ExchangeAssetTicketRequest{
-		SurfaceInstanceID: req.SurfaceInstanceID,
-		AssetTicket:       req.AssetTicket,
-		Now:               req.Now,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		AssetTicket:          req.AssetTicket,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Now:                  req.Now,
 	})
 	if err != nil {
 		return bridge.AssetSessionResult{}, err
@@ -1052,34 +1095,159 @@ func (h *Host) ExchangeAssetTicket(ctx context.Context, req ExchangeAssetTicketR
 	return result, nil
 }
 
-func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest) (ReadSurfaceAssetResult, error) {
-	if h.adapters.Assets == nil {
-		return ReadSurfaceAssetResult{}, errors.New("package asset store is required")
+func (h *Host) PrepareSurface(ctx context.Context, req ExchangeAssetTicketRequest) (result PrepareSurfaceResult, err error) {
+	assetSession, err := h.ExchangeAssetTicket(ctx, req)
+	if err != nil {
+		return PrepareSurfaceResult{}, err
 	}
-	validation, err := h.surfaceTokens.ValidateAssetSession(bridge.ValidateAssetSessionRequest{
-		AssetSession:   req.AssetSession,
-		AssetSessionID: req.AssetSessionID,
-		Now:            req.Now,
+	defer func() {
+		if err != nil {
+			_ = h.surfaceTokens.DisposeAssetSession(bridge.ValidateAssetSessionRequest{
+				AssetSession:         assetSession.AssetSession,
+				AssetSessionID:       assetSession.AssetSessionID,
+				OwnerSessionHash:     req.OwnerSessionHash,
+				OwnerUserHash:        req.OwnerUserHash,
+				SessionChannelIDHash: req.SessionChannelIDHash,
+				Now:                  req.Now,
+			})
+		}
+	}()
+	assetRequest := ReadSurfaceAssetRequest{
+		AssetSession:         assetSession.AssetSession,
+		AssetSessionID:       assetSession.AssetSessionID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Now:                  req.Now,
+	}
+	validation, record, err := h.validateSurfaceAssetSession(ctx, assetRequest)
+	if err != nil {
+		return PrepareSurfaceResult{}, err
+	}
+	markPrepared := func() error {
+		return h.surfaceTokens.MarkSurfacePrepared(bridge.MarkSurfacePreparedRequest{
+			SurfaceInstanceID:    validation.Session.SurfaceInstanceID,
+			AssetSessionID:       assetSession.AssetSessionID,
+			BridgeNonce:          validation.Session.BridgeNonce,
+			OwnerSessionHash:     req.OwnerSessionHash,
+			OwnerUserHash:        req.OwnerUserHash,
+			SessionChannelIDHash: req.SessionChannelIDHash,
+			Now:                  req.Now,
+		})
+	}
+	entry, err := h.readValidatedSurfaceAsset(ctx, validation, record, assetSession.EntryPath, assetSession.EntrySHA256)
+	if err != nil {
+		return PrepareSurfaceResult{}, err
+	}
+	if document, ok := h.surfaceDocuments.Get(entry.Session.ActiveFingerprint, assetSession.EntryPath, assetSession.EntrySHA256); ok {
+		if err := markPrepared(); err != nil {
+			return PrepareSurfaceResult{}, err
+		}
+		return PrepareSurfaceResult{AssetSessionResult: assetSession, Document: document}, nil
+	}
+	readAssets := map[string]pluginpkg.Asset{
+		assetSession.EntryPath: {Entry: entry.Entry, Content: entry.Content},
+	}
+	document, err := pluginpkg.BuildOpaqueSurfaceDocument(assetSession.EntryPath, func(assetPath string) (pluginpkg.Asset, error) {
+		if asset, ok := readAssets[assetPath]; ok {
+			return asset, nil
+		}
+		result, readErr := h.readValidatedSurfaceAsset(ctx, validation, record, assetPath, "")
+		if readErr != nil {
+			return pluginpkg.Asset{}, readErr
+		}
+		return pluginpkg.Asset{Entry: result.Entry, Content: result.Content}, nil
 	})
 	if err != nil {
+		return PrepareSurfaceResult{}, err
+	}
+	if document.EntrySHA256 != assetSession.EntrySHA256 {
+		return PrepareSurfaceResult{}, bridge.ErrTokenAudience
+	}
+	h.surfaceDocuments.Put(entry.Session.ActiveFingerprint, assetSession.EntryPath, assetSession.EntrySHA256, document)
+	if err := markPrepared(); err != nil {
+		return PrepareSurfaceResult{}, err
+	}
+	return PrepareSurfaceResult{AssetSessionResult: assetSession, Document: document}, nil
+}
+
+func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest) (ReadSurfaceAssetResult, error) {
+	validation, record, err := h.validateSurfaceAssetSession(ctx, req)
+	if err != nil {
 		return ReadSurfaceAssetResult{}, err
+	}
+	document, ok := h.surfaceDocuments.Get(
+		validation.Session.ActiveFingerprint,
+		validation.Session.EntryPath,
+		validation.Session.EntrySHA256,
+	)
+	if !ok {
+		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+	}
+	var binding *pluginpkg.OpaqueSurfaceAsset
+	for i := range document.Assets {
+		if document.Assets[i].BindingID == req.BindingID {
+			binding = &document.Assets[i]
+			break
+		}
+	}
+	if binding == nil {
+		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+	}
+	return h.readValidatedSurfaceAsset(ctx, validation, record, binding.Path, binding.SHA256)
+}
+
+func (h *Host) validateSurfaceAssetSession(ctx context.Context, req ReadSurfaceAssetRequest) (bridge.AssetSessionValidation, registry.PluginRecord, error) {
+	if h.adapters.Assets == nil {
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, errors.New("package asset store is required")
+	}
+	validation, err := h.surfaceTokens.ValidateAssetSession(bridge.ValidateAssetSessionRequest{
+		AssetSession:         req.AssetSession,
+		AssetSessionID:       req.AssetSessionID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Now:                  req.Now,
+	})
+	if err != nil {
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
 	if err != nil {
-		return ReadSurfaceAssetResult{}, err
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
 	}
 	if record.ActiveFingerprint != validation.Session.ActiveFingerprint {
-		return ReadSurfaceAssetResult{}, bridge.ErrTokenRevoked
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, bridge.ErrTokenRevoked
 	}
 	if record.EnableState != registry.EnableEnabled {
-		return ReadSurfaceAssetResult{}, errors.New("plugin is not enabled")
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, errors.New("plugin is not enabled")
 	}
 	if err := h.canRun(ctx, record); err != nil {
-		return ReadSurfaceAssetResult{}, err
+		return bridge.AssetSessionValidation{}, registry.PluginRecord{}, err
 	}
-	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, req.AssetPath)
+	return validation, record, nil
+}
+
+func (h *Host) readValidatedSurfaceAsset(ctx context.Context, validation bridge.AssetSessionValidation, record registry.PluginRecord, assetPath string, expectedSHA256 string) (ReadSurfaceAssetResult, error) {
+	expectedEntry, ok := packageEntryByPath(record.PackageEntries, assetPath)
+	if !ok || strings.TrimSpace(expectedEntry.SHA256) == "" || expectedEntry.Size < 0 {
+		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+	}
+	if expectedSHA256 != "" && expectedEntry.SHA256 != expectedSHA256 {
+		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
+	}
+	asset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, assetPath)
 	if err != nil {
 		return ReadSurfaceAssetResult{}, err
+	}
+	actualSHA256 := sha256.Sum256(asset.Content)
+	if asset.Entry.Path != expectedEntry.Path ||
+		asset.Entry.SHA256 != expectedEntry.SHA256 ||
+		asset.Entry.Size != expectedEntry.Size ||
+		asset.Entry.ContentType != expectedEntry.ContentType ||
+		int64(len(asset.Content)) != expectedEntry.Size ||
+		"sha256:"+hex.EncodeToString(actualSHA256[:]) != expectedEntry.SHA256 {
+		return ReadSurfaceAssetResult{}, bridge.ErrTokenAudience
 	}
 	return ReadSurfaceAssetResult{
 		Entry:   asset.Entry,
@@ -1088,14 +1256,54 @@ func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest
 	}, nil
 }
 
+func (h *Host) DisposeSurface(_ context.Context, req DisposeSurfaceRequest) error {
+	return h.surfaceTokens.DisposeBoundSurface(bridge.DisposeSurfaceRequest{
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		BridgeNonce:          req.BridgeNonce,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Now:                  req.Now,
+	})
+}
+
+func (h *Host) RevokeSurfaceScope(ctx context.Context, req RevokeSurfaceScopeRequest) (int, error) {
+	revoked, err := h.surfaceTokens.RevokeSurfaceScope(bridge.RevokeSurfaceScopeRequest{
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		Now:                  req.Now,
+	})
+	if err != nil {
+		return 0, err
+	}
+	h.audit(ctx, AuditEvent{
+		Type: "plugin.surface_scope.revoked",
+		Details: map[string]any{
+			"surface_count":  revoked,
+			"channel_scoped": req.SessionChannelIDHash != "",
+		},
+	})
+	return revoked, nil
+}
+
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (bridge.GatewayTokenResult, error) {
 	validation, err := h.surfaceTokens.ValidateBridgeHandshake(bridge.MintGatewayTokenRequest{
 		Handshake:                 req.Handshake,
 		BridgeChannelID:           req.BridgeChannelID,
 		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
+		PreviousGatewayToken:      req.PreviousGatewayToken,
 		Now:                       req.Now,
 	})
 	if err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
+	if validation.Session.OwnerSessionHash != req.OwnerSessionHash ||
+		validation.Session.OwnerUserHash != req.OwnerUserHash ||
+		validation.Session.SessionChannelIDHash != req.SessionChannelIDHash {
+		return bridge.GatewayTokenResult{}, bridge.ErrTokenAudience
+	}
+	if err := h.requireSurfaceRuntimeGeneration(ctx, validation.Session.SurfaceInstanceID, validation.Session.RuntimeGenerationID, req.Now); err != nil {
 		return bridge.GatewayTokenResult{}, err
 	}
 	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
@@ -1115,6 +1323,7 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 		Handshake:                 req.Handshake,
 		BridgeChannelID:           req.BridgeChannelID,
 		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
+		PreviousGatewayToken:      req.PreviousGatewayToken,
 		Now:                       req.Now,
 	})
 	if err != nil {
@@ -1130,6 +1339,9 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 		return CallMethodResult{}, err
 	}
 	if methodRequiresConfirmation(call.method) {
+		if err := h.validateMethodRequest(call.record, call.method, req.Params); err != nil {
+			return CallMethodResult{}, err
+		}
 		requestHash, err := methodRequestHash(call.method, req.Params)
 		if err != nil {
 			return CallMethodResult{}, err
@@ -1172,13 +1384,21 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 	}
 	if result.StreamID != "" {
 		streamTicket, err := h.surfaceTokens.MintStreamTicket(bridge.MintStreamTicketRequest{
-			PluginInstanceID:     call.record.PluginInstanceID,
-			ActiveFingerprint:    call.record.ActiveFingerprint,
-			SurfaceInstanceID:    req.SurfaceInstanceID,
-			OwnerSessionHash:     req.OwnerSessionHash,
-			OwnerUserHash:        req.OwnerUserHash,
-			SessionChannelIDHash: req.SessionChannelIDHash,
-			BridgeChannelID:      req.BridgeChannelID,
+			PluginID:             call.audience.PluginID,
+			PluginInstanceID:     call.audience.PluginInstanceID,
+			PluginVersion:        call.audience.PluginVersion,
+			ActiveFingerprint:    call.audience.ActiveFingerprint,
+			SurfaceID:            call.audience.SurfaceID,
+			SurfaceInstanceID:    call.audience.SurfaceInstanceID,
+			EntryPath:            call.audience.EntryPath,
+			EntrySHA256:          call.audience.EntrySHA256,
+			AssetSessionNonce:    call.audience.AssetSessionNonce,
+			RouteRole:            call.audience.RouteRole,
+			OwnerSessionHash:     call.audience.OwnerSessionHash,
+			OwnerUserHash:        call.audience.OwnerUserHash,
+			SessionChannelIDHash: call.audience.SessionChannelIDHash,
+			BridgeChannelID:      call.audience.BridgeChannelID,
+			RuntimeGenerationID:  call.audience.RuntimeGenerationID,
 			StreamID:             result.StreamID,
 			StreamDirection:      "read",
 			Method:               call.method.Method,
@@ -1190,6 +1410,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (Cal
 		}
 		result.StreamTicket = streamTicket.StreamTicket
 		result.StreamTicketID = streamTicket.StreamTicketID
+		result.StreamExpiresAt = &streamTicket.ExpiresAt
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.method.called", PluginID: call.record.PluginID, PluginInstanceID: call.record.PluginInstanceID})
 	return result, nil
@@ -1214,6 +1435,9 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 	if !methodRequiresConfirmation(call.method) {
 		return ConfirmMethodResult{}, errors.New("method does not require confirmation")
 	}
+	if err := h.validateMethodRequest(call.record, call.method, req.Params); err != nil {
+		return ConfirmMethodResult{}, err
+	}
 	requestHash, err := methodRequestHash(call.method, req.Params)
 	if err != nil {
 		return ConfirmMethodResult{}, err
@@ -1227,14 +1451,22 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req ConfirmMethodR
 		return ConfirmMethodResult{}, err
 	}
 	result, err := h.surfaceTokens.MintConfirmationToken(bridge.MintConfirmationTokenRequest{
-		PluginInstanceID:     call.record.PluginInstanceID,
-		ActiveFingerprint:    call.record.ActiveFingerprint,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
+		PluginID:             call.audience.PluginID,
+		PluginInstanceID:     call.audience.PluginInstanceID,
+		PluginVersion:        call.audience.PluginVersion,
+		ActiveFingerprint:    call.audience.ActiveFingerprint,
+		SurfaceID:            call.audience.SurfaceID,
+		SurfaceInstanceID:    call.audience.SurfaceInstanceID,
+		EntryPath:            call.audience.EntryPath,
+		EntrySHA256:          call.audience.EntrySHA256,
+		AssetSessionNonce:    call.audience.AssetSessionNonce,
+		RouteRole:            call.audience.RouteRole,
 		ConfirmationID:       confirmationID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		BridgeChannelID:      req.BridgeChannelID,
+		OwnerSessionHash:     call.audience.OwnerSessionHash,
+		OwnerUserHash:        call.audience.OwnerUserHash,
+		SessionChannelIDHash: call.audience.SessionChannelIDHash,
+		BridgeChannelID:      call.audience.BridgeChannelID,
+		RuntimeGenerationID:  call.audience.RuntimeGenerationID,
 		Method:               call.method.Method,
 		RequestHash:          requestHash,
 		PlanHash:             planHash,
@@ -1328,6 +1560,9 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallM
 		return CallMethodResult{}, err
 	}
 	if methodRequiresConfirmation(resolved.method) {
+		if err := h.validateMethodRequest(resolved.record, resolved.method, req.Params); err != nil {
+			return CallMethodResult{}, err
+		}
 		requestHash, hashErr := methodRequestHash(resolved.method, req.Params)
 		if hashErr != nil {
 			return CallMethodResult{}, hashErr
@@ -1352,8 +1587,11 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallM
 	}
 	if result.StreamID != "" {
 		streamTicket, err := h.surfaceTokens.MintStreamTicket(bridge.MintStreamTicketRequest{
+			PluginID:             resolved.record.PluginID,
 			PluginInstanceID:     resolved.record.PluginInstanceID,
+			PluginVersion:        resolved.record.Version,
 			ActiveFingerprint:    resolved.record.ActiveFingerprint,
+			RouteRole:            bridge.RouteRoleTrustedIntent,
 			OwnerSessionHash:     req.OwnerSessionHash,
 			OwnerUserHash:        req.OwnerUserHash,
 			SessionChannelIDHash: req.SessionChannelIDHash,
@@ -1368,6 +1606,7 @@ func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallM
 		}
 		result.StreamTicket = streamTicket.StreamTicket
 		result.StreamTicketID = streamTicket.StreamTicketID
+		result.StreamExpiresAt = &streamTicket.ExpiresAt
 	}
 	h.audit(ctx, AuditEvent{
 		Type:             "plugin.intent.invoked",
@@ -1415,21 +1654,27 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	if !ok {
 		return resolvedMethodCall{}, fmt.Errorf("method %q is not declared", req.Method)
 	}
-	audience := bridge.Audience{
-		PluginInstanceID:     record.PluginInstanceID,
-		ActiveFingerprint:    record.ActiveFingerprint,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		BridgeChannelID:      req.BridgeChannelID,
-	}
 	revision := bridge.RevisionBinding{
 		PolicyRevision:     record.PolicyRevision,
 		ManagementRevision: record.ManagementRevision,
 		RevokeEpoch:        record.RevokeEpoch,
 	}
-	if _, err := h.surfaceTokens.ValidateGatewayToken(req.GatewayToken, audience, revision, req.Now); err != nil {
+	token, err := h.surfaceTokens.ValidateSurfaceGatewayToken(bridge.ValidateSurfaceGatewayTokenRequest{
+		GatewayToken:         req.GatewayToken,
+		PluginInstanceID:     record.PluginInstanceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     req.OwnerSessionHash,
+		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: req.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		Revision:             revision,
+		Now:                  req.Now,
+	})
+	if err != nil {
+		return resolvedMethodCall{}, err
+	}
+	audience := token.Audience
+	if err := h.requireSurfaceRuntimeGeneration(ctx, audience.SurfaceInstanceID, audience.RuntimeGenerationID, req.Now); err != nil {
 		return resolvedMethodCall{}, err
 	}
 	session := sessionctx.Context{
@@ -1546,6 +1791,8 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 }
 
 func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
@@ -1553,25 +1800,35 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, req.PluginStateVersion, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
 }
 
 func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseRef := req.ReleaseRef
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, req.PluginStateVersion, packageTrustInput{
 		ReleaseRef:           &releaseRef,
 		Release:              &release,
 		SourcePolicySnapshot: &sourcePolicy,
 	}, req.Now, metadata)
 }
 
-func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package, pluginInstanceID string, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
+func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package, pluginInstanceID string, pluginStateVersion uint64, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
 	if strings.TrimSpace(pluginInstanceID) == "" {
 		pluginInstanceID = defaultPluginInstanceID(pkg)
+	}
+	if pluginStateVersion != 0 {
+		return registry.PluginRecord{}, fmt.Errorf("%w: install requires version 0, got %d", ErrPluginStateVersionMismatch, pluginStateVersion)
+	}
+	if existing, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID); err == nil {
+		return registry.PluginRecord{}, fmt.Errorf("%w: plugin %q is already at version %d", ErrPluginStateVersionMismatch, pluginInstanceID, existing.ManagementRevision)
+	} else if !errors.Is(err, registry.ErrNotFound) {
+		return registry.PluginRecord{}, err
 	}
 	stage, err := h.createInstallStage(ctx, installstage.ActionInstall, pkg, pluginInstanceID, trustInput.stageRequestedTrust(), now)
 	if err != nil {
@@ -1627,8 +1884,13 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 }
 
 func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requirePluginStateVersion(current, req.PluginStateVersion); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if req.PackageReader == nil {
@@ -1642,8 +1904,13 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 }
 
 func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requirePluginStateVersion(current, req.PluginStateVersion); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionUpdate, req.ReleaseRef, &current, current.PluginInstanceID, req.Now)
@@ -1873,7 +2140,7 @@ func parseSignedReleaseMetadata(ref PluginReleaseRef, metadataBytes []byte) (Plu
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata must contain exactly one JSON document", ErrReleaseRefVerificationFailed)
 	}
-	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v1" {
+	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v2" {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata schema_version is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if envelope.ReleaseMetadataRef != ref.ReleaseMetadataRef {
@@ -3020,8 +3287,13 @@ func storageStoresByID(spec *manifest.StorageSpec) map[string]manifest.StoreSpec
 }
 
 func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requirePluginStateVersion(current, req.PluginStateVersion); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	snapshot, remaining, err := selectVersionSnapshot(current.VersionHistory, req.Version, req.PackageHash)
@@ -3685,13 +3957,13 @@ func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.Proces
 }
 
 func (h *Host) StopRuntime(ctx context.Context) error {
-	if h.adapters.RuntimeSupervisor == nil {
-		return nil
+	if h.adapters.RuntimeSupervisor != nil {
+		if err := h.adapters.RuntimeSupervisor.Stop(ctx); err != nil {
+			return err
+		}
 	}
-	if err := h.adapters.RuntimeSupervisor.Stop(ctx); err != nil {
-		return err
-	}
-	h.audit(ctx, AuditEvent{Type: "plugin.runtime.stopped"})
+	revokedSurfaces := h.surfaceTokens.RevokeAllSurfaces(time.Time{})
+	h.audit(ctx, AuditEvent{Type: "plugin.runtime.stopped", Details: map[string]any{"revoked_surface_count": revokedSurfaces}})
 	return nil
 }
 
@@ -3700,6 +3972,35 @@ func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.Health, error) 
 		return runtimeclient.Health{}, nil
 	}
 	return h.adapters.RuntimeSupervisor.Health(ctx)
+}
+
+func (h *Host) currentRuntimeGeneration(ctx context.Context) (string, error) {
+	if h.adapters.RuntimeSupervisor == nil {
+		return h.surfaceGenerationID, nil
+	}
+	health, err := h.adapters.RuntimeSupervisor.Health(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !health.Ready {
+		return h.surfaceGenerationID, nil
+	}
+	if strings.TrimSpace(health.RuntimeGenerationID) == "" {
+		return "", errors.New("ready runtime is missing runtime_generation_id")
+	}
+	return health.RuntimeGenerationID, nil
+}
+
+func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, surfaceInstanceID string, boundGenerationID string, now time.Time) error {
+	currentGenerationID, err := h.currentRuntimeGeneration(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(boundGenerationID) == currentGenerationID {
+		return nil
+	}
+	h.surfaceTokens.DisposeSurface(surfaceInstanceID, now)
+	return bridge.ErrTokenRevoked
 }
 
 func (h *Host) GetOperation(ctx context.Context, operationID string) (operation.Record, error) {
@@ -3760,33 +4061,36 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
+	if record.OwnerSessionHash != req.OwnerSessionHash ||
+		record.OwnerUserHash != req.OwnerUserHash ||
+		record.SessionChannelIDHash != req.SessionChannelIDHash ||
+		(req.SurfaceInstanceID != "" && record.SurfaceInstanceID != req.SurfaceInstanceID) {
+		return ReadStreamResult{}, bridge.ErrTokenAudience
+	}
 	plugin, err := h.adapters.Registry.GetPlugin(ctx, record.PluginInstanceID)
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
-	if err := h.validateStreamSandboxOrigin(ctx, record, plugin, req.SandboxOrigin); err != nil {
-		return ReadStreamResult{}, err
-	}
-	if _, err := h.surfaceTokens.ValidateStreamTicket(bridge.ValidateStreamTicketRequest{
-		StreamTicket: req.StreamTicket,
-		Audience: bridge.Audience{
-			PluginInstanceID:     record.PluginInstanceID,
-			ActiveFingerprint:    plugin.ActiveFingerprint,
-			SurfaceInstanceID:    record.SurfaceInstanceID,
-			OwnerSessionHash:     record.OwnerSessionHash,
-			OwnerUserHash:        record.OwnerUserHash,
-			SessionChannelIDHash: record.SessionChannelIDHash,
-			BridgeChannelID:      record.BridgeChannelID,
-			StreamID:             record.StreamID,
-			StreamDirection:      string(record.Direction),
-			Method:               record.Method,
-		},
+	if _, err := h.surfaceTokens.ValidateBoundStreamTicket(bridge.ValidateBoundStreamTicketRequest{
+		StreamTicket:         req.StreamTicket,
+		PluginID:             record.PluginID,
+		PluginInstanceID:     record.PluginInstanceID,
+		PluginVersion:        plugin.Version,
+		ActiveFingerprint:    plugin.ActiveFingerprint,
+		SurfaceInstanceID:    record.SurfaceInstanceID,
+		OwnerSessionHash:     record.OwnerSessionHash,
+		OwnerUserHash:        record.OwnerUserHash,
+		SessionChannelIDHash: record.SessionChannelIDHash,
+		BridgeChannelID:      record.BridgeChannelID,
+		StreamID:             record.StreamID,
+		StreamDirection:      string(record.Direction),
+		Method:               record.Method,
 		Revision: bridge.RevisionBinding{
 			PolicyRevision:     plugin.PolicyRevision,
 			ManagementRevision: plugin.ManagementRevision,
 			RevokeEpoch:        plugin.RevokeEpoch,
 		},
-		Now: time.Time{},
+		Now: req.Now,
 	}); err != nil {
 		return ReadStreamResult{}, err
 	}
@@ -3799,36 +4103,6 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 		return ReadStreamResult{}, err
 	}
 	return ReadStreamResult{Record: record, Events: events}, nil
-}
-
-func (h *Host) validateStreamSandboxOrigin(ctx context.Context, record stream.Record, plugin registry.PluginRecord, sandboxOrigin string) error {
-	origin := strings.TrimRight(strings.TrimSpace(sandboxOrigin), "/")
-	if origin == "" || strings.TrimSpace(record.SurfaceInstanceID) == "" || h.adapters.BrowserSite == nil {
-		return nil
-	}
-	origins, err := h.adapters.BrowserSite.ListOrigins(ctx, browsersite.ListRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		State:            string(browsersite.StateActive),
-	})
-	if err != nil {
-		return err
-	}
-	foundBinding := false
-	for _, registered := range origins {
-		if registered.SurfaceInstanceID != record.SurfaceInstanceID ||
-			registered.ActiveFingerprint != plugin.ActiveFingerprint ||
-			registered.OwnerSessionHash != record.OwnerSessionHash {
-			continue
-		}
-		foundBinding = true
-		if registered.Origin == origin {
-			return nil
-		}
-	}
-	if foundBinding {
-		return fmt.Errorf("%w: stream sandbox origin mismatch", bridge.ErrTokenAudience)
-	}
-	return nil
 }
 
 func (h *Host) CloseStream(ctx context.Context, req CloseStreamRequest) (stream.Record, error) {
@@ -3982,8 +4256,13 @@ func (h *Host) MintStorageHandleGrant(ctx context.Context, req MintStorageHandle
 }
 
 func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	if err := h.canRun(ctx, record); err != nil {
@@ -4028,6 +4307,15 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 }
 
 func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
+	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	reason := req.Reason
 	if reason == "" {
 		reason = "disabled"
@@ -4078,8 +4366,13 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 }
 
 func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (registry.PluginRecord, error) {
+	h.managementMu.Lock()
+	defer h.managementMu.Unlock()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	operations, err := h.adapters.Operations.MarkPluginUninstalled(ctx, operation.PluginTransitionRequest{
@@ -4151,11 +4444,6 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 		return registry.PluginRecord{}, err
 	}
 	retainedSummary.SettingsRetained = settingsRetained
-	browserSiteRetained, err := h.deleteOrRetainBrowserSiteData(ctx, record, req.DeleteData, req.Now)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	retainedSummary.BrowserSiteRetained = browserSiteRetained
 	retainedRecord, err := h.recordRetainedDataIfNeeded(ctx, record, req.DeleteData, retainedSummary, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -4177,11 +4465,10 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 			PluginID:         record.PluginID,
 			PluginInstanceID: record.PluginInstanceID,
 			Details: map[string]any{
-				"retained_id":           retainedRecord.RetainedID,
-				"storage_retained":      retainedRecord.StorageRetained,
-				"settings_retained":     retainedRecord.SettingsRetained,
-				"browser_site_retained": retainedRecord.BrowserSiteRetained,
-				"usage_bytes":           retainedRecord.UsageBytes,
+				"retained_id":       retainedRecord.RetainedID,
+				"storage_retained":  retainedRecord.StorageRetained,
+				"settings_retained": retainedRecord.SettingsRetained,
+				"usage_bytes":       retainedRecord.UsageBytes,
 			},
 		})
 	}
@@ -4257,10 +4544,6 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 		h.reportRetainedDataBindFailure(ctx, record, target, err)
 		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
 	}
-	if err := h.discardRetainedBrowserSiteForBind(ctx, record, target, now); err != nil {
-		h.reportRetainedDataBindFailure(ctx, record, target, err)
-		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
-	}
 	if err := h.bindRetainedDataPayload(ctx, record, target, false, now); err != nil {
 		h.reportRetainedDataBindFailure(ctx, record, target, err)
 		return retaineddata.Record{}, fmt.Errorf("%w: %w", ErrRetainedDataBindFailed, err)
@@ -4284,7 +4567,6 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 			"target_plugin_instance_id": target.PluginInstanceID,
 			"storage_retained":          bound.StorageRetained,
 			"settings_retained":         bound.SettingsRetained,
-			"browser_site_discarded":    bound.BrowserSiteRetained,
 		},
 	})
 	return bound, nil
@@ -4556,49 +4838,6 @@ func (h *Host) DeleteSecretRef(ctx context.Context, req SecretDeleteRequest) err
 	return nil
 }
 
-func (h *Host) ReportCSPViolation(ctx context.Context, report CSPViolationReport) error {
-	if h.adapters.Diagnostics == nil {
-		return nil
-	}
-	message := report.EffectiveDirective
-	if message == "" {
-		message = report.ViolatedDirective
-	}
-	if message == "" {
-		message = "content security policy violation"
-	}
-	details := map[string]any{}
-	addStringDetail(details, "blocked_uri", report.BlockedURI)
-	addStringDetail(details, "document_uri", report.DocumentURI)
-	addStringDetail(details, "sandbox_origin", report.SandboxOrigin)
-	addStringDetail(details, "effective_directive", report.EffectiveDirective)
-	addStringDetail(details, "violated_directive", report.ViolatedDirective)
-	addStringDetail(details, "original_policy", report.OriginalPolicy)
-	addStringDetail(details, "disposition", report.Disposition)
-	addStringDetail(details, "source_file", report.SourceFile)
-	addStringDetail(details, "sample", report.Sample)
-	if report.LineNumber > 0 {
-		details["line_number"] = report.LineNumber
-	}
-	if report.ColumnNumber > 0 {
-		details["column_number"] = report.ColumnNumber
-	}
-	if len(report.Raw) > 0 {
-		details["raw"] = report.Raw
-	}
-	return h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-		Type:              "plugin.csp.violation",
-		Severity:          "warning",
-		Message:           message,
-		PluginID:          report.PluginID,
-		PluginInstanceID:  report.PluginInstanceID,
-		SurfaceID:         report.SurfaceID,
-		SurfaceInstanceID: report.SurfaceInstanceID,
-		ActiveFingerprint: report.ActiveFingerprint,
-		Details:           details,
-	})
-}
-
 type runtimeArtifactProvider struct {
 	assets pluginpkg.AssetStore
 }
@@ -4683,6 +4922,14 @@ func (v runtimeHandleGrantValidator) ValidateHandleGrant(_ context.Context, req 
 }
 
 func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (CallMethodResult, error) {
+	if err := h.validateMethodRequest(record, method, req.Params); err != nil {
+		return CallMethodResult{}, err
+	}
+
+	var (
+		result capability.Result
+		err    error
+	)
 	switch method.Route.Kind {
 	case manifest.MethodRouteCapability:
 		binding, ok := manifestCapabilityBinding(record.Manifest, method.Route.BindingID)
@@ -4693,7 +4940,7 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 		if !ok {
 			return CallMethodResult{}, fmt.Errorf("capability %q is unavailable", binding.CapabilityID)
 		}
-		result, err := adapter.InvokeCapability(ctx, capability.Invocation{
+		result, err = adapter.InvokeCapability(ctx, capability.Invocation{
 			CapabilityID:         binding.CapabilityID,
 			BindingID:            binding.BindingID,
 			Method:               method.Method,
@@ -4706,60 +4953,68 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 			BridgeChannelID:      req.BridgeChannelID,
 			Arguments:            cloneParams(req.Params),
 		})
-		if err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := validateExecutionResult(method, result); err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
-			return CallMethodResult{}, err
-		}
-		return callMethodResultFromCapabilityResult(result), nil
 	case manifest.MethodRouteWorker:
-		result, err := h.invokeWorker(ctx, record, method, req)
-		if err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := validateExecutionResult(method, result); err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
-			return CallMethodResult{}, err
-		}
-		return callMethodResultFromCapabilityResult(result), nil
+		result, err = h.invokeWorker(ctx, record, method, req)
 	case manifest.MethodRouteCoreAction:
-		result, err := h.invokeCoreAction(ctx, record, method, req)
-		if err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := validateExecutionResult(method, result); err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
-			return CallMethodResult{}, err
-		}
-		if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
-			return CallMethodResult{}, err
-		}
-		return callMethodResultFromCapabilityResult(result), nil
+		result, err = h.invokeCoreAction(ctx, record, method, req)
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
 	}
+	if err != nil {
+		return CallMethodResult{}, err
+	}
+	if err := validateExecutionResult(method, result); err != nil {
+		return CallMethodResult{}, err
+	}
+	visibleData := capability.RedactResponseData(result.Data)
+	visibleData, err = normalizeMethodResponseData(visibleData)
+	if err != nil {
+		return CallMethodResult{}, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err)
+	}
+	if err := h.validateMethodResponse(record, method, visibleData); err != nil {
+		return CallMethodResult{}, err
+	}
+	if err := h.registerOperationIfNeeded(ctx, record, method, req, result.OperationID); err != nil {
+		return CallMethodResult{}, err
+	}
+	if err := h.registerStreamIfNeeded(ctx, record, method, req, result.StreamID); err != nil {
+		return CallMethodResult{}, err
+	}
+	return CallMethodResult{Data: visibleData, OperationID: result.OperationID, StreamID: result.StreamID}, nil
 }
 
-func callMethodResultFromCapabilityResult(result capability.Result) CallMethodResult {
-	return CallMethodResult{
-		Data:        capability.RedactResponseData(result.Data),
-		OperationID: result.OperationID,
-		StreamID:    result.StreamID,
+func normalizeMethodResponseData(data any) (any, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
 	}
+	var normalized any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func (h *Host) validateMethodRequest(record registry.PluginRecord, method manifest.MethodSpec, params map[string]any) error {
+	compiled, err := h.methodSchemas.get(record, method)
+	if err != nil {
+		return fmt.Errorf("%w: method %q: %v", ErrMethodRequestContract, method.Method, err)
+	}
+	if err := compiled.ValidateRequest(params); err != nil {
+		return fmt.Errorf("%w: method %q: %v", ErrMethodRequestContract, method.Method, err)
+	}
+	return nil
+}
+
+func (h *Host) validateMethodResponse(record registry.PluginRecord, method manifest.MethodSpec, data any) error {
+	compiled, err := h.methodSchemas.get(record, method)
+	if err != nil {
+		return fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err)
+	}
+	if err := compiled.ValidateResponse(data); err != nil {
+		return fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err)
+	}
+	return nil
 }
 
 func (h *Host) invokeCoreAction(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (capability.Result, error) {
@@ -5246,12 +5501,6 @@ func cloneParams(params map[string]any) map[string]any {
 	return cloned
 }
 
-func addStringDetail(details map[string]any, key string, value string) {
-	if value != "" {
-		details[key] = value
-	}
-}
-
 func methodRequiresConfirmation(method manifest.MethodSpec) bool {
 	if method.Dangerous {
 		return true
@@ -5421,7 +5670,11 @@ func (h *Host) revokePluginRuntimeCapabilitiesStrict(ctx context.Context, record
 func (h *Host) revokePluginRuntimeCapabilitiesWithMode(ctx context.Context, record registry.PluginRecord, now time.Time, failOnRuntimeError bool) error {
 	revokedTokens := 0
 	if h.surfaceTokens != nil {
-		revokedTokens = h.surfaceTokens.RevokePlugin(record.PluginInstanceID, 0, now)
+		var err error
+		revokedTokens, err = h.surfaceTokens.RevokePlugin(record.PluginInstanceID, record.RevokeEpoch, now)
+		if err != nil {
+			return err
+		}
 	}
 	revokedConfirmations, err := h.deleteConfirmationIntentsForPlugin(ctx, record.PluginInstanceID, now)
 	if err != nil {
@@ -5742,10 +5995,9 @@ func (h *Host) refreshConnectivityPolicy(ctx context.Context, record registry.Pl
 }
 
 type retainedDataSummary struct {
-	StorageRetained     bool
-	SettingsRetained    bool
-	BrowserSiteRetained bool
-	UsageBytes          int64
+	StorageRetained  bool
+	SettingsRetained bool
+	UsageBytes       int64
 }
 
 func (h *Host) deleteOrRetainStorage(ctx context.Context, record registry.PluginRecord, deleteData bool) (bool, int64, error) {
@@ -5828,55 +6080,6 @@ func (h *Host) deleteSecretBindingsIfNeeded(ctx context.Context, record registry
 	return nil
 }
 
-func (h *Host) deleteOrRetainBrowserSiteData(ctx context.Context, record registry.PluginRecord, deleteData bool, now time.Time) (bool, error) {
-	if h.adapters.BrowserSite == nil {
-		return false, nil
-	}
-	reason := "uninstall_keep_data"
-	if deleteData {
-		reason = "uninstall_delete_data"
-	}
-	result, err := h.adapters.BrowserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
-		PluginInstanceID: record.PluginInstanceID,
-		DeleteData:       deleteData,
-		Reason:           reason,
-		Now:              now,
-	})
-	if err != nil {
-		if h.adapters.Diagnostics != nil {
-			_ = h.adapters.Diagnostics.AppendPluginDiagnostic(ctx, DiagnosticEvent{
-				Type:              "plugin.browser_site.cleanup_failed",
-				Severity:          "warning",
-				Message:           err.Error(),
-				PluginID:          record.PluginID,
-				PluginInstanceID:  record.PluginInstanceID,
-				ActiveFingerprint: record.ActiveFingerprint,
-				Details: map[string]any{
-					"origin_count": len(result.Records),
-					"delete_data":  deleteData,
-				},
-			})
-		}
-		return false, err
-	}
-	if len(result.Records) == 0 {
-		return false, nil
-	}
-	eventType := "plugin.browser_site.retained"
-	if deleteData {
-		eventType = "plugin.browser_site.deleted"
-	}
-	h.audit(ctx, AuditEvent{
-		Type:             eventType,
-		PluginID:         record.PluginID,
-		PluginInstanceID: record.PluginInstanceID,
-		Details: map[string]any{
-			"origin_count": len(result.Records),
-		},
-	})
-	return !deleteData, nil
-}
-
 func (h *Host) cleanupRetainedDataRecord(ctx context.Context, record retaineddata.Record, now time.Time) (retaineddata.Record, error) {
 	now = lifecycleNow(now)
 	if record.State == retaineddata.StateDeleted || record.State == retaineddata.StateBound {
@@ -5916,10 +6119,9 @@ func (h *Host) cleanupRetainedDataRecord(ctx context.Context, record retaineddat
 		PluginID:         record.PluginID,
 		PluginInstanceID: record.SourcePluginInstanceID,
 		Details: map[string]any{
-			"retained_id":           deleted.RetainedID,
-			"storage_retained":      deleted.StorageRetained,
-			"settings_retained":     deleted.SettingsRetained,
-			"browser_site_retained": deleted.BrowserSiteRetained,
+			"retained_id":       deleted.RetainedID,
+			"storage_retained":  deleted.StorageRetained,
+			"settings_retained": deleted.SettingsRetained,
 		},
 	})
 	return deleted, nil
@@ -5946,19 +6148,6 @@ func (h *Host) deleteRetainedDataPayload(ctx context.Context, record retaineddat
 			Now:              now,
 		}); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained settings: %w", err))
-		}
-	}
-	if record.BrowserSiteRetained {
-		if h.adapters.BrowserSite == nil {
-			cleanupErr = errors.Join(cleanupErr, errors.New("browser site store is required for retained browser site cleanup"))
-		} else if _, err := h.adapters.BrowserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
-			PluginInstanceID: record.SourcePluginInstanceID,
-			DeleteData:       true,
-			RequireRetained:  true,
-			Reason:           "retained_data_delete",
-			Now:              now,
-		}); err != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete retained browser site data: %w", err))
 		}
 	}
 	return cleanupErr
@@ -6006,36 +6195,6 @@ func (h *Host) bindRetainedDataPayload(ctx context.Context, record retaineddata.
 	return bindErr
 }
 
-func (h *Host) discardRetainedBrowserSiteForBind(ctx context.Context, record retaineddata.Record, target registry.PluginRecord, now time.Time) error {
-	if !record.BrowserSiteRetained {
-		return nil
-	}
-	if h.adapters.BrowserSite == nil {
-		return errors.New("browser site store is required for retained browser site cleanup")
-	}
-	result, err := h.adapters.BrowserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
-		PluginInstanceID: record.SourcePluginInstanceID,
-		DeleteData:       true,
-		RequireRetained:  true,
-		Reason:           "retained_data_bound_discard_browser_site",
-		Now:              now,
-	})
-	if err != nil {
-		return fmt.Errorf("discard retained browser site data: %w", err)
-	}
-	h.audit(ctx, AuditEvent{
-		Type:             "plugin.browser_site.retained_discarded",
-		PluginID:         target.PluginID,
-		PluginInstanceID: target.PluginInstanceID,
-		Details: map[string]any{
-			"retained_id":               record.RetainedID,
-			"source_plugin_instance_id": record.SourcePluginInstanceID,
-			"origin_count":              len(result.Records),
-		},
-	})
-	return nil
-}
-
 func validateRetainedDataBindTarget(record retaineddata.Record, target registry.PluginRecord) error {
 	if record.PublisherID != target.PublisherID || record.PluginID != target.PluginID {
 		return fmt.Errorf("retained data identity mismatch: got %s/%s, want %s/%s", target.PublisherID, target.PluginID, record.PublisherID, record.PluginID)
@@ -6079,7 +6238,6 @@ func (h *Host) reportRetainedDataBindFailure(ctx context.Context, record retaine
 			"source_plugin_instance_id": record.SourcePluginInstanceID,
 			"storage_retained":          record.StorageRetained,
 			"settings_retained":         record.SettingsRetained,
-			"browser_site_retained":     record.BrowserSiteRetained,
 		},
 	})
 }
@@ -6095,16 +6253,15 @@ func (h *Host) reportRetainedDataCleanupFailure(ctx context.Context, record reta
 		PluginID:         record.PluginID,
 		PluginInstanceID: record.SourcePluginInstanceID,
 		Details: map[string]any{
-			"retained_id":           record.RetainedID,
-			"storage_retained":      record.StorageRetained,
-			"settings_retained":     record.SettingsRetained,
-			"browser_site_retained": record.BrowserSiteRetained,
+			"retained_id":       record.RetainedID,
+			"storage_retained":  record.StorageRetained,
+			"settings_retained": record.SettingsRetained,
 		},
 	})
 }
 
 func (h *Host) recordRetainedDataIfNeeded(ctx context.Context, record registry.PluginRecord, deleteData bool, summary retainedDataSummary, now time.Time) (retaineddata.Record, error) {
-	if deleteData || (!summary.StorageRetained && !summary.SettingsRetained && !summary.BrowserSiteRetained) {
+	if deleteData || (!summary.StorageRetained && !summary.SettingsRetained) {
 		return retaineddata.Record{}, nil
 	}
 	if h.adapters.RetainedData == nil {
@@ -6124,7 +6281,6 @@ func (h *Host) recordRetainedDataIfNeeded(ctx context.Context, record registry.P
 		ManifestHash:           record.ManifestHash,
 		StorageRetained:        summary.StorageRetained,
 		SettingsRetained:       summary.SettingsRetained,
-		BrowserSiteRetained:    summary.BrowserSiteRetained,
 		UsageBytes:             summary.UsageBytes,
 		Metadata: map[string]string{
 			"reason":             "uninstall_keep_data",
@@ -6276,18 +6432,38 @@ func lifecycleNow(now time.Time) time.Time {
 	return now.UTC()
 }
 
-func defaultSurfaceInstanceID(record registry.PluginRecord, surfaceID string, ownerSessionHash string) string {
-	sum := sha256.Sum256([]byte(record.PluginInstanceID + "\x00" + record.ActiveFingerprint + "\x00" + surfaceID + "\x00" + ownerSessionHash))
-	return "surface_" + hex.EncodeToString(sum[:16])
+func newSurfaceInstanceID() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "surface_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func manifestHasSurface(m manifest.Manifest, surfaceID string) bool {
+func newHostSurfaceGenerationID() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "host_surface_gen_" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func manifestSurfaceByID(m manifest.Manifest, surfaceID string) (manifest.SurfaceSpec, bool) {
 	for _, surface := range m.Surfaces {
 		if surface.SurfaceID == surfaceID {
-			return true
+			return surface, true
 		}
 	}
-	return false
+	return manifest.SurfaceSpec{}, false
+}
+
+func packageEntryByPath(entries []pluginpkg.Entry, entryPath string) (pluginpkg.Entry, bool) {
+	for _, entry := range entries {
+		if entry.Path == entryPath {
+			return entry, true
+		}
+	}
+	return pluginpkg.Entry{}, false
 }
 
 func ImportLocalPackageBytes(ctx context.Context, h *Host, data []byte) (registry.PluginRecord, error) {

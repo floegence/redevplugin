@@ -7,19 +7,95 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: redevplugin-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Release Preflight
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      label: ${{ steps.metadata.outputs.label }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Resolve release metadata
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+            git fetch origin main --tags --force
+            test "$(git rev-list -n 1 "$tag")" = "$GITHUB_SHA"
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+            ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$tag"
+            label="$tag"
+          else
+            version="0.0.0-manual.${GITHUB_RUN_NUMBER:-0}"
+            label="manual-${GITHUB_RUN_NUMBER:-0}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+  quality-release:
+    name: Complete Release Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: rustup show
+      - name: Go formatting
+        run: test -z "$(gofmt -l .)"
+      - run: GOWORK=off go list ./...
+      - run: GOWORK=off go test ./...
+      - name: Install golangci-lint
+        run: GOWORK=off go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
+      - name: Go lint
+        run: GOWORK=off golangci-lint run ./...
+      - name: TypeScript, unit, demo, and browser checks
+        run: npm run check
+        env:
+          REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-quality
+      - name: Bridge boundary checks
+        run: ./scripts/check_redevplugin_ui_bridge.sh
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Install cargo-deny
+        run: cargo install cargo-deny@0.19.9 --locked
+      - run: cargo deny check
+      - run: ./scripts/check_redevplugin_runtime_contract.sh --ci
+      - run: ./scripts/check_redevplugin_platform.sh --ci
+
   audit-release:
     name: Release Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -33,11 +109,13 @@ jobs:
     name: Release Stress Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -45,18 +123,53 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: rustup show
       - run: ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
-      - uses: actions/upload-artifact@v4
+        env:
+          REDEVPLUGIN_A2_EVIDENCE_DIR: dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: redevplugin-release-stress
-          path: dist/redevplugin-release-stress.json
+          path: |
+            dist/redevplugin-release-stress.json
+            dist/redevplugin-a2-acceptance.json
+            dist/redevplugin-a2-supported.png
+            dist/redevplugin-a2-unsupported.png
+          if-no-files-found: error
+
+  package-ui:
+    name: Build npm Package Once
+    needs:
+      - preflight
+      - quality-release
+      - audit-release
+      - stress-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Pin npm used for immutable packing
+        run: npm i -g npm@11.18.0
+      - run: npm ci
+      - run: npm run build
+      - name: Build immutable npm tarball
+        run: node scripts/build_redevplugin_ui_package.mjs "${{ needs.preflight.outputs.version }}" dist/npm-package
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redevplugin-ui-package
+          path: dist/npm-package/*.tgz
           if-no-files-found: error
 
   runtime:
     name: Runtime ${{ matrix.target }}
     needs:
-      - audit-release
-      - stress-release
+      - preflight
+      - quality-release
+      - package-ui
     strategy:
       fail-fast: false
       matrix:
@@ -71,132 +184,249 @@ jobs:
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Build release bundle
-        run: |
-          tag="${GITHUB_REF_NAME:-manual}"
-          if [[ "$tag" == v* ]]; then
-            version="${tag#v}"
-          else
-            version="0.0.0-manual.${GITHUB_RUN_NUMBER:-0}"
-          fi
-          ./scripts/build_redevplugin_release.sh \
-            --version "$version" \
-            --runtime-target "${{ matrix.target }}" \
-            --out-dir "dist/redevplugin-${tag}-${{ matrix.target }}"
-      - name: Archive release bundle
-        run: |
-          tag="${GITHUB_REF_NAME:-manual}"
-          tar -C dist -czf "dist/redevplugin-${tag}-${{ matrix.target }}.tar.gz" "redevplugin-${tag}-${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: redevplugin-${{ github.ref_name }}-${{ matrix.target }}
-          path: dist/redevplugin-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          name: redevplugin-ui-package
+          path: dist/npm-package
+      - name: Build release bundle from the immutable npm tarball
+        run: |
+          set -euo pipefail
+          npm_package=$(find dist/npm-package -maxdepth 1 -type f -name '*.tgz' -print -quit)
+          test -n "$npm_package"
+          ./scripts/build_redevplugin_release.sh \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --runtime-target "${{ matrix.target }}" \
+            --npm-package "$npm_package" \
+            --source-commit "$GITHUB_SHA" \
+            --out-dir "dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}"
+      - name: Archive release bundle
+        run: tar -C dist -czf "dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}.tar.gz" "redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}
+          path: dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   publish-npm:
     name: Publish npm Package
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: runtime
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - preflight
+      - quality-release
+      - package-ui
+      - runtime
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: npm
       - name: Ensure npm supports trusted publishing
+        run: npm i -g npm@11.18.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: redevplugin-ui-package
+          path: dist/npm-package
+      - name: Recheck immutable public tag before npm publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify_github_release_identity.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Publish or verify identical npm bytes
         run: |
           set -euo pipefail
-          npm i -g npm@^11.5.1
-          npm --version
-      - name: Check if @floegence/redevplugin-ui is already published
-        id: redevplugin_ui_exists
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          if npm view "@floegence/redevplugin-ui@${version}" version >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install dependencies
-        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
-        run: npm ci
-      - name: Build UI package
-        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
-        run: npm run build
-      - name: Prepare versioned UI package
-        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          pkg_dir="dist/npm-publish/redevplugin-ui"
-          rm -rf "$pkg_dir"
-          mkdir -p "$pkg_dir"
-          cp packages/redevplugin-ui/package.json "$pkg_dir/package.json"
-          cp -R packages/redevplugin-ui/dist "$pkg_dir/dist"
-          node --input-type=module - "$pkg_dir/package.json" "$version" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-
-          const [filename, version] = process.argv.slice(2);
-          const pkg = JSON.parse(readFileSync(filename, "utf8"));
-          pkg.version = version;
-          writeFileSync(filename, JSON.stringify(pkg, null, 2) + "\n");
+          version="${{ needs.preflight.outputs.version }}"
+          package=$(find dist/npm-package -maxdepth 1 -type f -name '*.tgz' -print -quit)
+          test -n "$package"
+          expected_integrity=$(node --input-type=module - "$package" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+          const bytes = readFileSync(process.argv[2]);
+          console.log(`sha512-${createHash("sha512").update(bytes).digest("base64")}`);
           NODE
-      - name: Publish @floegence/redevplugin-ui
-        if: steps.redevplugin_ui_exists.outputs.exists != 'true'
-        working-directory: dist/npm-publish/redevplugin-ui
-        run: npm publish --access public --provenance
+          )
+          published_integrity=$(npm view "@floegence/redevplugin-ui@${version}" dist.integrity --json 2>/dev/null | tr -d '"' || true)
+          if [[ -n "$published_integrity" ]]; then
+            test "$published_integrity" = "$expected_integrity"
+          else
+            npm publish "$package" --access public --provenance
+          fi
+          for attempt in $(seq 1 20); do
+            if node scripts/verify_npm_registry_release.mjs "$version" "$GITHUB_SHA" "$expected_integrity"; then
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "npm registry did not return the expected tarball and SLSA provenance" >&2
+          exit 1
 
   publish:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: runtime
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - preflight
+      - quality-release
+      - runtime
+      - publish-npm
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          fetch-depth: 0
+      - name: Recheck immutable release coordinate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./scripts/verify_github_release_identity.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          ./scripts/assert_github_release_absent.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: redevplugin-${{ needs.preflight.outputs.label }}-*
           path: dist/artifacts
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: redevplugin-release-stress
+          path: dist/artifacts
       - name: Checksums
         run: |
           cd dist/artifacts
-          sha256sum *.tar.gz redevplugin-release-stress.json > SHA256SUMS
-      - uses: sigstore/cosign-installer@v3
+          sha256sum \
+            *.tar.gz \
+            redevplugin-release-stress.json \
+            redevplugin-a2-acceptance.json \
+            redevplugin-a2-supported.png \
+            redevplugin-a2-unsupported.png \
+            > SHA256SUMS
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.4.3
       - name: Sign release artifacts
         run: |
           cd dist/artifacts
-          for file in *.tar.gz redevplugin-release-stress.json SHA256SUMS; do
+          for file in \
+            *.tar.gz \
+            redevplugin-release-stress.json \
+            redevplugin-a2-acceptance.json \
+            redevplugin-a2-supported.png \
+            redevplugin-a2-unsupported.png \
+            SHA256SUMS; do
             cosign sign-blob --yes \
               --bundle "${file}.bundle" \
               --output-signature "${file}.sig" \
               "$file"
           done
       - name: Verify signed release artifacts
-        run: ./scripts/verify_redevplugin_release_artifacts.sh dist/artifacts
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/artifacts/*.tar.gz
-            dist/artifacts/*.tar.gz.sig
-            dist/artifacts/*.tar.gz.bundle
-            dist/artifacts/redevplugin-release-stress.json
-            dist/artifacts/redevplugin-release-stress.json.sig
-            dist/artifacts/redevplugin-release-stress.json.bundle
-            dist/artifacts/SHA256SUMS
-            dist/artifacts/SHA256SUMS.sig
+        run: ./scripts/verify_redevplugin_release_artifacts.sh --tag "$GITHUB_REF_NAME" dist/artifacts
+      - name: Create immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --latest \
+            dist/artifacts/*.tar.gz \
+            dist/artifacts/*.tar.gz.sig \
+            dist/artifacts/*.tar.gz.bundle \
+            dist/artifacts/redevplugin-release-stress.json \
+            dist/artifacts/redevplugin-release-stress.json.sig \
+            dist/artifacts/redevplugin-release-stress.json.bundle \
+            dist/artifacts/redevplugin-a2-acceptance.json \
+            dist/artifacts/redevplugin-a2-acceptance.json.sig \
+            dist/artifacts/redevplugin-a2-acceptance.json.bundle \
+            dist/artifacts/redevplugin-a2-supported.png \
+            dist/artifacts/redevplugin-a2-supported.png.sig \
+            dist/artifacts/redevplugin-a2-supported.png.bundle \
+            dist/artifacts/redevplugin-a2-unsupported.png \
+            dist/artifacts/redevplugin-a2-unsupported.png.sig \
+            dist/artifacts/redevplugin-a2-unsupported.png.bundle \
+            dist/artifacts/SHA256SUMS \
+            dist/artifacts/SHA256SUMS.sig \
             dist/artifacts/SHA256SUMS.bundle
+
+  verify-published-release:
+    name: Verify Published Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - preflight
+      - publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.4.3
+      - name: Verify public tag and GitHub Release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/verify_github_release_identity.sh --require-release "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Download immutable GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/published
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist/published
+      - name: Verify signatures, checksums, compatibility, runtime matrix, and npm identity
+        run: |
+          set -euo pipefail
+          ./scripts/verify_redevplugin_release_artifacts.sh --tag "$GITHUB_REF_NAME" dist/published
+          node scripts/verify_published_release.mjs \
+            dist/published \
+            "${{ needs.preflight.outputs.version }}" \
+            "$GITHUB_SHA"
+      - name: Verify npm and Go module registry readback
+        run: |
+          set -euo pipefail
+          version="${{ needs.preflight.outputs.version }}"
+          expected_integrity=$(node scripts/verify_published_release.mjs --npm-integrity dist/published)
+          for attempt in $(seq 1 20); do
+            if node scripts/verify_npm_registry_release.mjs "$version" "$GITHUB_SHA" "$expected_integrity"; then
+              break
+            fi
+            if [[ "$attempt" = 20 ]]; then
+              echo "npm tarball or SLSA provenance readback mismatch" >&2
+              exit 1
+            fi
+            sleep 6
+          done
+          for attempt in $(seq 1 20); do
+            if node scripts/verify_go_module_readback.mjs "$version" "$GITHUB_SHA"; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Go module proxy did not expose the expected v${version} identity" >&2
+          exit 1

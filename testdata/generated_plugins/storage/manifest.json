@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v1",
+  "schema_version": "redevplugin.manifest.v2",
   "publisher": {
     "publisher_id": "example.generated",
     "display_name": "Example Generated"
@@ -10,12 +10,12 @@
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v1"
+    "ui_protocol_version": "plugin-ui-v2"
   },
   "surfaces": [
     {
-      "surface_id": "storage.activity",
-      "kind": "activity",
+      "surface_id": "storage.view",
+      "kind": "view",
       "label": "Storage",
       "entry": "ui/index.html"
     }

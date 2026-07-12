@@ -42,6 +42,7 @@ const (
 	ErrRuntimeVersionMismatch       ErrorCode = "PLUGIN_RUNTIME_VERSION_MISMATCH"
 	ErrJSONLimitExceeded            ErrorCode = "PLUGIN_JSON_LIMIT_EXCEEDED"
 	ErrContractMismatch             ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
+	ErrStateVersionMismatch         ErrorCode = "PLUGIN_STATE_VERSION_MISMATCH"
 	ErrCSRFRequired                 ErrorCode = "PLUGIN_CSRF_REQUIRED"
 	ErrRetainedDataCleanupFailed    ErrorCode = "PLUGIN_RETAINED_DATA_CLEANUP_FAILED"
 	ErrRetainedDataBindFailed       ErrorCode = "PLUGIN_RETAINED_DATA_BIND_FAILED"
@@ -93,6 +94,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrRuntimeVersionMismatch,
 	ErrJSONLimitExceeded,
 	ErrContractMismatch,
+	ErrStateVersionMismatch,
 	ErrCSRFRequired,
 	ErrRetainedDataCleanupFailed,
 	ErrRetainedDataBindFailed,

@@ -1,0 +1,77 @@
+export const pluginPlatformErrorCodes = [
+  "PLUGIN_INVALID_REQUEST",
+  "PLUGIN_MANIFEST_INVALID",
+  "PLUGIN_PACKAGE_INVALID",
+  "PLUGIN_PACKAGE_TOO_LARGE",
+  "PLUGIN_PACKAGE_PATH_FORBIDDEN",
+  "PLUGIN_SIGNATURE_INVALID",
+  "PLUGIN_TRUST_STATE_DENIED",
+  "PLUGIN_TRUST_VERIFICATION_REQUIRED",
+  "PLUGIN_TRUST_VERIFICATION_INVALID",
+  "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
+  "PLUGIN_RELEASE_REF_POLICY_DENIED",
+  "PLUGIN_DISABLED",
+  "PLUGIN_DISABLED_BY_POLICY",
+  "PLUGIN_PERMISSION_DENIED",
+  "PLUGIN_CONFIRMATION_REQUIRED",
+  "PLUGIN_CONFIRMATION_INVALID",
+  "PLUGIN_TOKEN_EXPIRED",
+  "PLUGIN_TOKEN_REPLAY",
+  "PLUGIN_GATEWAY_TOKEN_INVALID",
+  "PLUGIN_GATEWAY_TOKEN_REPLAYED",
+  "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH",
+  "PLUGIN_ASSET_TICKET_INVALID",
+  "PLUGIN_ASSET_SESSION_INVALID",
+  "PLUGIN_STREAM_TICKET_INVALID",
+  "PLUGIN_STREAM_CANCELLED",
+  "PLUGIN_LEASE_INVALID",
+  "PLUGIN_LEASE_REPLAYED",
+  "PLUGIN_GRANT_INVALID",
+  "PLUGIN_STORAGE_QUOTA_EXCEEDED",
+  "PLUGIN_OPERATION_BLOCKED",
+  "PLUGIN_OPERATION_NOT_FOUND",
+  "PLUGIN_OPERATION_NOT_CANCELABLE",
+  "PLUGIN_NETWORK_TARGET_DENIED",
+  "PLUGIN_NETWORK_RATE_LIMITED",
+  "PLUGIN_RUNTIME_UNAVAILABLE",
+  "PLUGIN_RUNTIME_VERSION_MISMATCH",
+  "PLUGIN_JSON_LIMIT_EXCEEDED",
+  "PLUGIN_CONTRACT_MISMATCH",
+  "PLUGIN_STATE_VERSION_MISMATCH",
+  "PLUGIN_CSRF_REQUIRED",
+  "PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
+  "PLUGIN_RETAINED_DATA_BIND_FAILED",
+] as const;
+
+export const pluginBridgeErrorCodes = [
+  ...pluginPlatformErrorCodes,
+  "PLUGIN_CONFIRMATION_REJECTED",
+  "PLUGIN_BRIDGE_TIMEOUT",
+  "PLUGIN_BRIDGE_DISPOSED",
+  "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
+  "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED",
+] as const;
+
+export const pluginClientErrorCodes = [
+  ...pluginBridgeErrorCodes,
+  "PLUGIN_PLATFORM_REQUEST_FAILED",
+  "PLUGIN_STREAM_FAILED",
+] as const;
+
+export type PluginPlatformErrorCode = typeof pluginPlatformErrorCodes[number];
+export type PluginBridgeErrorCode = typeof pluginBridgeErrorCodes[number];
+export type PluginClientErrorCode = typeof pluginClientErrorCodes[number];
+
+export class PluginBridgeError extends Error {
+  readonly errorCode: string;
+  readonly data?: unknown;
+  readonly details?: unknown;
+
+  constructor(errorCode: string, message: string, data?: unknown, details?: unknown) {
+    super(message);
+    this.name = "PluginBridgeError";
+    this.errorCode = errorCode;
+    this.data = data;
+    this.details = details ?? data;
+  }
+}

@@ -8,147 +8,108 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
+	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
-func TestRealDemoSandboxHandlerOnlyExposesSandboxRoutes(t *testing.T) {
+func TestRealDemoWebSecurityGuardAllowsOnlyHostOrigin(t *testing.T) {
 	hostOrigin := "http://app.redevplugin.localhost:4175"
-	var platformCalls []string
-	platform := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		platformCalls = append(platformCalls, r.Method+" "+r.URL.Path)
-		w.Header().Set("X-Platform-Handler", "called")
-		w.WriteHeader(http.StatusNoContent)
-	})
-	handler := realDemoSandboxHandler(hostOrigin, platform)
-
+	guard := realDemoWebSecurityGuard{hostOrigin: hostOrigin}
 	for _, tc := range []struct {
-		name         string
-		method       string
-		path         string
-		origin       string
-		wantStatus   int
-		wantPlatform bool
+		name      string
+		origin    string
+		wantAllow bool
+		wantErr   bool
 	}{
-		{
-			name:         "bootstrap preflight is allowed only from host origin",
-			method:       http.MethodOptions,
-			path:         "/_redevplugin/bootstrap",
-			origin:       hostOrigin,
-			wantStatus:   http.StatusNoContent,
-			wantPlatform: false,
-		},
-		{
-			name:         "bootstrap post delegates to canonical sandbox bootstrap handler",
-			method:       http.MethodPost,
-			path:         "/_redevplugin/bootstrap",
-			origin:       hostOrigin,
-			wantStatus:   http.StatusNoContent,
-			wantPlatform: true,
-		},
-		{
-			name:         "bootstrap rejects unknown origins",
-			method:       http.MethodPost,
-			path:         "/_redevplugin/bootstrap",
-			origin:       "http://evil.example",
-			wantStatus:   http.StatusForbidden,
-			wantPlatform: false,
-		},
-		{
-			name:         "packaged ui assets delegate to canonical asset handler",
-			method:       http.MethodGet,
-			path:         "/_redevplugin/assets/asset_session_test/ui/index.html",
-			wantStatus:   http.StatusNoContent,
-			wantPlatform: true,
-		},
-		{
-			name:         "sandbox origin does not expose management api",
-			method:       http.MethodPost,
-			path:         "/_redevplugin/api/plugins/local-import/install",
-			origin:       hostOrigin,
-			wantStatus:   http.StatusNotFound,
-			wantPlatform: false,
-		},
-		{
-			name:         "sandbox origin does not expose release ref management api",
-			method:       http.MethodPost,
-			path:         "/_redevplugin/api/plugins/install-release-ref",
-			origin:       hostOrigin,
-			wantStatus:   http.StatusNotFound,
-			wantPlatform: false,
-		},
-		{
-			name:         "legacy static ui path is not served",
-			method:       http.MethodGet,
-			path:         "/ui/index.html",
-			wantStatus:   http.StatusNotFound,
-			wantPlatform: false,
-		},
+		{name: "same origin", origin: hostOrigin, wantAllow: true},
+		{name: "non-browser request", origin: "", wantAllow: true},
+		{name: "cross origin", origin: "http://evil.example", wantAllow: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			platformCalls = nil
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/surfaces/open", nil)
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
 			}
-			rec := httptest.NewRecorder()
-
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d body = %s, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
+			requestContext, decision, err := guard.Evaluate(req)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Evaluate() error = %v", err)
 			}
-			if (len(platformCalls) > 0) != tc.wantPlatform {
-				t.Fatalf("platform calls = %#v, wantPlatform=%v", platformCalls, tc.wantPlatform)
+			if got := decision == websecurity.OriginTrustedParent; got != tc.wantAllow {
+				t.Fatalf("origin decision = %q, wantAllow=%v", decision, tc.wantAllow)
 			}
-			if tc.origin == hostOrigin && tc.path == "/_redevplugin/bootstrap" {
-				if got := rec.Header().Get("Access-Control-Allow-Origin"); got != hostOrigin {
-					t.Fatalf("allow-origin = %q, want %q", got, hostOrigin)
-				}
-				if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-					t.Fatalf("allow-credentials = %q", got)
-				}
+			if tc.wantAllow && (requestContext.Scope.OwnerSessionHash != realDemoOwner || requestContext.Scope.SessionChannelIDHash != realDemoChannel) {
+				t.Fatalf("request scope = %#v", requestContext.Scope)
 			}
 		})
 	}
 }
 
-func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
-	html := realDemoHostHTML(
-		"http://app.redevplugin.localhost:4175",
-		"http://plg-real.redevplugin.localhost:4176",
-		`{"plugin_id":"com.example.real.demo","plugin_instance_id":"plugin_real","surface_id":"com.example.real.demo.activity","surface_instance_id":"surface_real","active_fingerprint":"sha256:real","owner_session_hash":"owner","owner_user_hash":"user","session_channel_id_hash":"channel","asset_ticket":"ticket_secret","asset_ticket_id":"ticket_id","bridge_nonce":"nonce"}`,
-		`{"broker_grants_url":"/demo/real/broker-grants"}`,
-		"runtime_generation",
-	)
+func TestRealDemoBootstrapCarriesRuntimeGeneration(t *testing.T) {
+	payload := realDemoBootstrap(bridge.SurfaceBootstrap{RuntimeGenerationID: "runtime_generation_test"})
+	if payload.RuntimeGenerationID != "runtime_generation_test" {
+		t.Fatalf("runtime generation = %q", payload.RuntimeGenerationID)
+	}
+}
+
+func TestRealDemoHTMLUsesOpaqueSurfaceHost(t *testing.T) {
+	html := realDemoHostHTML()
 
 	for _, want := range []string{
-		`new URL("/_redevplugin/assets/" + encodeURIComponent(assetSessionId) + "/ui/index.html", pluginOrigin)`,
-		`new URL("/_redevplugin/bootstrap", pluginOrigin)`,
-		`asset bootstrap response omitted asset_session_id`,
-		`credentials: "include"`,
-		`surface_instance_id: bootstrap.surface_instance_id`,
-		`asset_ticket: bootstrap.asset_ticket`,
+		`createReDevPluginSurfaceTransport`,
+		`PluginSurfaceHost.create`,
+		`surfaceHost.element`,
+		`surfaceMount.replaceChildren(iframe)`,
+		`await surfaceHost.open()`,
+		`await surfaceHost.close()`,
+		`toPluginSurfaceHostBootstrap`,
+		`bootstrap: toPluginSurfaceHostBootstrap(bootstrap)`,
+		`hostTransport: createReDevPluginSurfaceTransport({ fetch: hostFetch })`,
 		`isBrokeredRuntimeMethod(body.method)`,
 		`method === "` + realDemoScheduleMethod + `"`,
 		`fetchBrokerGrants`,
+		`fetch("/demo/real/bootstrap"`,
+		`method: "POST"`,
 		`brokerConfig.broker_grants_url`,
-		`storage_handle_grant_token: brokerGrants.storage_handle_grant_token`,
-		`storage_kv_handle_grant_token: brokerGrants.storage_kv_handle_grant_token`,
-		`storage_sqlite_handle_grant_token: brokerGrants.storage_sqlite_handle_grant_token`,
+		`storage_handle_grant_token: grants.storage_handle_grant_token`,
+		`storage_kv_handle_grant_token: grants.storage_kv_handle_grant_token`,
+		`storage_sqlite_handle_grant_token: grants.storage_sqlite_handle_grant_token`,
+		`intent.signal.addEventListener("abort"`,
+		`progressEvents`,
+		`confirmationAborted`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("real demo html missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{
-		`new URL("/_redevplugin/assets/ui/index.html", pluginOrigin)`,
-		`new URL("/ui/index.html", pluginOrigin)`,
-		`/_redevplugin/api/plugins/surfaces/`,
+		`new PluginSurfaceHost`,
+		`<iframe id="plugin-frame"`,
+		`allow-same-origin`,
+		`pluginOrigin`,
+		`parentOrigin`,
+		`/_redevplugin/bootstrap`,
+		`/_redevplugin/assets/`,
+		`/_redevplugin/csp-report`,
+		`Access-Control-Allow-Origin`,
+		`credentials: "include"`,
+		`owner_session_hash`,
+		`session_channel_id_hash`,
 		`storage_path: brokerConfig.storage_path`,
 		`storage_data_base64: brokerConfig.storage_data_base64`,
 		`storage_kv_value_base64: brokerConfig.storage_kv_value_base64`,
 		`storage_sqlite_sql: brokerConfig.storage_sqlite_sql`,
 		`network_body_base64: brokerConfig.network_body_base64`,
+		`ticket_secret`,
+		`asset_nonce`,
+		`runtime_generation_canary_12345678`,
+		`entryPath: bootstrap.entry_path`,
+		`entrySHA256: bootstrap.entry_sha256`,
+		`assetSessionNonce: bootstrap.asset_session_nonce`,
+		`pluginStateVersion: bootstrap.plugin_state_version`,
+		`revokeEpoch: bootstrap.revoke_epoch`,
+		`"data":{"bootstrap"`,
+		`response.clone().json()`,
 		`storage_secret`,
 		`kv_secret`,
 		`sqlite_secret`,
@@ -161,33 +122,39 @@ func TestRealDemoHTMLUsesCanonicalAssetSessionFlow(t *testing.T) {
 
 func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 	html := realDemoPluginHTML()
-	js := realDemoPluginJS()
+	js := string(realDemoPluginWorkerJS)
 
 	for _, want := range []string{
-		`id="invoke-broker"`,
-		`id="invoke-schedule"`,
-		`id="schedule-list"`,
-		`id="invoke-network-matrix"`,
+		`type="text/redevplugin-worker"`,
+		`PluginBridgeClient`,
+		`invoke-broker`,
+		`invoke-schedule`,
+		`invoke-network-matrix`,
+		`invoke-stream`,
 		`worker.brokerDemo`,
 		realDemoScheduleMethod,
+		realDemoStreamMethod,
 		`parseScheduleRows`,
+		`bridge.readStream`,
+		`runWorkerSecurityProbe`,
 		`worker.networkWebSocket`,
 		`worker.networkTCP`,
 		`worker.networkUDP`,
 		`parseNetworkBody`,
 		`parseNetworkPayload`,
-		`storage_grant_visible`,
-		`network_grant_visible`,
+		`storage_credential_visible`,
+		`network_credential_visible`,
 	} {
 		if !strings.Contains(html+js, want) {
 			t.Fatalf("real demo plugin surface missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{
-		`storage_handle_grant_token`,
-		`storage_kv_handle_grant_token`,
-		`storage_kv_value_base64`,
-		`storage_sqlite_handle_grant_token`,
+		`window.parent.postMessage`,
+		`parent_origin`,
+		`redevplugin.bridge.handshake`,
+		`asset_ticket`,
+		`plugin_gateway_token`,
 		`storage_path`,
 		`storage_sqlite_sql`,
 		`network_body_base64`,
@@ -195,6 +162,20 @@ func TestRealDemoPluginSurfaceDoesNotCarryParentOnlyBrokerGrant(t *testing.T) {
 	} {
 		if strings.Contains(js, forbidden) {
 			t.Fatalf("plugin iframe script contains parent-only broker field %q", forbidden)
+		}
+	}
+}
+
+func TestRealDemoStreamWorkerUsesRealHTTPStreamHostcall(t *testing.T) {
+	raw := string(realDemoNetworkWorkerWASM(realDemoHTTPStreamCase))
+	for _, want := range []string{
+		`"operation":"http_stream"`,
+		`"path":"/v1/stream"`,
+		`"max_chunk_bytes":1024`,
+		`"max_buffered_bytes":65536`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("stream worker wasm missing %q", want)
 		}
 	}
 }
@@ -234,6 +215,18 @@ func TestRealDemoNetworkExecutorCoversAllSupportedTransports(t *testing.T) {
 		t.Fatalf("HTTP body = %s", httpResponse.Body)
 	}
 
+	var streamBody strings.Builder
+	streamResponse, err := executor.StreamHTTP(ctx, connectivity.HTTPRequest{}, func(chunk connectivity.HTTPResponseChunk) error {
+		streamBody.Write(chunk.Data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamHTTP() error = %v", err)
+	}
+	if streamResponse.StatusCode != http.StatusOK || streamResponse.ChunkCount != 2 || streamBody.String() != "real stream line 1\nreal stream line 2\n" {
+		t.Fatalf("stream response = %#v body = %q", streamResponse, streamBody.String())
+	}
+
 	wsResponse, err := executor.WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
 		MessageType: connectivity.WebSocketMessageText,
 		Payload:     []byte("hello websocket"),
@@ -268,7 +261,7 @@ func TestRealDemoRefreshesPolicyAfterPermissionGrant(t *testing.T) {
 	if grantIndex < 0 {
 		t.Fatal("real demo does not grant declared permissions")
 	}
-	refreshIndex := strings.Index(source[grantIndex:], "pluginHost.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})")
+	refreshIndex := strings.Index(source[grantIndex:], "record, err = currentPluginRecord(ctx, pluginHost, record.PluginInstanceID)")
 	if refreshIndex < 0 {
 		t.Fatal("real demo must refresh enabled policy after permission grant")
 	}

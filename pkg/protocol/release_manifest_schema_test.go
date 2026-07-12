@@ -4,15 +4,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-const releaseManifestSchemaVersion = "redevplugin.release_manifest.v1"
+const releaseManifestSchemaVersion = "redevplugin.release_manifest.v2"
 
 func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-manifest-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "release-manifest-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,23 +25,44 @@ func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	if schema["additionalProperties"] != false {
 		t.Fatalf("release manifest schema additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
-	if id, ok := schema["$id"].(string); !ok || !strings.Contains(id, "release-manifest-v1") {
-		t.Fatalf("release manifest $id = %#v, want release-manifest-v1", schema["$id"])
+	if id, ok := schema["$id"].(string); !ok || !strings.Contains(id, "release-manifest-v2") {
+		t.Fatalf("release manifest $id = %#v, want release-manifest-v2", schema["$id"])
 	}
 	required := requireStringSlice(t, schema["required"], "release manifest required")
-	assertStringSet(t, required, []string{"schema_version", "version", "runtime_target", "generated_at", "files"}, "release manifest required fields")
+	assertStringSet(t, required, []string{
+		"schema_version",
+		"version",
+		"source_commit",
+		"runtime_target",
+		"generated_at",
+		"compatibility_sha256",
+		"npm_package",
+		"files",
+	}, "release manifest required fields")
 
 	props := requireNestedObject(t, schema, "properties")
-	assertStringSet(t, objectKeys(props), []string{"schema_version", "version", "runtime_target", "generated_at", "files"}, "release manifest properties")
+	assertStringSet(t, objectKeys(props), []string{
+		"schema_version",
+		"version",
+		"source_commit",
+		"runtime_target",
+		"generated_at",
+		"compatibility_sha256",
+		"npm_package",
+		"files",
+	}, "release manifest properties")
 	if got := requireNestedObject(t, props, "schema_version")["const"]; got != releaseManifestSchemaVersion {
 		t.Fatalf("schema_version const = %#v, want %q", got, releaseManifestSchemaVersion)
 	}
 	assertStringMinLength(t, requireNestedObject(t, props, "version"), "version", 1)
+	assertLowerHexPattern(t, requireNestedObject(t, props, "source_commit"), "source_commit", 40)
 	assertRuntimeTargetOneOf(t, requireNestedObject(t, props, "runtime_target"))
 	generatedAt := requireNestedObject(t, props, "generated_at")
 	if generatedAt["type"] != "string" || generatedAt["format"] != "date-time" {
 		t.Fatalf("generated_at property = %#v, want string date-time", generatedAt)
 	}
+	assertLowerHexPattern(t, requireNestedObject(t, props, "compatibility_sha256"), "compatibility_sha256", 64)
+	assertReleaseManifestNpmPackage(t, schema, requireNestedObject(t, props, "npm_package"))
 	files := requireNestedObject(t, props, "files")
 	if files["type"] != "array" || files["minItems"] != float64(1) {
 		t.Fatalf("files property = %#v, want array minItems 1", files)
@@ -69,6 +91,49 @@ func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 
 	assertReleaseManifestBuildScriptContract(t, filepath.Join(root, "scripts", "build_redevplugin_release.sh"))
 	assertReleaseManifestVerifierContract(t, filepath.Join(root, "scripts", "verify_redevplugin_release_bundle.mjs"))
+	assertReleaseWorkflowContract(t, filepath.Join(root, ".github", "workflows", "release.yml"))
+}
+
+func assertLowerHexPattern(t *testing.T, property map[string]any, label string, width int) {
+	t.Helper()
+	want := "^[0-9a-f]{" + strconv.Itoa(width) + "}$"
+	if property["type"] != "string" || property["pattern"] != want {
+		t.Fatalf("%s property = %#v, want lowercase hex width %d", label, property, width)
+	}
+}
+
+func assertReleaseManifestNpmPackage(t *testing.T, schema map[string]any, property map[string]any) {
+	t.Helper()
+	if property["$ref"] != "#/$defs/npm_package" {
+		t.Fatalf("npm_package property = %#v, want #/$defs/npm_package", property)
+	}
+	npmPackage := requireNestedObject(t, schema, "$defs", "npm_package")
+	if npmPackage["additionalProperties"] != false {
+		t.Fatalf("npm_package additionalProperties = %#v, want false", npmPackage["additionalProperties"])
+	}
+	assertStringSet(t, requireStringSlice(t, npmPackage["required"], "npm_package required"), []string{
+		"name",
+		"version",
+		"path",
+		"sha256",
+		"integrity",
+		"size",
+	}, "npm_package required fields")
+	props := requireNestedObject(t, npmPackage, "properties")
+	if got := requireNestedObject(t, props, "name")["const"]; got != "@floegence/redevplugin-ui" {
+		t.Fatalf("npm_package name const = %#v", got)
+	}
+	assertStringMinLength(t, requireNestedObject(t, props, "version"), "npm_package version", 1)
+	if got := requireNestedObject(t, props, "path")["pattern"]; got != `^npm/floegence-redevplugin-ui-[A-Za-z0-9._+-]+\.tgz$` {
+		t.Fatalf("npm_package path pattern = %#v", got)
+	}
+	assertLowerHexPattern(t, requireNestedObject(t, props, "sha256"), "npm_package sha256", 64)
+	if got := requireNestedObject(t, props, "integrity")["pattern"]; got != `^sha512-[A-Za-z0-9+/]+={0,2}$` {
+		t.Fatalf("npm_package integrity pattern = %#v", got)
+	}
+	if got := requireNestedObject(t, props, "size")["minimum"]; got != float64(1) {
+		t.Fatalf("npm_package size minimum = %#v, want 1", got)
+	}
 }
 
 func assertStringMinLength(t *testing.T, property map[string]any, label string, minLength float64) {
@@ -144,9 +209,12 @@ func assertReleaseManifestBuildScriptContract(t *testing.T, path string) {
 	for _, snippet := range []string{
 		`rel === "release-manifest.json" || rel === "SHA256SUMS"`,
 		`files.sort((a, b) => a.path.localeCompare(b.path))`,
-		`schema_version: "redevplugin.release_manifest.v1"`,
+		`schema_version: "redevplugin.release_manifest.v2"`,
+		`source_commit: sourceCommit`,
 		`runtime_target: runtimeTarget || null`,
 		`generated_at: new Date().toISOString()`,
+		`compatibility_sha256: compatibilitySHA256`,
+		`npm_package: npmPackage`,
 		"const sums = files.map((file) => `${file.sha256}  ${file.path}`).join(\"\\n\") + \"\\n\";",
 		`node "$ROOT_DIR/scripts/verify_redevplugin_release_bundle.mjs" "$OUT_DIR" "$VERSION"`,
 	} {
@@ -164,9 +232,12 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`const sha256SumsPath = join(bundleDir, "SHA256SUMS");`,
 		`verifyReleaseManifestShape(manifest, expectedVersion);`,
 		`verifyManifestFiles(bundleDir, manifest);`,
-		`assertEqual(manifest.schema_version, "redevplugin.release_manifest.v1", "release manifest schema_version");`,
+		`assertEqual(manifest.schema_version, "redevplugin.release_manifest.v2", "release manifest schema_version");`,
+		`assertGitCommit(manifest.source_commit, "release manifest source_commit");`,
 		`manifest.runtime_target !== null && typeof manifest.runtime_target !== "string"`,
 		`!Number.isFinite(Date.parse(manifest.generated_at))`,
+		`assertHexSHA256(manifest.compatibility_sha256, "release manifest compatibility_sha256");`,
+		`verifyNpmManifestEntry(manifest.npm_package, expectedVersion);`,
 		`!Array.isArray(manifest.files) || manifest.files.length === 0`,
 		`assertBundlePath(file.path, ` + "`release manifest files[${index}].path`" + `);`,
 		`assertHexSHA256(file.sha256, ` + "`release manifest files[${index}].sha256`" + `);`,
@@ -175,10 +246,55 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`assertDeepEqual(manifestFiles, actualFiles, "release manifest file list");`,
 		"const expectedSums = manifestFiles.map((file) => `${file.sha256}  ${file.path}`).join(\"\\n\") + \"\\n\";",
 		`assertEqual(actualSums, expectedSums, "SHA256SUMS content");`,
-		`"contracts/spec/plugin/release-manifest-v1.schema.json"`,
+		`"contracts/spec/plugin/release-manifest-v2.schema.json"`,
+		`"contracts/spec/plugin/opaque-surface-document-v1.schema.json"`,
+		`"contracts/spec/plugin/opaque-surface-transport-v1.schema.json"`,
+		`const structuralOnly = args.includes("--structural-only");`,
+		`verifyExecutableTargets(bundleDir, manifest.runtime_target);`,
+		`verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);`,
 	} {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("%s missing release manifest verifier contract snippet %q", path, snippet)
+		}
+	}
+}
+
+func assertReleaseWorkflowContract(t *testing.T, path string) {
+	t.Helper()
+	source := readTextFile(t, path)
+	for _, snippet := range []string{
+		"contents: read",
+		"cancel-in-progress: false",
+		"startsWith(github.ref, 'refs/tags/v')",
+		"./scripts/assert_github_release_absent.sh",
+		"gh release create",
+		"node scripts/verify_go_module_readback.mjs",
+		"npm@11.18.0",
+	} {
+		if !strings.Contains(source, snippet) {
+			t.Fatalf("%s missing hardened release workflow snippet %q", path, snippet)
+		}
+	}
+	for _, forbidden := range []string{
+		"softprops/action-gh-release",
+		"if: startsWith(github.ref, 'refs/tags/')",
+		"govulncheck@latest",
+		"cargo install cargo-deny --locked",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("%s retains mutable or overbroad release workflow snippet %q", path, forbidden)
+		}
+	}
+	for _, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "- uses: ") {
+			continue
+		}
+		uses := strings.TrimPrefix(trimmed, "- uses: ")
+		uses = strings.Fields(uses)[0]
+		at := strings.LastIndex(uses, "@")
+		if at < 0 || len(uses)-at-1 != 40 {
+			t.Fatalf("release workflow action must be pinned to a full commit: %q", uses)
 		}
 	}
 }

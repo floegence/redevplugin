@@ -1,0 +1,32 @@
+{
+  "token_kind": "asset_ticket",
+  "token_id": "at_fixture_asset_ticket_1",
+  "token_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "audience": {
+    "plugin_id": "com.example.fixture",
+    "plugin_instance_id": "plugini_fixture_1",
+    "plugin_version": "1.0.0",
+    "active_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "surface_id": "fixture.view",
+    "surface_instance_id": "surface_fixture_1",
+    "entry_path": "ui/index.html",
+    "entry_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "asset_session_nonce": "asset_session_nonce_fixture_1",
+    "route_role": "trusted_parent",
+    "owner_session_hash": "owner_session_hash_fixture_1",
+    "owner_user_hash": "owner_user_hash_fixture_1",
+    "session_channel_id_hash": "session_channel_hash_fixture_1",
+    "runtime_generation_id": "runtime_gen_fixture_1"
+  },
+  "revision": {
+    "policy_revision": 2,
+    "management_revision": 3,
+    "revoke_epoch": 4
+  },
+  "issued_at": "2026-07-12T00:00:00Z",
+  "expires_at": "2026-07-12T00:00:15Z",
+  "nonce": "asset_ticket_nonce_fixture_1",
+  "use": "single_use",
+  "consumed": false,
+  "revoked": false
+}

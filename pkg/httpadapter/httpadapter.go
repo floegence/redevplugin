@@ -7,13 +7,9 @@ import (
 	"errors"
 	"io"
 	"math/big"
-	"mime"
-	"net"
 	"net/http"
-	"path"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -53,77 +49,55 @@ type RouteSetOptions struct {
 type Handler struct {
 	Host                    *host.Host
 	WebSecurity             websecurity.Guard
-	SandboxAssetSecurity    SandboxAssetSecurity
-	CSPReportLimiter        CSPReportLimiter
 	EnableLocalImportRoutes bool
 }
 
-type SandboxAssetSecurity struct {
-	FrameAncestors []string
-	ReportTo       string
-	ReportURI      string
-}
-
-type CSPReportRateLimitKey struct {
-	SandboxOrigin     string
-	ActiveFingerprint string
-	SourceIP          string
-}
-
-type CSPReportLimiter interface {
-	AllowCSPReport(key CSPReportRateLimitKey, now time.Time) bool
-}
-
-type MemoryCSPReportLimiter struct {
-	mu        sync.Mutex
-	maxEvents int
-	window    time.Duration
-	entries   map[CSPReportRateLimitKey]cspReportRateWindow
-}
-
-type cspReportRateWindow struct {
-	start time.Time
-	count int
-}
-
 type importLocalPackageRequest struct {
-	PackageBase64    string `json:"package_base64"`
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
+	PackageBase64      string  `json:"package_base64"`
+	PluginInstanceID   string  `json:"plugin_instance_id,omitempty"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
 type installReleaseRefRequest struct {
-	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
-	PluginInstanceID string                `json:"plugin_instance_id,omitempty"`
+	ReleaseRef         host.PluginReleaseRef `json:"release_ref"`
+	PluginInstanceID   string                `json:"plugin_instance_id,omitempty"`
+	PluginStateVersion *uint64               `json:"plugin_state_version"`
 }
 
 type updateLocalPackageRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	PackageBase64    string `json:"package_base64"`
+	PluginInstanceID   string  `json:"plugin_instance_id"`
+	PackageBase64      string  `json:"package_base64"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
 type updateReleaseRefRequest struct {
-	PluginInstanceID string                `json:"plugin_instance_id"`
-	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
+	PluginInstanceID   string                `json:"plugin_instance_id"`
+	ReleaseRef         host.PluginReleaseRef `json:"release_ref"`
+	PluginStateVersion *uint64               `json:"plugin_state_version"`
 }
 
 type downgradeRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	Version          string `json:"version,omitempty"`
-	PackageHash      string `json:"package_hash,omitempty"`
+	PluginInstanceID   string  `json:"plugin_instance_id"`
+	Version            string  `json:"version,omitempty"`
+	PackageHash        string  `json:"package_hash,omitempty"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
 type enableRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
+	PluginInstanceID   string  `json:"plugin_instance_id"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
 type disableRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	Reason           string `json:"reason,omitempty"`
+	PluginInstanceID   string  `json:"plugin_instance_id"`
+	Reason             string  `json:"reason,omitempty"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
 type uninstallRequest struct {
-	PluginInstanceID string `json:"plugin_instance_id"`
-	DeleteData       bool   `json:"delete_data"`
+	PluginInstanceID   string  `json:"plugin_instance_id"`
+	DeleteData         bool    `json:"delete_data"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
 type deleteRetainedDataRequest struct {
@@ -141,55 +115,109 @@ type cleanupExpiredRetainedDataRequest struct {
 }
 
 type openSurfaceRequest struct {
-	PluginInstanceID     string `json:"plugin_instance_id"`
-	SurfaceID            string `json:"surface_id"`
-	SurfaceInstanceID    string `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string `json:"session_channel_id_hash,omitempty"`
-	SandboxOrigin        string `json:"sandbox_origin,omitempty"`
+	PluginInstanceID   string  `json:"plugin_instance_id"`
+	SurfaceID          string  `json:"surface_id"`
+	SurfaceInstanceID  string  `json:"surface_instance_id,omitempty"`
+	PluginStateVersion *uint64 `json:"plugin_state_version"`
 }
 
-type exchangeAssetTicketRequest struct {
+type surfaceBootstrapResponse struct {
+	PluginID            string    `json:"plugin_id"`
+	PluginInstanceID    string    `json:"plugin_instance_id"`
+	PluginVersion       string    `json:"plugin_version"`
+	SurfaceID           string    `json:"surface_id"`
+	SurfaceInstanceID   string    `json:"surface_instance_id"`
+	ActiveFingerprint   string    `json:"active_fingerprint"`
+	EntryPath           string    `json:"entry_path"`
+	EntrySHA256         string    `json:"entry_sha256"`
+	AssetSessionNonce   string    `json:"asset_session_nonce"`
+	PluginStateVersion  uint64    `json:"plugin_state_version"`
+	RevokeEpoch         uint64    `json:"revoke_epoch"`
+	RuntimeGenerationID string    `json:"runtime_generation_id"`
+	AssetTicket         string    `json:"asset_ticket"`
+	AssetTicketID       string    `json:"asset_ticket_id"`
+	BridgeNonce         string    `json:"bridge_nonce"`
+	IssuedAt            time.Time `json:"issued_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
+}
+
+func publicSurfaceBootstrap(bootstrap bridge.SurfaceBootstrap) surfaceBootstrapResponse {
+	return surfaceBootstrapResponse{
+		PluginID:            bootstrap.PluginID,
+		PluginInstanceID:    bootstrap.PluginInstanceID,
+		PluginVersion:       bootstrap.PluginVersion,
+		SurfaceID:           bootstrap.SurfaceID,
+		SurfaceInstanceID:   bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:   bootstrap.ActiveFingerprint,
+		EntryPath:           bootstrap.EntryPath,
+		EntrySHA256:         bootstrap.EntrySHA256,
+		AssetSessionNonce:   bootstrap.AssetSessionNonce,
+		PluginStateVersion:  bootstrap.PluginStateVersion,
+		RevokeEpoch:         bootstrap.RevokeEpoch,
+		RuntimeGenerationID: bootstrap.RuntimeGenerationID,
+		AssetTicket:         bootstrap.AssetTicket,
+		AssetTicketID:       bootstrap.AssetTicketID,
+		BridgeNonce:         bootstrap.BridgeNonce,
+		IssuedAt:            bootstrap.IssuedAt,
+		ExpiresAt:           bootstrap.ExpiresAt,
+	}
+}
+
+type prepareSurfaceRequest struct {
 	AssetTicket string `json:"asset_ticket"`
 }
+
+type readSurfaceAssetRequest struct {
+	AssetSession   string `json:"asset_session"`
+	AssetSessionID string `json:"asset_session_id"`
+	BindingID      string `json:"binding_id"`
+}
+
+type readSurfaceStreamRequest struct {
+	StreamID     string `json:"stream_id"`
+	StreamTicket string `json:"stream_ticket"`
+}
+
+type disposeSurfaceRequest struct {
+	BridgeNonce string `json:"bridge_nonce"`
+}
+
+type revokeSurfaceScopeRequest struct{}
 
 type bridgeTokenRequest struct {
 	Handshake                 pluginBridgeHandshake `json:"handshake"`
 	BridgeChannelID           string                `json:"bridge_channel_id"`
 	HandshakeTranscriptSHA256 string                `json:"handshake_transcript_sha256"`
+	PreviousGatewayToken      string                `json:"previous_plugin_gateway_token,omitempty"`
 }
 
 type pluginBridgeHandshake struct {
-	Type              string `json:"type,omitempty"`
-	PluginID          string `json:"plugin_id"`
-	SurfaceID         string `json:"surface_id"`
-	SurfaceInstanceID string `json:"surface_instance_id"`
-	ActiveFingerprint string `json:"active_fingerprint"`
-	BridgeNonce       string `json:"bridge_nonce"`
-	UIProtocolVersion string `json:"ui_protocol_version"`
+	Type               string `json:"type"`
+	PluginID           string `json:"plugin_id"`
+	SurfaceID          string `json:"surface_id"`
+	SurfaceInstanceID  string `json:"surface_instance_id"`
+	ActiveFingerprint  string `json:"active_fingerprint"`
+	BridgeNonce        string `json:"bridge_nonce"`
+	AssetSessionNonce  string `json:"asset_session_nonce"`
+	PluginStateVersion uint64 `json:"plugin_state_version"`
+	RevokeEpoch        uint64 `json:"revoke_epoch"`
+	UIProtocolVersion  string `json:"ui_protocol_version"`
 }
 
 type rpcRequest struct {
-	PluginInstanceID     string         `json:"plugin_instance_id"`
-	SurfaceInstanceID    string         `json:"surface_instance_id"`
-	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
-	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
-	BridgeChannelID      string         `json:"bridge_channel_id"`
-	GatewayToken         string         `json:"plugin_gateway_token"`
-	ConfirmationID       string         `json:"confirmation_id,omitempty"`
-	Method               string         `json:"method"`
-	Params               map[string]any `json:"params,omitempty"`
+	PluginInstanceID  string         `json:"plugin_instance_id"`
+	SurfaceInstanceID string         `json:"surface_instance_id"`
+	BridgeChannelID   string         `json:"bridge_channel_id"`
+	GatewayToken      string         `json:"plugin_gateway_token"`
+	ConfirmationID    string         `json:"confirmation_id,omitempty"`
+	Method            string         `json:"method"`
+	Params            map[string]any `json:"params,omitempty"`
 }
 
 type invokeIntentRequest struct {
-	PluginInstanceID     string         `json:"plugin_instance_id,omitempty"`
-	IntentID             string         `json:"intent_id"`
-	Params               map[string]any `json:"params,omitempty"`
-	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
+	PluginInstanceID string         `json:"plugin_instance_id,omitempty"`
+	IntentID         string         `json:"intent_id"`
+	Params           map[string]any `json:"params,omitempty"`
 }
 
 type exportDataRequest struct {
@@ -228,11 +256,6 @@ type patchSettingsRequest struct {
 	Values map[string]any `json:"values"`
 }
 
-type sandboxBootstrapRequest struct {
-	SurfaceInstanceID string `json:"surface_instance_id"`
-	AssetTicket       string `json:"asset_ticket"`
-}
-
 type cancelOperationRequest struct {
 	Reason string `json:"reason,omitempty"`
 }
@@ -241,32 +264,15 @@ type startRuntimeRequest struct {
 	Target host.RuntimeTarget `json:"target,omitempty"`
 }
 
-const assetSessionCookieName = "__Secure-redevplugin-asset-session"
-const assetPathPrefix = "/_redevplugin/assets/"
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
-const defaultCSPReportGroup = "redevplugin-plugin-csp"
-const defaultCSPReportURI = "/_redevplugin/csp-report"
-
-const sandboxPermissionsPolicy = "accelerometer=(), camera=(), microphone=(), geolocation=(), usb=(), serial=(), bluetooth=(), clipboard-read=(), clipboard-write=(), payment=(), fullscreen=()"
-
-// OwnerSessionHashHeader optionally carries the host session binding used by
-// the configured WebSecurity guard for CSRF validation.
-const OwnerSessionHashHeader = "X-ReDevPlugin-Owner-Session-Hash"
-
-const maxCSPReportBytes = 32 << 10
 const defaultStreamReadMaxEvents = 256
 const defaultStreamReadMaxBytes = 1 << 20
 const defaultJSONRequestMaxBytes = 1 << 20
 const defaultJSONMaxDepth = 64
-const cspReportJSONMaxDepth = 16
-const defaultCSPReportRateLimit = 20
-const defaultCSPReportRateWindow = time.Minute
-const maxCSPReportRateLimitKeys = 4096
 const maxJSONSafeInteger int64 = 1<<53 - 1
 const jsonNumberPrecisionBits uint = 256
 
 var maxJSONSafeFloat = new(big.Float).SetPrec(jsonNumberPrecisionBits).SetInt64(maxJSONSafeInteger)
-var defaultCSPReportLimiter = NewMemoryCSPReportLimiter(defaultCSPReportRateLimit, defaultCSPReportRateWindow)
 
 type jsonLimitReason string
 
@@ -303,59 +309,13 @@ func (e *jsonLimitError) status() int {
 	return http.StatusBadRequest
 }
 
-func NewMemoryCSPReportLimiter(maxEvents int, window time.Duration) *MemoryCSPReportLimiter {
-	if maxEvents <= 0 {
-		maxEvents = defaultCSPReportRateLimit
-	}
-	if window <= 0 {
-		window = defaultCSPReportRateWindow
-	}
-	return &MemoryCSPReportLimiter{
-		maxEvents: maxEvents,
-		window:    window,
-		entries:   map[CSPReportRateLimitKey]cspReportRateWindow{},
-	}
-}
-
-func (l *MemoryCSPReportLimiter) AllowCSPReport(key CSPReportRateLimitKey, now time.Time) bool {
-	if l == nil {
-		return true
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	window, ok := l.entries[key]
-	if !ok && len(l.entries) >= maxCSPReportRateLimitKeys {
-		l.pruneExpiredLocked(now)
-		if len(l.entries) >= maxCSPReportRateLimitKeys {
-			return false
-		}
-	}
-	if !ok || now.Sub(window.start) >= l.window || now.Before(window.start) {
-		l.entries[key] = cspReportRateWindow{start: now, count: 1}
-		return true
-	}
-	if window.count >= l.maxEvents {
-		return false
-	}
-	window.count++
-	l.entries[key] = window
-	return true
-}
-
-func (l *MemoryCSPReportLimiter) pruneExpiredLocked(now time.Time) {
-	for key, window := range l.entries {
-		if now.Sub(window.start) >= l.window || now.Before(window.start) {
-			delete(l.entries, key)
-		}
-	}
-}
-
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.enforceWebSecurity(w, r) {
+	requestContext, ok := h.enforceWebSecurity(w, r)
+	if !ok {
 		return
+	}
+	if isPluginHTTPPath(r.URL.Path) {
+		r = r.WithContext(websecurity.WithRequestContext(r.Context(), requestContext))
 	}
 	switch {
 	case h.EnableLocalImportRoutes && r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/local-import/install":
@@ -380,10 +340,18 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleCompatibility(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/surfaces/open":
 		h.handleOpenSurface(w, r)
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bootstrap"):
-		h.handleExchangeAssetTicket(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/surfaces/revoke-scope":
+		h.handleRevokeSurfaceScope(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/prepare"):
+		h.handlePrepareSurface(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/bridge-token"):
 		h.handleBridgeToken(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/assets/read"):
+		h.handleReadSurfaceAsset(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/streams/read"):
+		h.handleReadSurfaceStream(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/dispose"):
+		h.handleDisposeSurface(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/rpc":
 		h.handleRPC(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/confirm":
@@ -440,43 +408,43 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleGetSettings(w, r)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/") && strings.HasSuffix(r.URL.Path, "/settings"):
 		h.handlePatchSettings(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/bootstrap":
-		h.handleSandboxBootstrap(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/assets/"):
-		h.handlePluginAsset(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/stream/"):
-		h.handlePluginStream(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/csp-report":
-		h.handleCSPReport(w, r)
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 	}
 }
 
-func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) bool {
-	if h.WebSecurity == nil || !isPluginHTTPPath(r.URL.Path) {
-		return true
+func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) (websecurity.RequestContext, bool) {
+	if !isPluginHTTPPath(r.URL.Path) {
+		return websecurity.RequestContext{}, true
+	}
+	if h.WebSecurity == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "web security guard is required", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return websecurity.RequestContext{}, false
 	}
 	requestContext, decision, err := h.WebSecurity.Evaluate(r)
 	if err != nil {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
-		return false
+		return websecurity.RequestContext{}, false
 	}
-	if requestContext.Role == websecurity.OriginPluginSandbox && isPluginManagementAPIPath(r.URL.Path) {
-		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
-		return false
-	}
-	if decision != websecurity.OriginAllow {
+	if decision != websecurity.OriginTrustedParent {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "request origin is not allowed", ErrorCode: string(security.ErrPermissionDenied)})
-		return false
+		return websecurity.RequestContext{}, false
+	}
+	if !requestContext.Scope.Valid() {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: websecurity.ErrScopeRequired.Error(), ErrorCode: string(security.ErrPermissionDenied)})
+		return websecurity.RequestContext{}, false
 	}
 	if requiresCSRF(r) {
-		if err := h.WebSecurity.ValidateCSRF(r, strings.TrimSpace(r.Header.Get(OwnerSessionHashHeader))); err != nil {
-			WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
-			return false
+		if err := h.WebSecurity.ValidateCSRF(r, requestContext.Scope.OwnerSessionHash); err != nil {
+			errorCode := security.ErrPermissionDenied
+			if errors.Is(err, websecurity.ErrCSRFRequired) || errors.Is(err, websecurity.ErrCSRFInvalid) {
+				errorCode = security.ErrCSRFRequired
+			}
+			WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCode)})
+			return websecurity.RequestContext{}, false
 		}
 	}
-	return true
+	return requestContext, true
 }
 
 func isPluginHTTPPath(requestPath string) bool {
@@ -485,15 +453,19 @@ func isPluginHTTPPath(requestPath string) bool {
 		strings.HasPrefix(requestPath, "/_redevplugin/")
 }
 
-func isPluginManagementAPIPath(requestPath string) bool {
-	return requestPath == "/_redevplugin/api/plugins" || strings.HasPrefix(requestPath, "/_redevplugin/api/plugins/")
-}
-
 func requiresCSRF(r *http.Request) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return false
 	}
-	return isPluginManagementAPIPath(r.URL.Path)
+	return isPluginHTTPPath(r.URL.Path)
+}
+
+func trustedRequestScope(r *http.Request) websecurity.RequestScope {
+	requestContext, ok := websecurity.RequestContextFromContext(r.Context())
+	if !ok {
+		return websecurity.RequestScope{}
+	}
+	return requestContext.Scope
 }
 
 func RouteSet() []Route {
@@ -511,8 +483,12 @@ func RouteSetWithOptions(options RouteSetOptions) []Route {
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/open"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirm"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/intents"},
@@ -541,10 +517,6 @@ func RouteSetWithOptions(options RouteSetOptions) []Route {
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings/schema"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
 		{Method: http.MethodPatch, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
-		{Method: http.MethodPost, Path: "/_redevplugin/bootstrap"},
-		{Method: http.MethodGet, Path: "/_redevplugin/assets/{asset_session_id}/{asset_path...}"},
-		{Method: http.MethodGet, Path: "/_redevplugin/stream/{stream_id}"},
-		{Method: http.MethodPost, Path: "/_redevplugin/csp-report"},
 	}
 	if options.EnableLocalImportRoutes {
 		routes = append(routes,
@@ -564,6 +536,9 @@ func RouteSetWithOptions(options RouteSetOptions) []Route {
 func WriteJSON(w http.ResponseWriter, status int, envelope Envelope) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(envelope)
 }
@@ -591,6 +566,22 @@ func writeManagementError(w http.ResponseWriter, err error) {
 	})
 }
 
+func requirePluginStateVersion(w http.ResponseWriter, value *uint64, install bool) (uint64, bool) {
+	if value == nil || (install && *value != 0) || (!install && *value == 0) {
+		expected := "a positive integer"
+		if install {
+			expected = "0"
+		}
+		WriteJSON(w, http.StatusBadRequest, Envelope{
+			OK:        false,
+			Error:     "plugin_state_version must be " + expected,
+			ErrorCode: string(security.ErrInvalidRequest),
+		})
+		return 0, false
+	}
+	return *value, true
+}
+
 func (h Handler) handleImportLocalPackage(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
@@ -601,15 +592,20 @@ func (h Handler) handleImportLocalPackage(w http.ResponseWriter, r *http.Request
 		writeInvalidRequestError(w, err)
 		return
 	}
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, true)
+	if !ok {
+		return
+	}
 	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
 	if err != nil || len(packageBytes) == 0 {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
 	record, err := h.Host.ImportLocalPackage(r.Context(), host.ImportLocalPackageRequest{
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-		PluginInstanceID: req.PluginInstanceID,
+		PackageReader:      bytes.NewReader(packageBytes),
+		PackageSize:        int64(len(packageBytes)),
+		PluginInstanceID:   req.PluginInstanceID,
+		PluginStateVersion: pluginStateVersion,
 	})
 	if err != nil {
 		writeManagementError(w, err)
@@ -628,9 +624,14 @@ func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request)
 		writeInvalidRequestError(w, err)
 		return
 	}
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, true)
+	if !ok {
+		return
+	}
 	record, err := h.Host.InstallReleaseRef(r.Context(), host.InstallReleaseRefRequest{
-		ReleaseRef:       req.ReleaseRef,
-		PluginInstanceID: req.PluginInstanceID,
+		ReleaseRef:         req.ReleaseRef,
+		PluginInstanceID:   req.PluginInstanceID,
+		PluginStateVersion: pluginStateVersion,
 	})
 	if err != nil {
 		writeManagementError(w, err)
@@ -649,7 +650,11 @@ func (h Handler) handleEnable(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.EnablePlugin(r.Context(), host.EnableRequest{PluginInstanceID: req.PluginInstanceID})
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
+		return
+	}
+	record, err := h.Host.EnablePlugin(r.Context(), host.EnableRequest{PluginInstanceID: req.PluginInstanceID, PluginStateVersion: pluginStateVersion})
 	if err != nil {
 		writeManagementError(w, err)
 		return
@@ -667,7 +672,11 @@ func (h Handler) handleDisable(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.DisablePlugin(r.Context(), host.DisableRequest{PluginInstanceID: req.PluginInstanceID, Reason: req.Reason})
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
+		return
+	}
+	record, err := h.Host.DisablePlugin(r.Context(), host.DisableRequest{PluginInstanceID: req.PluginInstanceID, PluginStateVersion: pluginStateVersion, Reason: req.Reason})
 	if err != nil {
 		writeManagementError(w, err)
 		return
@@ -685,7 +694,11 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	record, err := h.Host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, DeleteData: req.DeleteData})
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
+		return
+	}
+	record, err := h.Host.UninstallPlugin(r.Context(), host.UninstallRequest{PluginInstanceID: req.PluginInstanceID, PluginStateVersion: pluginStateVersion, DeleteData: req.DeleteData})
 	if err != nil {
 		writeManagementError(w, err)
 		return
@@ -703,15 +716,20 @@ func (h Handler) handleUpdateLocalPackage(w http.ResponseWriter, r *http.Request
 		writeInvalidRequestError(w, err)
 		return
 	}
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
+		return
+	}
 	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
 	if err != nil || len(packageBytes) == 0 {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
 	record, err := h.Host.UpdateLocalPackage(r.Context(), host.UpdateLocalPackageRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
+		PluginInstanceID:   req.PluginInstanceID,
+		PluginStateVersion: pluginStateVersion,
+		PackageReader:      bytes.NewReader(packageBytes),
+		PackageSize:        int64(len(packageBytes)),
 	})
 	if err != nil {
 		writeManagementError(w, err)
@@ -730,9 +748,14 @@ func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) 
 		writeInvalidRequestError(w, err)
 		return
 	}
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
+		return
+	}
 	record, err := h.Host.UpdateReleaseRef(r.Context(), host.UpdateReleaseRefRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		ReleaseRef:       req.ReleaseRef,
+		PluginInstanceID:   req.PluginInstanceID,
+		PluginStateVersion: pluginStateVersion,
+		ReleaseRef:         req.ReleaseRef,
 	})
 	if err != nil {
 		writeManagementError(w, err)
@@ -751,10 +774,15 @@ func (h Handler) handleDowngrade(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
+		return
+	}
 	record, err := h.Host.DowngradePlugin(r.Context(), host.DowngradeRequest{
-		PluginInstanceID: req.PluginInstanceID,
-		Version:          req.Version,
-		PackageHash:      req.PackageHash,
+		PluginInstanceID:   req.PluginInstanceID,
+		PluginStateVersion: pluginStateVersion,
+		Version:            req.Version,
+		PackageHash:        req.PackageHash,
 	})
 	if err != nil {
 		writeManagementError(w, err)
@@ -790,43 +818,52 @@ func (h Handler) handleOpenSurface(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	bootstrap, err := h.Host.OpenSurface(r.Context(), host.OpenSurfaceRequest{
-		PluginInstanceID:     req.PluginInstanceID,
-		SurfaceID:            req.SurfaceID,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		SandboxOrigin:        req.SandboxOrigin,
-	})
-	if err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
+	pluginStateVersion, ok := requirePluginStateVersion(w, req.PluginStateVersion, false)
+	if !ok {
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: bootstrap})
+	scope := trustedRequestScope(r)
+	bootstrap, err := h.Host.OpenSurface(r.Context(), host.OpenSurfaceRequest{
+		PluginInstanceID:     req.PluginInstanceID,
+		PluginStateVersion:   pluginStateVersion,
+		SurfaceID:            req.SurfaceID,
+		SurfaceInstanceID:    req.SurfaceInstanceID,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForOpenSurfaceError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForOpenSurfaceError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: publicSurfaceBootstrap(bootstrap)})
 }
 
-func (h Handler) handleExchangeAssetTicket(w http.ResponseWriter, r *http.Request) {
+func (h Handler) handlePrepareSurface(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
 	}
-	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/bootstrap")
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/prepare")
 	if !ok {
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
-	var req exchangeAssetTicketRequest
+	var req prepareSurfaceRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	result, err := h.Host.ExchangeAssetTicket(r.Context(), host.ExchangeAssetTicketRequest{
-		SurfaceInstanceID: surfaceInstanceID,
-		AssetTicket:       req.AssetTicket,
+	scope := trustedRequestScope(r)
+	result, err := h.Host.PrepareSurface(r.Context(), host.ExchangeAssetTicketRequest{
+		SurfaceInstanceID:    surfaceInstanceID,
+		AssetTicket:          req.AssetTicket,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
 	})
 	if err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -847,7 +884,7 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
-	if req.Handshake.Type != "" && req.Handshake.Type != pluginBridgeHandshakeType {
+	if req.Handshake.Type != pluginBridgeHandshakeType {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "handshake type is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
@@ -855,13 +892,18 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "surface_instance_id mismatch", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
+	scope := trustedRequestScope(r)
 	result, err := h.Host.MintBridgeToken(r.Context(), host.MintBridgeTokenRequest{
 		Handshake:                 bridgeHandshake(req.Handshake),
 		BridgeChannelID:           req.BridgeChannelID,
 		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
+		PreviousGatewayToken:      req.PreviousGatewayToken,
+		OwnerSessionHash:          scope.OwnerSessionHash,
+		OwnerUserHash:             scope.OwnerUserHash,
+		SessionChannelIDHash:      scope.SessionChannelIDHash,
 	})
 	if err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeTokenError(err, req.PreviousGatewayToken != ""))})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -869,13 +911,146 @@ func (h Handler) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 
 func bridgeHandshake(handshake pluginBridgeHandshake) bridge.Handshake {
 	return bridge.Handshake{
-		PluginID:          handshake.PluginID,
-		SurfaceID:         handshake.SurfaceID,
-		SurfaceInstanceID: handshake.SurfaceInstanceID,
-		ActiveFingerprint: handshake.ActiveFingerprint,
-		BridgeNonce:       handshake.BridgeNonce,
-		UIProtocolVersion: handshake.UIProtocolVersion,
+		PluginID:           handshake.PluginID,
+		SurfaceID:          handshake.SurfaceID,
+		SurfaceInstanceID:  handshake.SurfaceInstanceID,
+		ActiveFingerprint:  handshake.ActiveFingerprint,
+		BridgeNonce:        handshake.BridgeNonce,
+		AssetSessionNonce:  handshake.AssetSessionNonce,
+		PluginStateVersion: handshake.PluginStateVersion,
+		RevokeEpoch:        handshake.RevokeEpoch,
+		UIProtocolVersion:  handshake.UIProtocolVersion,
 	}
+}
+
+func (h Handler) handleReadSurfaceAsset(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/assets/read")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req readSurfaceAssetRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope := trustedRequestScope(r)
+	result, err := h.Host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
+		AssetSession:         req.AssetSession,
+		AssetSessionID:       req.AssetSessionID,
+		BindingID:            req.BindingID,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
+		return
+	}
+	if result.Session.SurfaceInstanceID != surfaceInstanceID {
+		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: bridge.ErrTokenAudience.Error(), ErrorCode: string(errorCodeForAssetError(bridge.ErrTokenAudience))})
+		return
+	}
+	contentType := result.Entry.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{
+		"path":           result.Entry.Path,
+		"sha256":         result.Entry.SHA256,
+		"content_type":   contentType,
+		"content_base64": base64.StdEncoding.EncodeToString(result.Content),
+	}})
+}
+
+func (h Handler) handleReadSurfaceStream(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/streams/read")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req readSurfaceStreamRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope := trustedRequestScope(r)
+	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
+		StreamID:             req.StreamID,
+		StreamTicket:         req.StreamTicket,
+		SurfaceInstanceID:    surfaceInstanceID,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+		MaxEvents:            defaultStreamReadMaxEvents,
+		MaxBytes:             defaultStreamReadMaxBytes,
+	})
+	if err != nil {
+		code := errorCodeForStreamError(err)
+		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"events": result.Events}})
+}
+
+func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/dispose")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req disposeSurfaceRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope := trustedRequestScope(r)
+	if err := h.Host.DisposeSurface(r.Context(), host.DisposeSurfaceRequest{
+		SurfaceInstanceID:    surfaceInstanceID,
+		BridgeNonce:          req.BridgeNonce,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+	}); err != nil {
+		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"disposed": true}})
+}
+
+func (h Handler) handleRevokeSurfaceScope(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req revokeSurfaceScopeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope := trustedRequestScope(r)
+	revoked, err := h.Host.RevokeSurfaceScope(r.Context(), host.RevokeSurfaceScopeRequest{
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForBridgeError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]int{"revoked_surface_count": revoked}})
 }
 
 func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
@@ -888,12 +1063,13 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
+	scope := trustedRequestScope(r)
 	result, err := h.Host.CallPluginMethod(r.Context(), host.CallMethodRequest{
 		PluginInstanceID:     req.PluginInstanceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		GatewayToken:         req.GatewayToken,
 		ConfirmationID:       req.ConfirmationID,
@@ -901,7 +1077,8 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		Params:               req.Params,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForRPCError(err))})
+		code := errorCodeForRPCError(err)
+		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -917,19 +1094,21 @@ func (h Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
+	scope := trustedRequestScope(r)
 	result, err := h.Host.PrepareMethodConfirmation(r.Context(), host.ConfirmMethodRequest{
 		PluginInstanceID:     req.PluginInstanceID,
 		SurfaceInstanceID:    req.SurfaceInstanceID,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
 		BridgeChannelID:      req.BridgeChannelID,
 		GatewayToken:         req.GatewayToken,
 		Method:               req.Method,
 		Params:               req.Params,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForRPCError(err))})
+		code := errorCodeForRPCError(err)
+		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -945,7 +1124,8 @@ func (h Handler) handleListIntents(w http.ResponseWriter, r *http.Request) {
 		PluginInstanceID: r.URL.Query().Get("plugin_instance_id"),
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForIntentError(err))})
+		code := errorCodeForIntentError(err)
+		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"intents": records}})
@@ -961,13 +1141,14 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 		writeInvalidRequestError(w, err)
 		return
 	}
+	scope := trustedRequestScope(r)
 	result, err := h.Host.InvokeIntent(r.Context(), host.InvokeIntentRequest{
 		PluginInstanceID:     req.PluginInstanceID,
 		IntentID:             req.IntentID,
 		Params:               req.Params,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
 	})
 	if err != nil {
 		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForIntentError(err))})
@@ -1441,307 +1622,6 @@ func (h Handler) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
 }
 
-func (h Handler) handleSandboxBootstrap(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	var req sandboxBootstrapRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	if strings.TrimSpace(req.SurfaceInstanceID) == "" || strings.TrimSpace(req.AssetTicket) == "" {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "surface_instance_id and asset_ticket are required", ErrorCode: string(security.ErrInvalidRequest)})
-		return
-	}
-	result, err := h.Host.ExchangeAssetTicket(r.Context(), host.ExchangeAssetTicketRequest{
-		SurfaceInstanceID: req.SurfaceInstanceID,
-		AssetTicket:       req.AssetTicket,
-	})
-	if err != nil {
-		WriteJSON(w, httpStatusForBridgeError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetTicketError(err))})
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     assetSessionCookieName,
-		Value:    result.AssetSession,
-		Path:     assetSessionCookiePath(result.AssetSessionID),
-		Expires:  result.ExpiresAt,
-		MaxAge:   maxAgeSeconds(time.Until(result.ExpiresAt)),
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{
-		"asset_session_id": result.AssetSessionID,
-		"issued_at":        result.IssuedAt,
-		"expires_at":       result.ExpiresAt,
-	}})
-}
-
-func (h Handler) handlePluginAsset(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	assetSessionID, assetPath, ok := assetPathFromSandboxPath(r.URL.Path)
-	if !ok {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "asset path is invalid", ErrorCode: string(security.ErrInvalidRequest)})
-		return
-	}
-	if err := validatePluginAssetFetchMetadata(r); err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrAssetSessionInvalid)})
-		return
-	}
-	cookie, err := r.Cookie(assetSessionCookieName)
-	if err != nil || strings.TrimSpace(cookie.Value) == "" {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "asset session is required", ErrorCode: string(security.ErrAssetSessionInvalid)})
-		return
-	}
-	result, err := h.Host.ReadSurfaceAsset(r.Context(), host.ReadSurfaceAssetRequest{
-		AssetSession:   cookie.Value,
-		AssetSessionID: assetSessionID,
-		AssetPath:      assetPath,
-	})
-	if err != nil {
-		WriteJSON(w, httpStatusForAssetError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForAssetError(err))})
-		return
-	}
-	contentType := result.Entry.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	h.writeSandboxAssetSecurityHeaders(w, assetSessionID, assetPath)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(result.Content)
-}
-
-func validatePluginAssetFetchMetadata(r *http.Request) error {
-	fetchSite := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Site")))
-	if fetchSite == "cross-site" {
-		return errors.New("asset request fetch site is invalid")
-	}
-	return nil
-}
-
-func (h Handler) handlePluginStream(w http.ResponseWriter, r *http.Request) {
-	writePluginStreamSecurityHeaders(w)
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	streamID, ok := streamIDFromPath(r.URL.Path)
-	if !ok {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "stream_id is invalid", ErrorCode: string(security.ErrInvalidRequest)})
-		return
-	}
-	if err := validatePluginStreamFetchMetadata(r); err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrStreamTicketInvalid)})
-		return
-	}
-	streamTicket := strings.TrimSpace(r.URL.Query().Get("ticket"))
-	if streamTicket == "" {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "stream ticket is required", ErrorCode: string(security.ErrStreamTicketInvalid)})
-		return
-	}
-	result, err := h.Host.ReadStream(r.Context(), host.ReadStreamRequest{
-		StreamID:      streamID,
-		StreamTicket:  streamTicket,
-		SandboxOrigin: r.Header.Get("Origin"),
-		MaxEvents:     defaultStreamReadMaxEvents,
-		MaxBytes:      defaultStreamReadMaxBytes,
-	})
-	if err != nil {
-		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForStreamError(err))})
-		return
-	}
-	contentType := result.Record.ContentType
-	if contentType == "" {
-		contentType = "application/x-ndjson"
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.WriteHeader(http.StatusOK)
-	encoder := json.NewEncoder(w)
-	for _, event := range result.Events {
-		if err := encoder.Encode(event); err != nil {
-			return
-		}
-	}
-}
-
-func validatePluginStreamFetchMetadata(r *http.Request) error {
-	fetchSite := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Site")))
-	if fetchSite != "" && fetchSite != "same-origin" {
-		return errors.New("stream request fetch site is invalid")
-	}
-	fetchMode := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Mode")))
-	if fetchMode != "" && fetchMode != "cors" && fetchMode != "same-origin" {
-		return errors.New("stream request fetch mode is invalid")
-	}
-	fetchDest := strings.TrimSpace(strings.ToLower(r.Header.Get("Sec-Fetch-Dest")))
-	if fetchDest != "" && fetchDest != "empty" {
-		return errors.New("stream request fetch destination is invalid")
-	}
-	return nil
-}
-
-func writePluginStreamSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-}
-
-func (h Handler) handleCSPReport(w http.ResponseWriter, r *http.Request) {
-	if h.Host == nil {
-		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
-		return
-	}
-	if !isAllowedCSPReportContentType(r.Header.Get("Content-Type")) {
-		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "content type is not supported", ErrorCode: string(security.ErrInvalidRequest)})
-		return
-	}
-	raw, err := readLimitedJSONBody(r, maxCSPReportBytes)
-	if err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	if err := validateJSONLimits(raw, cspReportJSONMaxDepth); err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	report, err := parseCSPReport(raw)
-	if err != nil {
-		writeInvalidRequestError(w, err)
-		return
-	}
-	if !h.cspReportLimiter().AllowCSPReport(CSPReportRateLimitKey{
-		SandboxOrigin:     report.SandboxOrigin,
-		ActiveFingerprint: report.ActiveFingerprint,
-		SourceIP:          sourceIPFromRequest(r),
-	}, time.Now()) {
-		WriteJSON(w, http.StatusTooManyRequests, Envelope{OK: false, Error: "csp report rate limit exceeded", ErrorCode: string(security.ErrNetworkRateLimited)})
-		return
-	}
-	if err := h.Host.ReportCSPViolation(r.Context(), report); err != nil {
-		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
-		return
-	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]bool{"reported": true}})
-}
-
-func (h Handler) cspReportLimiter() CSPReportLimiter {
-	if h.CSPReportLimiter != nil {
-		return h.CSPReportLimiter
-	}
-	return defaultCSPReportLimiter
-}
-
-func (h Handler) writeSandboxAssetSecurityHeaders(w http.ResponseWriter, assetSessionID string, assetPath string) {
-	reportTo := cleanCSPReportGroup(h.SandboxAssetSecurity.ReportTo)
-	reportURI := cleanCSPReportURI(h.SandboxAssetSecurity.ReportURI)
-	w.Header().Set("Content-Security-Policy", sandboxAssetCSP(h.SandboxAssetSecurity.FrameAncestors, reportTo, reportURI))
-	w.Header().Set("Reporting-Endpoints", reportTo+`="`+reportURI+`"`)
-	w.Header().Set("Permissions-Policy", sandboxPermissionsPolicy)
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
-	w.Header().Set("Service-Worker-Allowed", serviceWorkerAllowedScope(assetSessionID, assetPath))
-}
-
-func sandboxAssetCSP(frameAncestors []string, reportTo string, reportURI string) string {
-	directives := []string{
-		"default-src 'none'",
-		"script-src 'self'",
-		"style-src 'self'",
-		"img-src 'self' data: blob:",
-		"media-src 'self' blob:",
-		"font-src 'self'",
-		"connect-src 'self'",
-		"frame-src 'none'",
-		"worker-src 'none'",
-		"webrtc 'block'",
-		"object-src 'none'",
-		"base-uri 'none'",
-		"form-action 'none'",
-		"navigate-to 'none'",
-	}
-	if sources := sanitizeCSPSourceList(frameAncestors); len(sources) > 0 {
-		directives = append(directives, "frame-ancestors "+strings.Join(sources, " "))
-	}
-	if reportTo != "" {
-		directives = append(directives, "report-to "+reportTo)
-	}
-	if reportURI != "" {
-		directives = append(directives, "report-uri "+reportURI)
-	}
-	return strings.Join(directives, "; ")
-}
-
-func cleanCSPReportGroup(value string) string {
-	group := strings.TrimSpace(value)
-	if group == "" || strings.ContainsAny(group, " \t;\"'\r\n") {
-		return defaultCSPReportGroup
-	}
-	return group
-}
-
-func cleanCSPReportURI(value string) string {
-	uri := strings.TrimSpace(value)
-	if uri == "" || strings.ContainsAny(uri, "\"\r\n") {
-		return defaultCSPReportURI
-	}
-	if strings.HasPrefix(uri, "/") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "http://") {
-		return uri
-	}
-	return defaultCSPReportURI
-}
-
-func sanitizeCSPSourceList(values []string) []string {
-	sources := make([]string, 0, len(values))
-	for _, value := range values {
-		source := strings.TrimSpace(value)
-		if source == "" || strings.ContainsAny(source, " \t;\r\n") {
-			continue
-		}
-		sources = append(sources, source)
-	}
-	return sources
-}
-
-func serviceWorkerAllowedScope(assetSessionID string, assetPath string) string {
-	base := assetSessionCookiePath(assetSessionID)
-	dir := path.Dir(assetPath)
-	if dir == "." || dir == "/" {
-		return base
-	}
-	return base + strings.Trim(dir, "/") + "/"
-}
-
-func isAllowedCSPReportContentType(header string) bool {
-	mediaType, _, err := mime.ParseMediaType(header)
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(mediaType) {
-	case "application/csp-report", "application/json", "application/reports+json":
-		return true
-	default:
-		return false
-	}
-}
-
-func sourceIPFromRequest(r *http.Request) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil {
-		return host
-	}
-	return strings.TrimSpace(r.RemoteAddr)
-}
-
 func decodeJSON(r *http.Request, dst any) error {
 	raw, err := readLimitedJSONBody(r, defaultJSONRequestMaxBytes)
 	if err != nil {
@@ -1881,57 +1761,6 @@ func pluginInstanceIDFromSettingsPath(requestPath string, suffix string) (string
 	return pluginInstanceID, true
 }
 
-func assetPathFromSandboxPath(requestPath string) (string, string, bool) {
-	if !strings.HasPrefix(requestPath, assetPathPrefix) {
-		return "", "", false
-	}
-	rest := strings.TrimPrefix(requestPath, assetPathPrefix)
-	sessionID, assetPath, ok := strings.Cut(rest, "/")
-	if !ok || !validAssetSessionID(sessionID) || assetPath == "" {
-		return "", "", false
-	}
-	clean := path.Clean(assetPath)
-	if clean != assetPath || clean == "." || strings.HasPrefix(assetPath, "../") || strings.Contains(assetPath, "/../") || strings.HasPrefix(assetPath, ".") || strings.Contains(assetPath, "/.") {
-		return "", "", false
-	}
-	if !strings.HasPrefix(assetPath, "ui/") {
-		return "", "", false
-	}
-	return sessionID, assetPath, true
-}
-
-func assetSessionCookiePath(assetSessionID string) string {
-	if !validAssetSessionID(assetSessionID) {
-		return assetPathPrefix
-	}
-	return assetPathPrefix + assetSessionID + "/"
-}
-
-func validAssetSessionID(value string) bool {
-	if value == "" || strings.Contains(value, "/") || strings.HasPrefix(value, ".") {
-		return false
-	}
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func streamIDFromPath(requestPath string) (string, bool) {
-	const prefix = "/_redevplugin/stream/"
-	if !strings.HasPrefix(requestPath, prefix) {
-		return "", false
-	}
-	streamID := strings.Trim(strings.TrimPrefix(requestPath, prefix), "/")
-	if streamID == "" || strings.Contains(streamID, "/") || strings.HasPrefix(streamID, ".") {
-		return "", false
-	}
-	return streamID, true
-}
-
 func boolQuery(r *http.Request, key string) bool {
 	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
 	return value == "1" || value == "true" || value == "yes"
@@ -1952,94 +1781,6 @@ func intQuery(r *http.Request, key string) int {
 	return parsed
 }
 
-func maxAgeSeconds(d time.Duration) int {
-	if d <= 0 {
-		return 0
-	}
-	return int(d.Seconds())
-}
-
-func parseCSPReport(raw []byte) (host.CSPViolationReport, error) {
-	var envelope map[string]any
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return host.CSPViolationReport{}, err
-	}
-	body := envelope
-	if cspReport, ok := envelope["csp-report"].(map[string]any); ok {
-		body = cspReport
-	} else if reportBody, ok := envelope["body"].(map[string]any); ok {
-		body = reportBody
-	}
-	report := host.CSPViolationReport{
-		PluginID:           stringFromAny(envelope["plugin_id"]),
-		PluginInstanceID:   stringFromAny(envelope["plugin_instance_id"]),
-		SurfaceID:          stringFromAny(envelope["surface_id"]),
-		SurfaceInstanceID:  stringFromAny(envelope["surface_instance_id"]),
-		SandboxOrigin:      stringFromAny(envelope["sandbox_origin"]),
-		ActiveFingerprint:  stringFromAny(envelope["active_fingerprint"]),
-		BlockedURI:         stringFromAny(firstAny(body, "blocked-uri", "blockedURL", "blocked_uri")),
-		DocumentURI:        stringFromAny(firstAny(body, "document-uri", "documentURL", "document_uri")),
-		EffectiveDirective: stringFromAny(firstAny(body, "effective-directive", "effectiveDirective", "effective_directive")),
-		ViolatedDirective:  stringFromAny(firstAny(body, "violated-directive", "violatedDirective", "violated_directive")),
-		OriginalPolicy:     stringFromAny(firstAny(body, "original-policy", "originalPolicy", "original_policy")),
-		Disposition:        stringFromAny(body["disposition"]),
-		LineNumber:         intFromAny(firstAny(body, "line-number", "lineNumber", "line_number")),
-		ColumnNumber:       intFromAny(firstAny(body, "column-number", "columnNumber", "column_number")),
-		SourceFile:         stringFromAny(firstAny(body, "source-file", "sourceFile", "source_file")),
-		Sample:             stringFromAny(firstAny(body, "sample", "script-sample", "scriptSample", "script_sample")),
-		Raw:                body,
-	}
-	if report.PluginID == "" {
-		report.PluginID = stringFromAny(body["plugin_id"])
-	}
-	if report.PluginInstanceID == "" {
-		report.PluginInstanceID = stringFromAny(body["plugin_instance_id"])
-	}
-	if report.SurfaceID == "" {
-		report.SurfaceID = stringFromAny(body["surface_id"])
-	}
-	if report.SurfaceInstanceID == "" {
-		report.SurfaceInstanceID = stringFromAny(body["surface_instance_id"])
-	}
-	if report.SandboxOrigin == "" {
-		report.SandboxOrigin = stringFromAny(body["sandbox_origin"])
-	}
-	if report.ActiveFingerprint == "" {
-		report.ActiveFingerprint = stringFromAny(body["active_fingerprint"])
-	}
-	return report, nil
-}
-
-func firstAny(values map[string]any, keys ...string) any {
-	for _, key := range keys {
-		if value, ok := values[key]; ok {
-			return value
-		}
-	}
-	return nil
-}
-
-func stringFromAny(value any) string {
-	if text, ok := value.(string); ok {
-		return strings.TrimSpace(text)
-	}
-	return ""
-}
-
-func intFromAny(value any) int {
-	switch v := value.(type) {
-	case float64:
-		if v > 0 {
-			return int(v)
-		}
-	case int:
-		if v > 0 {
-			return v
-		}
-	}
-	return 0
-}
-
 func errorCodeForBridgeError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, bridge.ErrTokenExpired):
@@ -2055,12 +1796,36 @@ func errorCodeForBridgeError(err error) security.ErrorCode {
 	}
 }
 
-func errorCodeForAssetTicketError(err error) security.ErrorCode {
+func errorCodeForBridgeTokenError(err error, renewal bool) security.ErrorCode {
+	if renewal && isGatewayTokenValidationError(err) {
+		return errorCodeForGatewayTokenError(err)
+	}
+	return errorCodeForBridgeError(err)
+}
+
+func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	switch {
-	case isSandboxTokenValidationError(err), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
-		return security.ErrAssetTicketInvalid
+	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+		return security.ErrStateVersionMismatch
+	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
+		return security.ErrRuntimeUnavailable
+	case errors.Is(err, bridge.ErrSurfaceSessionAlreadyExists):
+		return security.ErrContractMismatch
 	default:
 		return security.ErrPermissionDenied
+	}
+}
+
+func httpStatusForOpenSurfaceError(err error) int {
+	switch {
+	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+		return http.StatusConflict
+	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, bridge.ErrSurfaceSessionAlreadyExists):
+		return http.StatusConflict
+	default:
+		return http.StatusForbidden
 	}
 }
 
@@ -2075,6 +1840,10 @@ func httpStatusForBridgeError(err error) int {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrMethodRequestContract):
+		return security.ErrInvalidRequest
+	case errors.Is(err, host.ErrMethodResponseContract):
+		return security.ErrContractMismatch
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return security.ErrConfirmationRequired
 	case errors.Is(err, security.ErrPolicyDenied):
@@ -2092,13 +1861,42 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 	}
 }
 
+func publicPluginErrorMessage(code security.ErrorCode) string {
+	switch code {
+	case security.ErrInvalidRequest:
+		return "plugin request is invalid"
+	case security.ErrPermissionDenied:
+		return "plugin permission was denied"
+	case security.ErrConfirmationRequired:
+		return "plugin confirmation is required"
+	case security.ErrConfirmationInvalid:
+		return "plugin confirmation is invalid"
+	case security.ErrConfirmationRejected:
+		return "plugin confirmation was rejected"
+	case security.ErrTokenExpired:
+		return "plugin credential has expired"
+	case security.ErrGatewayTokenInvalid, security.ErrGatewayTokenReplayed, security.ErrGatewayTokenChannelMismatch:
+		return "plugin gateway credential is invalid"
+	case security.ErrStreamTicketInvalid:
+		return "plugin stream credential is invalid"
+	case security.ErrStreamCancelled:
+		return "plugin stream was cancelled"
+	case security.ErrRuntimeUnavailable:
+		return "plugin runtime is unavailable"
+	case security.ErrContractMismatch:
+		return "plugin contract validation failed"
+	default:
+		return "plugin request failed"
+	}
+}
+
 func errorCodeForGatewayTokenError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, bridge.ErrTokenReplay):
 		return security.ErrGatewayTokenReplayed
-	case errors.Is(err, bridge.ErrTokenAlreadyBound):
+	case errors.Is(err, bridge.ErrTokenAlreadyBound), errors.Is(err, bridge.ErrTokenAudience):
 		return security.ErrGatewayTokenChannelMismatch
-	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenAudience), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
+	case errors.Is(err, bridge.ErrTokenInvalid), errors.Is(err, bridge.ErrTokenRevoked), errors.Is(err, bridge.ErrTokenKind):
 		return security.ErrGatewayTokenInvalid
 	default:
 		return security.ErrGatewayTokenInvalid
@@ -2106,7 +1904,8 @@ func errorCodeForGatewayTokenError(err error) security.ErrorCode {
 }
 
 func isGatewayTokenValidationError(err error) bool {
-	return errors.Is(err, bridge.ErrTokenReplay) ||
+	return errors.Is(err, bridge.ErrTokenExpired) ||
+		errors.Is(err, bridge.ErrTokenReplay) ||
 		errors.Is(err, bridge.ErrTokenAlreadyBound) ||
 		errors.Is(err, bridge.ErrTokenInvalid) ||
 		errors.Is(err, bridge.ErrTokenAudience) ||
@@ -2129,6 +1928,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		}
 	}
 	switch {
+	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+		return security.ErrStateVersionMismatch
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
@@ -2175,6 +1976,8 @@ func httpStatusForManagementError(err error) int {
 		return http.StatusBadRequest
 	}
 	switch {
+	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+		return http.StatusConflict
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
@@ -2252,6 +2055,10 @@ func httpStatusForStreamError(err error) int {
 
 func httpStatusForRPCError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrMethodRequestContract):
+		return http.StatusBadRequest
+	case errors.Is(err, host.ErrMethodResponseContract):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return http.StatusConflict
 	case errors.Is(err, security.ErrPolicyDenied):
@@ -2269,6 +2076,10 @@ func httpStatusForRPCError(err error) int {
 
 func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrMethodRequestContract):
+		return security.ErrInvalidRequest
+	case errors.Is(err, host.ErrMethodResponseContract):
+		return security.ErrContractMismatch
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return security.ErrConfirmationRequired
 	case errors.Is(err, security.ErrPolicyDenied):
@@ -2286,6 +2097,10 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 
 func httpStatusForIntentError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrMethodRequestContract):
+		return http.StatusBadRequest
+	case errors.Is(err, host.ErrMethodResponseContract):
+		return http.StatusBadGateway
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return http.StatusConflict
 	case errors.Is(err, security.ErrPolicyDenied):
@@ -2358,6 +2173,10 @@ func httpStatusForSecretError(err error) int {
 
 func errorCodeForAssetError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, bridge.ErrTokenReplay):
+		return security.ErrTokenReplay
+	case errors.Is(err, bridge.ErrTokenExpired):
+		return security.ErrTokenExpired
 	case isSandboxTokenValidationError(err), errors.Is(err, bridge.ErrSurfaceSessionNotFound), errors.Is(err, bridge.ErrSurfaceSessionExpired), errors.Is(err, bridge.ErrAssetSessionRequired):
 		return security.ErrAssetSessionInvalid
 	case errors.Is(err, registry.ErrNotFound):

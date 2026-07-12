@@ -12,7 +12,6 @@ import (
 	"io"
 	"io/fs"
 	"mime"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -20,9 +19,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"golang.org/x/net/html"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 type Entry struct {
@@ -64,8 +66,10 @@ const PackageSignatureAlgorithmEd25519 = "ed25519"
 const workerABIPath = "workers/abi.json"
 
 var serviceWorkerDependencyPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bnavigator\s*\.\s*serviceWorker\b`),
-	regexp.MustCompile(`\bserviceWorker\s*\.\s*register\s*\(`),
+	regexp.MustCompile(`\bnavigator\s*(?:\?\s*)?\.\s*serviceWorker\b`),
+	regexp.MustCompile(`\bnavigator\s*(?:\?\s*\.)?\s*\[\s*["']serviceWorker["']\s*\]`),
+	regexp.MustCompile(`\bserviceWorker\s*(?:\?\s*)?\.\s*register\b`),
+	regexp.MustCompile(`\bserviceWorker\s*(?:\?\s*\.)?\s*\[\s*["']register["']\s*\]`),
 	regexp.MustCompile(`\bServiceWorkerRegistration\b`),
 	regexp.MustCompile(`\bServiceWorkerContainer\b`),
 }
@@ -272,6 +276,8 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 
 	files := map[string][]byte{}
 	signatureFiles := map[string][]byte{}
+	seenPaths := map[string]struct{}{}
+	securityPaths := map[string]string{}
 	var total int64
 	for _, file := range zr.File {
 		select {
@@ -286,14 +292,23 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 		if err := validateEntryPathLength(entryPath, opts.MaxPathBytes); err != nil {
 			return Package{}, err
 		}
-		if _, ok := files[entryPath]; ok {
+		if _, ok := seenPaths[entryPath]; ok {
 			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "duplicate_entry", entryPath, "", "duplicate entry %q", entryPath)
 		}
+		seenPaths[entryPath] = struct{}{}
+		securityKey := entryPathSecurityKey(entryPath)
+		if previous, ok := securityPaths[securityKey]; ok {
+			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "ambiguous_entry", entryPath, "", "entry %q aliases %q after Unicode case folding", entryPath, previous)
+		}
+		securityPaths[securityKey] = entryPath
 		if file.FileInfo().Mode()&fs.ModeSymlink != 0 {
 			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "symlink_entry", entryPath, "", "symlink entry %q is not allowed", entryPath)
 		}
 		if strings.HasSuffix(entryPath, "/") {
 			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "directory_entry", entryPath, "", "directory entry %q is not allowed", entryPath)
+		}
+		if !file.FileInfo().Mode().IsRegular() {
+			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "non_regular_entry", entryPath, "", "non-regular entry %q is not allowed", entryPath)
 		}
 		if opts.MaxEntryBytes > 0 && int64(file.UncompressedSize64) > opts.MaxEntryBytes {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entryPath, "", "entry %q too large", entryPath)
@@ -355,14 +370,14 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 	if err != nil {
 		return Package{}, manifestDecodeValidationError(err)
 	}
+	if err := validatePackageArtifactBoundary(files); err != nil {
+		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_artifact_boundary")
+	}
 	if err := validateManifestArtifacts(decodedManifest, files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "manifest_artifact")
 	}
 	if err := validatePackageAssetSecurity(decodedManifest, files); err != nil {
 		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_asset_security")
-	}
-	if err := validatePackageArtifactBoundary(files); err != nil {
-		return Package{}, ensurePackageValidationError(err, ValidationCodePackageInvalid, "package_artifact_boundary")
 	}
 	entries := make([]Entry, 0, len(files))
 	for entryPath, content := range files {
@@ -402,6 +417,7 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[string][]byte, error) {
 	files := map[string][]byte{}
 	signatureFiles := map[string][]byte{}
+	securityPaths := map[string]string{}
 	var total int64
 	err := filepath.WalkDir(srcDir, func(filename string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -431,6 +447,14 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 		if d.IsDir() {
 			return nil
 		}
+		if !info.Mode().IsRegular() {
+			return validationErrorf(ValidationCodePackagePathForbidden, "non_regular_entry", entryPath, "", "non-regular entry %q is not allowed", entryPath)
+		}
+		securityKey := entryPathSecurityKey(entryPath)
+		if previous, ok := securityPaths[securityKey]; ok {
+			return validationErrorf(ValidationCodePackagePathForbidden, "ambiguous_entry", entryPath, "", "entry %q aliases %q after Unicode case folding", entryPath, previous)
+		}
+		securityPaths[securityKey] = entryPath
 		if opts.MaxFiles > 0 && len(files)+1 > opts.MaxFiles {
 			return validationErrorf(ValidationCodePackageTooLarge, "file_count", "", "", "too many files")
 		}
@@ -462,6 +486,12 @@ func validateEntryPath(entryPath string) (string, error) {
 	if entryPath == "" {
 		return "", validationErrorf(ValidationCodePackagePathForbidden, "empty_path", "", "", "empty entry path")
 	}
+	if !utf8.ValidString(entryPath) {
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "invalid_utf8_path", entryPath, "", "entry path is not valid UTF-8")
+	}
+	if !norm.NFC.IsNormalString(entryPath) {
+		return "", validationErrorf(ValidationCodePackagePathForbidden, "non_nfc_path", entryPath, "", "entry %q must use Unicode NFC", entryPath)
+	}
 	if strings.Contains(entryPath, "\\") {
 		return "", validationErrorf(ValidationCodePackagePathForbidden, "slash_separator", entryPath, "", "entry %q must use slash separators", entryPath)
 	}
@@ -476,6 +506,10 @@ func validateEntryPath(entryPath string) (string, error) {
 		return "", validationErrorf(ValidationCodePackagePathForbidden, "hidden_path", entryPath, "", "hidden entry %q is not allowed", entryPath)
 	}
 	return entryPath, nil
+}
+
+func entryPathSecurityKey(entryPath string) string {
+	return norm.NFC.String(cases.Fold().String(entryPath))
 }
 
 func validateEntryPathLength(entryPath string, maxPathBytes int) error {
@@ -819,60 +853,21 @@ func validateSurfaceHTMLAsset(entryPath string, content []byte, files map[string
 	if err := validateNoServiceWorkerDependency(entryPath, content); err != nil {
 		return err
 	}
-	doc, err := html.Parse(bytes.NewReader(content))
+	_, err := BuildOpaqueSurfaceDocument(entryPath, func(assetPath string) (Asset, error) {
+		assetContent, ok := files[assetPath]
+		if !ok {
+			return Asset{}, fmt.Errorf("missing package asset %q", assetPath)
+		}
+		entry, err := makeEntry(assetPath, assetContent)
+		if err != nil {
+			return Asset{}, err
+		}
+		return Asset{Entry: entry, Content: assetContent}, nil
+	})
 	if err != nil {
-		return fmt.Errorf("%s: invalid HTML: %w", entryPath, err)
+		return fmt.Errorf("%s: %w", entryPath, err)
 	}
-	baseDir := path.Dir(entryPath)
-	if baseDir == "." {
-		baseDir = ""
-	}
-	var walk func(*html.Node) error
-	walk = func(node *html.Node) error {
-		if node.Type == html.ElementNode {
-			tag := strings.ToLower(node.Data)
-			if tag == "base" {
-				return fmt.Errorf("%s: base element is not allowed", entryPath)
-			}
-			attrs := map[string]string{}
-			for _, attr := range node.Attr {
-				key := strings.ToLower(attr.Key)
-				attrs[key] = attr.Val
-				if strings.HasPrefix(key, "on") {
-					return fmt.Errorf("%s: inline event handler %q is not allowed", entryPath, attr.Key)
-				}
-				if key == "style" {
-					return fmt.Errorf("%s: inline style attribute is not allowed", entryPath)
-				}
-				if key == "srcdoc" {
-					return fmt.Errorf("%s: iframe srcdoc is not allowed", entryPath)
-				}
-				if isHTMLURLAttribute(tag, key) {
-					if err := validateHTMLAssetURL(entryPath, tag, key, attr.Val, baseDir, files); err != nil {
-						return err
-					}
-				}
-			}
-			if tag == "script" {
-				if _, ok := attrs["src"]; !ok && nodeTextContent(node) != "" {
-					return fmt.Errorf("%s: inline script is not allowed", entryPath)
-				}
-			}
-			if tag == "style" && nodeTextContent(node) != "" {
-				return fmt.Errorf("%s: inline style block is not allowed", entryPath)
-			}
-			if tag == "meta" && strings.EqualFold(strings.TrimSpace(attrs["http-equiv"]), "refresh") {
-				return fmt.Errorf("%s: meta refresh is not allowed", entryPath)
-			}
-		}
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			if err := walk(child); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return walk(doc)
+	return nil
 }
 
 func validateNoServiceWorkerDependency(entryPath string, content []byte) error {
@@ -884,61 +879,16 @@ func validateNoServiceWorkerDependency(entryPath string, content []byte) error {
 	return nil
 }
 
-func validateHTMLAssetURL(entryPath string, tag string, attr string, value string, baseDir string, files map[string][]byte) error {
-	if attr == "srcset" {
-		for _, candidate := range strings.Split(value, ",") {
-			fields := strings.Fields(strings.TrimSpace(candidate))
-			if len(fields) == 0 {
-				continue
-			}
-			if err := validateSingleHTMLAssetURL(entryPath, tag, attr, fields[0], baseDir, files); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return validateSingleHTMLAssetURL(entryPath, tag, attr, value, baseDir, files)
-}
-
-func validateSingleHTMLAssetURL(entryPath string, tag string, attr string, value string, baseDir string, files map[string][]byte) error {
-	raw := strings.TrimSpace(value)
-	if raw == "" || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "?") {
-		return nil
-	}
-	if strings.ContainsAny(raw, "\\\r\n\t") {
-		return fmt.Errorf("%s: <%s %s> URL %q is not a canonical package-local asset reference", entryPath, tag, attr, value)
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("%s: <%s %s> URL %q is invalid: %w", entryPath, tag, attr, value, err)
-	}
-	if parsed.Scheme != "" || parsed.Host != "" || strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/") {
-		if isAllowedInlineImageURL(tag, attr, raw, parsed) {
-			return nil
-		}
-		return fmt.Errorf("%s: <%s %s> URL %q must reference a package-local relative asset", entryPath, tag, attr, value)
-	}
-	if parsed.Path == "" {
-		return nil
-	}
-	assetPath, err := resolvePackageRelativeAssetPath(baseDir, parsed.Path)
-	if err != nil {
-		return fmt.Errorf("%s: <%s %s> URL %q: %w", entryPath, tag, attr, value, err)
-	}
-	if _, ok := files[assetPath]; !ok {
-		return fmt.Errorf("%s: <%s %s> URL %q references missing package asset %q", entryPath, tag, attr, value, assetPath)
-	}
-	return nil
-}
-
-func isAllowedInlineImageURL(tag string, attr string, raw string, parsed *url.URL) bool {
-	if parsed.Scheme != "data" {
-		return false
-	}
-	return tag == "img" && attr == "src" && strings.HasPrefix(strings.ToLower(raw), "data:image/")
-}
-
 func resolvePackageRelativeAssetPath(baseDir string, rawPath string) (string, error) {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" || strings.HasPrefix(rawPath, "/") || strings.HasPrefix(rawPath, "//") || strings.ContainsAny(rawPath, "\\?#:\r\n\t\x00") {
+		return "", fmt.Errorf("asset path %q must be a canonical package-local path", rawPath)
+	}
+	for _, part := range strings.Split(rawPath, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("asset path %q must be a canonical package-local path", rawPath)
+		}
+	}
 	joined := path.Clean(path.Join(baseDir, rawPath))
 	if joined == "." {
 		return "", errors.New("asset path is empty")

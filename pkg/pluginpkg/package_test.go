@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,6 +310,64 @@ func TestReadRejectsDuplicateEntry(t *testing.T) {
 	}
 }
 
+func TestReadRejectsAmbiguousArchivePaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries map[string][]byte
+		reason  string
+		path    string
+	}{
+		{
+			name: "case folded collision",
+			entries: map[string][]byte{
+				"ui/App.js": []byte("first"),
+				"ui/app.js": []byte("second"),
+			},
+			reason: "ambiguous_entry",
+			path:   "ui/app.js",
+		},
+		{
+			name: "non NFC path",
+			entries: map[string][]byte{
+				"ui/cafe\u0301.js": []byte("content"),
+			},
+			reason: "non_nfc_path",
+			path:   "ui/cafe\u0301.js",
+		},
+		{
+			name: "invalid UTF-8 path",
+			entries: map[string][]byte{
+				"ui/" + string([]byte{0xff}) + ".js": []byte("content"),
+			},
+			reason: "invalid_utf8_path",
+			path:   "ui/" + string([]byte{0xff}) + ".js",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := packageZipBytes(t, tc.entries)
+			_, err := Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), DefaultReadOptions())
+			requireValidationError(t, err, ValidationCodePackagePathForbidden, tc.reason, tc.path, "")
+		})
+	}
+}
+
+func TestReadRejectsNonRegularArchiveEntry(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	header := &zip.FileHeader{Name: "ui/runtime.pipe", Method: zip.Store}
+	header.SetMode(fs.ModeNamedPipe | 0o600)
+	if _, err := zw.CreateHeader(header); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions())
+	requireValidationError(t, err, ValidationCodePackagePathForbidden, "non_regular_entry", "ui/runtime.pipe", "")
+}
+
 func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -397,18 +456,14 @@ func TestBuildAcceptsPackageLocalSurfaceAssets(t *testing.T) {
 <html>
   <head>
     <link rel="stylesheet" href="assets/styles.css">
-    <script src="assets/app.js" defer></script>
   </head>
   <body>
-    <img src="assets/icon.png" srcset="assets/icon-small.png 1x, assets/icon-large.png 2x" alt="">
-    <img src="data:image/png;base64,iVBORw0KGgo=" alt="">
-    <a href="#details">Details</a>
+    <main><img src="assets/icon.png" alt=""></main>
+    <script type="text/redevplugin-worker" src="assets/app.js"></script>
   </body>
 </html>`)
 	mustWrite(t, filepath.Join(dir, "ui", "assets", "styles.css"), "body{}")
 	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon.png"), "png")
-	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon-small.png"), "small")
-	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon-large.png"), "large")
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
@@ -424,23 +479,23 @@ func TestBuildRejectsUnsafeSurfaceHTMLAssets(t *testing.T) {
 	}{
 		{
 			name:    "external script",
-			html:    `<!doctype html><script src="https://cdn.example/plugin.js"></script>`,
-			wantErr: "must reference a package-local relative asset",
+			html:    `<!doctype html><script type="text/redevplugin-worker" src="https://cdn.example/plugin.js"></script>`,
+			wantErr: "canonical package-local path",
 		},
 		{
 			name:    "root absolute stylesheet",
 			html:    `<!doctype html><link rel="stylesheet" href="/assets/styles.css">`,
-			wantErr: "must reference a package-local relative asset",
+			wantErr: "canonical package-local path",
 		},
 		{
 			name:    "missing local script",
-			html:    `<!doctype html><script src="assets/missing.js"></script>`,
+			html:    `<!doctype html><script type="text/redevplugin-worker" src="assets/missing.js"></script>`,
 			wantErr: `missing package asset "ui/assets/missing.js"`,
 		},
 		{
 			name:    "inline script",
-			html:    `<!doctype html><script>console.log("inline")</script>`,
-			wantErr: "inline script is not allowed",
+			html:    `<!doctype html><script type="text/redevplugin-worker">console.log("inline")</script>`,
+			wantErr: "external bundled worker",
 		},
 		{
 			name:    "inline event handler",
@@ -460,17 +515,32 @@ func TestBuildRejectsUnsafeSurfaceHTMLAssets(t *testing.T) {
 		{
 			name:    "base element",
 			html:    `<!doctype html><base href="assets/">`,
-			wantErr: "base element is not allowed",
+			wantErr: "embedded browsing context or base URL",
 		},
 		{
 			name:    "iframe srcdoc",
 			html:    `<!doctype html><iframe srcdoc="<script></script>"></iframe>`,
-			wantErr: "iframe srcdoc is not allowed",
+			wantErr: "embedded browsing context or base URL",
 		},
 		{
 			name:    "meta refresh",
 			html:    `<!doctype html><meta http-equiv="refresh" content="0; url=https://example.com">`,
 			wantErr: "meta refresh is not allowed",
+		},
+		{
+			name:    "unsupported navigation element",
+			html:    `<!doctype html><body><a href="#details">Details</a><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`,
+			wantErr: "element <a> is not supported",
+		},
+		{
+			name:    "unsupported srcset",
+			html:    `<!doctype html><body><img srcset="assets/icon.png 1x" alt=""><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`,
+			wantErr: "srcset is not supported",
+		},
+		{
+			name:    "unsupported plugin metadata attribute",
+			html:    `<!doctype html><body><main data-plugin-id="com.example.plugin"></main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`,
+			wantErr: `attribute "data-plugin-id" is not supported`,
 		},
 	}
 	for _, tc := range tests {
@@ -595,14 +665,24 @@ func TestBuildValidatesSurfaceIconAsset(t *testing.T) {
 }
 
 func TestBuildRejectsServiceWorkerRegistrationDependency(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	mustWrite(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><script src="assets/app.js" defer></script>`)
-	mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), `navigator.serviceWorker.register("sw.js");`)
+	for _, source := range []string{
+		`navigator.serviceWorker.register("sw.js");`,
+		`navigator?.serviceWorker?.register("sw.js");`,
+		`navigator["serviceWorker"].register("sw.js");`,
+		`navigator?.["serviceWorker"]?.["register"]("sw.js");`,
+		`serviceWorker["register"]("sw.js");`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			dir := writeFixturePackageDir(t)
+			mustWrite(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><script type="text/redevplugin-worker" src="assets/app.js"></script>`)
+			mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), source)
 
-	var buf bytes.Buffer
-	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
-	if err == nil || !strings.Contains(err.Error(), "Service Worker registration APIs are not allowed") {
-		t.Fatalf("BuildFromDir() error = %v, want Service Worker rejection", err)
+			var buf bytes.Buffer
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			if err == nil || !strings.Contains(err.Error(), "Service Worker registration APIs are not allowed") {
+				t.Fatalf("BuildFromDir() error = %v, want Service Worker rejection", err)
+			}
+		})
 	}
 }
 
@@ -721,6 +801,21 @@ func TestBuildRejectsForbiddenExecutablePackageArtifacts(t *testing.T) {
 				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestBuildReportsArtifactBoundaryBeforeInvalidSurfaceShape(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Missing worker</title>")
+	mustWrite(t, filepath.Join(dir, "package.json"), `{"scripts":{"postinstall":"node install.js"}}`)
+
+	var buf bytes.Buffer
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err == nil || !strings.Contains(err.Error(), `package manager lifecycle script "postinstall" is not allowed`) {
+		t.Fatalf("BuildFromDir() error = %v, want artifact boundary rejection", err)
+	}
+	if strings.Contains(err.Error(), "bundled worker") {
+		t.Fatalf("artifact boundary error was masked by surface validation: %v", err)
 	}
 }
 
@@ -922,7 +1017,7 @@ func TestAssetStoreReadsPackageAssets(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadAsset() error = %v", err)
 			}
-			if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Entry.ContentType != "text/html; charset=utf-8" {
+			if string(asset.Content) != fixtureSurfaceHTML || asset.Entry.ContentType != "text/html; charset=utf-8" {
 				t.Fatalf("asset mismatch: %#v content=%q", asset.Entry, string(asset.Content))
 			}
 			asset.Content[0] = 'x'
@@ -930,7 +1025,7 @@ func TestAssetStoreReadsPackageAssets(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(again.Content) != "<!doctype html><title>Plugin</title>" {
+			if string(again.Content) != fixtureSurfaceHTML {
 				t.Fatalf("asset content was not cloned: %q", string(again.Content))
 			}
 		})
@@ -998,7 +1093,7 @@ func TestFileAssetStorePersistsAssetsAcrossOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAsset() after reopen error = %v", err)
 	}
-	if string(asset.Content) != "console.log('plugin');" {
+	if string(asset.Content) != fixtureWorkerJS {
 		t.Fatalf("persisted asset content = %q", string(asset.Content))
 	}
 }
@@ -1031,12 +1126,17 @@ func assetStoreCases() []assetStoreCase {
 	}
 }
 
+const (
+	fixtureSurfaceHTML = `<!doctype html><title>Plugin</title><body><main>Plugin</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`
+	fixtureWorkerJS    = "void 0;"
+)
+
 func writeFixturePackageDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "manifest.json"), validManifestJSON())
-	mustWrite(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Plugin</title>")
-	mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), "console.log('plugin');")
+	mustWrite(t, filepath.Join(dir, "ui", "index.html"), fixtureSurfaceHTML)
+	mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), fixtureWorkerJS)
 	return dir
 }
 
@@ -1167,7 +1267,7 @@ func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
 
 func validManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.pkg",
@@ -1175,17 +1275,17 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "pkg.activity", "kind": "activity", "label": "Package", "entry": "ui/index.html"}
+			{"surface_id": "pkg.view", "kind": "view", "label": "Package", "entry": "ui/index.html"}
 		]
 	}`
 }
 
 func workerManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -1193,10 +1293,10 @@ func workerManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -1213,6 +1313,12 @@ func workerManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
+				"request_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"message": {"type": "string"}}
+				},
+				"response_schema": {"type": "object", "additionalProperties": false},
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		]
@@ -1221,7 +1327,7 @@ func workerManifestJSON() string {
 
 func actorWorkerManifestJSON() string {
 	return `{
-			"schema_version": "redevplugin.manifest.v1",
+			"schema_version": "redevplugin.manifest.v2",
 			"publisher": {"publisher_id": "example", "display_name": "Example"},
 			"plugin": {
 				"plugin_id": "com.example.actor",
@@ -1229,10 +1335,10 @@ func actorWorkerManifestJSON() string {
 				"version": "1.0.0",
 				"api_version": "plugin-v1",
 				"min_runtime_version": "0.1.0",
-				"ui_protocol_version": "plugin-ui-v1"
+				"ui_protocol_version": "plugin-ui-v2"
 			},
 			"surfaces": [
-				{"surface_id": "actor.activity", "kind": "activity", "label": "Actor", "entry": "ui/index.html", "method": "worker.echo"}
+				{"surface_id": "actor.view", "kind": "view", "label": "Actor", "entry": "ui/index.html"}
 			],
 			"workers": [
 				{
@@ -1249,6 +1355,12 @@ func actorWorkerManifestJSON() string {
 					"method": "worker.echo",
 					"effect": "read",
 					"execution": "sync",
+					"request_schema": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {"message": {"type": "string"}}
+					},
+					"response_schema": {"type": "object", "additionalProperties": false},
 					"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 				}
 			]

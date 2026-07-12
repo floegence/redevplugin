@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/opaque-surface-document-v1.schema.json",
+  "title": "ReDevPlugin opaque surface document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entry_path",
+    "entry_sha256",
+    "body_html",
+    "styles",
+    "worker",
+    "assets",
+    "critical_bytes"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.opaque_surface_document.v1" },
+    "entry_path": { "$ref": "#/$defs/package_path" },
+    "entry_sha256": { "$ref": "#/$defs/sha256" },
+    "title": { "type": "string", "maxLength": 256 },
+    "language": { "type": "string", "maxLength": 64 },
+    "direction": { "enum": ["ltr", "rtl", "auto"] },
+    "body_html": { "type": "string", "maxLength": 4194304 },
+    "styles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/style" }
+    },
+    "worker": { "$ref": "#/$defs/worker" },
+    "assets": {
+      "type": "array",
+	  "maxItems": 128,
+      "items": { "$ref": "#/$defs/asset" }
+    },
+    "critical_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8388608
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "package_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$)).+$"
+    },
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "content"],
+      "properties": {
+        "path": { "$ref": "#/$defs/package_path" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "content": { "type": "string", "maxLength": 2097152 }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "type", "content"],
+      "properties": {
+        "path": { "$ref": "#/$defs/package_path" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "type": { "const": "classic" },
+        "content": { "type": "string", "maxLength": 4194304 }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding_id", "path", "sha256", "size", "content_type"],
+      "properties": {
+        "binding_id": {
+          "type": "string",
+          "pattern": "^asset_[A-Za-z0-9_-]{8,154}$"
+        },
+        "path": { "$ref": "#/$defs/package_path" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+		"size": { "type": "integer", "minimum": 0, "maximum": 33554432 },
+        "content_type": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    }
+  }
+}

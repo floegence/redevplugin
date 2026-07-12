@@ -37,6 +37,7 @@ export GOWORK=off
 
 (
   cd "$ROOT_DIR"
+  go list ./...
   go test ./...
   tmp_compatibility_manifest=$(mktemp "${TMPDIR:-/tmp}/redevplugin-compatibility.XXXXXX.json")
   tmp_scaffold_dir=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-scaffold.XXXXXX")
@@ -88,7 +89,10 @@ export GOWORK=off
   go run ./cmd/redevplugin uninstall "$tmp_package" >/dev/null
   go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_package" | grep -q '"enable_state": "disabled"'
   go run ./cmd/redevplugin dev-enable "$tmp_dev_state_root" | grep -q '"enable_state": "enabled"'
-  go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "com.example.smoke.activity" "http://127.0.0.1:4174" | grep -q '"browser_origin_count": 1'
+  dev_open_output=$(go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "com.example.smoke.view")
+  grep -q '"surface_instance_id":' <<<"$dev_open_output"
+  grep -q '"bridge_nonce":' <<<"$dev_open_output"
+  grep -q '"asset_ticket_id":' <<<"$dev_open_output"
   go run ./cmd/redevplugin dev-disable "$tmp_dev_state_root" | grep -q '"enable_state": "disabled"'
   go run ./cmd/redevplugin dev-uninstall "$tmp_dev_state_root" --delete-data | grep -q '"retained_data_state": "deleted"'
   ./scripts/check_redevplugin_ui_bridge.sh

@@ -110,9 +110,9 @@ write_summary() {
   else
     ok=false
   fi
-  categories='["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota","csp_report_flood"]'
+  categories='["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
   if [[ "$MODE" != "fast" ]]; then
-    categories='["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota","csp_report_flood","browser_demo","runtime_contract","release_bundle"]'
+    categories='["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle","published_release_verifier"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)
@@ -197,6 +197,10 @@ if [[ "$MODE" != "fast" ]]; then
     exit "$STATUS"
   }
   run_step release_bundle ./scripts/build_redevplugin_release.sh --version 0.0.0-stress.0 --out-dir "$TMP_DIR/release" || {
+    write_summary
+    exit "$STATUS"
+  }
+  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" 0.0.0-stress.0 "$(git rev-parse HEAD)" || {
     write_summary
     exit "$STATUS"
   }

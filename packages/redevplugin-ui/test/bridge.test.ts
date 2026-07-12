@@ -3,54 +3,18 @@ import { test } from "node:test";
 import {
   defaultPluginSurfaceReloadMax,
   defaultPluginSurfaceReloadWindowMs,
-  decodePluginStreamText,
   pluginBridgeErrorCodes,
   pluginClientErrorCodes,
   pluginPlatformErrorCodes,
-  PluginBridgeClient,
   PluginBridgeError,
   PluginPlatformClient,
-  PluginSurfaceHost,
   PluginSurfaceReloadLimiter,
-  isPluginRiskPlan,
-  pluginRiskPlanSchemaVersion,
-  pluginBridgeHandshakeTranscriptSHA256,
-  readPluginStream,
+  redevPluginContractArtifacts,
+  toPluginSurfaceHostBootstrap,
   type FetchInitLike,
   type FetchResponseLike,
-  type MessageEventLike,
-  type PluginConfirmationIntent,
-  type PluginRiskPlan,
-  type StreamFetchInitLike,
-  type StreamFetchResponseLike,
-  type WindowLike,
-} from "../src/index.js";
+} from "../src/trusted-parent.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
-
-class FakeWindow implements WindowLike {
-  readonly sent: Array<{ message: unknown; targetOrigin: string }> = [];
-  #listeners = new Set<(event: MessageEventLike) => void>();
-
-  postMessage(message: unknown, targetOrigin: string): void {
-    this.sent.push({ message, targetOrigin });
-  }
-
-  addEventListener(type: "message", listener: (event: MessageEventLike) => void): void {
-    assert.equal(type, "message");
-    this.#listeners.add(listener);
-  }
-
-  removeEventListener(type: "message", listener: (event: MessageEventLike) => void): void {
-    assert.equal(type, "message");
-    this.#listeners.delete(listener);
-  }
-
-  emit(origin: string, data: unknown, source?: WindowLike | null): void {
-    for (const listener of this.#listeners) {
-      listener({ origin, data, source });
-    }
-  }
-}
 
 type FetchCall = {
   input: string;
@@ -76,67 +40,36 @@ class FakeFetch {
   };
 }
 
-type StreamFetchCall = {
-  input: string;
-  init?: StreamFetchInitLike;
-};
-
-class FakeStreamFetch {
-  readonly calls: StreamFetchCall[] = [];
-  #responses: Array<{ ok: boolean; status: number; body: string }> = [];
-
-  push(body: string, status = 200): void {
-    this.#responses.push({ ok: status >= 200 && status < 300, status, body });
-  }
-
-  fetch = async (input: string, init?: StreamFetchInitLike): Promise<StreamFetchResponseLike> => {
-    this.calls.push({ input, init });
-    const response = this.#responses.shift() ?? { ok: false, status: 500, body: "missing fake stream response" };
-    return {
-      ok: response.ok,
-      status: response.status,
-      text: async () => response.body,
-    };
-  };
-}
-
-const bootstrap = {
-  pluginId: "com.example.plugin",
-  surfaceId: "example.activity",
-  surfaceInstanceId: "surface_1",
-  activeFingerprint: "sha256:abc",
-  bridgeNonce: "nonce_1",
-  parentOrigin: "https://host.example",
-};
-
-const hostBootstrap = {
-  pluginId: "com.example.plugin",
-  pluginInstanceId: "plugin_instance_1",
-  surfaceId: "example.activity",
-  surfaceInstanceId: "surface_1",
-  activeFingerprint: "sha256:abc",
-  bridgeNonce: "nonce_1",
-  ownerSessionHash: "owner_session_hash",
-  ownerUserHash: "owner_user_hash",
-  sessionChannelIdHash: "session_channel_hash",
-};
-
-const handshake = {
-  type: "redevplugin.bridge.handshake",
-  plugin_id: "com.example.plugin",
-  surface_id: "example.activity",
-  surface_instance_id: "surface_1",
-  active_fingerprint: "sha256:abc",
-  bridge_nonce: "nonce_1",
-  ui_protocol_version: "plugin-ui-v1",
-} as const;
-
 test("stable error-code exports separate platform, bridge, and client-only codes", () => {
   assert.equal(pluginPlatformErrorCodes.includes("PLUGIN_JSON_LIMIT_EXCEEDED"), true);
   assert.equal(pluginBridgeErrorCodes.includes("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"), true);
   assert.equal(pluginClientErrorCodes.includes("PLUGIN_PLATFORM_REQUEST_FAILED"), true);
   assert.equal((pluginPlatformErrorCodes as readonly string[]).includes("PLUGIN_PLATFORM_REQUEST_FAILED"), false);
   assert.equal((pluginBridgeErrorCodes as readonly string[]).includes("PLUGIN_STREAM_FAILED"), false);
+});
+
+test("generated contract registry exports immutable artifact hashes", () => {
+  assert.equal(redevPluginContractArtifacts.length > 0, true);
+  assert.equal(new Set(redevPluginContractArtifacts.map((artifact) => artifact.id)).size, redevPluginContractArtifacts.length);
+  assert.equal(new Set(redevPluginContractArtifacts.map((artifact) => artifact.path)).size, redevPluginContractArtifacts.length);
+  for (const artifact of redevPluginContractArtifacts) {
+    assert.equal(/^[a-z][a-z0-9-]+$/.test(artifact.id), true);
+    assert.equal(/^(spec\/openapi|spec\/plugin)\/[A-Za-z0-9._/-]+$/.test(artifact.path), true);
+    assert.equal(artifact.version.length > 0, true);
+    assert.equal(/^[a-f0-9]{64}$/.test(artifact.sha256), true);
+  }
+});
+
+test("platform client revokes the authenticated surface scope without caller-supplied identity", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { revoked_surface_count: 3 } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+
+  const result = await client.revokeSurfaceScope();
+
+  assert.deepEqual(result, { revoked_surface_count: 3 });
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/surfaces/revoke-scope");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {});
 });
 
 test("surface reload limiter caps consecutive automatic reloads", () => {
@@ -238,656 +171,43 @@ test("surface reload limiter rejects invalid timing options", () => {
   assert.throws(() => limiter.recordCrash(Number.NaN), /nowMs/);
 });
 
-test("handshake posts source-bound message", () => {
-  const target = new FakeWindow();
-  const receiver = new FakeWindow();
-  const client = new PluginBridgeClient(bootstrap, { target, receiver });
-
-  client.handshake();
-
-  assert.equal(target.sent.length, 1);
-  assert.equal(target.sent[0]?.targetOrigin, "https://host.example");
-  assert.deepEqual(target.sent[0]?.message, {
-    type: "redevplugin.bridge.handshake",
-    plugin_id: "com.example.plugin",
-    surface_id: "example.activity",
-    surface_instance_id: "surface_1",
-    active_fingerprint: "sha256:abc",
-    bridge_nonce: "nonce_1",
-    ui_protocol_version: "plugin-ui-v1",
-  });
-  client.dispose();
-});
-
-test("bridge handshake transcript hash is stable", async () => {
-  const got = await pluginBridgeHandshakeTranscriptSHA256(handshake, "bridge_channel_1");
-  assert.equal(got, "sha256:94393d8980a4e43e287bab18b98531cbd7025fc38c25beea5c4ad2b9170593f2");
-});
-
-test("call resolves only matching source-bound response", async () => {
-  const target = new FakeWindow();
-  const receiver = new FakeWindow();
-  const otherSource = new FakeWindow();
-  const client = new PluginBridgeClient(bootstrap, { target, receiver, timeoutMs: 100 });
-
-  const pending = client.call<{ ok: boolean }>("worker.echo", { message: "hello" });
-  assert.equal(target.sent.length, 1);
-  assert.equal(target.sent[0]?.targetOrigin, "https://host.example");
-  assert.deepEqual(target.sent[0]?.message, {
-    type: "redevplugin.bridge.call",
-    request: { id: "1", method: "worker.echo", params: { message: "hello" } },
-  });
-
-  receiver.emit("https://evil.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } }, target);
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } }, otherSource);
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } }, null);
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "other", ok: true, data: { ok: false } }, target);
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: true } }, target);
-
-  assert.deepEqual(await pending, { ok: true });
-  client.dispose();
-});
-
-test("call rejects runtime bridge errors", async () => {
-  const target = new FakeWindow();
-  const receiver = new FakeWindow();
-  const client = new PluginBridgeClient(bootstrap, { target, receiver, timeoutMs: 100 });
-
-  const pending = client.call("worker.echo");
-  receiver.emit("https://host.example", {
-    type: "redevplugin.bridge.response",
-    id: "1",
-    ok: false,
-    error_code: "PLUGIN_RUNTIME_UNAVAILABLE",
-    error: "runtime is not ready",
-  }, target);
-
-  await assert.rejects(pending, (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_RUNTIME_UNAVAILABLE");
-  client.dispose();
-});
-
-test("call times out when no response arrives", async () => {
-  const target = new FakeWindow();
-  const receiver = new FakeWindow();
-  const client = new PluginBridgeClient(bootstrap, { target, receiver, timeoutMs: 1 });
-
-  await assert.rejects(client.call("worker.echo"), (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_BRIDGE_TIMEOUT");
-  client.dispose();
-});
-
-test("lifecycle subscription accepts only parent source", () => {
-  const target = new FakeWindow();
-  const receiver = new FakeWindow();
-  const otherSource = new FakeWindow();
-  const client = new PluginBridgeClient(bootstrap, { target, receiver });
-  const events: string[] = [];
-
-  const unsubscribe = client.onLifecycle((event) => {
-    events.push(event.type);
-  });
-  receiver.emit("https://evil.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } }, target);
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } }, otherSource);
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } }, target);
-  unsubscribe();
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "hidden" } }, target);
-
-  assert.deepEqual(events, ["visible"]);
-  client.dispose();
-});
-
-test("dispose rejects pending calls and removes listener", async () => {
-  const target = new FakeWindow();
-  const receiver = new FakeWindow();
-  const client = new PluginBridgeClient(bootstrap, { target, receiver, timeoutMs: 1000 });
-  const pending = client.call("worker.echo");
-
-  client.dispose();
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: true }, target);
-
-  await assert.rejects(pending, (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_BRIDGE_DISPOSED");
-  assert.throws(() => client.handshake(), PluginBridgeError);
-});
-
-test("surface host mints parent-only gateway token after matching handshake", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  fetch.push({
-    ok: true,
-    data: {
-      plugin_gateway_token: "gateway_secret",
-      plugin_gateway_token_id: "gateway_token_1",
-    },
-  });
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-    apiBaseURL: "https://host.example/",
-  });
-
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-
-  assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/api/plugins/surfaces/surface_1/bridge-token");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), {
-    bridge_channel_id: "bridge_channel_1",
-    handshake,
-    handshake_transcript_sha256: await pluginBridgeHandshakeTranscriptSHA256(handshake, "bridge_channel_1"),
-  });
-  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
-  assert.deepEqual(iframe.sent, [
-    {
-      targetOrigin: "https://plugin.example",
-      message: { type: "redevplugin.bridge.lifecycle", event: { type: "ready" } },
-    },
-  ]);
-  host.dispose();
-});
-
-test("surface host calls rpc with gateway token without exposing it to iframe", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
-  fetch.push({ ok: true, data: { data: { pong: true }, operation_id: "op_1" } });
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-  });
-
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_1", method: "echo.ping", params: { message: "hello" } },
-  }, iframe);
-  await waitForFetchCalls(fetch, 2);
-  await waitForMessages(iframe, 2);
-
-  assert.equal(fetch.calls.length, 2);
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/rpc");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
-    plugin_instance_id: "plugin_instance_1",
-    surface_instance_id: "surface_1",
-    session_channel_id_hash: "session_channel_hash",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    bridge_channel_id: "bridge_channel_1",
-    plugin_gateway_token: "gateway_secret",
-    method: "echo.ping",
-    params: { message: "hello" },
-  });
-  assert.deepEqual(iframe.sent[1], {
-    targetOrigin: "https://plugin.example",
-    message: {
-      type: "redevplugin.bridge.response",
-      id: "call_1",
-      ok: true,
-      data: { data: { pong: true }, operation_id: "op_1" },
-    },
-  });
-  assert.equal(JSON.stringify(iframe.sent).includes("gateway_secret"), false);
-  host.dispose();
-});
-
-test("surface host rejects calls before handshake and invalid params", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-  });
-
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_before_handshake", method: "echo.ping", params: {} },
-  }, iframe);
-  await tick();
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_from_other_window", method: "echo.ping", params: {} },
-  }, new FakeWindow());
-  await tick();
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_without_source", method: "echo.ping", params: {} },
-  }, null);
-  await tick();
-
-  assert.equal(fetch.calls.length, 0);
-  assert.deepEqual(iframe.sent, [
-    {
-      targetOrigin: "https://plugin.example",
-      message: {
-        type: "redevplugin.bridge.response",
-        id: "call_before_handshake",
-        ok: false,
-        error_code: "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED",
-        error: "Plugin bridge call arrived before a successful handshake",
-      },
-    },
-  ]);
-
-  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-  await waitForMessages(iframe, 2);
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_bad_params", method: "echo.ping", params: ["not", "object"] },
-  }, iframe);
-  await waitForMessages(iframe, 3);
-
-  assert.equal(fetch.calls.length, 1);
-  assert.deepEqual(iframe.sent[2], {
-    targetOrigin: "https://plugin.example",
-    message: {
-      type: "redevplugin.bridge.response",
-      id: "call_bad_params",
-      ok: false,
-      error_code: "PLUGIN_INVALID_REQUEST",
-      error: "Plugin bridge call params must be a JSON object when present",
-    },
-  });
-  host.dispose();
-});
-
-test("surface host reports mismatched handshake without minting token", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  const errors: PluginBridgeError[] = [];
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-    onError: (err) => errors.push(err),
-  });
-
-  parent.emit("https://evil.example", handshake, iframe);
-  parent.emit("https://plugin.example", handshake, null);
-  parent.emit("https://plugin.example", { ...handshake, bridge_nonce: "wrong" }, iframe);
-  await tick();
-
-  assert.equal(fetch.calls.length, 0);
-  assert.equal(errors.length, 1);
-  assert.equal(errors[0]?.errorCode, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
-  assert.deepEqual(iframe.sent, []);
-  host.dispose();
-});
-
-test("surface host maps rpc envelope errors into bridge responses", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
-  fetch.push({ ok: false, error_code: "PLUGIN_PERMISSION_DENIED", error: "denied" });
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-  });
-
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_denied", method: "echo.ping", params: {} },
-  }, iframe);
-  await waitForFetchCalls(fetch, 2);
-  await waitForMessages(iframe, 2);
-
-  assert.deepEqual(iframe.sent[1], {
-    targetOrigin: "https://plugin.example",
-    message: {
-      type: "redevplugin.bridge.response",
-      id: "call_denied",
-      ok: false,
-      error_code: "PLUGIN_PERMISSION_DENIED",
-      error: "denied",
-    },
-  });
-  host.dispose();
-});
-
-test("surface host uses server-held confirmation intent and retries confirmed rpc", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  const confirmations: PluginConfirmationIntent[] = [];
-  const riskPlan = {
-    schema_version: pluginRiskPlanSchemaVersion,
-    capability_id: "example.capability.resources",
-    method: "resources.start",
-    target_method: "resources.start",
-    effect: "execute",
-    resource_ref: "resource_hash_1",
-    summary: "Start resource",
-    risk_flags: [{
-      id: "resource.host_network",
-      severity: "high",
-      summary: "Uses host networking",
-      requires_admin: true,
-    }],
-    requires_confirmation: true,
-    requires_admin: true,
-    details: {
-      network_mode: "host",
-      image_digest: "sha256:container_image",
-    },
-  } satisfies PluginRiskPlan;
-  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
-  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
-  fetch.push({
-    ok: true,
-    data: {
-      confirmation_id: "confirmation_intent_1",
-      confirmation_token_id: "confirmation_token_1",
-      request_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      plan_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      plan: riskPlan,
-    },
-  });
-  fetch.push({ ok: true, data: { data: { done: true } } });
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-    confirm: (intent) => {
-      confirmations.push(intent);
-      return { confirmed: true };
-    },
-  });
-
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_danger", method: "danger.run", params: { target: "db" } },
-  }, iframe);
-  await waitForFetchCalls(fetch, 4);
-  await waitForMessages(iframe, 2);
-
-  assert.equal(fetch.calls.length, 4);
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/rpc");
-  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/confirm");
-  assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/rpc");
-  assert.deepEqual(confirmations, [{
-    requestId: "call_danger",
-    method: "danger.run",
-    params: { target: "db" },
-    requestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    planHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    plan: riskPlan,
-    confirmationTokenId: "confirmation_token_1",
-  }]);
-  assert.equal(isPluginRiskPlan(confirmations[0]?.plan), true);
-  const confirmedPlan = confirmations[0]?.plan;
-  if (!isPluginRiskPlan(confirmedPlan)) {
-    throw new Error("expected typed risk plan");
-  }
-  assert.equal(confirmedPlan.schema_version, pluginRiskPlanSchemaVersion);
-  assert.equal(confirmedPlan.risk_flags[0]?.severity, "high");
-  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), {
-    plugin_instance_id: "plugin_instance_1",
-    surface_instance_id: "surface_1",
-    session_channel_id_hash: "session_channel_hash",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    bridge_channel_id: "bridge_channel_1",
-    plugin_gateway_token: "gateway_secret",
-    method: "danger.run",
-    params: { target: "db" },
-  });
-  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), {
-    plugin_instance_id: "plugin_instance_1",
-    surface_instance_id: "surface_1",
-    session_channel_id_hash: "session_channel_hash",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    bridge_channel_id: "bridge_channel_1",
-    plugin_gateway_token: "gateway_secret",
-    confirmation_id: "confirmation_intent_1",
-    method: "danger.run",
-    params: { target: "db" },
-  });
-  assert.deepEqual(iframe.sent[1], {
-    targetOrigin: "https://plugin.example",
-    message: {
-      type: "redevplugin.bridge.response",
-      id: "call_danger",
-      ok: true,
-      data: { data: { done: true } },
-    },
-  });
-  assert.equal(JSON.stringify(iframe.sent).includes("confirmation_secret"), false);
-  assert.equal(JSON.stringify(fetch.calls).includes("confirmation_secret"), false);
-  assert.equal(JSON.stringify(fetch.calls).includes("confirmation_token\":\""), false);
-  host.dispose();
-});
-
-test("surface host rejects dangerous call when confirmation callback declines", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
-  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
-  fetch.push({
-    ok: true,
-    data: {
-      confirmation_id: "confirmation_intent_1",
-      confirmation_token_id: "confirmation_token_1",
-      request_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      plan_hash: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    },
-  });
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-    confirm: () => false,
-  });
-
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_declined", method: "danger.run", params: { target: "db" } },
-  }, iframe);
-  await waitForFetchCalls(fetch, 3);
-  await waitForMessages(iframe, 2);
-
-  assert.equal(fetch.calls.length, 3);
-  assert.deepEqual(iframe.sent[1], {
-    targetOrigin: "https://plugin.example",
-    message: {
-      type: "redevplugin.bridge.response",
-      id: "call_declined",
-      ok: false,
-      error_code: "PLUGIN_CONFIRMATION_REJECTED",
-      error: "Plugin method confirmation was rejected",
-    },
-  });
-  host.dispose();
-});
-
-test("surface host keeps dangerous call fail-closed without confirmation callback", async () => {
-  const parent = new FakeWindow();
-  const iframe = new FakeWindow();
-  const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
-  fetch.push({ ok: false, error_code: "PLUGIN_CONFIRMATION_REQUIRED", error: "confirmation required" });
-  const host = new PluginSurfaceHost({
-    bootstrap: hostBootstrap,
-    iframeOrigin: "https://plugin.example",
-    iframeWindow: iframe,
-    parentWindow: parent,
-    bridgeChannelId: "bridge_channel_1",
-    fetch: fetch.fetch,
-  });
-
-  parent.emit("https://plugin.example", handshake, iframe);
-  await waitForFetchCalls(fetch, 1);
-  parent.emit("https://plugin.example", {
-    type: "redevplugin.bridge.call",
-    request: { id: "call_no_confirm_handler", method: "danger.run", params: { target: "db" } },
-  }, iframe);
-  await waitForFetchCalls(fetch, 2);
-  await waitForMessages(iframe, 2);
-
-  assert.equal(fetch.calls.length, 2);
-  assert.deepEqual(iframe.sent[1], {
-    targetOrigin: "https://plugin.example",
-    message: {
-      type: "redevplugin.bridge.response",
-      id: "call_no_confirm_handler",
-      ok: false,
-      error_code: "PLUGIN_CONFIRMATION_REQUIRED",
-      error: "confirmation required",
-    },
-  });
-  host.dispose();
-});
-
-test("readPluginStream drains ndjson events with a single-use ticket", async () => {
-  const fetch = new FakeStreamFetch();
-  fetch.push([
-    JSON.stringify({
-      stream_id: "stream/a b",
-      sequence: 1,
-      kind: "data",
-      data: "bGluZSAxCg==",
-      at: "2026-06-30T00:00:00Z",
-    }),
-    JSON.stringify({
-      stream_id: "stream/a b",
-      sequence: 2,
-      kind: "done",
-      at: "2026-06-30T00:00:01Z",
-    }),
-    "",
-  ].join("\n"));
-
-  const events = await readPluginStream({
-    streamId: "stream/a b",
-    streamTicket: "ticket+1/=",
-    apiBaseURL: "https://host.example/",
-    fetch: fetch.fetch,
-  });
-
-  assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0]?.input, "https://host.example/_redevplugin/stream/stream%2Fa%20b?ticket=ticket%2B1%2F%3D");
-  assert.equal(fetch.calls[0]?.init?.method, "GET");
-  assert.equal(fetch.calls[0]?.init?.credentials, "same-origin");
-  assert.equal(events.length, 2);
-  assert.equal(events[0]?.sequence, 1);
-  assert.equal(decodePluginStreamText(events[0]!), "line 1\n");
-});
-
-test("readPluginStream accepts method results returned by bridge calls", async () => {
-  const fetch = new FakeStreamFetch();
-  fetch.push(`${JSON.stringify({
-    stream_id: "stream_result_1",
-    sequence: 1,
-    kind: "data",
-    data: "b2s=",
-    at: "2026-06-30T00:00:00Z",
-  })}\n`);
-
-  const events = await readPluginStream({
-    result: {
-      data: { started: true },
-      stream_id: "stream_result_1",
-      stream_ticket: "stream_ticket_1",
-    },
-    fetch: fetch.fetch,
-  });
-
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/stream/stream_result_1?ticket=stream_ticket_1");
-  assert.equal(decodePluginStreamText(events[0]!), "ok");
-});
-
-test("readPluginStream maps missing ticket and endpoint errors", async () => {
-  await assert.rejects(
-    readPluginStream({ streamId: "stream_missing_ticket" }),
-    (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_INVALID_REQUEST",
-  );
-
-  const fetch = new FakeStreamFetch();
-  fetch.push(JSON.stringify({
-    ok: false,
-    error_code: "PLUGIN_PERMISSION_DENIED",
-    error: "stream ticket is required",
-    error_details: { reason: "payload_bytes" },
-  }), 403);
-
-  await assert.rejects(
-    readPluginStream({ streamId: "stream_denied", streamTicket: "bad", fetch: fetch.fetch }),
-    (err) => err instanceof PluginBridgeError &&
-      err.errorCode === "PLUGIN_PERMISSION_DENIED" &&
-      err.message === "stream ticket is required" &&
-      (err.details as { reason?: string }).reason === "payload_bytes",
-  );
-});
-
 test("platform client reads compatibility manifest through host API", async () => {
   const fetch = new FakeFetch();
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v1",
+      schema_version: "redevplugin.compatibility.v2",
       matrix: {
         redevplugin_go_version: "0.0.0-dev",
         redevplugin_ui_version: "0.0.0-dev",
         redevplugin_runtime_version: "0.0.0-dev",
-        plugin_host_protocol_version: "plugin-host-v1",
+        plugin_ui_protocol_version: "plugin-ui-v2",
+        plugin_host_protocol_version: "plugin-host-v2",
         rust_ipc_version: "rust-ipc-v1",
         wasm_abi_version: "redevplugin-wasm-worker-v1",
-        manifest_schema_version: "manifest-v1",
+        manifest_schema_version: "manifest-v2",
         package_signature_schema_version: "package-signature-v1",
-        release_metadata_schema_version: "release-metadata-v1",
+        release_metadata_schema_version: "release-metadata-v2",
         source_policy_schema_version: "source-policy-v1",
         source_revocations_schema_version: "source-revocations-v1",
-        token_ticket_schema_version: "token-ticket-v1",
-        bridge_schema_version: "bridge-v1",
+        token_ticket_schema_version: "token-ticket-v2",
+        bridge_schema_version: "bridge-v2",
+        opaque_surface_document_schema_version: "opaque-surface-document-v1",
+        opaque_surface_transport_schema_version: "opaque-surface-transport-v1",
         target_classifier_version: "target-classifier-v1",
         network_grant_schema_version: "network-grant-v1",
-        plugin_platform_openapi_version: "plugin-platform-v1",
-        compatibility_schema_version: "compatibility-manifest-v1",
+        plugin_platform_openapi_version: "plugin-platform-v2",
+        compatibility_schema_version: "compatibility-manifest-v2",
+        release_manifest_schema_version: "release-manifest-v2",
         worker_invocation_schema_version: "worker-invocation-v1",
         error_codes_schema_version: "error-codes-v1",
+        contract_registry_version: "contract-registry-v1",
       },
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v1.yaml",
-          version: "plugin-platform-v1",
+          path: "spec/openapi/plugin-platform-v2.yaml",
+          version: "plugin-platform-v2",
           sha256: "sha256-openapi",
         },
         {
@@ -902,14 +222,13 @@ test("platform client reads compatibility manifest through host API", async () =
   const client = new PluginPlatformClient({
     apiBaseURL: "https://host.example/",
     fetch: fetch.fetch,
-    ownerSessionHashHeader: "owner_session_hash",
   });
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v1");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v1");
-  assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v1");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v2");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v2");
+  assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v2");
   assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
   assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
   assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
@@ -920,7 +239,7 @@ test("platform client reads compatibility manifest through host API", async () =
   assert.equal(fetch.calls[0]?.init.body, undefined);
   assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
   assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
-  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
 });
 
 test("platform client reads and patches plugin settings through host API", async () => {
@@ -947,7 +266,6 @@ test("platform client reads and patches plugin settings through host API", async
   const client = new PluginPlatformClient({
     apiBaseURL: "https://host.example/",
     fetch: fetch.fetch,
-    ownerSessionHashHeader: "owner_session_hash",
   });
 
   const schema = await client.getSettingsSchema("plugin instance/1");
@@ -959,7 +277,7 @@ test("platform client reads and patches plugin settings through host API", async
   assert.equal(fetch.calls[0]?.init.method, "GET");
   assert.equal(fetch.calls[0]?.init.headers["Accept"], "application/json");
   assert.equal(fetch.calls[0]?.init.headers["Content-Type"], undefined);
-  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
   assert.equal(fetch.calls[1]?.input, "https://host.example/_redevplugin/api/plugins/plugin%20instance%2F1/settings");
   assert.equal(fetch.calls[1]?.init.method, "PATCH");
   assert.equal(fetch.calls[1]?.init.headers["Content-Type"], "application/json");
@@ -978,9 +296,16 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
     data: {
       plugin_id: "com.example.plugin",
       plugin_instance_id: "plugin_instance_1",
-      surface_id: "example.activity",
+      surface_id: "example.view",
       surface_instance_id: "surface_1",
       active_fingerprint: "sha256:a",
+      plugin_version: "1.0.0",
+      entry_path: "ui/index.html",
+      entry_sha256: "sha256:b",
+      asset_session_nonce: "asset_session_nonce_1",
+      plugin_state_version: 1,
+      revoke_epoch: 1,
+      runtime_generation_id: "runtime_gen_1",
       asset_ticket: "asset_ticket_1",
       asset_ticket_id: "asset_ticket_id_1",
       bridge_nonce: "bridge_nonce_1",
@@ -995,21 +320,18 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal("importLocalPackage" in client, false);
   assert.equal("updateLocalPackage" in client, false);
 
-  const installed = await localImportClient.importLocalPackage({ package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
-  const updated = await localImportClient.updateLocalPackage({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg" });
-  const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0" });
-  const enabled = await client.enablePlugin("plugin_instance_1");
-  const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", reason: "admin" });
+  const installed = await localImportClient.importLocalPackage({ package_base64: "cGtn", plugin_instance_id: "plugin_instance_1", plugin_state_version: 0 });
+  const updated = await localImportClient.updateLocalPackage({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", plugin_state_version: 1 });
+  const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", plugin_state_version: 2 });
+  const enabled = await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 3 });
+  const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 4, reason: "admin" });
   const surface = await client.openSurface({
     plugin_instance_id: "plugin_instance_1",
-    surface_id: "example.activity",
+    surface_id: "example.view",
     surface_instance_id: "surface_1",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    session_channel_id_hash: "channel_hash",
-    sandbox_origin: "https://plg.example",
+    plugin_state_version: 5,
   });
-  const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", delete_data: true });
+  const uninstalled = await client.uninstallPlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 5, delete_data: true });
 
   assert.equal(installed.enable_state, "disabled");
   assert.equal(updated.version, "1.1.0");
@@ -1017,29 +339,27 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal(enabled.enable_state, "enabled");
   assert.equal(disabled.disabled_reason, "admin");
   assert.equal(surface.asset_ticket, "asset_ticket_1");
+  assert.equal(toPluginSurfaceHostBootstrap(surface).runtimeGenerationId, "runtime_gen_1");
   assert.equal(uninstalled.retained_data_state, "deleted");
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-import/install");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", plugin_instance_id: "plugin_instance_1", plugin_state_version: 0 });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/local-import/update");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg" });
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", plugin_state_version: 1 });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/downgrade");
-  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0" });
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0", plugin_state_version: 2 });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/enable");
-  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1" });
+  assert.deepEqual(JSON.parse(fetch.calls[3]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", plugin_state_version: 3 });
   assert.equal(fetch.calls[4]?.input, "/_redevplugin/api/plugins/disable");
-  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", reason: "admin" });
+  assert.deepEqual(JSON.parse(fetch.calls[4]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", plugin_state_version: 4, reason: "admin" });
   assert.equal(fetch.calls[5]?.input, "/_redevplugin/api/plugins/surfaces/open");
   assert.deepEqual(JSON.parse(fetch.calls[5]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
-    surface_id: "example.activity",
+    surface_id: "example.view",
     surface_instance_id: "surface_1",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    session_channel_id_hash: "channel_hash",
-    sandbox_origin: "https://plg.example",
+    plugin_state_version: 5,
   });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/uninstall");
-  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", delete_data: true });
+  assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", plugin_state_version: 5, delete_data: true });
 });
 
 test("platform client installs and updates plugin release refs without package bytes", async () => {
@@ -1061,13 +381,13 @@ test("platform client installs and updates plugin release refs without package b
     },
   };
 
-  await client.installReleaseRef({ release_ref: releaseRef });
-  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" } });
+  await client.installReleaseRef({ release_ref: releaseRef, plugin_state_version: 0 });
+  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, plugin_state_version: 1 });
 
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { release_ref: releaseRef });
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { release_ref: releaseRef, plugin_state_version: 0 });
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" } });
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" }, plugin_state_version: 1 });
 });
 
 test("platform client manages runtime lifecycle routes", async () => {
@@ -1198,15 +518,12 @@ test("platform client lists and invokes host-mediated intents", async () => {
     },
   });
   fetch.push({ ok: true, data: { data: { ok: true } } });
-  const client = new PluginPlatformClient({ fetch: fetch.fetch, ownerSessionHashHeader: "owner_session_hash" });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   const listed = await client.listIntents({ intent_id: "example.echo", plugin_instance_id: "plugin_instance_1" });
   const result = await client.invokeIntent<{ ok: boolean }>({
     plugin_instance_id: "plugin_instance_1",
     intent_id: "example.echo",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    session_channel_id_hash: "channel_hash",
     params: { message: "hello" },
   });
 
@@ -1214,15 +531,12 @@ test("platform client lists and invokes host-mediated intents", async () => {
   assert.equal(result.data?.ok, true);
   assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/intents?intent_id=example.echo&plugin_instance_id=plugin_instance_1");
   assert.equal(fetch.calls[0]?.init.method, "GET");
-  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], "owner_session_hash");
+  assert.equal(fetch.calls[0]?.init.headers["X-ReDevPlugin-Owner-Session-Hash"], undefined);
   assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/intents/invoke");
   assert.equal(fetch.calls[1]?.init.method, "POST");
   assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), {
     plugin_instance_id: "plugin_instance_1",
     intent_id: "example.echo",
-    owner_session_hash: "owner_session_hash",
-    owner_user_hash: "owner_user_hash",
-    session_channel_id_hash: "channel_hash",
     params: { message: "hello" },
   });
 });
@@ -1270,7 +584,7 @@ test("platform client exposes host error details separately from data", async ()
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
 
   await assert.rejects(
-    client.enablePlugin("plugin_instance_1"),
+    client.enablePlugin({ plugin_instance_id: "plugin_instance_1", plugin_state_version: 1 }),
     (err) => err instanceof PluginBridgeError &&
       err.errorCode === "PLUGIN_JSON_LIMIT_EXCEEDED" &&
       err.data === undefined &&
@@ -1358,27 +672,3 @@ test("platform client maps management envelope errors", async () => {
     (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_INVALID_REQUEST" && err.message === "plugin settings are not declared",
   );
 });
-
-async function tick(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-async function waitForFetchCalls(fetch: FakeFetch, count: number): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (fetch.calls.length >= count) {
-      return;
-    }
-    await tick();
-  }
-  throw new Error(`expected at least ${count} fetch calls, got ${fetch.calls.length}`);
-}
-
-async function waitForMessages(window: FakeWindow, count: number): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (window.sent.length >= count) {
-      return;
-    }
-    await tick();
-  }
-  throw new Error(`expected at least ${count} posted messages, got ${window.sent.length}`);
-}

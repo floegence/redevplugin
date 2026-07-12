@@ -183,6 +183,9 @@ boundary must stay explicit in both directions:
 - ReDevPlugin may provide host-neutral UI SDK pieces and reference components,
   but it must not contain Redeven navigation, Activity Bar layout, Workbench
   chrome, product copy, or Flower-specific interaction logic.
+- Manifest surfaces use only host-neutral `view`, `command`, or `background`
+  kinds plus optional semantic intent. Host products map those declarations to
+  navigation, workspace, settings, modal, or command placement.
 - Redeven may wrap ReDevPlugin routes, commands, and generated clients to fit
   its product shell, but it must not carry a second manifest parser, weaker
   validator, alternate package builder, independent registry lifecycle, forked
@@ -678,7 +681,7 @@ schemas, or missing release metadata.
 
 Expected gates for platform changes:
 
-- Go: formatting, unit tests, race-sensitive lifecycle tests where practical,
+- Go: formatting, `GOWORK=off go list ./...`, unit tests, race-sensitive lifecycle tests where practical,
   linting, schema migration tests, HTTP adapter contract tests, and generated DTO
   checks.
 - TypeScript: clean install, typecheck, lint, unit tests, SDK contract tests,

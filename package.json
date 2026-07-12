@@ -1,21 +1,30 @@
 {
   "name": "redevplugin-monorepo",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
+    "contracts:generate": "node scripts/generate_contract_registry.mjs",
+    "contracts:check": "node scripts/generate_contract_registry.mjs --check",
+    "demo:workers:build": "node scripts/build_demo_workers.mjs",
+    "demo:workers:check": "node scripts/build_demo_workers.mjs --check",
+    "lint": "eslint packages/redevplugin-ui/src packages/redevplugin-ui/test demo/browser/*.ts",
     "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
-    "build": "tsc -p packages/redevplugin-ui/tsconfig.json",
+    "build": "tsc -p packages/redevplugin-ui/tsconfig.json && npm run demo:workers:build",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
-    "test:demo": "node --test demo/browser/*.test.mjs",
+    "test:demo": "npm run demo:workers:check && node --test demo/browser/*.test.mjs",
     "test:demo:browser": "npm run build && node demo/browser/browser-smoke.mjs && node demo/browser/real-runtime-smoke.mjs",
     "predemo:browser": "npm run build",
     "demo:browser": "node demo/browser/server.mjs",
-    "demo:browser:generated": "npm run build && node demo/browser/generated-demo.mjs",
     "demo:browser:real": "npm run build && node demo/browser/real-demo.mjs",
-    "check": "npm run typecheck && npm run build && npm run test:ui && npm run test:demo && npm run test:demo:browser"
+    "check": "npm run contracts:check && npm run lint && npm run typecheck && npm run build && npm run test:ui && npm run test:demo && npm run test:demo:browser"
   },
   "devDependencies": {
+    "esbuild": "^0.25.5",
+    "eslint": "10.7.0",
     "playwright": "^1.61.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "8.63.0",
+    "yaml": "^2.8.1"
   }
 }

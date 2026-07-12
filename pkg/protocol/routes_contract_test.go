@@ -3,7 +3,6 @@ package protocol
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,13 +15,9 @@ import (
 )
 
 type routeFixture struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
-}
-
-type openAPIRouteFixture struct {
-	routeFixture
-	RouteSet string
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+	RouteSet string `json:"route_set,omitempty"`
 }
 
 type typeScriptSDKRouteBinding struct {
@@ -48,9 +43,10 @@ func TestHTTPRouteSetMatchesFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	fixtures = filterRoutesBySet(fixtures, "default")
 	got := make([]routeFixture, 0, len(httpadapter.RouteSet()))
 	for _, route := range httpadapter.RouteSet() {
-		got = append(got, routeFixture{Method: route.Method, Path: route.Path})
+		got = append(got, routeFixture{Method: route.Method, Path: route.Path, RouteSet: "default"})
 	}
 	sortRoutes(fixtures)
 	sortRoutes(got)
@@ -65,11 +61,8 @@ func TestHTTPRoutesClassifyTypeScriptSDKCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sdkRaw, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "index.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sdkSource := string(sdkRaw)
+	fixtures = filterRoutesBySet(fixtures, "default")
+	sdkSource := readTypeScriptSources(t, root, "platform.ts", "surface.ts")
 
 	fixtureRoutes := map[string]routeFixture{}
 	for _, route := range fixtures {
@@ -114,37 +107,28 @@ func TestHTTPRoutesClassifyTypeScriptSDKCoverage(t *testing.T) {
 	}
 }
 
-func TestHTTPRouteSetMatchesOpenAPI(t *testing.T) {
+func TestGeneratedRouteFixtureCoversExplicitRouteSets(t *testing.T) {
 	root := repoRoot(t)
-	defaultOpenAPIRoutes, localImportOpenAPIRoutes, err := readOpenAPIRoutesBySet(filepath.Join(root, "spec", "openapi", "plugin-platform-v1.yaml"))
+	fixtures, err := readRouteFixtures(filepath.Join(root, "testdata", "contracts", "routes.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	defaultRoutes := make([]routeFixture, 0, len(httpadapter.RouteSet()))
+	got := make([]routeFixture, 0)
 	defaultRouteKeys := map[string]bool{}
 	for _, route := range httpadapter.RouteSet() {
-		fixture := routeFixture{Method: route.Method, Path: route.Path}
-		defaultRoutes = append(defaultRoutes, fixture)
-		defaultRouteKeys[routeKey(fixture)] = true
+		defaultRouteKeys[routeKey(routeFixture{Method: route.Method, Path: route.Path})] = true
 	}
-	sortRoutes(defaultOpenAPIRoutes)
-	sortRoutes(defaultRoutes)
-	if !reflect.DeepEqual(defaultRoutes, defaultOpenAPIRoutes) {
-		t.Fatalf("default OpenAPI route set mismatch\n got: %#v\nwant: %#v", defaultRoutes, defaultOpenAPIRoutes)
-	}
-
-	localImportRoutes := []routeFixture{}
 	for _, route := range httpadapter.RouteSetWithOptions(httpadapter.RouteSetOptions{EnableLocalImportRoutes: true}) {
-		fixture := routeFixture{Method: route.Method, Path: route.Path}
+		fixture := routeFixture{Method: route.Method, Path: route.Path, RouteSet: "default"}
 		if !defaultRouteKeys[routeKey(fixture)] {
-			localImportRoutes = append(localImportRoutes, fixture)
+			fixture.RouteSet = "local_import"
 		}
+		got = append(got, fixture)
 	}
-	sortRoutes(localImportOpenAPIRoutes)
-	sortRoutes(localImportRoutes)
-	if !reflect.DeepEqual(localImportRoutes, localImportOpenAPIRoutes) {
-		t.Fatalf("local-import OpenAPI route set mismatch\n got: %#v\nwant: %#v", localImportRoutes, localImportOpenAPIRoutes)
+	sortRoutes(fixtures)
+	sortRoutes(got)
+	if !reflect.DeepEqual(got, fixtures) {
+		t.Fatalf("generated route fixture mismatch\n got: %#v\nwant: %#v", got, fixtures)
 	}
 }
 
@@ -200,7 +184,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 		"importLocalPackage(request: PluginImportLocalPackageRequest)",
 		`#postJSON("/_redevplugin/api/plugins/local-import/install"`,
 		"updateLocalPackage(request: PluginUpdateLocalPackageRequest)",
-		`#postJSON("/_redevplugin/api/plugins/local-import/update"`,
+		`#postJSON<PluginRecord>("/_redevplugin/api/plugins/local-import/update"`,
 	} {
 		if !strings.Contains(localImportSDK, snippet) {
 			t.Fatalf("local-import TypeScript entrypoint missing snippet %q", snippet)
@@ -210,13 +194,13 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	requestBodies, err := readOpenAPIRequestBodyRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v1.yaml"))
+	requestBodies, err := readOpenAPIRequestBodyRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[routeFixture]bool{}
 	for _, route := range requestBodies {
-		got[routeFixture(route)] = true
+		got[routeFixture{Method: route.Method, Path: route.Path}] = true
 	}
 	for _, route := range requiredJSONRequestBodyRoutes() {
 		if !got[route] {
@@ -227,18 +211,27 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v1.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
 	for _, snippet := range []string{
-		"BridgeTokenRequest:",
+		"TrustedParentBridgeTokenRequest:",
 		"handshake_transcript_sha256:",
 		"plugin_gateway_token: { type: string, minLength: 1 }",
 		"delete_data: { type: boolean }",
 		"asset_ticket: { type: string, minLength: 1 }",
-		"ui_protocol_version: { const: plugin-ui-v1 }",
+		"ui_protocol_version: { const: plugin-ui-v2 }",
+		"plugin_state_version: { type: integer, minimum: 1 }",
+		"revoke_epoch: { type: integer, minimum: 1 }",
+		"DisposeSurfaceRequest:",
+		"required: [bridge_nonce]",
+		"SurfacePreparation:",
+		"../plugin/opaque-surface-document-v1.schema.json",
+		"ReadSurfaceAssetRequest:",
+		"ReadSurfaceStreamRequest:",
+		"DisposeSurfaceRequest:",
 		"scope: { type: string, enum: [user, environment] }",
 		"RetainedDataRecord:",
 		"RetainedDataCleanupResult:",
@@ -253,10 +246,6 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"manifest_field",
 		"path:",
 		"pointer:",
-		"application/csp-report:",
-		"per sandbox_origin plus active_fingerprint plus source IP rate limiting",
-		"Content-Security-Policy:",
-		"Permissions-Policy:",
 		"InstallReleaseRefRequest:",
 		"UpdateReleaseRefRequest:",
 		"ImportLocalPackageRequest:",
@@ -275,6 +264,66 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	if strings.Contains(text, "enum: [bundled,") {
 		t.Fatalf("OpenAPI TrustState must not expose bundled as a public target trust state")
 	}
+	for _, forbidden := range []string{
+		"sandbox_origin",
+		"/_redevplugin/bootstrap",
+		"/_redevplugin/assets/",
+		"/_redevplugin/stream/",
+		"/_redevplugin/csp-report",
+		"application/csp-report",
+		"OwnerSessionHashHeader",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("OpenAPI must not retain obsolete browser contract %q", forbidden)
+		}
+	}
+}
+
+func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	invokeIntent := openAPISchemaBlock(t, text, "InvokeIntentRequest")
+	for _, forbidden := range []string{"owner_session_hash", "owner_user_hash", "session_channel_id_hash"} {
+		if strings.Contains(invokeIntent, forbidden) {
+			t.Fatalf("InvokeIntentRequest must derive trusted scope server-side; found %q", forbidden)
+		}
+	}
+	retainedData := openAPISchemaBlock(t, text, "RetainedDataRecord")
+	if strings.Contains(retainedData, "browser_site_retained") {
+		t.Fatal("RetainedDataRecord must not expose removed browser-site state")
+	}
+	surfaceBootstrap := openAPISchemaBlock(t, text, "SurfaceBootstrap")
+	if !strings.Contains(surfaceBootstrap, "- runtime_generation_id") {
+		t.Fatal("SurfaceBootstrap must require runtime_generation_id")
+	}
+	assetRead := openAPISchemaBlock(t, text, "ReadSurfaceAssetRequest")
+	if !strings.Contains(assetRead, "required: [asset_session, asset_session_id, binding_id]") || strings.Contains(assetRead, "asset_path") || strings.Contains(assetRead, "expected_sha256") {
+		t.Fatalf("ReadSurfaceAssetRequest must expose only the prepared binding id: %s", assetRead)
+	}
+}
+
+func openAPISchemaBlock(t *testing.T, source string, schemaName string) string {
+	t.Helper()
+	marker := "    " + schemaName + ":\n"
+	start := strings.LastIndex(source, marker)
+	if start < 0 {
+		t.Fatalf("OpenAPI schema %s is missing", schemaName)
+	}
+	start += len(marker)
+	rest := source[start:]
+	lines := strings.Split(rest, "\n")
+	end := len(lines)
+	for i := 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "    ") && len(lines[i]) > 4 && lines[i][4] != ' ' {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[:end], "\n")
 }
 
 func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
@@ -284,10 +333,10 @@ func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
 		snippets []string
 	}{
 		{
-			path: "release-metadata-v1.schema.json",
+			path: "release-metadata-v2.schema.json",
 			snippets: []string{
 				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_metadata.v1" }`,
+				`"schema_version": { "const": "redevplugin.release_metadata.v2" }`,
 				`"release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" }`,
 				`"package_signature": { "$ref": "#/$defs/package_release_signature" }`,
 				`"signature_sha256": { "$ref": "#/$defs/sha256" }`,
@@ -341,65 +390,28 @@ func readRouteFixtures(path string) ([]routeFixture, error) {
 	return fixtures, nil
 }
 
-func readOpenAPIRoutesBySet(path string) ([]routeFixture, []routeFixture, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer file.Close()
-
-	var routes []openAPIRouteFixture
-	var currentPath string
-	currentRouteIndex := -1
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) == 0 {
-			continue
-		}
-		if strings.HasPrefix(line, "components:") {
-			currentPath = ""
-			continue
-		}
-		if strings.HasPrefix(line, "  /") && strings.HasSuffix(line, ":") {
-			currentPath = strings.TrimSuffix(strings.TrimSpace(line), ":")
-			continue
-		}
-		if currentPath == "" {
-			continue
-		}
-		switch line {
-		case "    get:":
-			routes = append(routes, openAPIRouteFixture{routeFixture: routeFixture{Method: "GET", Path: currentPath}, RouteSet: "default"})
-			currentRouteIndex = len(routes) - 1
-		case "    patch:":
-			routes = append(routes, openAPIRouteFixture{routeFixture: routeFixture{Method: "PATCH", Path: currentPath}, RouteSet: "default"})
-			currentRouteIndex = len(routes) - 1
-		case "    post:":
-			routes = append(routes, openAPIRouteFixture{routeFixture: routeFixture{Method: "POST", Path: currentPath}, RouteSet: "default"})
-			currentRouteIndex = len(routes) - 1
-		case "      x-redevplugin-route-set: local_import":
-			if currentRouteIndex >= 0 {
-				routes[currentRouteIndex].RouteSet = "local_import"
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, nil, err
-	}
-	defaultRoutes := []routeFixture{}
-	localImportRoutes := []routeFixture{}
+func filterRoutesBySet(routes []routeFixture, routeSet string) []routeFixture {
+	out := make([]routeFixture, 0, len(routes))
 	for _, route := range routes {
-		switch route.RouteSet {
-		case "default":
-			defaultRoutes = append(defaultRoutes, route.routeFixture)
-		case "local_import":
-			localImportRoutes = append(localImportRoutes, route.routeFixture)
-		default:
-			return nil, nil, fmt.Errorf("unknown OpenAPI route set %q for %s %s", route.RouteSet, route.Method, route.Path)
+		if route.RouteSet == routeSet {
+			out = append(out, route)
 		}
 	}
-	return defaultRoutes, localImportRoutes, nil
+	return out
+}
+
+func readTypeScriptSources(t *testing.T, root string, names ...string) string {
+	t.Helper()
+	var source strings.Builder
+	for _, name := range names {
+		raw, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source.Write(raw)
+		source.WriteByte('\n')
+	}
+	return source.String()
 }
 
 func readOpenAPIRequestBodyRoutes(path string) ([]openAPIRequestBodyFixture, error) {
@@ -452,27 +464,27 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 			Owner:        "PluginPlatformClient.enablePlugin",
-			Snippets:     []string{"enablePlugin(pluginInstanceIdOrRequest", `#postJSON("/_redevplugin/api/plugins/enable"`},
+			Snippets:     []string{"enablePlugin(request: PluginEnableRequest)", `#postJSON("/_redevplugin/api/plugins/enable"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/disable"},
 			Owner:        "PluginPlatformClient.disablePlugin",
-			Snippets:     []string{"disablePlugin(request: PluginDisableRequest)", `#postJSON("/_redevplugin/api/plugins/disable"`},
+			Snippets:     []string{"disablePlugin(request: PluginDisableRequest)", `#mutatePlugin("/_redevplugin/api/plugins/disable"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/uninstall"},
 			Owner:        "PluginPlatformClient.uninstallPlugin",
-			Snippets:     []string{"uninstallPlugin(request: PluginUninstallRequest)", `#postJSON("/_redevplugin/api/plugins/uninstall"`},
+			Snippets:     []string{"uninstallPlugin(request: PluginUninstallRequest)", `#mutatePlugin("/_redevplugin/api/plugins/uninstall"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
 			Owner:        "PluginPlatformClient.updateReleaseRef",
-			Snippets:     []string{"updateReleaseRef(request: PluginUpdateReleaseRefRequest)", `#postJSON("/_redevplugin/api/plugins/update-release-ref"`},
+			Snippets:     []string{"updateReleaseRef(request: PluginUpdateReleaseRefRequest)", `#mutatePlugin("/_redevplugin/api/plugins/update-release-ref"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
 			Owner:        "PluginPlatformClient.downgradePlugin",
-			Snippets:     []string{"downgradePlugin(request: PluginDowngradeRequest)", `#postJSON("/_redevplugin/api/plugins/downgrade"`},
+			Snippets:     []string{"downgradePlugin(request: PluginDowngradeRequest)", `#mutatePlugin("/_redevplugin/api/plugins/downgrade"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/catalog"},
@@ -490,9 +502,34 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"openSurface(request: PluginOpenSurfaceRequest)", `#postJSON("/_redevplugin/api/plugins/surfaces/open"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"},
+			Owner:        "PluginPlatformClient.revokeSurfaceScope",
+			Snippets:     []string{"revokeSurfaceScope(): Promise<PluginSurfaceScopeRevokeResult>", `#postJSON("/_redevplugin/api/plugins/surfaces/revoke-scope"`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},
+			Owner:        "PluginSurfaceHost.#prepareSurface",
+			Snippets:     []string{"#prepareSurface(): Promise<PluginSurfacePreparationResult>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/prepare`},
+		},
+		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
-			Owner:        "PluginSurfaceHost.#handleHandshake",
-			Snippets:     []string{"async #handleHandshake(handshake: PluginBridgeHandshake)", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`},
+			Owner:        "PluginSurfaceHost.#mintBridgeToken",
+			Snippets:     []string{"#mintBridgeToken(previousGatewayToken?: string, direct = false): Promise<PluginGatewayTokenResult>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/bridge-token`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
+			Owner:        "PluginSurfaceHost.#handleAssetRead",
+			Snippets:     []string{"async #handleAssetRead(message: SurfaceAssetReadMessage)", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/assets/read`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"},
+			Owner:        "PluginSurfaceHost.#handleStreamRead",
+			Snippets:     []string{"async #handleStreamRead(id: string, streamHandle: string)", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/streams/read`},
+		},
+		{
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
+			Owner:        "PluginSurfaceHost.close",
+			Snippets:     []string{"async close(): Promise<void>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/rpc"},
@@ -502,7 +539,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/confirm"},
 			Owner:        "PluginSurfaceHost.#prepareConfirmation",
-			Snippets:     []string{"#prepareConfirmation(request: PluginBridgeRequest)", "/_redevplugin/api/plugins/confirm"},
+			Snippets:     []string{"#prepareConfirmation(request: PluginBridgeRequest, signal: AbortSignal)", "/_redevplugin/api/plugins/confirm"},
 		},
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/intents"},
@@ -517,7 +554,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/operations"},
 			Owner:        "PluginPlatformClient.listOperations",
-			Snippets:     []string{"listOperations(pluginInstanceId?: string)", `/_redevplugin/api/plugins/operations${query`},
+			Snippets:     []string{"listOperations(pluginInstanceId?: string)", `/_redevplugin/api/plugins/operations${`},
 		},
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/operations/{operation_id}"},
@@ -562,7 +599,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/retained-data"},
 			Owner:        "PluginPlatformClient.listRetainedData",
-			Snippets:     []string{"listRetainedData(options: PluginRetainedDataListOptions", `/_redevplugin/api/plugins/retained-data${query`},
+			Snippets:     []string{"listRetainedData(options: PluginRetainedDataListOptions", `/_redevplugin/api/plugins/retained-data${`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/delete"},
@@ -582,7 +619,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/permissions"},
 			Owner:        "PluginPlatformClient.listPermissions",
-			Snippets:     []string{"listPermissions(pluginInstanceId?: string", `/_redevplugin/api/plugins/permissions${query`},
+			Snippets:     []string{"listPermissions(pluginInstanceId?: string", `/_redevplugin/api/plugins/permissions${`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/grant"},
@@ -634,33 +671,11 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Owner:        "PluginPlatformClient.patchSettings",
 			Snippets:     []string{"patchSettings(pluginInstanceId: string", `/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings`},
 		},
-		{
-			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/stream/{stream_id}"},
-			Owner:        "readPluginStream",
-			Snippets:     []string{"export async function readPluginStream", `/_redevplugin/stream/${encodeURIComponent(streamId)}?ticket=${encodeURIComponent(streamTicket)}`, `method: "GET"`},
-		},
 	}
 }
 
 func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
-	return []routeWithoutTypeScriptSDKBinding{
-		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
-			Reason:       "asset-session exchange sets an HttpOnly cookie and is driven by the browser bootstrap shell",
-		},
-		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/bootstrap"},
-			Reason:       "sandbox bootstrap entry is a browser protocol endpoint, not a management SDK call",
-		},
-		{
-			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/assets/{asset_session_id}/{asset_path...}"},
-			Reason:       "asset fetches are browser resource loads guarded by the HttpOnly asset-session cookie",
-		},
-		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/csp-report"},
-			Reason:       "CSP reports are browser telemetry posts without a product-shell SDK wrapper",
-		},
-	}
+	return nil
 }
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
@@ -674,8 +689,11 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/rpc"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/confirm"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/intents/invoke"},
@@ -684,6 +702,7 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/data/export"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/data/import"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/delete"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/bind"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/retained-data/cleanup-expired"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/grant"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/permissions/revoke"},
@@ -691,8 +710,6 @@ func requiredJSONRequestBodyRoutes() []routeFixture {
 		{Method: "POST", Path: "/_redevplugin/api/plugins/secrets/test"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/secrets/delete"},
 		{Method: "PATCH", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/settings"},
-		{Method: "POST", Path: "/_redevplugin/bootstrap"},
-		{Method: "POST", Path: "/_redevplugin/csp-report"},
 	}
 }
 

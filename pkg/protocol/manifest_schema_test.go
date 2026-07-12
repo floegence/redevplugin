@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,11 +10,12 @@ import (
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/version"
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,23 +33,31 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	}
 
 	props := requireNestedObject(t, schema, "properties")
-	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v1" {
+	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v2" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 	pluginProps := requireNestedObject(t, props, "plugin", "properties")
 	if got := requireNestedObject(t, pluginProps, "api_version")["const"]; got != "plugin-v1" {
 		t.Fatalf("plugin.api_version const = %#v", got)
 	}
-	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v1" {
+	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v2" {
 		t.Fatalf("plugin.ui_protocol_version const = %#v", got)
 	}
 
 	surfaceProps := requireNestedObject(t, props, "surfaces", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, surfaceProps, "kind")["enum"], "surface kind", []string{
-		string(manifest.SurfaceActivity),
-		string(manifest.SurfaceWorkbench),
-		string(manifest.SurfaceSettings),
+		string(manifest.SurfaceView),
+		string(manifest.SurfaceCommand),
+		string(manifest.SurfaceBackground),
 	})
+	assertStringEnum(t, requireNestedObject(t, surfaceProps, "intent")["enum"], "surface intent", []string{
+		string(manifest.SurfaceIntentPrimary),
+		string(manifest.SurfaceIntentSecondary),
+		string(manifest.SurfaceIntentUtility),
+	})
+	if _, ok := surfaceProps["method"]; ok {
+		t.Fatal("surface schema must not bind product methods or placement behavior")
+	}
 	defaultSize := requireNestedObject(t, surfaceProps, "default_size")
 	if defaultSize["additionalProperties"] != false {
 		t.Fatalf("surface default_size additionalProperties = %#v, want false", defaultSize["additionalProperties"])
@@ -143,6 +153,100 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 
 	settingsProps := requireNestedObject(t, props, "settings", "properties", "fields", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, settingsProps, "scope")["enum"], "settings field scope", []string{"user", "environment"})
+}
+
+func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
+	root := repoRoot(t)
+	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v2.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	if err := compiler.AddResource("urn:redevplugin:manifest-v2", bytes.NewReader(schemaRaw)); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := compiler.Compile("urn:redevplugin:manifest-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureRaw, err := os.ReadFile(filepath.Join(root, "testdata", "generated_plugins", "method-contract", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		valid  bool
+	}{
+		{name: "closed composition fixture", valid: true},
+		{
+			name: "nested open object",
+			mutate: func(document map[string]any) {
+				method := firstManifestMethod(t, document)
+				method["request_schema"] = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{"type": "object"},
+					},
+				}
+			},
+			valid: false,
+		},
+		{
+			name: "negative composition open object",
+			mutate: func(document map[string]any) {
+				method := firstManifestMethod(t, document)
+				method["request_schema"] = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{"not": map[string]any{"type": "string"}},
+					},
+				}
+			},
+			valid: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var document map[string]any
+			if err := json.Unmarshal(fixtureRaw, &document); err != nil {
+				t.Fatal(err)
+			}
+			if tc.mutate != nil {
+				tc.mutate(document)
+			}
+			raw, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			machineErr := compiled.Validate(document)
+			_, goErr := manifest.Decode(bytes.NewReader(raw))
+			if (machineErr == nil) != tc.valid {
+				t.Fatalf("machine schema valid = %t, want %t: %v", machineErr == nil, tc.valid, machineErr)
+			}
+			if (goErr == nil) != tc.valid {
+				t.Fatalf("Go manifest valid = %t, want %t: %v", goErr == nil, tc.valid, goErr)
+			}
+		})
+	}
+}
+
+func firstManifestMethod(t *testing.T, document map[string]any) map[string]any {
+	t.Helper()
+	methods, ok := document["methods"].([]any)
+	if !ok || len(methods) == 0 {
+		t.Fatal("fixture methods are missing")
+	}
+	method, ok := methods[0].(map[string]any)
+	if !ok {
+		t.Fatal("fixture method is not an object")
+	}
+	return method
 }
 
 func assertStringEnum(t *testing.T, value any, label string, want []string) {

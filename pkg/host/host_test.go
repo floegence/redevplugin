@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/browsersite"
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
@@ -34,6 +33,24 @@ import (
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
+
+func mustPluginStateVersion(t testing.TB, h *Host, pluginInstanceID string) uint64 {
+	t.Helper()
+	records, err := h.ListPlugins(context.Background())
+	if err != nil {
+		t.Fatalf("ListPlugins() for state version: %v", err)
+	}
+	for _, record := range records {
+		if record.PluginInstanceID == pluginInstanceID {
+			if record.ManagementRevision == 0 {
+				t.Fatalf("plugin %q has zero management revision", pluginInstanceID)
+			}
+			return record.ManagementRevision
+		}
+	}
+	t.Fatalf("plugin %q not found while resolving state version", pluginInstanceID)
+	return 0
+}
 
 func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	host, surfaces, audits := newTestHost(t, true, true)
@@ -55,7 +72,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("local import provenance mismatch: %#v", installed.LocalImportProvenance)
 	}
 
-	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -66,7 +83,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("surface publish mismatch: %#v", surfaces.snapshots)
 	}
 
-	disabled, err := host.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test"})
+	disabled, err := host.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test", PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
@@ -77,7 +94,7 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		t.Fatalf("disable did not clear surfaces: %#v", surfaces.snapshots)
 	}
 
-	uninstalled, err := host.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true})
+	uninstalled, err := host.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
@@ -91,6 +108,80 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 		if !audits.hasEvent(eventType) {
 			t.Fatalf("missing audit event %q: %#v", eventType, audits.events)
 		}
+	}
+}
+
+func TestManagementStateVersionFailsClosedWithoutSideEffects(t *testing.T) {
+	ctx := context.Background()
+	h, surfaces, audits := newTestHost(t, true, true)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialAuditCount := len(audits.events)
+
+	for _, stateVersion := range []uint64{0, installed.ManagementRevision + 1} {
+		if _, err := h.EnablePlugin(ctx, EnableRequest{
+			PluginInstanceID:   installed.PluginInstanceID,
+			PluginStateVersion: stateVersion,
+		}); !errors.Is(err, ErrPluginStateVersionMismatch) {
+			t.Fatalf("EnablePlugin(state version %d) error = %v, want ErrPluginStateVersionMismatch", stateVersion, err)
+		}
+	}
+	records, err := h.ListPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].EnableState != registry.EnableDisabled || records[0].ManagementRevision != installed.ManagementRevision {
+		t.Fatalf("failed enable mutated registry: %#v", records)
+	}
+	if len(surfaces.snapshots) != 0 || len(audits.events) != initialAuditCount {
+		t.Fatalf("failed enable produced side effects: surfaces=%#v audits=%#v", surfaces.snapshots, audits.events)
+	}
+
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		PluginStateVersion: installed.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:     enabled.PluginInstanceID,
+		PluginStateVersion:   installed.ManagementRevision,
+		SurfaceID:            "lifecycle.view",
+		SurfaceInstanceID:    "surface_state_version",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		SessionChannelIDHash: "session_channel_hash",
+	}); !errors.Is(err, ErrPluginStateVersionMismatch) {
+		t.Fatalf("OpenSurface(stale) error = %v, want ErrPluginStateVersionMismatch", err)
+	}
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:     enabled.PluginInstanceID,
+		PluginStateVersion:   enabled.ManagementRevision,
+		SurfaceID:            "lifecycle.view",
+		SurfaceInstanceID:    "surface_state_version",
+		OwnerSessionHash:     "owner_session_hash",
+		OwnerUserHash:        "owner_user_hash",
+		SessionChannelIDHash: "session_channel_hash",
+	}); err != nil {
+		t.Fatalf("OpenSurface(current) after stale request error = %v", err)
+	}
+
+	if _, err := h.DisablePlugin(ctx, DisableRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		PluginStateVersion: installed.ManagementRevision,
+		Reason:             "stale request",
+	}); !errors.Is(err, ErrPluginStateVersionMismatch) {
+		t.Fatalf("DisablePlugin(stale) error = %v, want ErrPluginStateVersionMismatch", err)
+	}
+	records, err = h.ListPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].EnableState != registry.EnableEnabled || records[0].ManagementRevision != enabled.ManagementRevision {
+		t.Fatalf("stale disable mutated registry: %#v", records)
 	}
 }
 
@@ -110,40 +201,43 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "rpc.activity",
+		SurfaceID:            "rpc.view",
 		SurfaceInstanceID:    "surface_update",
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",
 		SessionChannelIDHash: "channel_hash",
-		Now:                  now.Add(time.Second),
+		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	if _, err := h.ExchangeAssetTicket(ctx, ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(2 * time.Second),
-	}); err != nil {
-		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	if _, err := h.PrepareSurface(ctx, exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("PrepareSurface() error = %v", err)
 	}
 	handshake := bridge.Handshake{
-		PluginID:          bootstrap.PluginID,
-		SurfaceID:         bootstrap.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		ActiveFingerprint: bootstrap.ActiveFingerprint,
-		BridgeNonce:       bootstrap.BridgeNonce,
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_update",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_update"),
+		OwnerSessionHash:          bootstrap.OwnerSessionHash,
+		OwnerUserHash:             bootstrap.OwnerUserHash,
+		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
 		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
@@ -154,7 +248,8 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
-		Now:              now.Add(4 * time.Second),
+		Now:              now.Add(4 * time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("UpdateLocalPackage() error = %v", err)
@@ -190,7 +285,8 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	downgraded, err := h.DowngradePlugin(ctx, DowngradeRequest{
 		PluginInstanceID: updated.PluginInstanceID,
 		Version:          "1.0.0",
-		Now:              now.Add(6 * time.Second),
+		Now:              now.Add(6 * time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			updated.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("DowngradePlugin() error = %v", err)
@@ -214,7 +310,8 @@ func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(other),
-		PackageSize:      int64(len(other)),
+		PackageSize:      int64(len(other)), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	}); err == nil {
 		t.Fatal("UpdateLocalPackage() expected identity mismatch error")
 	}
@@ -253,7 +350,8 @@ func TestUpdateAndDowngradeValidateMigrationPreflight(t *testing.T) {
 	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
-		PackageSize:      int64(len(v2)),
+		PackageSize:      int64(len(v2)), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("UpdateLocalPackage() migration preflight error = %v", err)
@@ -263,7 +361,8 @@ func TestUpdateAndDowngradeValidateMigrationPreflight(t *testing.T) {
 	}
 	downgraded, err := h.DowngradePlugin(ctx, DowngradeRequest{
 		PluginInstanceID: updated.PluginInstanceID,
-		Version:          "1.0.0",
+		Version:          "1.0.0", PluginStateVersion: mustPluginStateVersion(t, h,
+			updated.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("DowngradePlugin() reversible migration error = %v", err)
@@ -306,7 +405,8 @@ func TestUpdateRejectsMismatchedMigrationPreflight(t *testing.T) {
 	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(badV2),
-		PackageSize:      int64(len(badV2)),
+		PackageSize:      int64(len(badV2)), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	}); !errors.Is(err, ErrPluginMigrationPreflight) {
 		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPluginMigrationPreflight", err)
 	}
@@ -345,14 +445,16 @@ func TestDowngradeRejectsIrreversibleMigrationPreflight(t *testing.T) {
 	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(irreversibleV2),
-		PackageSize:      int64(len(irreversibleV2)),
+		PackageSize:      int64(len(irreversibleV2)), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("UpdateLocalPackage() irreversible forward migration error = %v", err)
 	}
 	if _, err := h.DowngradePlugin(ctx, DowngradeRequest{
 		PluginInstanceID: updated.PluginInstanceID,
-		Version:          "1.0.0",
+		Version:          "1.0.0", PluginStateVersion: mustPluginStateVersion(t, h,
+			updated.PluginInstanceID),
 	}); !errors.Is(err, ErrPluginMigrationPreflight) {
 		t.Fatalf("DowngradePlugin() error = %v, want ErrPluginMigrationPreflight", err)
 	}
@@ -365,7 +467,7 @@ func TestEnableRejectsUntrusted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err == nil {
+	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err == nil {
 		t.Fatal("EnablePlugin() expected untrusted error")
 	}
 }
@@ -382,7 +484,7 @@ func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err == nil {
+	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err == nil {
 		t.Fatal("EnablePlugin() expected policy error")
 	}
 	record, err := host.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
@@ -636,15 +738,16 @@ func TestOpenSurfaceRejectsCurrentSourceSecurityFloorRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallReleaseRef() error = %v", err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 
 	sourceResolver.snapshot = sourcePolicyForRelease(ref)
 	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceID:         "lifecycle.activity",
-		SurfaceInstanceID: "surface_floor_rollback",
+		SurfaceID:         "lifecycle.view",
+		SurfaceInstanceID: "surface_floor_rollback", PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("OpenSurface() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
@@ -1457,7 +1560,7 @@ func TestUpdateReleaseRefRejectsDowngradeWhenSourcePolicyBlocks(t *testing.T) {
 	}
 	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy}
 
-	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: current.PluginInstanceID, ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: current.PluginInstanceID, ReleaseRef: ref, PluginStateVersion: mustPluginStateVersion(t, h, current.PluginInstanceID)}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("UpdateReleaseRef() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
 }
@@ -1487,10 +1590,10 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 	}
 	installedPackageHash := installed.PackageHash
 	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
-	bootstrap, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "lifecycle.activity")
+	bootstrap, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "lifecycle.view")
 
 	verifier.metadata = map[string]string{"trust.key_id": "official-v2"}
 	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
@@ -1501,7 +1604,7 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 	h.adapters.ReleaseSourcePolicy = sourceResolver
 	h.adapters.ReleaseArtifactResolver = artifactResolver
 
-	updated, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: installed.PluginInstanceID, ReleaseRef: v2Ref})
+	updated, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: installed.PluginInstanceID, ReleaseRef: v2Ref, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UpdateReleaseRef() error = %v", err)
 	}
@@ -1564,7 +1667,7 @@ func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
 		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
 	}
 	surfaces.err = nil
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -1577,7 +1680,7 @@ func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
 	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
 	surfaces.err = errors.New("surface catalog unavailable")
 
-	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref}); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref, PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
 		t.Fatalf("UpdateReleaseRef() error = %v, want surface catalog failure", err)
 	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
@@ -1617,7 +1720,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 	if err != nil {
 		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -1629,7 +1732,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
 	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
 
-	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref}); err == nil || !strings.Contains(err.Error(), "runtime revoke unavailable") {
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref, PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "runtime revoke unavailable") {
 		t.Fatalf("UpdateReleaseRef() error = %v, want runtime revoke failure", err)
 	}
 	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
@@ -1666,7 +1769,8 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(nextBytes),
-		PackageSize:      int64(len(nextBytes)),
+		PackageSize:      int64(len(nextBytes)), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1718,7 +1822,8 @@ func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
-		Now:              now.Add(time.Minute),
+		Now:              now.Add(time.Minute), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("UpdateLocalPackage() error = %v", err)
@@ -1788,7 +1893,7 @@ func TestOpenSurfaceRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 	ctx := context.Background()
 	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
 	now := stableRecentTestNow()
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	nextPolicy := sourcePolicyForRelease(ref)
@@ -1797,11 +1902,12 @@ func TestOpenSurfaceRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 
 	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceID:         "lifecycle.activity",
+		SurfaceID:         "lifecycle.view",
 		SurfaceInstanceID: "surface_source_policy_advance",
 		OwnerSessionHash:  "session_hash",
 		OwnerUserHash:     "user_hash",
-		Now:               now.Add(time.Second),
+		Now:               now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("OpenSurface() error = %v, want ErrReleaseRefPolicyDenied", err)
 	}
@@ -1853,44 +1959,47 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 	ctx := context.Background()
 	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
 	now := stableRecentTestNow()
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.activity",
+		SurfaceID:            "lifecycle.view",
 		SurfaceInstanceID:    "surface_source_policy_bridge",
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",
 		SessionChannelIDHash: "channel_hash",
-		Now:                  now.Add(time.Second),
+		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	if _, err := h.ExchangeAssetTicket(ctx, ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(2 * time.Second),
-	}); err != nil {
-		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	if _, err := h.PrepareSurface(ctx, exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("PrepareSurface() error = %v", err)
 	}
 	nextPolicy := sourcePolicyForRelease(ref)
 	setSourcePolicyEpochs(&nextPolicy, "2")
 	sourceResolver.snapshot = nextPolicy
 	handshake := bridge.Handshake{
-		PluginID:          bootstrap.PluginID,
-		SurfaceID:         bootstrap.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		ActiveFingerprint: bootstrap.ActiveFingerprint,
-		BridgeNonce:       bootstrap.BridgeNonce,
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}
 
 	if _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_source_policy",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_source_policy"),
+		OwnerSessionHash:          bootstrap.OwnerSessionHash,
+		OwnerUserHash:             bootstrap.OwnerUserHash,
+		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
 		Now:                       now.Add(3 * time.Second),
 	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
 		t.Fatalf("MintBridgeToken() error = %v, want ErrReleaseRefPolicyDenied", err)
@@ -1936,7 +2045,7 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatalf("InstallReleaseRef() error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow()})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -2021,7 +2130,7 @@ func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow()})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow(), PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -2120,18 +2229,19 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
 	bootstrap, err := host.OpenSurface(context.Background(), OpenSurfaceRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.activity",
+		SurfaceID:            "lifecycle.view",
 		SurfaceInstanceID:    "surface_lifecycle",
 		OwnerSessionHash:     "owner_session_hash",
 		OwnerUserHash:        "owner_user_hash",
 		SessionChannelIDHash: "session_channel_hash",
-		Now:                  now.Add(time.Second),
+		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, host,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
@@ -2140,26 +2250,28 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		t.Fatalf("bootstrap missing ticket/nonce: %#v", bootstrap)
 	}
 
-	if _, err := host.ExchangeAssetTicket(context.Background(), ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(2 * time.Second),
-	}); err != nil {
-		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	if _, err := host.PrepareSurface(context.Background(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("PrepareSurface() error = %v", err)
 	}
 
 	handshake := bridge.Handshake{
-		PluginID:          bootstrap.PluginID,
-		SurfaceID:         bootstrap.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		ActiveFingerprint: bootstrap.ActiveFingerprint,
-		BridgeNonce:       bootstrap.BridgeNonce,
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}
 	gateway, err := host.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_channel",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_channel"),
+		OwnerSessionHash:          bootstrap.OwnerSessionHash,
+		OwnerUserHash:             bootstrap.OwnerUserHash,
+		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
 		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
@@ -2170,55 +2282,103 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 	}
 }
 
-func TestOpenSurfaceRegistersBrowserOrigin(t *testing.T) {
-	browserSite := browsersite.NewMemoryStore()
+func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{health: runtimeclient.Health{
+		RuntimeInstanceID:   "runtime_surface",
+		RuntimeGenerationID: "runtime_generation_surface",
+		IPCChannelID:        "ipc_surface",
+		ConnectionNonce:     "connection_nonce_surface_123456",
+		Ready:               true,
+	}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		browserSite:    browserSite,
+		developerMode:     true,
+		localGenerated:    true,
+		runtimeSupervisor: runtime,
 	})
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
 	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.activity",
-		SurfaceInstanceID:    "surface_lifecycle_browser",
+		SurfaceID:            "lifecycle.view",
+		SurfaceInstanceID:    "surface_runtime_generation",
 		OwnerSessionHash:     "owner_session_hash",
 		OwnerUserHash:        "owner_user_hash",
 		SessionChannelIDHash: "session_channel_hash",
-		SandboxOrigin:        "https://plg-lifecycle.sandbox.redevplugin.local",
+		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
+	})
+	if err != nil {
+		t.Fatalf("OpenSurface() error = %v", err)
+	}
+	if bootstrap.RuntimeGenerationID != "runtime_generation_surface" {
+		t.Fatalf("runtime generation = %q, want runtime_generation_surface", bootstrap.RuntimeGenerationID)
+	}
+	if !audits.hasEvent("plugin.surface.opened") {
+		t.Fatalf("missing surface opened audit event: %#v", audits.events)
+	}
+}
+
+func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{health: runtimeclient.Health{
+		RuntimeInstanceID:   "runtime_surface",
+		RuntimeGenerationID: "runtime_generation_1",
+		IPCChannelID:        "ipc_surface",
+		ConnectionNonce:     "connection_nonce_surface_123456",
+		Ready:               true,
+	}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		runtimeSupervisor: runtime,
+	})
+	now := stableRecentTestNow()
+	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
+	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "lifecycle.view",
+		SurfaceInstanceID:    "surface_runtime_restart_before_bridge",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		PluginStateVersion:   mustPluginStateVersion(t, h, installed.PluginInstanceID),
 		Now:                  now.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	origins, err := browserSite.ListOrigins(context.Background(), browsersite.ListRequest{PluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := h.PrepareSurface(context.Background(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("PrepareSurface() error = %v", err)
 	}
-	if len(origins) != 1 {
-		t.Fatalf("registered origins = %#v", origins)
+	runtime.health.RuntimeGenerationID = "runtime_generation_2"
+	handshake := bridge.Handshake{
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}
-	origin := origins[0]
-	if origin.State != browsersite.StateActive ||
-		origin.PluginID != installed.PluginID ||
-		origin.ActiveFingerprint != installed.ActiveFingerprint ||
-		origin.SurfaceID != "lifecycle.activity" ||
-		origin.SurfaceInstanceID != bootstrap.SurfaceInstanceID ||
-		origin.OwnerSessionHash != "owner_session_hash" ||
-		origin.OwnerUserHash != "owner_user_hash" ||
-		origin.Origin != "https://plg-lifecycle.sandbox.redevplugin.local" {
-		t.Fatalf("registered origin mismatch: %#v", origin)
-	}
-	if !audits.hasEvent("plugin.browser_origin.registered") {
-		t.Fatalf("missing browser origin audit event: %#v", audits.events)
+	_, err = h.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_runtime_restart",
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_runtime_restart"),
+		OwnerSessionHash:          bootstrap.OwnerSessionHash,
+		OwnerUserHash:             bootstrap.OwnerUserHash,
+		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
+		Now:                       now.Add(3 * time.Second),
+	})
+	if !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("MintBridgeToken() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
 	}
 }
 
@@ -2229,56 +2389,142 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	bootstrap, err := h.OpenSurface(context.Background(), OpenSurfaceRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "lifecycle.activity",
+		SurfaceID:            "lifecycle.view",
 		SurfaceInstanceID:    "surface_asset",
 		OwnerSessionHash:     "owner_session_hash",
 		OwnerUserHash:        "owner_user_hash",
 		SessionChannelIDHash: "session_channel_hash",
-		Now:                  now.Add(time.Second),
+		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			installed.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession: "not-a-session",
-		AssetPath:    "ui/index.html",
-		Now:          now.Add(2 * time.Second),
+		AssetSession:         "not-a-session",
+		AssetSessionID:       "as_invalid",
+		BindingID:            "asset_invalid",
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(2 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenInvalid) {
 		t.Fatalf("ReadSurfaceAsset() error = %v, want ErrTokenInvalid", err)
 	}
-	session, err := h.ExchangeAssetTicket(context.Background(), ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(2 * time.Second),
-	})
+	prepared, err := h.PrepareSurface(context.Background(), exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(prepared.Document.Assets) != 1 {
+		t.Fatalf("prepared assets = %#v, want one lazy asset", prepared.Document.Assets)
+	}
+	preparedAsset := prepared.Document.Assets[0]
 	asset, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession:   session.AssetSession,
-		AssetSessionID: session.AssetSessionID,
-		AssetPath:      "ui/index.html",
-		Now:            now.Add(3 * time.Second),
+		AssetSession:         prepared.AssetSession,
+		AssetSessionID:       prepared.AssetSessionID,
+		BindingID:            preparedAsset.BindingID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(3 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("ReadSurfaceAsset() error = %v", err)
 	}
-	if string(asset.Content) != "<!doctype html><title>Plugin</title>" || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
+	if string(asset.Content) != "status" || asset.Entry.Path != preparedAsset.Path || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
 		t.Fatalf("asset mismatch: session=%#v entry=%#v content=%q", asset.Session, asset.Entry, string(asset.Content))
 	}
+	originalAssets := h.adapters.Assets
+	for _, tt := range []struct {
+		name   string
+		mutate func(pluginpkg.Asset) pluginpkg.Asset
+	}{
+		{
+			name: "content digest",
+			mutate: func(asset pluginpkg.Asset) pluginpkg.Asset {
+				asset.Content = []byte("forged")
+				return asset
+			},
+		},
+		{
+			name: "entry path",
+			mutate: func(asset pluginpkg.Asset) pluginpkg.Asset {
+				asset.Entry.Path = "ui/other.txt"
+				return asset
+			},
+		},
+		{
+			name: "entry size",
+			mutate: func(asset pluginpkg.Asset) pluginpkg.Asset {
+				asset.Entry.Size++
+				return asset
+			},
+		},
+		{
+			name: "entry content type",
+			mutate: func(asset pluginpkg.Asset) pluginpkg.Asset {
+				asset.Entry.ContentType = "application/octet-stream"
+				return asset
+			},
+		},
+	} {
+		t.Run("rejects adapter "+tt.name+" mismatch", func(t *testing.T) {
+			h.adapters.Assets = mutatingAssetStore{AssetStore: originalAssets, mutate: tt.mutate}
+			defer func() { h.adapters.Assets = originalAssets }()
+			_, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
+				AssetSession:         prepared.AssetSession,
+				AssetSessionID:       prepared.AssetSessionID,
+				BindingID:            preparedAsset.BindingID,
+				OwnerSessionHash:     bootstrap.OwnerSessionHash,
+				OwnerUserHash:        bootstrap.OwnerUserHash,
+				SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+				Now:                  now.Add(3 * time.Second),
+			})
+			if !errors.Is(err, bridge.ErrTokenAudience) {
+				t.Fatalf("ReadSurfaceAsset() adapter mismatch error = %v, want ErrTokenAudience", err)
+			}
+		})
+	}
 	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
-		AssetSession:   session.AssetSession,
-		AssetSessionID: "asset_session_other",
-		AssetPath:      "ui/index.html",
-		Now:            now.Add(3 * time.Second),
+		AssetSession:         prepared.AssetSession,
+		AssetSessionID:       prepared.AssetSessionID,
+		BindingID:            "asset_not_prepared",
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(3 * time.Second),
+	}); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("ReadSurfaceAsset(unprepared binding) error = %v, want ErrTokenAudience", err)
+	}
+	if _, err := h.ReadSurfaceAsset(context.Background(), ReadSurfaceAssetRequest{
+		AssetSession:         prepared.AssetSession,
+		AssetSessionID:       "asset_session_other",
+		BindingID:            preparedAsset.BindingID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(3 * time.Second),
 	}); !errors.Is(err, bridge.ErrTokenAudience) {
 		t.Fatalf("ReadSurfaceAsset(wrong session id) error = %v, want ErrTokenAudience", err)
 	}
+}
+
+type mutatingAssetStore struct {
+	pluginpkg.AssetStore
+	mutate func(pluginpkg.Asset) pluginpkg.Asset
+}
+
+func (s mutatingAssetStore) ReadAsset(ctx context.Context, packageHash string, assetPath string) (pluginpkg.Asset, error) {
+	asset, err := s.AssetStore.ReadAsset(ctx, packageHash, assetPath)
+	if err != nil {
+		return pluginpkg.Asset{}, err
+	}
+	return s.mutate(asset), nil
 }
 
 func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
@@ -2289,7 +2535,8 @@ func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	}
 	if _, err := host.OpenSurface(context.Background(), OpenSurfaceRequest{
 		PluginInstanceID: installed.PluginInstanceID,
-		SurfaceID:        "lifecycle.activity",
+		SurfaceID:        "lifecycle.view", PluginStateVersion: mustPluginStateVersion(t, host,
+			installed.PluginInstanceID),
 	}); err == nil {
 		t.Fatal("OpenSurface() expected disabled plugin error")
 	}
@@ -2303,7 +2550,7 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2332,6 +2579,102 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	}
 	if !audits.hasEvent("plugin.method.called") {
 		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{health: runtimeclient.Health{
+		RuntimeInstanceID:   "runtime_surface",
+		RuntimeGenerationID: "runtime_generation_1",
+		IPCChannelID:        "ipc_surface",
+		ConnectionNonce:     "connection_nonce_surface_123456",
+		Ready:               true,
+	}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+		runtimeSupervisor: runtime,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	runtime.health.RuntimeGenerationID = "runtime_generation_2"
+
+	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+		Params:               map[string]any{"message": "hello"},
+	})
+	if !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("CallPluginMethod() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter calls = %d, want 0", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodRejectsRequestSchemaViolationBeforeDispatch(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+
+	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+		Params:               map[string]any{"unknown": true},
+	})
+	if !errors.Is(err, ErrMethodRequestContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodRequestContract", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter calls = %d, want 0", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodRejectsResponseSchemaViolation(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unknown": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+
+	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "echo.ping",
+		Params:               map[string]any{"message": "hello"},
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
 	}
 }
 
@@ -2364,7 +2707,7 @@ func TestCallPluginMethodRedactsCapabilityResponseData(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2404,7 +2747,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildRPCFixturePackage(t), "rpc.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -2443,7 +2786,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() with stale token error = %v, want ErrTokenRevoked", err)
 	}
-	_, freshGateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	_, freshGateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	call.GatewayToken = freshGateway.GatewayToken
 	if _, err := h.CallPluginMethod(context.Background(), call); err != nil {
 		t.Fatalf("CallPluginMethod() after grant error = %v", err)
@@ -2474,7 +2817,7 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() after revoke with stale token error = %v, want ErrTokenRevoked", err)
 	}
-	_, freshGateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	_, freshGateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	call.GatewayToken = freshGateway.GatewayToken
 	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, permissions.ErrPermissionDenied) {
 		t.Fatalf("CallPluginMethod() after revoke error = %v, want ErrPermissionDenied", err)
@@ -2501,7 +2844,7 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 		runtimeSupervisor: runtime,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	if _, err := h.RevokePermission(context.Background(), RevokePermissionRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PermissionID:     "read",
@@ -2546,14 +2889,14 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 }
 
 func TestCallPluginMethodRegistersOperation(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_pull_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_pull_1"}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
 
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2590,14 +2933,14 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 }
 
 func TestCallPluginMethodRegistersStream(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{StreamID: "stream_logs_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, StreamID: "stream_logs_1"}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
 
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2612,7 +2955,7 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if result.StreamID != "stream_logs_1" || result.StreamTicket == "" || result.StreamTicketID == "" {
+	if result.StreamID != "stream_logs_1" || result.StreamTicket == "" || result.StreamTicketID == "" || result.StreamExpiresAt == nil || result.StreamExpiresAt.IsZero() {
 		t.Fatalf("CallPluginMethod() stream result mismatch: %#v", result)
 	}
 	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
@@ -2624,14 +2967,14 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1"}); !errors.Is(err, ErrStreamTicketRequired) {
 		t.Fatalf("ReadStream() without ticket error = %v, want %v", err, ErrStreamTicketRequired)
 	}
-	streamResult, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1", StreamTicket: result.StreamTicket})
+	streamResult, err := h.ReadStream(context.Background(), scopedReadStreamRequest("stream_logs_1", result.StreamTicket))
 	if err != nil {
 		t.Fatalf("ReadStream() error = %v", err)
 	}
 	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != "line 1" {
 		t.Fatalf("stream read mismatch: %#v", streamResult)
 	}
-	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1", StreamTicket: result.StreamTicket}); !errors.Is(err, bridge.ErrTokenReplay) {
+	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest("stream_logs_1", result.StreamTicket)); !errors.Is(err, bridge.ErrTokenReplay) {
 		t.Fatalf("ReadStream() replay error = %v, want %v", err, bridge.ErrTokenReplay)
 	}
 	if !audits.hasEvent("plugin.stream.started") {
@@ -2640,14 +2983,14 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 }
 
 func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{StreamID: "stream_disable_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, StreamID: "stream_disable_1"}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -2668,7 +3011,7 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 		t.Fatalf("AppendStreamEvent() before disable error = %v", err)
 	}
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"}); err != nil {
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 
@@ -2679,10 +3022,7 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 	}); !errors.Is(err, stream.ErrStreamClosed) {
 		t.Fatalf("AppendStreamEvent() after disable error = %v, want %v", err, stream.ErrStreamClosed)
 	}
-	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{
-		StreamID:     "stream_disable_1",
-		StreamTicket: result.StreamTicket,
-	}); !errors.Is(err, bridge.ErrTokenRevoked) {
+	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest("stream_disable_1", result.StreamTicket)); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("ReadStream() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
 	}
 	if !audits.hasEvent("plugin.streams.disabled_transitioned") {
@@ -2701,7 +3041,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		runtimeSupervisor:  runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2817,7 +3157,7 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 		runtimeSupervisor:  runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2843,7 +3183,7 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 
 func TestCallPluginMethodWorkerRouteRequiresRuntimeSupervisor(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2870,9 +3210,9 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
 		runtimeSupervisor:  runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"}); err != nil {
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
@@ -2904,9 +3244,9 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
 		runtimeSupervisor:  runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
-	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
@@ -2934,7 +3274,7 @@ func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 		localGenerated: true,
 		coreActions:    coreAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
 	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -2966,7 +3306,7 @@ func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 
 func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
 
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -3035,7 +3375,7 @@ func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
 }
 
 func TestCancelOperationRequestsCancel(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_cancel_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_cancel_1"}}
 	operationCanceler := &recordingOperationCanceler{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -3044,7 +3384,7 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 		capabilityAdapter: capabilityAdapter,
 		operationCanceler: operationCanceler,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3085,7 +3425,7 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 }
 
 func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{OperationID: "op_cancel_fail_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_cancel_fail_1"}}
 	operationCanceler := &recordingOperationCanceler{err: errors.New("runtime unavailable")}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -3094,7 +3434,7 @@ func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing
 		capabilityAdapter: capabilityAdapter,
 		operationCanceler: operationCanceler,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3132,7 +3472,7 @@ func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -3160,7 +3500,7 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -3180,14 +3520,14 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 }
 
 func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "allowed"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
+	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	beforePolicy, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
 	if err != nil {
 		t.Fatal(err)
@@ -3210,7 +3550,7 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 	if afterPolicy.PolicyRevision <= beforePolicy.PolicyRevision || afterPolicy.RevokeEpoch <= beforePolicy.RevokeEpoch {
 		t.Fatalf("security policy update did not bump policy/revoke revisions: before=%#v after=%#v", beforePolicy, afterPolicy)
 	}
-	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3230,7 +3570,7 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 	if err := h.DeleteSecurityPolicy(context.Background(), DeleteSecurityPolicyRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatalf("DeleteSecurityPolicy() error = %v", err)
 	}
-	_, gateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.activity")
+	_, gateway = openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "rpc.view")
 	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3252,14 +3592,14 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 }
 
 func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3323,7 +3663,7 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 		capabilityID:      "example.capability.tasks",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3408,7 +3748,7 @@ func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *te
 		capabilityID:      "example.capability.tasks",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3448,7 +3788,7 @@ func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *te
 }
 
 func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	confirmationIntents := &tamperingConfirmationIntentStore{
 		ConfirmationIntentStore: security.NewMemoryConfirmationIntentStore(),
 		planHash:                "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -3460,7 +3800,7 @@ func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 		capabilityAdapter:   capabilityAdapter,
 		confirmationIntents: confirmationIntents,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3490,7 +3830,7 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 	}
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:       true,
@@ -3501,7 +3841,7 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 		connectivityBroker:  connectivity.NewMemoryBroker(),
 		confirmationIntents: confirmationIntents,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3522,7 +3862,7 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 	}
 	call.ConfirmationID = confirmation.ConfirmationID
 
-	disabled, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"})
+	disabled, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
@@ -3578,7 +3918,7 @@ func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -3595,7 +3935,7 @@ func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 		t.Fatalf("MintConnectionGrant(before disable) error = %v", err)
 	}
 
-	disabled, err := h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: enabled.PluginInstanceID, Reason: "policy"})
+	disabled, err := h.DisablePlugin(ctx, DisableRequest{PluginInstanceID: enabled.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
@@ -3634,7 +3974,7 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, installed)
@@ -3677,7 +4017,7 @@ func TestInvokeIntentRequiresPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3713,10 +4053,10 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: first.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: first.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, first.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: second.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: second.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, second.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, first)
@@ -3728,7 +4068,7 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 }
 
 func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -3739,7 +4079,7 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	grantDeclaredPermissions(t, h, installed)
@@ -3761,14 +4101,14 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 }
 
 func TestConfirmationIntentCannotBeReusedForDifferentParams(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3799,14 +4139,14 @@ func TestConfirmationIntentCannotBeReusedForDifferentParams(t *testing.T) {
 }
 
 func TestConfirmationIntentConsumesOnceAfterSuccess(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3835,14 +4175,14 @@ func TestConfirmationIntentConsumesOnceAfterSuccess(t *testing.T) {
 }
 
 func TestConfirmationIntentBindsFullParamsBeyondManifestHashFieldHints(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "done"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
@@ -3876,7 +4216,7 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	namespaces, err := storageBroker.ListNamespaces(context.Background(), installed.PluginInstanceID)
@@ -3921,7 +4261,7 @@ func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, host, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -3997,7 +4337,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -4147,7 +4487,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 		t.Fatalf("MintNetworkHandleGrant(missing runtime generation) error = %v, want %v", err, bridge.ErrMissingTokenAudience)
 	}
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test"}); err != nil {
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "test", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 	if _, err := connectivityBroker.MintConnectionGrant(context.Background(), connectivity.GrantRequest{
@@ -4176,7 +4516,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -4264,7 +4604,7 @@ func TestEnableRejectsBlockedNetworkTargetBeforeStorageSideEffects(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); !errors.Is(err, connectivity.ErrTargetDenied) {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, connectivity.ErrTargetDenied) {
 		t.Fatalf("EnablePlugin() error = %v, want ErrTargetDenied", err)
 	}
 	namespaces, err := storageBroker.ListNamespaces(ctx, installed.PluginInstanceID)
@@ -4292,7 +4632,7 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID}); err != nil {
+	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, retainHost, retainedPlugin.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := retainBroker.PutKV(ctx, storage.KVPutRequest{
@@ -4303,7 +4643,7 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutKV(retain setup) error = %v", err)
 	}
-	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, retainHost, retainedPlugin.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin(retain) error = %v", err)
 	}
 	retained, err := retainBroker.ListNamespaces(ctx, retainedPlugin.PluginInstanceID)
@@ -4321,7 +4661,6 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 		retainedRecords[0].State != retaineddata.StateRetained ||
 		!retainedRecords[0].StorageRetained ||
 		retainedRecords[0].SettingsRetained ||
-		retainedRecords[0].BrowserSiteRetained ||
 		retainedRecords[0].UsageBytes == 0 {
 		t.Fatalf("retained data registry mismatch: %#v", retainedRecords)
 	}
@@ -4380,7 +4719,7 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID}); err != nil {
+	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, deleteHost, deletedPlugin.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := deleteBroker.PutKV(ctx, storage.KVPutRequest{
@@ -4391,7 +4730,7 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutKV(delete setup) error = %v", err)
 	}
-	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, deleteHost, deletedPlugin.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin(delete) error = %v", err)
 	}
 	deleted, err := deleteBroker.ListNamespaces(ctx, deletedPlugin.PluginInstanceID)
@@ -4439,7 +4778,7 @@ func TestDeleteRetainedDataRemovesRetainedStoragePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
@@ -4450,7 +4789,7 @@ func TestDeleteRetainedDataRemovesRetainedStoragePayload(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutKV() error = %v", err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin(retain) error = %v", err)
 	}
 	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: installed.PluginInstanceID})
@@ -4502,7 +4841,7 @@ func TestBindRetainedDataRestoresStoragePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
@@ -4513,7 +4852,7 @@ func TestBindRetainedDataRestoresStoragePayload(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
@@ -4575,7 +4914,7 @@ func TestBindRetainedDataRestoresStoragePayloadInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := broker.PutKV(ctx, storage.KVPutRequest{
@@ -4586,7 +4925,7 @@ func TestBindRetainedDataRestoresStoragePayloadInPlace(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
@@ -4639,7 +4978,7 @@ func TestBindRetainedDataRestoresSettingsWithoutSecretState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
@@ -4655,7 +4994,7 @@ func TestBindRetainedDataRestoresSettingsWithoutSecretState(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
@@ -4708,10 +5047,10 @@ func TestBindRetainedDataRejectsUnsafeTrustClass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
@@ -4758,10 +5097,10 @@ func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: source.PluginInstanceID, DeleteData: false, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	retainedRecords, err := h.ListRetainedData(ctx, ListRetainedDataRequest{SourcePluginInstanceID: source.PluginInstanceID})
@@ -4776,7 +5115,7 @@ func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: target.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: target.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, target.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4795,17 +5134,15 @@ func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
 	}
 }
 
-func TestCleanupExpiredRetainedDataDeletesPayloadAndMarksFailures(t *testing.T) {
+func TestCleanupExpiredRetainedDataDeletesPayload(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
 	broker := storage.NewMemoryBroker()
-	browserSite := browsersite.NewMemoryStore()
 	retainedRegistry := retaineddata.NewMemoryStore()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
 		storageBroker:  broker,
-		browserSite:    browserSite,
 		retainedData:   retainedRegistry,
 	})
 
@@ -4847,64 +5184,22 @@ func TestCleanupExpiredRetainedDataDeletesPayloadAndMarksFailures(t *testing.T) 
 		t.Fatalf("Retain(success) error = %v", err)
 	}
 
-	failedPluginID := "plugini_retained_expired_failed"
-	if _, err := browserSite.RegisterOrigin(ctx, browsersite.RegisterRequest{
-		PluginInstanceID:  failedPluginID,
-		PluginID:          "com.example.browser",
-		ActiveFingerprint: "sha256:browser",
-		Origin:            "https://plg-failed.sandbox.redevplugin.local",
-		OwnerSessionHash:  "session_failed",
-		Now:               now.Add(-2 * time.Hour),
-	}); err != nil {
-		t.Fatalf("RegisterOrigin(failed) error = %v", err)
-	}
-	if _, err := browserSite.CleanupPluginOrigins(ctx, browsersite.CleanupRequest{
-		PluginInstanceID: failedPluginID,
-		DeleteData:       false,
-		Reason:           "test_retain",
-		Now:              now.Add(-time.Hour),
-	}); err != nil {
-		t.Fatalf("CleanupPluginOrigins(retain failed) error = %v", err)
-	}
-	failedRecord, err := retainedRegistry.Retain(ctx, retaineddata.RetainRequest{
-		RetainedID:             "retained_expired_failed",
-		SourcePluginInstanceID: failedPluginID,
-		PublisherID:            "example",
-		PluginID:               "com.example.browser",
-		Version:                "1.0.0",
-		PackageHash:            "sha256:package-failed",
-		ManifestHash:           "sha256:manifest-failed",
-		BrowserSiteRetained:    true,
-		DeleteAfter:            &deleteAfter,
-		Now:                    now.Add(-2 * time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("Retain(failed) error = %v", err)
-	}
-
 	result, err := h.CleanupExpiredRetainedData(ctx, CleanupExpiredRetainedDataRequest{Now: now})
-	if !errors.Is(err, ErrRetainedDataCleanupFailed) {
-		t.Fatalf("CleanupExpiredRetainedData() error = %v, want ErrRetainedDataCleanupFailed", err)
+	if err != nil {
+		t.Fatalf("CleanupExpiredRetainedData() error = %v", err)
 	}
 	if len(result.Deleted) != 1 || result.Deleted[0].RetainedID != successRecord.RetainedID || result.Deleted[0].State != retaineddata.StateDeleted {
 		t.Fatalf("deleted cleanup result mismatch: %#v", result.Deleted)
 	}
-	if len(result.Failed) != 1 || result.Failed[0].RetainedID != failedRecord.RetainedID || result.Failed[0].State != retaineddata.StateDeleteFailedRetryable {
-		t.Fatalf("failed cleanup result mismatch: %#v", result.Failed)
+	if len(result.Failed) != 0 {
+		t.Fatalf("unexpected failed cleanup result: %#v", result.Failed)
 	}
 	if namespaces, err := broker.ListNamespaces(ctx, successPluginID); err != nil {
 		t.Fatal(err)
 	} else if len(namespaces) != 0 {
 		t.Fatalf("expired retained storage still present: %#v", namespaces)
 	}
-	storedFailed, err := retainedRegistry.Get(ctx, failedRecord.RetainedID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if storedFailed.State != retaineddata.StateDeleteFailedRetryable || storedFailed.DeleteError == "" {
-		t.Fatalf("failed retained record mismatch: %#v", storedFailed)
-	}
-	if !audits.hasEvent("plugin.retained_data.deleted") || !audits.hasEvent("plugin.retained_data.delete_failed") {
+	if !audits.hasEvent("plugin.retained_data.deleted") {
 		t.Fatalf("missing retained cleanup audit events: %#v", audits.events)
 	}
 }
@@ -5060,8 +5355,8 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 		localGenerated:    true,
 		runtimeSupervisor: runtime,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.activity")
-	uninstalled, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	uninstalled, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
@@ -5109,7 +5404,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
@@ -5143,7 +5438,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 		t.Fatalf("Streams.Register() error = %v", err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: enabled.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: enabled.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
 
@@ -5174,131 +5469,6 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 	}
 }
 
-func TestUninstallRetainsOrDeletesBrowserSiteData(t *testing.T) {
-	ctx := context.Background()
-	retainBrowserSite := browsersite.NewMemoryStore()
-	retainHost, _, retainAudits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		browserSite:    retainBrowserSite,
-	})
-	retainedPlugin, err := ImportLocalPackageBytes(ctx, retainHost, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := retainHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: retainedPlugin.PluginInstanceID}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := retainHost.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:  retainedPlugin.PluginInstanceID,
-		SurfaceID:         "lifecycle.activity",
-		SurfaceInstanceID: "surface_retain_browser",
-		OwnerSessionHash:  "session_retain",
-		SandboxOrigin:     "https://plg-retain.sandbox.redevplugin.local",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := retainHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: retainedPlugin.PluginInstanceID, DeleteData: false}); err != nil {
-		t.Fatalf("UninstallPlugin(retain) error = %v", err)
-	}
-	retainedOrigins, err := retainBrowserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: retainedPlugin.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retainedOrigins) != 1 || retainedOrigins[0].State != browsersite.StateRetained || retainedOrigins[0].RetainedAt == nil {
-		t.Fatalf("retained browser origins mismatch: %#v", retainedOrigins)
-	}
-	if !retainAudits.hasEvent("plugin.browser_site.retained") {
-		t.Fatalf("missing retained browser site audit event: %#v", retainAudits.events)
-	}
-
-	cleaner := &recordingBrowserSiteCleaner{}
-	deleteBrowserSite := browsersite.NewMemoryStore(browsersite.MemoryStoreOptions{Cleaner: cleaner})
-	deleteHost, _, deleteAudits := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		browserSite:    deleteBrowserSite,
-	})
-	deletedPlugin, err := ImportLocalPackageBytes(ctx, deleteHost, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := deleteHost.EnablePlugin(ctx, EnableRequest{PluginInstanceID: deletedPlugin.PluginInstanceID}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := deleteHost.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:  deletedPlugin.PluginInstanceID,
-		SurfaceID:         "lifecycle.activity",
-		SurfaceInstanceID: "surface_delete_browser",
-		OwnerSessionHash:  "session_delete",
-		SandboxOrigin:     "https://plg-delete.sandbox.redevplugin.local",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := deleteHost.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: deletedPlugin.PluginInstanceID, DeleteData: true}); err != nil {
-		t.Fatalf("UninstallPlugin(delete) error = %v", err)
-	}
-	if len(cleaner.origins) != 1 || cleaner.origins[0] != "https://plg-delete.sandbox.redevplugin.local" {
-		t.Fatalf("cleaned origins mismatch: %#v", cleaner.origins)
-	}
-	deletedOrigins, err := deleteBrowserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: deletedPlugin.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(deletedOrigins) != 1 || deletedOrigins[0].State != browsersite.StateCleanupComplete || deletedOrigins[0].CleanedAt == nil {
-		t.Fatalf("deleted browser origins mismatch: %#v", deletedOrigins)
-	}
-	if !deleteAudits.hasEvent("plugin.browser_site.deleted") {
-		t.Fatalf("missing deleted browser site audit event: %#v", deleteAudits.events)
-	}
-}
-
-func TestUninstallDeleteDataFailsWhenBrowserSiteCleanupFails(t *testing.T) {
-	ctx := context.Background()
-	cleaner := &recordingBrowserSiteCleaner{err: errors.New("browser profile locked")}
-	browserSite := browsersite.NewMemoryStore(browsersite.MemoryStoreOptions{Cleaner: cleaner})
-	diagnostics := &diagnosticSink{}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		browserSite:    browserSite,
-		diagnostics:    diagnostics,
-	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
-		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceID:         "lifecycle.activity",
-		SurfaceInstanceID: "surface_cleanup_failure",
-		OwnerSessionHash:  "session_failure",
-		SandboxOrigin:     "https://plg-failure.sandbox.redevplugin.local",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); !errors.Is(err, browsersite.ErrCleanupFailed) {
-		t.Fatalf("UninstallPlugin(delete) error = %v, want ErrCleanupFailed", err)
-	}
-	if _, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID); err != nil {
-		t.Fatalf("plugin should remain installed after failed browser cleanup: %v", err)
-	}
-	origins, err := browserSite.ListOrigins(ctx, browsersite.ListRequest{PluginInstanceID: installed.PluginInstanceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(origins) != 1 || origins[0].State != browsersite.StateCleanupFailed || origins[0].CleanupError == "" {
-		t.Fatalf("failed browser origin mismatch: %#v", origins)
-	}
-	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.browser_site.cleanup_failed" {
-		t.Fatalf("diagnostic events mismatch: %#v", diagnostics.events)
-	}
-}
-
 func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 	ctx := context.Background()
 	broker, err := storage.NewFileBroker(t.TempDir())
@@ -5310,7 +5480,7 @@ func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	dataPath, err := broker.NamespacePath(ctx, installed.PluginInstanceID, "cache")
@@ -5321,7 +5491,7 @@ func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 	if err := os.WriteFile(dataFile, []byte(`{"theme":"dark"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
 	}
 	if _, err := os.Stat(dataFile); !errors.Is(err, os.ErrNotExist) {
@@ -5362,7 +5532,7 @@ func TestDisableTransitionsOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy"}); err != nil {
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, cancelOp.OperationID, operation.StatusCancelRequested)
@@ -5383,7 +5553,7 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
@@ -5395,7 +5565,7 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); !errors.Is(err, operation.ErrDeleteBlocked) {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
 		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
 	}
 	assertHostOperationStatus(t, h, "op_blocks_delete", operation.StatusCancelRequested)
@@ -5426,7 +5596,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
@@ -5438,7 +5608,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); !errors.Is(err, operation.ErrDeleteBlocked) {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
 		t.Fatalf("UninstallPlugin() first error = %v, want ErrDeleteBlocked", err)
 	}
 	if _, err := h.FinishOperation(ctx, FinishOperationRequest{
@@ -5448,7 +5618,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("FinishOperation() error = %v", err)
 	}
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() retry error = %v", err)
 	}
 	namespaces, err := broker.ListNamespaces(ctx, installed.PluginInstanceID)
@@ -5468,7 +5638,7 @@ func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
@@ -5481,7 +5651,7 @@ func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
 	}
 	assertHostOperationStatus(t, h, "op_force_cleanup", operation.StatusOrphanedAfterUninstall)
@@ -5502,7 +5672,7 @@ func TestExportImportPluginData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := broker.SetUsage(ctx, source.PluginInstanceID, "db", 2048); err != nil {
@@ -5547,7 +5717,7 @@ func TestExportImportPluginSettingsData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.PatchPluginSettings(ctx, PatchSettingsRequest{
@@ -5621,7 +5791,7 @@ func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: source.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, source.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 	exported, err := h.ExportPluginData(ctx, ExportDataRequest{PluginInstanceID: source.PluginInstanceID})
@@ -5690,7 +5860,7 @@ func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	schema, err := h.GetSettingsSchema(ctx, GetSettingsRequest{PluginInstanceID: installed.PluginInstanceID})
@@ -5745,7 +5915,7 @@ func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
 		t.Fatalf("secret setting state mismatch: %#v", withSecret.Values["api_token"])
 	}
 
-	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err != nil {
+	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin(delete data) error = %v", err)
 	}
 	if secrets.deletePluginID != installed.PluginInstanceID {
@@ -5815,40 +5985,11 @@ func TestUninstallDeleteDataRequiresSecretPluginCleanup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("BindSecretRef() error = %v", err)
 	}
-	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true}); err == nil || !strings.Contains(err.Error(), "secret store does not support plugin cleanup") {
+	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err == nil || !strings.Contains(err.Error(), "secret store does not support plugin cleanup") {
 		t.Fatalf("UninstallPlugin(delete data) error = %v, want secret cleanup support error", err)
 	}
 	if _, err := h.adapters.Settings.Get(context.Background(), settings.GetRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
 		t.Fatalf("settings should not be deleted when secret cleanup preflight fails: %v", err)
-	}
-}
-
-func TestReportCSPViolationAppendsDiagnostic(t *testing.T) {
-	diagnostics := &diagnosticSink{}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		diagnostics:    diagnostics,
-	})
-	err := h.ReportCSPViolation(context.Background(), CSPViolationReport{
-		PluginID:           "com.example.plugin",
-		PluginInstanceID:   "plugin_instance",
-		SurfaceID:          "activity",
-		SurfaceInstanceID:  "surface_instance",
-		ActiveFingerprint:  "sha256:fingerprint",
-		BlockedURI:         "inline",
-		EffectiveDirective: "script-src",
-		LineNumber:         12,
-	})
-	if err != nil {
-		t.Fatalf("ReportCSPViolation() error = %v", err)
-	}
-	if len(diagnostics.events) != 1 {
-		t.Fatalf("diagnostic events = %#v", diagnostics.events)
-	}
-	event := diagnostics.events[0]
-	if event.Type != "plugin.csp.violation" || event.Severity != "warning" || event.Message != "script-src" || event.PluginInstanceID != "plugin_instance" || event.Details["blocked_uri"] != "inline" {
-		t.Fatalf("diagnostic event mismatch: %#v", event)
 	}
 }
 
@@ -5865,7 +6006,7 @@ func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+	if _, err := h.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5880,11 +6021,13 @@ func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
 		t.Fatalf("audit events mismatch: %#v", auditEvents)
 	}
 
-	if err := h.ReportCSPViolation(context.Background(), CSPViolationReport{
-		PluginID:           installed.PluginID,
-		PluginInstanceID:   installed.PluginInstanceID,
-		SurfaceInstanceID:  "surface_default_observability",
-		EffectiveDirective: "script-src",
+	if err := h.adapters.Diagnostics.AppendPluginDiagnostic(context.Background(), DiagnosticEvent{
+		Type:              "plugin.surface.renderer_error",
+		Severity:          "warning",
+		Message:           "renderer rejected plugin output",
+		PluginID:          installed.PluginID,
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceInstanceID: "surface_default_observability",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -5896,7 +6039,7 @@ func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDiagnosticEvents() error = %v", err)
 	}
-	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.csp.violation" || diagnosticEvents[0].Message != "script-src" {
+	if len(diagnosticEvents) != 1 || diagnosticEvents[0].Type != "plugin.surface.renderer_error" || diagnosticEvents[0].Message != "renderer rejected plugin output" {
 		t.Fatalf("diagnostic events mismatch: %#v", diagnosticEvents)
 	}
 }
@@ -5922,7 +6065,6 @@ type testHostOptions struct {
 	networkExecutor         connectivity.NetworkExecutor
 	cleanup                 cleanup.Orchestrator
 	retainedData            retaineddata.Store
-	browserSite             browsersite.Store
 	installStages           installstage.Store
 	permissions             permissions.Store
 	securityPolicy          security.PolicyStore
@@ -5972,7 +6114,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		NetworkExecutor:         opts.networkExecutor,
 		Cleanup:                 opts.cleanup,
 		RetainedData:            opts.retainedData,
-		BrowserSite:             opts.browserSite,
 		InstallStages:           opts.installStages,
 		Permissions:             opts.permissions,
 		SecurityPolicy:          opts.securityPolicy,
@@ -5994,7 +6135,7 @@ func buildFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), fixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Plugin</title>")
+	writeSurfaceFixture(t, dir, "Plugin")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6006,7 +6147,7 @@ func buildVersionedLifecyclePackage(t *testing.T, version string, title string) 
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), lifecycleManifestJSON(version, title))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
+	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6018,7 +6159,7 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), storageFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Storage</title>")
+	writeSurfaceFixture(t, dir, "Storage")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6030,7 +6171,7 @@ func buildSettingsFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), settingsFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Settings</title>")
+	writeSurfaceFixture(t, dir, "Settings")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6054,7 +6195,7 @@ func buildMigrationFixturePackage(t *testing.T, opts migrationFixtureOptions) []
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), migrationFixtureManifestJSON(opts))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Migration</title>")
+	writeSurfaceFixture(t, dir, "Migration")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6071,7 +6212,7 @@ func buildVersionedRPCPackage(t *testing.T, version string, title string) []byte
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), rpcFixtureManifestJSON(version, title))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
+	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6083,7 +6224,7 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), dangerousRPCFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Danger</title>")
+	writeSurfaceFixture(t, dir, "Danger")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6109,7 +6250,7 @@ func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 		manifestJSON = dangerousRPCFixtureManifestJSON()
 	}
 	writeFile(t, filepath.Join(dir, "manifest.json"), addIntentToManifestJSON(t, manifestJSON, dangerous))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Intent</title>")
+	writeSurfaceFixture(t, dir, "Intent")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6121,7 +6262,7 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Operation</title>")
+	writeSurfaceFixture(t, dir, "Operation")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6133,7 +6274,7 @@ func buildSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), subscriptionRPCFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Subscription</title>")
+	writeSurfaceFixture(t, dir, "Subscription")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6145,7 +6286,7 @@ func buildCoreActionFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), coreActionFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Core Action</title>")
+	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6157,7 +6298,7 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker</title>")
+	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6171,7 +6312,7 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network</title>")
+	writeSurfaceFixture(t, dir, "Worker Network")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6187,7 +6328,7 @@ func buildWorkerNetworkSubscriptionFixturePackage(t *testing.T) []byte {
 	manifestJSON := strings.Replace(workerNetworkFixtureManifestJSON(), `"execution": "sync"`, `"execution": "subscription"`, 1)
 	manifestJSON = strings.Replace(manifestJSON, `"route": {"kind": "worker"`, `"cancel_policy": {"cancelable": true, "disable_behavior": "orphan", "uninstall_behavior": "force_cleanup_allowed", "ack_timeout_ms": 2000}, "route": {"kind": "worker"`, 1)
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Stream</title>")
+	writeSurfaceFixture(t, dir, "Worker Network Stream")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6201,7 +6342,7 @@ func buildWorkerNetworkHostcallFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Hostcall</title>")
+	writeSurfaceFixture(t, dir, "Worker Network Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedHostcallWorkerWASMForTest("redevplugin.network", "http_request_demo", "redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6215,7 +6356,7 @@ func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Memory Hostcall</title>")
+	writeSurfaceFixture(t, dir, "Worker Network Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6229,7 +6370,7 @@ func buildWorkerNetworkTransportMemoryHostcallFixturePackage(t *testing.T, trans
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkTransportFixtureManifestJSON(transport))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Network Transport Memory Hostcall</title>")
+	writeSurfaceFixture(t, dir, "Worker Network Transport Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkTransportMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke", transport))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6243,7 +6384,7 @@ func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage</title>")
+	writeSurfaceFixture(t, dir, "Worker Storage")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6257,7 +6398,7 @@ func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage Memory Hostcall</title>")
+	writeSurfaceFixture(t, dir, "Worker Storage Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6271,7 +6412,7 @@ func buildWorkerStorageKVMemoryHostcallFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageKVFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage KV Memory Hostcall</title>")
+	writeSurfaceFixture(t, dir, "Worker Storage KV Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageKVMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6285,7 +6426,7 @@ func buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageSQLiteFixtureManifestJSON())
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Worker Storage SQLite Memory Hostcall</title>")
+	writeSurfaceFixture(t, dir, "Worker Storage SQLite Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageSQLiteMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
@@ -6299,7 +6440,7 @@ func buildNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(false))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Network</title>")
+	writeSurfaceFixture(t, dir, "Network")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6311,7 +6452,7 @@ func buildBlockedNetworkFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(true))
-	writeFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>Network</title>")
+	writeSurfaceFixture(t, dir, "Network")
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6322,6 +6463,17 @@ func buildBlockedNetworkFixturePackage(t *testing.T) []byte {
 func writeFile(t *testing.T, filename string, content string) {
 	t.Helper()
 	writeBytes(t, filename, []byte(content))
+}
+
+func writeSurfaceFixture(t *testing.T, dir string, title string) {
+	t.Helper()
+	writeFile(t, filepath.Join(dir, "ui", "index.html"), fixtureSurfaceHTML(title))
+	writeFile(t, filepath.Join(dir, "ui", "assets", "app.js"), "void 0;")
+	writeFile(t, filepath.Join(dir, "ui", "assets", "status.png"), "status")
+}
+
+func fixtureSurfaceHTML(title string) string {
+	return `<!doctype html><html><head><title>` + title + `</title></head><body><main>` + title + `</main><img src="assets/status.png" alt="Status"><script type="text/redevplugin-worker" src="assets/app.js"></script></body></html>`
 }
 
 func writeBytes(t *testing.T, filename string, content []byte) {
@@ -6550,7 +6702,7 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
@@ -6558,17 +6710,17 @@ func lifecycleManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "lifecycle.activity", "kind": "activity", "label": "Lifecycle", "entry": "ui/index.html"}
+			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
 		]
 	}`
 }
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
@@ -6576,10 +6728,10 @@ func storageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "storage.activity", "kind": "activity", "label": "Storage", "entry": "ui/index.html"}
+			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
 		],
 		"storage": {
 			"stores": [
@@ -6626,7 +6778,7 @@ func storageFixtureManifestJSON() string {
 
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
@@ -6634,10 +6786,10 @@ func settingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "settings.activity", "kind": "activity", "label": "Settings", "entry": "ui/index.html"}
+			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
 		],
 		"settings": {
 			"schema_version": 1,
@@ -6666,7 +6818,7 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 		version = "1.0.0"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.migration",
@@ -6674,10 +6826,10 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "migration.activity", "kind": "activity", "label": "Migration", "entry": "ui/index.html"}
+			{"surface_id": "migration.view", "kind": "view", "label": "Migration", "entry": "ui/index.html"}
 		],
 		"storage": {
 			"stores": [
@@ -6724,7 +6876,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
@@ -6732,10 +6884,10 @@ func rpcFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "rpc.activity", "kind": "activity", "label": "RPC", "entry": "ui/index.html", "method": "echo.ping"}
+			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
@@ -6745,6 +6897,51 @@ func rpcFixtureManifestJSON(version string, title string) string {
 				"method": "echo.ping",
 				"effect": "read",
 				"execution": "sync",
+				"request_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"message": {"type": "string"}}
+				},
+				"response_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"ok": {"type": "boolean"},
+						"containers": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"properties": {
+									"id": {"type": "string"},
+									"image": {"type": "string"},
+									"env": {"type": "array", "items": {"type": "string"}},
+									"labels": {
+										"type": "object",
+										"additionalProperties": false,
+										"properties": {
+											"com.example.owner": {"type": "string"},
+											"com.example.secret": {"type": "string"}
+										}
+									},
+									"mounts": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"additionalProperties": false,
+											"properties": {
+												"source": {"type": "string"},
+												"target": {"type": "string"}
+											}
+										}
+									}
+								}
+							}
+						},
+						"token_id": {"type": "string"},
+						"secret_ref": {"type": "string"}
+					}
+				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
 			}
 		]
@@ -6753,7 +6950,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
@@ -6761,10 +6958,10 @@ func dangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "danger.activity", "kind": "activity", "label": "Danger", "entry": "ui/index.html", "method": "danger.run"}
+			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
@@ -6776,6 +6973,20 @@ func dangerousRPCFixtureManifestJSON() string {
 				"execution": "sync",
 				"dangerous": true,
 				"confirmation": {"mode": "required", "request_hash_fields": ["target"]},
+				"request_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["target"],
+					"properties": {
+						"target": {"type": "string"},
+						"ui_note": {"type": "string"}
+					}
+				},
+				"response_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"result": {"type": "string"}}
+				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "danger.run"}
 			}
 		]
@@ -6784,7 +6995,7 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
@@ -6792,10 +7003,10 @@ func operationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "operation.activity", "kind": "activity", "label": "Operation", "entry": "ui/index.html", "method": "images.pull"}
+			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
@@ -6811,6 +7022,16 @@ func operationRPCFixtureManifestJSON() string {
 					"uninstall_behavior": "cancel_then_block_delete",
 					"ack_timeout_ms": 2000
 				},
+				"request_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"image": {"type": "string"}}
+				},
+				"response_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"started": {"type": "boolean"}}
+				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
 			}
 		]
@@ -6819,7 +7040,7 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
@@ -6827,10 +7048,10 @@ func subscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "subscription.activity", "kind": "activity", "label": "Subscription", "entry": "ui/index.html", "method": "logs.tail"}
+			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
@@ -6846,6 +7067,12 @@ func subscriptionRPCFixtureManifestJSON() string {
 					"uninstall_behavior": "force_cleanup_allowed",
 					"ack_timeout_ms": 2000
 				},
+				"request_schema": {"type": "object", "additionalProperties": false},
+				"response_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"started": {"type": "boolean"}}
+				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "logs.tail"}
 			}
 		]
@@ -6854,7 +7081,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
@@ -6862,25 +7089,121 @@ func coreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "core.activity", "kind": "activity", "label": "Core", "entry": "ui/index.html", "method": "core.open"}
+			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
 		],
 		"methods": [
 			{
 				"method": "core.open",
 				"effect": "read",
 				"execution": "sync",
+				"request_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"target": {"type": "string"}}
+				},
+				"response_schema": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {"opened": {"type": "boolean"}}
+				},
 				"route": {"kind": "core_action", "action_id": "example.open_settings"}
 			}
 		]
 	}`
 }
 
+func workerMethodSchemasJSON() string {
+	return `"request_schema": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"message": {"type": "string"},
+					"network_body_base64": {"type": "string"},
+					"storage_handle_grant_token": {"type": "string"},
+					"storage_store_id": {"type": "string"},
+					"storage_path": {"type": "string"},
+					"storage_data_base64": {"type": "string"},
+					"storage_kv_handle_grant_token": {"type": "string"},
+					"storage_sqlite_handle_grant_token": {"type": "string"}
+				}
+			},
+			"response_schema": {
+				"type": "object",
+				"additionalProperties": false,
+				"$defs": {
+					"network_result": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"ok": {"type": "boolean"},
+							"status_code": {"type": "integer"},
+							"connector_id": {"type": "string"},
+							"grant_id": {"type": "string"},
+							"destination": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": ["transport", "host", "port"],
+								"properties": {
+									"transport": {"type": "string"},
+									"scheme": {"type": "string"},
+									"host": {"type": "string"},
+									"port": {"type": "integer"}
+								}
+							},
+							"runtime_generation_id": {"type": "string"},
+							"headers": {"type": "object", "additionalProperties": false, "patternProperties": {"^[!#$%&'*+.^_\u0060|~0-9A-Za-z-]+$": {"type": "array", "items": {"type": "string"}}}},
+							"body_base64": {"type": "string"},
+							"stream_id": {"type": "string"},
+							"bytes_read": {"type": "integer"},
+							"chunk_count": {"type": "integer"},
+							"transport": {"type": "string"},
+							"message_type": {"type": "string"},
+							"payload_base64": {"type": "string"}
+						}
+					},
+					"storage_usage": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"plugin_instance_id": {"type": "string"},
+							"store_id": {"type": "string"},
+							"usage_bytes": {"type": "integer", "minimum": 0},
+							"quota_bytes": {"type": "integer", "minimum": 0},
+							"usage_files": {"type": "integer", "minimum": 0},
+							"quota_files": {"type": "integer", "minimum": 0}
+						}
+					},
+					"storage_file_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "path": {"type": "string"}, "size_bytes": {"type": "integer"}, "usage": {"$ref": "#/$defs/storage_usage"}}},
+					"storage_kv_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "key": {"type": "string"}, "size_bytes": {"type": "integer"}, "usage": {"$ref": "#/$defs/storage_usage"}}},
+					"storage_sqlite_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "database": {"type": "string"}, "usage": {"$ref": "#/$defs/storage_usage"}}}
+				},
+				"properties": {
+					"from_worker": {"type": "boolean"},
+					"backend": {"type": "string"},
+					"transport": {"type": "string"},
+					"method": {"type": "string"},
+					"worker_id": {"type": "string"},
+					"wasm_abi": {"type": "string"},
+					"wasm_byte_len": {"type": "integer", "minimum": 0},
+						"network_execute": {"$ref": "#/$defs/network_result"},
+						"network_execute_http": {"$ref": "#/$defs/network_result"},
+						"network_execute_websocket": {"$ref": "#/$defs/network_result"},
+						"network_execute_tcp": {"$ref": "#/$defs/network_result"},
+						"network_execute_udp": {"$ref": "#/$defs/network_result"},
+					"stream_id": {"type": "string"},
+						"storage_file": {"$ref": "#/$defs/storage_file_result"},
+						"storage_kv": {"$ref": "#/$defs/storage_kv_result"},
+						"storage_sqlite": {"$ref": "#/$defs/storage_sqlite_result"}
+				}
+			},`
+}
+
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -6888,10 +7211,10 @@ func workerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -6909,6 +7232,7 @@ func workerFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		]
@@ -6917,7 +7241,7 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
@@ -6925,10 +7249,10 @@ func workerNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -6946,6 +7270,7 @@ func workerNetworkFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -6968,7 +7293,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network.transport",
@@ -6976,10 +7301,10 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -6997,6 +7322,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 				"method": "worker.echo",
 				"effect": "read",
 				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -7008,7 +7334,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 
 func workerStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage",
@@ -7016,10 +7342,10 @@ func workerStorageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -7037,6 +7363,7 @@ func workerStorageFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "write",
 				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -7066,7 +7393,7 @@ func workerStorageFixtureManifestJSON() string {
 
 func workerStorageKVFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.kv",
@@ -7074,10 +7401,10 @@ func workerStorageKVFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -7095,6 +7422,7 @@ func workerStorageKVFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "write",
 				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -7124,7 +7452,7 @@ func workerStorageKVFixtureManifestJSON() string {
 
 func workerStorageSQLiteFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.sqlite",
@@ -7132,10 +7460,10 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "worker.activity", "kind": "activity", "label": "Worker", "entry": "ui/index.html", "method": "worker.echo"}
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
 			{
@@ -7153,6 +7481,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 				"method": "worker.echo",
 				"effect": "write",
 				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -7186,7 +7515,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",
@@ -7194,10 +7523,10 @@ func networkFixtureManifestJSON(blocked bool) string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "network.activity", "kind": "activity", "label": "Network", "entry": "ui/index.html"}
+			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}
 		],
 		"storage": {
 			"stores": [
@@ -7233,7 +7562,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 
 func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
-	installed, _ := installEnableAndMintGatewayWithoutPermissions(t, h, packageBytes, surfaceID)
+	installed := installAndEnablePlugin(t, h, packageBytes)
 	grantDeclaredPermissions(t, h, installed)
 	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
 	return installed, gateway
@@ -7241,17 +7570,23 @@ func installEnableAndMintGateway(t *testing.T, h *Host, packageBytes []byte, sur
 
 func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packageBytes []byte, surfaceID string) (registry.PluginRecord, bridge.GatewayTokenResult) {
 	t.Helper()
+	installed := installAndEnablePlugin(t, h, packageBytes)
+	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
+	return installed, gateway
+}
+
+func installAndEnablePlugin(t *testing.T, h *Host, packageBytes []byte) registry.PluginRecord {
+	t.Helper()
 	ctx := context.Background()
 	now := stableRecentTestNow()
 	installed, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatal(err)
 	}
-	_, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, surfaceID)
-	return installed, gateway
+	return installed
 }
 
 func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, surfaceID string) (bridge.SurfaceBootstrap, bridge.GatewayTokenResult) {
@@ -7269,30 +7604,36 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",
 		SessionChannelIDHash: "channel_hash",
-		Now:                  now.Add(time.Second),
+		Now:                  now.Add(time.Second), PluginStateVersion: mustPluginStateVersion(t, h,
+			record.PluginInstanceID),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.ExchangeAssetTicket(ctx, ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(2 * time.Second),
-	}); err != nil {
+	if bootstrap.RuntimeGenerationID == "" {
+		t.Fatal("surface bootstrap is missing runtime_generation_id")
+	}
+	if _, err := h.PrepareSurface(ctx, exchangeAssetTicketRequestForBootstrap(bootstrap, now.Add(2*time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	handshake := bridge.Handshake{
-		PluginID:          bootstrap.PluginID,
-		SurfaceID:         bootstrap.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		ActiveFingerprint: bootstrap.ActiveFingerprint,
-		BridgeNonce:       bootstrap.BridgeNonce,
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_rpc",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_rpc"),
+		OwnerSessionHash:          bootstrap.OwnerSessionHash,
+		OwnerUserHash:             bootstrap.OwnerUserHash,
+		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
 		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
@@ -7303,6 +7644,27 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 
 func stableRecentTestNow() time.Time {
 	return time.Now().UTC().Add(-1 * time.Minute)
+}
+
+func exchangeAssetTicketRequestForBootstrap(bootstrap bridge.SurfaceBootstrap, now time.Time) ExchangeAssetTicketRequest {
+	return ExchangeAssetTicketRequest{
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		AssetTicket:          bootstrap.AssetTicket,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now,
+	}
+}
+
+func scopedReadStreamRequest(streamID string, streamTicket string) ReadStreamRequest {
+	return ReadStreamRequest{
+		StreamID:             streamID,
+		StreamTicket:         streamTicket,
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+	}
 }
 
 func grantDeclaredPermissions(t *testing.T, h *Host, record registry.PluginRecord) {
@@ -7516,7 +7878,7 @@ func releaseMetadataBytesForPackage(t *testing.T, ref PluginReleaseRef, pkg plug
 func releaseMetadataBytesForRelease(t *testing.T, ref PluginReleaseRef, release PluginPackageRelease) []byte {
 	t.Helper()
 	raw, err := json.Marshal(signedReleaseMetadata{
-		SchemaVersion:            "redevplugin.release_metadata.v1",
+		SchemaVersion:            "redevplugin.release_metadata.v2",
 		SourceID:                 release.SourceID,
 		ReleaseMetadataRef:       ref.ReleaseMetadataRef,
 		PublisherID:              release.PublisherID,
@@ -7608,7 +7970,7 @@ func releaseForPackage(ref PluginReleaseRef, pkg pluginpkg.Package) PluginPackag
 		Compatibility: &ReleaseCompatibility{
 			MinReDevPluginVersion: "0.1.0",
 			MinRuntimeVersion:     "0.1.0",
-			UIProtocolVersion:     "plugin-ui-v1",
+			UIProtocolVersion:     "plugin-ui-v2",
 		},
 	}
 }
@@ -7803,16 +8165,6 @@ func (s *diagnosticSink) AppendPluginDiagnostic(_ context.Context, event Diagnos
 	return nil
 }
 
-type recordingBrowserSiteCleaner struct {
-	origins []string
-	err     error
-}
-
-func (c *recordingBrowserSiteCleaner) ClearOriginData(_ context.Context, origin string) error {
-	c.origins = append(c.origins, origin)
-	return c.err
-}
-
 type recordingCapabilityAdapter struct {
 	calls           int
 	last            capability.Invocation
@@ -7882,12 +8234,12 @@ type recordingRuntimeArtifactResolver struct {
 
 func surfaceIDForMethod(method string) string {
 	if method == "images.pull" {
-		return "operation.activity"
+		return "operation.view"
 	}
 	if method == "logs.tail" {
-		return "subscription.activity"
+		return "subscription.view"
 	}
-	return "rpc.activity"
+	return "rpc.view"
 }
 
 func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want operation.Status) {

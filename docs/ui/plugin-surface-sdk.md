@@ -12,20 +12,19 @@ ReDevPlugin separates trusted host UI from untrusted plugin UI.
 Trusted host UI may:
 
 - call management APIs through `PluginPlatformClient`;
-- mount plugin surfaces inside product chrome;
-- request asset tickets and create sandbox iframes;
+- mount `PluginSurfaceHost` inside product chrome;
+- provide the authenticated parent-side surface transport and confirmation UI;
 - show settings, permissions, retained data, operations, audit, diagnostics, and
   host-mediated intents;
 - register product-specific session, origin, CSRF, and policy adapters on the
   Go Host side.
 
-Sandboxed plugin UI may:
+Plugin worker UI may:
 
-- load packaged assets through asset-session routes;
-- talk to the trusted parent through source/port-bound MessageChannel bridge
-  messages;
+- receive one opaque surface handle and a private `MessagePort`;
+- render through typed virtual nodes and receive typed UI action events;
 - invoke declared plugin methods through Host-mediated bridge/RPC paths;
-- render plugin-owned UI state.
+- read parent-owned streams through opaque stream handles.
 
 Sandboxed plugin UI must not receive host management credentials, parent-only
 storage/network grants, raw vault secrets, runtime-control tokens, or unrelated
@@ -33,30 +32,45 @@ product session authority.
 
 ## Bridge Protocol
 
-The bridge protocol is described by `spec/plugin/bridge-v1.schema.json` and
+The bridge protocol is described by `spec/plugin/bridge-v2.schema.json` and
 implemented by the TypeScript package. Contract checks keep these frame names,
 the UI protocol version, and forbidden response fields aligned with the schema:
 
-- `redevplugin.bridge.handshake`;
 - `redevplugin.bridge.call`;
+- `redevplugin.bridge.stream.read`;
+- `redevplugin.ui.render`;
+- `redevplugin.bridge.cancel`;
+- `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v1`.
+- `plugin-ui-v2`.
 
-Bridge messaging is source/port-bound. Parent-to-plugin and plugin-to-parent
-messages must bind the window source, transferred `MessagePort`, asset session,
-surface instance, bridge nonce, active fingerprint, session hash, state version,
-and revoke epoch. Opaque sandbox origins treat `event.origin` as diagnostic
-context, not an authorization input. Wildcard `postMessage` target origins are
-forbidden.
+The parent transfers one secret-free bootstrap port to the current iframe
+`contentWindow` and frame generation. Because the iframe has an opaque origin,
+this one transfer uses `postMessage("*")`; no token, plugin identity, or session
+authority is present in that message. The renderer acknowledges the exact frame
+generation with `redevplugin.surface.port_ack` over that port before the parent
+may mint a gateway lease. All later traffic is port-bound and binds
+the asset session, surface instance, bridge nonce, active fingerprint, owner and
+session hashes, state version, and revoke epoch. `event.origin` is diagnostic
+context, not an authorization input.
 
-The trusted parent computes `handshake_transcript_sha256` before it asks the Go
+The trusted renderer transfers two ordered ports to the worker:
+`runtime_control` remains private to the bootstrap runtime, while
+`plugin_bridge` is the only port exposed through `PluginBridgeClient`. Request
+ids are monotonically increasing per bridge, duplicate/replayed ids are rejected,
+timeouts send one `redevplugin.bridge.cancel`, and late responses after cancel or
+port close are ignored fail closed.
+
+The trusted-parent SDK computes `handshake_transcript_sha256` before it asks the Go
 Host for a parent-only `plugin_gateway_token`. The transcript is the SHA-256 of
-a length-prefixed `redevplugin.bridge.handshake.v1` field list containing the
+a length-prefixed `redevplugin.bridge.handshake.v2` field list containing the
 plugin ID, surface ID, surface instance ID, active fingerprint, bridge nonce,
-UI protocol version, and `bridge_channel_id`. The Go Host recomputes the same
-hash and refuses to mint a gateway token if the transcript is missing or
-mismatched.
+asset-session nonce, plugin state version, revoke epoch, UI protocol version,
+and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
+mint a parent-only gateway token if the transcript is missing or mismatched.
+This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
+`bridge-v2.schema.json` contract.
 
 ## Management Client
 
@@ -67,6 +81,7 @@ routes exposed by `pkg/httpadapter`, including:
 - release-reference install/update for official or registry-backed product
   flows where the host page sends `PluginReleaseRef` rather than package bytes;
 - downgrade, enable, disable, uninstall, and surface open;
+- authenticated owner/session surface-scope revocation;
 - runtime start, health, refresh-enabled, and stop;
 - settings schema/read/patch;
 - operation list/get/cancel;
@@ -100,16 +115,69 @@ local or developer import flows must opt into `PluginLocalImportClient` from
 `@floegence/redevplugin-ui/local-import`, and hosts must only mount those routes
 when local import is allowed for that product surface.
 
-## Surface Bootstrap And Assets
+## Opaque Surface Host
 
-The Host issues asset tickets and asset sessions. Plugin iframes load packaged
-HTML assets through sandbox asset routes and path-scoped HttpOnly asset-session
-cookies. The browser smoke tests assert that plugin UI does not fall back to
-legacy direct static paths.
+`PluginSurfaceHost.create(...)` is the only public construction path. It creates
+and owns a fresh iframe, hardens it before returning, and exposes the read-only
+`element` only so trusted product chrome can mount it. The public options do not
+accept an existing iframe or frame factory. The frame has explicit
+`src="about:blank"`, exactly `sandbox="allow-scripts"`, an explicit Permissions
+Policy deny-list, and `no-referrer`. The
+iframe receives a unique opaque origin. It never navigates to a plugin origin,
+Host origin, localhost URL, remote URL, or caller-created blob URL.
 
-Asset responses carry CSP, reporting, permissions, referrer, CORP, nosniff, and
-service-worker scope headers. Host products provide exact `frame-ancestors`
-values when embedding iframes.
+```ts
+const surfaceHost = PluginSurfaceHost.create({
+  bootstrap: toPluginSurfaceHostBootstrap(openedSurface),
+  hostTransport: createReDevPluginSurfaceTransport(),
+  confirm: showProductConfirmation,
+});
+
+surfaceHost.element.title = pluginSurfaceLabel;
+surfaceMount.replaceChildren(surfaceHost.element);
+await surfaceHost.open();
+```
+
+`loadTimeoutMs` is one aggregate opening deadline, not a fresh timeout for each
+stage. It covers frame load, prepare, port acknowledgement, initial lease,
+first paint, and worker readiness. Expiry returns `PLUGIN_BRIDGE_TIMEOUT`,
+revokes the server surface, aborts parent requests, clears the iframe and ports,
+and records one attempt in the supplied `PluginSurfaceReloadLimiter`. A new host
+instance may retry within that limiter; a healthy open resets its state.
+
+The trusted parent prepares the surface document and reads assets through
+same-origin POST transport methods. The document contains validated static HTML,
+nonce-bound external CSS content, one classic bundled worker, and opaque lazy
+asset bindings. The renderer policy is generated from the bridge schema into
+both Go and TypeScript, so package validation and browser rendering accept the
+same tags, attributes, input types, and size/depth limits. Lazy image, font, and
+media blobs are created inside the opaque frame; executable plugin code runs
+only in the hardened Dedicated Worker. Asset sessions, tickets, gateway tokens,
+stream tickets, and confirmation tokens never cross into plugin code.
+
+Each lazy asset has an opaque, package-builder-derived `binding_id` in the
+prepared document. The worker may request only that binding. `PluginSurfaceHost`
+looks up the corresponding prepared asset and sends the parent-only HTTP request
+with `binding_id`; it never forwards a worker-selected package path. The Go Host
+resolves the path and digest from its prepared-document cache and rejects
+missing, stale, or mismatched bindings before reading package bytes. It then
+compares the registry path, size, and content type with adapter metadata, actual
+byte length, and a recomputed SHA-256 on every read. Documents are limited to 128 lazy assets
+and 32 MiB cumulative lazy bytes, and the renderer dispatches at most four reads
+concurrently.
+
+After closed-document validation, the Go Host marks the exact asset session
+prepared. After the generation-bound port acknowledgement, the trusted parent
+mints and applies the initial gateway and asset
+lease before it sends `redevplugin.surface.initialize`. This ordering prevents
+renderer asset reads from racing the server-side replacement of the prepared
+asset session. Renewal scheduling starts only after first paint and worker
+startup make the surface ready.
+
+The Host renews a live surface lease before expiry by rotating both the
+parent-held gateway token and asset session on the same bridge channel. Reads
+wait for the current renewal, old credentials are revoked by the server, and a
+renewal failure closes the surface rather than continuing with stale authority.
 
 ## Surface Reload Guard
 
@@ -155,16 +223,24 @@ behavior.
 The browser demo under `demo/browser/` exercises the surface SDK in realistic
 browser conditions:
 
-- host page and plugin iframe use isolated sandbox documents;
-- bridge handshake, ordinary RPC, lifecycle messages, streams, confirmation, and
-  richer plugin surfaces are tested;
-- sandbox security probes check media capture policy and site-data cleanup for
-  localStorage, IndexedDB, and Cache API;
-- generated plugin flows scaffold, package, install, enable, open, disable, and
-  uninstall a plugin through the dev lifecycle;
+- the host page asks the SDK to create a fresh same-host opaque `srcdoc` iframe
+  and mounts `surfaceHost.element` without a caller-provided frame, plugin
+  server, subdomain, or cookie bootstrap;
+- bridge handshake, typed rendering/actions, ordinary RPC, lifecycle messages,
+  streams, confirmation, opening progress, and deterministic disposal are
+  tested;
+- sandbox security probes assert parent DOM/cookie/storage, localStorage,
+  sessionStorage, IndexedDB, Cache API, Service Worker, direct fetch, WebSocket,
+  nested Worker, dynamic import, eval, and Function constructors are blocked;
 - real runtime smoke uses the Go Host library, HTTP adapter, Rust runtime,
-  packaged assets, asset sessions, WASM workers, storage broker, and network
-  broker end to end.
+  parent-only asset/stream transport, WASM workers, storage broker, and network
+  broker end to end for HTTP, WebSocket, TCP, and UDP.
+
+`npm run test:demo:browser` persists the A2 acceptance report and visual evidence
+as `dist/a2-evidence/redevplugin-a2-acceptance.json`,
+`redevplugin-a2-supported.png`, and `redevplugin-a2-unsupported.png`. CI uploads
+the same files, and tagged releases checksum and sign them alongside runtime and
+stress artifacts.
 
 These demos are platform conformance checks for ReDevPlugin, not product UI
 implementations. Host products still own product navigation, workbench layout,
@@ -176,7 +252,7 @@ Host products should:
 
 1. import the published `@floegence/redevplugin-ui` package;
 2. use the host-side client only from trusted product surfaces;
-3. isolate plugin UI in sandboxed iframes with source/port-bound bridge setup;
+3. use `PluginSurfaceHost` for opaque iframe construction and bridge setup;
 4. map ReDevPlugin state into product navigation and settings without forking
    bridge, token, package, or lifecycle protocols;
 5. keep product-specific capability UI outside ReDevPlugin core unless it is a

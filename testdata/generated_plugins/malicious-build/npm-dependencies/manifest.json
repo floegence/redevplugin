@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v1",
+  "schema_version": "redevplugin.manifest.v2",
   "publisher": {
     "publisher_id": "example",
     "display_name": "Example"
@@ -10,12 +10,12 @@
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v1"
+    "ui_protocol_version": "plugin-ui-v2"
   },
   "surfaces": [
     {
-      "surface_id": "malicious.npm_dependencies.activity",
-      "kind": "activity",
+      "surface_id": "malicious.npm_dependencies.view",
+      "kind": "view",
       "label": "Malicious NPM Dependencies",
       "entry": "ui/index.html"
     }

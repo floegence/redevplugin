@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
-const [rawBundleDir, rawExpectedVersion] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const structuralOnly = args.includes("--structural-only");
+const positional = args.filter((arg) => arg !== "--structural-only");
+const [rawBundleDir, rawExpectedVersion] = positional;
 
-if (!rawBundleDir) {
-  console.error("usage: verify_redevplugin_release_bundle.mjs <bundle-dir> [expected-version]");
+if (!rawBundleDir || positional.length > 2) {
+  console.error("usage: verify_redevplugin_release_bundle.mjs [--structural-only] <bundle-dir> [expected-version]");
   process.exit(2);
 }
 
@@ -21,23 +24,37 @@ const expectedVersion = rawExpectedVersion || manifest.version;
 verifyReleaseManifestShape(manifest, expectedVersion);
 verifyManifestFiles(bundleDir, manifest);
 verifyRequiredArtifacts(bundleDir);
-verifyCompatibility(bundleDir, expectedVersion);
-verifyRuntimeHello(bundleDir, expectedVersion);
-verifyNpmTarball(bundleDir, expectedVersion);
+verifyExecutableTargets(bundleDir, manifest.runtime_target);
+verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);
+verifyRuntimeHello(bundleDir, expectedVersion, structuralOnly);
+await verifyNpmTarball(bundleDir, expectedVersion, manifest);
 verifyNoticeEvidence(bundleDir);
 
 console.log(`release bundle verified: ${bundleDir}`);
 
 function verifyReleaseManifestShape(manifest, expectedVersion) {
   assertObject(manifest, "release-manifest.json");
-  assertEqual(manifest.schema_version, "redevplugin.release_manifest.v1", "release manifest schema_version");
+  assertExactKeys(manifest, [
+    "schema_version",
+    "version",
+    "source_commit",
+    "runtime_target",
+    "generated_at",
+    "compatibility_sha256",
+    "npm_package",
+    "files",
+  ], "release manifest");
+  assertEqual(manifest.schema_version, "redevplugin.release_manifest.v2", "release manifest schema_version");
   assertEqual(manifest.version, expectedVersion, "release manifest version");
+  assertGitCommit(manifest.source_commit, "release manifest source_commit");
   if (manifest.runtime_target !== null && typeof manifest.runtime_target !== "string") {
     fail("release manifest runtime_target must be a string or null");
   }
   if (!Number.isFinite(Date.parse(manifest.generated_at))) {
     fail("release manifest generated_at must be an ISO date-time string");
   }
+  assertHexSHA256(manifest.compatibility_sha256, "release manifest compatibility_sha256");
+  verifyNpmManifestEntry(manifest.npm_package, expectedVersion);
   if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
     fail("release manifest files must be a non-empty array");
   }
@@ -74,24 +91,30 @@ function verifyManifestFiles(bundleDir, manifest) {
 function verifyRequiredArtifacts(bundleDir) {
   const requiredFiles = [
     "AGENTS.md",
+    "CHANGELOG.md",
+    "docs/release/a2-tdd-evidence.md",
+    "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
     "bin/redevplugin",
     "bin/redevplugin-runtime",
     "compatibility.json",
-    "contracts/spec/openapi/plugin-platform-v1.yaml",
-    "contracts/spec/plugin/bridge-v1.schema.json",
-    "contracts/spec/plugin/compatibility-manifest-v1.schema.json",
+    "contracts/spec/openapi/plugin-platform-v2.yaml",
+    "contracts/spec/plugin/bridge-v2.schema.json",
+    "contracts/spec/plugin/compatibility-manifest-v2.schema.json",
     "contracts/spec/plugin/error-codes-v1.schema.json",
     "contracts/spec/plugin/ipc-v1.schema.json",
-    "contracts/spec/plugin/manifest-v1.schema.json",
-    "contracts/spec/plugin/release-metadata-v1.schema.json",
-    "contracts/spec/plugin/release-manifest-v1.schema.json",
+    "contracts/spec/plugin/manifest-v2.schema.json",
+    "contracts/spec/plugin/opaque-surface-document-v1.schema.json",
+    "contracts/spec/plugin/opaque-surface-transport-v1.schema.json",
+    "contracts/spec/plugin/release-metadata-v2.schema.json",
+    "contracts/spec/plugin/release-manifest-v2.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
-    "contracts/spec/plugin/token-ticket-v1.schema.json",
+    "contracts/spec/plugin/token-ticket-v2.schema.json",
     "contracts/spec/plugin/worker-invocation-v1.schema.json",
     "notices/Cargo.lock",
+    "notices/THIRD_PARTY_LICENSES.json",
     "notices/go.sum",
     "notices/package-lock.json",
   ];
@@ -102,13 +125,52 @@ function verifyRequiredArtifacts(bundleDir) {
   assertExecutable(join(bundleDir, "bin/redevplugin-runtime"), "bin/redevplugin-runtime");
 }
 
-function verifyCompatibility(bundleDir, expectedVersion) {
+function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution) {
   const compatibilityPath = join(bundleDir, "compatibility.json");
+  const compatibilityBytes = readFileSync(compatibilityPath);
+  assertEqual(
+    createHash("sha256").update(compatibilityBytes).digest("hex"),
+    manifest.compatibility_sha256,
+    "compatibility manifest sha256",
+  );
   const compatibility = readJSON(compatibilityPath);
-  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v1", "compatibility schema_version");
+  assertObject(compatibility, "compatibility.json");
+  assertExactKeys(compatibility, ["schema_version", "matrix", "contracts"], "compatibility manifest");
+  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v2", "compatibility schema_version");
+  assertObject(compatibility.matrix, "compatibility matrix");
   for (const key of ["redevplugin_go_version", "redevplugin_ui_version", "redevplugin_runtime_version"]) {
     assertEqual(compatibility.matrix?.[key], expectedVersion, `compatibility matrix ${key}`);
   }
+  if (!Array.isArray(compatibility.contracts) || compatibility.contracts.length === 0) {
+    fail("compatibility contracts must be a non-empty array");
+  }
+  const contractIDs = new Set();
+  const contractPaths = new Set();
+  for (const [index, contract] of compatibility.contracts.entries()) {
+    assertObject(contract, `compatibility contracts[${index}]`);
+    assertExactKeys(contract, ["id", "path", "version", "sha256"], `compatibility contracts[${index}]`);
+    if (typeof contract.id !== "string" || !/^[a-z][a-z0-9-]+$/.test(contract.id) || contractIDs.has(contract.id)) {
+      fail(`compatibility contracts[${index}].id is invalid or duplicated`);
+    }
+    assertBundlePath(contract.path, `compatibility contracts[${index}].path`);
+    if (!contract.path.startsWith("spec/") || contractPaths.has(contract.path)) {
+      fail(`compatibility contracts[${index}].path is invalid or duplicated`);
+    }
+    if (typeof contract.version !== "string" || contract.version.length === 0) {
+      fail(`compatibility contracts[${index}].version must be non-empty`);
+    }
+    assertHexSHA256(contract.sha256, `compatibility contracts[${index}].sha256`);
+    const contractPath = join(bundleDir, "contracts", contract.path);
+    assertFile(contractPath, `contracts/${contract.path}`);
+    assertEqual(
+      createHash("sha256").update(readFileSync(contractPath)).digest("hex"),
+      contract.sha256,
+      `compatibility contract ${contract.id} sha256`,
+    );
+    contractIDs.add(contract.id);
+    contractPaths.add(contract.path);
+  }
+  if (skipExecution) return;
   const verifyOutput = execFileSync(
     join(bundleDir, "bin/redevplugin"),
     ["verify-compatibility", compatibilityPath, join(bundleDir, "contracts")],
@@ -118,8 +180,8 @@ function verifyCompatibility(bundleDir, expectedVersion) {
   assertEqual(summary.ok, true, "verify-compatibility summary");
 }
 
-function verifyRuntimeHello(bundleDir, expectedVersion) {
-  if (process.env.REDEVPLUGIN_SKIP_RUNTIME_EXEC === "1") {
+function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
+  if (skipExecution || process.env.REDEVPLUGIN_SKIP_RUNTIME_EXEC === "1") {
     return;
   }
   const channelNonce = "release_bundle_nonce_1";
@@ -143,16 +205,136 @@ function verifyRuntimeHello(bundleDir, expectedVersion) {
   assertEqual(ack.payload?.channel_nonce, channelNonce, "runtime hello channel_nonce");
 }
 
-function verifyNpmTarball(bundleDir, expectedVersion) {
-  const npmDir = join(bundleDir, "npm");
-  const tarballs = readdirSync(npmDir).filter((name) => name.endsWith(".tgz"));
-  assertEqual(tarballs.length, 1, "npm tarball count");
+function verifyExecutableTargets(bundleDir, runtimeTarget) {
+  if (runtimeTarget === null) return;
+  const targets = {
+    "x86_64-unknown-linux-gnu": { format: "elf", machine: 62 },
+    "aarch64-unknown-linux-gnu": { format: "elf", machine: 183 },
+    "x86_64-apple-darwin": { format: "macho", machine: 0x01000007 },
+    "aarch64-apple-darwin": { format: "macho", machine: 0x0100000c },
+  };
+  const expected = targets[runtimeTarget];
+  if (!expected) fail(`unsupported runtime_target ${runtimeTarget}`);
+  for (const relativePath of ["bin/redevplugin", "bin/redevplugin-runtime"]) {
+    const bytes = readFileSync(join(bundleDir, relativePath));
+    if (bytes.length < 32) fail(`${relativePath} is too small to be a supported executable`);
+    if (expected.format === "elf") {
+      if (bytes.subarray(0, 4).toString("hex") !== "7f454c46" || bytes[4] !== 2 || bytes[5] !== 1) {
+        fail(`${relativePath} is not a 64-bit little-endian ELF executable`);
+      }
+      assertEqual(bytes.readUInt16LE(18), expected.machine, `${relativePath} ELF machine`);
+      continue;
+    }
+    if (bytes.subarray(0, 4).toString("hex") !== "cffaedfe") {
+      fail(`${relativePath} is not a 64-bit little-endian Mach-O executable`);
+    }
+    assertEqual(bytes.readUInt32LE(4), expected.machine, `${relativePath} Mach-O CPU type`);
+  }
+}
+
+function verifyNpmManifestEntry(npmPackage, expectedVersion) {
+  assertObject(npmPackage, "release manifest npm_package");
+  assertExactKeys(npmPackage, ["name", "version", "path", "sha256", "integrity", "size"], "release manifest npm_package");
+  assertEqual(npmPackage.name, "@floegence/redevplugin-ui", "release manifest npm package name");
+  assertEqual(npmPackage.version, expectedVersion, "release manifest npm package version");
+  if (typeof npmPackage.path !== "string" || !/^npm\/floegence-redevplugin-ui-[A-Za-z0-9._+-]+\.tgz$/.test(npmPackage.path)) {
+    fail("release manifest npm package path is invalid");
+  }
+  assertHexSHA256(npmPackage.sha256, "release manifest npm package sha256");
+  if (typeof npmPackage.integrity !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(npmPackage.integrity)) {
+    fail("release manifest npm package integrity must be sha512 SRI");
+  }
+  if (!Number.isSafeInteger(npmPackage.size) || npmPackage.size < 1) {
+    fail("release manifest npm package size must be a positive safe integer");
+  }
+}
+
+async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
+  const npmPath = join(bundleDir, manifest.npm_package.path);
+  const npmBytes = readFileSync(npmPath);
+  assertEqual(createHash("sha256").update(npmBytes).digest("hex"), manifest.npm_package.sha256, "npm tarball sha256");
+  assertEqual(`sha512-${createHash("sha512").update(npmBytes).digest("base64")}`, manifest.npm_package.integrity, "npm tarball integrity");
+  assertEqual(npmBytes.length, manifest.npm_package.size, "npm tarball size");
   const tmp = mkdtempSync(join(tmpdir(), "redevplugin-npm-"));
   try {
-    execFileSync("tar", ["-xzf", join(npmDir, tarballs[0]), "-C", tmp]);
-    const pkg = readJSON(join(tmp, "package", "package.json"));
+    const archiveEntries = execFileSync("tar", ["-tzf", npmPath], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    if (archiveEntries.length === 0) fail("npm tarball must contain package files");
+    for (const entry of archiveEntries) {
+      if (!entry.startsWith("package/") || entry.includes("\\") || entry.split("/").includes("..")) {
+        fail(`npm tarball contains unsafe path ${entry}`);
+      }
+    }
+    execFileSync("tar", ["-xzf", npmPath, "-C", tmp]);
+    const packageDir = join(tmp, "package");
+    const pkg = readJSON(join(packageDir, "package.json"));
     assertEqual(pkg.name, "@floegence/redevplugin-ui", "npm package name");
     assertEqual(pkg.version, expectedVersion, "npm package version");
+    assertEqual(pkg.license, "MIT", "npm package license");
+    assertFile(join(packageDir, "LICENSE"), "npm package LICENSE");
+    assertEqual(readFileSync(join(packageDir, "LICENSE"), "utf8"), readFileSync(join(bundleDir, "LICENSE"), "utf8"), "npm package LICENSE content");
+    assertObject(pkg.exports, "npm package exports");
+    const exportSpecifiers = [];
+    for (const [subpath, target] of Object.entries(pkg.exports)) {
+      if (subpath !== "." && !/^\.\/[A-Za-z0-9._/-]+$/.test(subpath)) {
+        fail(`npm package export subpath is invalid: ${subpath}`);
+      }
+      assertObject(target, `npm package export ${subpath}`);
+      assertExactKeys(target, ["types", "default"], `npm package export ${subpath}`);
+      for (const condition of ["types", "default"]) {
+        const relativeTarget = target[condition];
+        if (typeof relativeTarget !== "string" || !relativeTarget.startsWith("./")) {
+          fail(`npm package export ${subpath}.${condition} must be a package-relative path`);
+        }
+        assertBundlePath(relativeTarget.slice(2), `npm package export ${subpath}.${condition}`);
+        const absoluteTarget = resolve(packageDir, relativeTarget);
+        if (!absoluteTarget.startsWith(packageDir + sep)) {
+          fail(`npm package export ${subpath}.${condition} escapes the package`);
+        }
+        assertFile(absoluteTarget, `npm package export ${subpath}.${condition}`);
+        if (lstatSync(absoluteTarget).isSymbolicLink()) {
+          fail(`npm package export ${subpath}.${condition} must not be a symlink`);
+        }
+      }
+      exportSpecifiers.push(subpath === "." ? pkg.name : pkg.name + subpath.slice(1));
+    }
+    assertDeepEqual(exportSpecifiers.sort(), [
+      "@floegence/redevplugin-ui",
+      "@floegence/redevplugin-ui/local-import",
+      "@floegence/redevplugin-ui/plugin",
+      "@floegence/redevplugin-ui/trusted-parent",
+    ], "npm package export specifiers");
+    execFileSync(
+      process.execPath,
+      ["--input-type=module", "--eval", `
+        for (const specifier of ${JSON.stringify(exportSpecifiers)}) await import(specifier);
+        const plugin = await import("@floegence/redevplugin-ui/plugin");
+        const pluginKeys = Object.keys(plugin).sort();
+        if (JSON.stringify(pluginKeys) !== JSON.stringify(["PluginBridgeClient"])) {
+          throw new Error("plugin entrypoint runtime exports are not closed: " + JSON.stringify(pluginKeys));
+        }
+        const trusted = await import("@floegence/redevplugin-ui/trusted-parent");
+        for (const forbidden of ["PluginBridgeClient", "createOpaquePluginBootstrapHTML"]) {
+          if (forbidden in trusted) throw new Error("trusted-parent entrypoint exposes forbidden export " + forbidden);
+        }
+      `],
+      { cwd: packageDir, encoding: "utf8" },
+    );
+    const pluginTypes = readFileSync(join(packageDir, "dist/plugin.d.ts"), "utf8");
+    for (const forbidden of [
+      "PluginPlatformClient",
+      "PluginSurfaceHost",
+      "PluginTrustedMethodResult",
+      "ReDevPluginSurfaceTransport",
+      "createOpaquePluginBootstrapHTML",
+      "stream_ticket",
+    ]) {
+      if (pluginTypes.includes(forbidden)) fail(`plugin entrypoint types expose ${forbidden}`);
+    }
+    for (const entrypoint of ["index.d.ts", "trusted-parent.d.ts"]) {
+      if (readFileSync(join(packageDir, "dist", entrypoint), "utf8").includes("createOpaquePluginBootstrapHTML")) {
+        fail(`${entrypoint} exposes the internal opaque bootstrap HTML factory`);
+      }
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -165,6 +347,7 @@ function verifyNoticeEvidence(bundleDir) {
     "notices/go.sum",
     "notices/package-lock.json",
     "notices/Cargo.lock",
+    "notices/THIRD_PARTY_LICENSES.json",
     "cargo deny check",
     "## Rust Crates",
     "## npm Packages",
@@ -188,6 +371,53 @@ function verifyNoticeEvidence(bundleDir) {
       fail(`notices/Cargo.lock must include ${crate}`);
     }
   }
+
+	const licenseManifest = readJSON(join(bundleDir, "notices/THIRD_PARTY_LICENSES.json"));
+	assertObject(licenseManifest, "third-party license manifest");
+	assertExactKeys(licenseManifest, ["schema_version", "packages"], "third-party license manifest");
+	assertEqual(licenseManifest.schema_version, "redevplugin.third_party_licenses.v1", "third-party license manifest schema_version");
+	if (!Array.isArray(licenseManifest.packages) || licenseManifest.packages.length === 0) {
+		fail("third-party license manifest packages must be a non-empty array");
+	}
+	const referencedFiles = new Set();
+	const packageIDs = new Set();
+	for (const [index, pkg] of licenseManifest.packages.entries()) {
+		assertObject(pkg, `third-party license packages[${index}]`);
+		assertExactKeys(pkg, ["ecosystem", "name", "version", "license", "files"], `third-party license packages[${index}]`);
+		if (!["go", "npm", "rust"].includes(pkg.ecosystem) || typeof pkg.name !== "string" || pkg.name.length === 0 || typeof pkg.version !== "string" || pkg.version.length === 0) {
+			fail(`third-party license packages[${index}] has invalid identity`);
+		}
+		if (typeof pkg.license !== "string" || pkg.license.length === 0 || pkg.license === "UNKNOWN") {
+			fail(`third-party license packages[${index}] has invalid license metadata`);
+		}
+		const packageID = `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;
+		if (packageIDs.has(packageID)) fail(`third-party license manifest duplicates ${packageID}`);
+		packageIDs.add(packageID);
+		if (!Array.isArray(pkg.files) || pkg.files.length === 0) {
+			fail(`third-party license package ${packageID} has no redistributed legal text`);
+		}
+		for (const [fileIndex, file] of pkg.files.entries()) {
+			assertObject(file, `third-party license package ${packageID} files[${fileIndex}]`);
+			assertExactKeys(file, ["path", "sha256"], `third-party license package ${packageID} files[${fileIndex}]`);
+			if (typeof file.path !== "string" || !file.path.startsWith("notices/licenses/") || referencedFiles.has(file.path)) {
+				fail(`third-party license package ${packageID} has invalid or duplicated legal-text path`);
+			}
+			assertHexSHA256(file.sha256, `third-party license package ${packageID} legal-text sha256`);
+			const legalPath = join(bundleDir, file.path);
+			assertFile(legalPath, file.path);
+			const bytes = readFileSync(legalPath);
+			if (bytes.length === 0) fail(`third-party legal text is empty: ${file.path}`);
+			assertEqual(createHash("sha256").update(bytes).digest("hex"), file.sha256, `${file.path} sha256`);
+			referencedFiles.add(file.path);
+		}
+	}
+	for (const requiredPackage of ["rust:wasmi@", "npm:typescript@", "go:modernc.org/sqlite@"]) {
+		if (![...packageIDs].some((packageID) => packageID.startsWith(requiredPackage))) {
+			fail(`third-party license manifest must include ${requiredPackage}`);
+		}
+	}
+	const actualLegalFiles = listBundleFiles(join(bundleDir, "notices", "licenses")).map((file) => `notices/licenses/${file.path}`);
+	assertDeepEqual([...referencedFiles].sort(), actualLegalFiles.sort(), "third-party legal-text file set");
 }
 
 function listBundleFiles(root) {
@@ -256,10 +486,22 @@ function assertHexSHA256(value, label) {
   }
 }
 
+function assertGitCommit(value, label) {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/.test(value)) {
+    fail(`${label} must be a full lowercase Git commit`);
+  }
+}
+
 function assertObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     fail(`${label} must be an object`);
   }
+}
+
+function assertExactKeys(value, expected, label) {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  assertDeepEqual(actual, wanted, `${label} keys`);
 }
 
 function assertEqual(actual, expected, label) {

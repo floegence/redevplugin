@@ -15,9 +15,10 @@ capabilities.
 - Rust workspace: `redevplugin-runtime` and support crates
 - Contracts: OpenAPI, manifest schema, package-signature schema,
   release-metadata schema, source-policy schema, source-revocations schema,
-  token/ticket schema, iframe bridge schema, compatibility manifest schema, IPC
-  schema, WASM ABI schema, worker invocation payload schema, stable error-code
-  schema, and target classifier fixture
+  token/ticket schema, iframe bridge and render policy, opaque surface document
+  and transport schemas, compatibility and release manifest schemas, IPC schema,
+  WASM ABI schema, worker invocation payload schema, stable error-code schema,
+  and target classifier fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
@@ -36,10 +37,6 @@ capabilities.
   validation/default/secret-redaction lifecycle, restores settings across
   process restarts, and keeps retained bind/import behavior durable without
   storing secret plaintext.
-- Browser-site origin stores include both in-memory and SQLite-backed
-  implementations. The SQLite store persists sandbox origin registrations,
-  keep-data retention, delete-data cleanup completion, retryable cleanup
-  failures, and require-retained guards across host restarts.
 - Observability stores include both in-memory and SQLite-backed implementations.
   The SQLite store persists audit and diagnostic events, preserves the same
   filtering, defaults, newest-first ordering, retention limits, and generated
@@ -77,10 +74,17 @@ capabilities.
   serving, and the package hash to avoid self-referential signatures. The
   signature directory is closed-world: package IO rejects any signature entry
   other than `signatures/package.sig`.
-- Package validation requires surface entries to be packaged HTML assets and
-  rejects external, root-absolute, missing, inline-script/style, event-handler,
-  `srcdoc`, `base`, and Service Worker registration dependencies in sandbox UI
-  assets before Host install can persist them. Surface icons must be packaged
+- Package validation requires every surface entry to declare exactly one
+  package-local `text/redevplugin-worker` classic bundled worker. The builder
+  and trusted renderer consume one generated render policy, so unsupported
+  elements, attributes, input types, URL-bearing markup, inline script/style,
+  event handlers, `srcdoc`, embedded browsing contexts, excessive render trees,
+  and direct Service Worker API references fail during package validation as an
+  early diagnostic. Runtime hardening removes `navigator.serviceWorker` inside
+  the opaque renderer/worker boundary, which remains authoritative even when a
+  source-level reference is dynamically constructed. Script imports/exports are
+  rejected because the worker must be a
+  self-contained classic bundle. Surface icons must be packaged
   raster image assets, not SVG or external URLs, so product shells do not need
   to inline or sanitize plugin-provided SVG markup. The same validation path rejects
   shell/shebang scripts, native executable or dynamic-library artifacts,
@@ -124,24 +128,45 @@ capabilities.
   covers dangerous confirmation, risk preflight, operation/subscription cancel
   policy, and delete-effect metadata. `testdata/generated_plugins/malicious-build/*`
   must fail packaging before any dependency install or build step can run.
-- Mountable HTTP routes can call a host-provided `websecurity.Guard` for origin
-  and CSRF policy while keeping the concrete session and token semantics in the
-  host product.
-- The CSP report endpoint accepts only CSP/browser JSON content types, limits
-  report bodies to 32 KiB and JSON depth 16, and applies a host-replaceable
-  per sandbox origin, active fingerprint, and source IP rate limiter before
-  appending diagnostics.
-- Sandboxed plugin package assets are served with CSP, reporting, permissions,
-  referrer, CORP, nosniff, and service-worker scope headers; hosts pass exact
-  frame ancestors when embedding the sandbox iframe.
+- Mountable HTTP routes call a host-provided `websecurity.Guard` for origin and
+  CSRF policy. The guard returns the host-neutral `trusted_parent` or `deny`
+  decision plus an authenticated request scope; product-specific origin roles
+  and concrete session semantics stay in the host product.
+- `PluginSurfaceHost.create(...)` is the only public construction path. It
+  creates a fresh SDK-owned iframe, exposes it as the read-only `element` for
+  product-shell placement, and immediately applies `src="about:blank"`,
+  `sandbox="allow-scripts"`, no same-origin capability, no plugin URL, and a
+  fail-closed CSP. The trusted parent prepares the validated surface document,
+  marks the server session prepared only after the closed document succeeds,
+  transfers one secret-free `MessagePort`, waits for the current frame generation
+  to acknowledge that port, then mints and applies the initial parent-only lease
+  before renderer initialization. The iframe also carries an explicit
+  Permissions Policy deny-list. One aggregate opening deadline covers frame
+  load, prepare, acknowledgement, lease minting, first paint, and worker
+  readiness; timeout revokes server state, tears down locally, and consumes one
+  bounded reload-limiter attempt. It reads lazy assets and streams
+  through parent-only POST routes. Asset reads accept only the opaque `binding_id`
+  from the server-prepared document; the Host resolves and revalidates the bound
+  registry path, size, content type, and SHA-256 against the returned bytes. Prepared documents
+  allow at most 128 lazy assets and 32 MiB total, with at most four reads in
+  flight. Plugin code receives opaque surface and stream handles, never
+  asset tickets, stream tickets, gateway credentials, parent origins, cookies,
+  or host storage.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
-  and TypeScript SDK route coverage aligned. Browser-owned protocol endpoints
-  such as asset bootstrap, asset fetches, and CSP reports must be explicitly
-  classified when they intentionally do not expose a management SDK wrapper.
+  generated render policy, TypeScript SDK route coverage, and package validator
+  aligned.
+- Manifest v2 requires every method to declare closed request and response
+  object schemas. Package validation compiles those schemas without remote
+  references; Host dispatch validates requests before adapters/runtime and
+  validates canonical redacted responses before returning them to plugin code.
+- Manifest v2 surface declarations use only host-neutral `view`, `command`, or
+  `background` kinds with optional `primary`, `secondary`, or `utility` intent.
+  Activity bars, workbench panes, settings pages, and modal placement remain
+  host-product decisions.
 - Stable error-code contract tests keep the Go `pkg/security` catalog, OpenAPI
   envelope enum, iframe bridge schema, TypeScript SDK exports, and Rust IPC
   runtime-origin error constants aligned. The catalog separates server platform
-  codes, bridge response codes, TypeScript client-only fallback codes, and Rust
+  codes, bridge response codes, TypeScript client-side transport codes, and Rust
   IPC codes so product shells can branch on stable values without scraping
   localized messages.
 - WASM worker ABI schema tests keep `wasm-worker-v1.schema.json` aligned with
@@ -212,6 +237,14 @@ capabilities.
   credentials to the sandboxed iframe. Host pages can also use
   `PluginSurfaceReloadLimiter` to cap consecutive automatic iframe reloads
   after crashes or load failures before showing a host-owned error state.
+- The npm API boundary is split into four auditable entrypoints. The package
+  root and `@floegence/redevplugin-ui/trusted-parent` expose the same
+  trusted-parent allowlist for host shells. `@floegence/redevplugin-ui/plugin`
+  exposes only `PluginBridgeClient` to untrusted plugin worker bundles.
+  `@floegence/redevplugin-ui/local-import` exposes the explicit dev/admin raw
+  package client and must not be imported by official release-reference product
+  paths. The opaque bootstrap HTML factory remains internal and is not exported
+  by any public entrypoint.
 - Operation cancel requests are durable Host decisions: `CancelOperation` records
   `cancel_requested`, emits audit evidence, and dispatches the optional
   `OperationCanceler` adapter with plugin, method, surface, bridge-channel, and
@@ -241,7 +274,8 @@ capabilities.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, release-metadata, source-policy, source-revocations,
-  token/ticket, bridge, compatibility, release-manifest, IPC, WASM,
+  token/ticket, bridge, opaque-surface document and transport, compatibility,
+  release-manifest, IPC, WASM,
   network-grant, worker invocation, error-code, and
   target-classifier contracts. Network grant schema, release manifest schema,
   and target-classifier fixture versions are tracked independently so hosts can
@@ -250,11 +284,14 @@ capabilities.
   for public DNS, punycode hostnames, metadata hosts, RFC1918/ULA/link-local
   addresses, and IPv4-mapped IPv6 private addresses, with Go and Rust tests
   reading the same JSON contract.
-- Release-manifest schema tests keep `release-manifest-v1.schema.json` aligned
+- `spec/plugin/contract-registry-v1.json` is the generated complete inventory of
+  those public contract IDs, paths, versions, and SHA-256 identities; Go and
+  TypeScript registries are generated from the same source set.
+- Release-manifest schema tests keep `release-manifest-v2.schema.json` aligned
   with the release bundle build script and verifier: `release-manifest.json`
-  excludes itself and `SHA256SUMS`, records a sorted file list, stores lowercase
-  hex SHA-256 and byte sizes, rejects unsafe paths, and drives the generated
-  `SHA256SUMS` content.
+  records the source commit, compatibility digest, exact npm tarball identity,
+  sorted file list, lowercase SHA-256 hashes and byte sizes, excludes itself and
+  `SHA256SUMS`, rejects unsafe paths, and drives generated checksums.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
   verify the loaded platform artifact set without shelling out to the CLI; the
@@ -303,8 +340,8 @@ capabilities.
   back into worker-provided output buffers. `network_execute.operation =
   "http_stream"` is currently a Host stream-store bridge: the Go supervisor
   streams HTTP response chunks into `stream.Store` and returns response
-  metadata plus `stream_id`; it is not yet the Rust hot-path persistent
-  stream/credit/resume transport. Before each broker dispatch the
+  metadata plus `stream_id`; this path is a Host-owned stream-store bridge rather
+  than a Rust-owned persistent stream transport. Before each broker dispatch the
   runtime verifies control-channel freshness and fails closed with
   `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
   stale. Runtime revoke ACKs now return a structured result with closed
@@ -312,9 +349,8 @@ capabilities.
   in-process registry for worker actor entries, brokered storage handles,
   network socket leases, and Host stream-store bridge stream IDs; revoke epochs
   clear matching registry entries and report the actual closed counts. Resource
-  classes that are still purely Host-owned, including the persistent
-  credit/resume stream transport that is not yet in the Rust hot path, still
-  report zero until Rust owns those handles. The earlier fixed
+  classes that are purely Host-owned report zero because Rust has no matching
+  handle to close. The earlier fixed
   `*_demo` imports and `redevplugin.network/http_request` alias remain covered only as legacy runtime compatibility fixtures,
   not as the scaffolded plugin backend contract. Host integration tests build
   and exercise the real Rust runtime whenever a local Cargo toolchain is
@@ -335,7 +371,7 @@ capabilities.
   plugin data to another environment.
 - `redevplugin dev-install <state-root> <package>` creates a persistent local
   development state root for Flower-generated plugins. The matching
-  `dev-enable`, `dev-open <surface-id> [sandbox-origin]`, `dev-disable`,
+  `dev-enable`, `dev-open <surface-id>`, `dev-disable`,
   `dev-secret-bind <secret-ref> [user|environment]`,
   `dev-secret-test <secret-ref> [user|environment]`,
   `dev-secret-delete <secret-ref> [user|environment]`,
@@ -347,8 +383,8 @@ capabilities.
   `dev-uninstall [--delete-data|--keep-data]`, and `dev-status` commands replay
   the saved package through the real Host lifecycle APIs while keeping the
   copied package, filesystem storage root, manifest-level settings, redacted
-  secret-ref binding/test state, permission grant/revoke records, and sandbox
-  browser-origin records under the same state root. Dev secret commands never
+  secret-ref binding/test state, and permission grant/revoke records under the
+  same state root. Dev secret commands never
   store secret plaintext; they only persist the declared `secret_ref`, scope,
   bound flag, and test status that the Host settings API can expose as redacted
   state. Dev permission commands call the Host permission APIs, so policy
@@ -360,68 +396,24 @@ capabilities.
   install -> enable -> open -> disable -> uninstall flow without importing any
   host-product internals. Uninstall removes the copied package; `--delete-data`
   also removes plugin storage namespaces, manifest settings, dev secret-ref
-  state, permission grants, and marks browser-origin data cleanup complete,
+  state, and permission grants,
   while `--keep-data` marks declared plugin data retained and preserves redacted
   dev secret-ref state for the local developer profile. Permission grants are
   removed on every uninstall, including `--keep-data`, because authorization is
   tied to the installed plugin lifecycle rather than retained user data.
-- The browser demo under `demo/browser/` runs a real host page plus sandboxed
-  iframe plugin page using the built `@floegence/redevplugin-ui` bridge package.
-  Start it with `npm run demo:browser`, open the printed host URL, then exercise
-  handshake, lifecycle, ordinary RPC, storage-list RPC, streaming,
-  dangerous-confirmation, and richer plugin surfaces. The host and plugin page
-  are served from isolated sandbox documents to exercise source/port-bound
-  sandbox bridge behavior. The demo picker includes a workspace tools plugin, an
-  animated canvas bouncer game with particles, trails, power-ups, score saving,
-  achievements, replay file exports, stored challenge snapshots, and a
-  host-backed leaderboard; a schedule planner that lists/adds/toggles/deletes
-  host-backed stored items, displays storage revision/quota/timeline metadata,
-  inspects the demo SQLite schema, backs up and restores stored items through
-  the file broker, and keeps data through host-page reloads;
-  and a weather plugin that saves the current location, requests a
-  host-network-backed HTTP forecast payload through the demo network broker,
-  parses the raw JSON response inside the sandboxed plugin UI, and renders
-  current, hourly, forecast, broker endpoint, response headers, parser
-  field-mapping diagnostics, saved-location comparison, and network-history
-  views.
-  For the Flower-generated plugin path, run `npm run demo:browser:generated`.
-  That launcher scaffolds a plugin with a backend worker skeleton, packages it,
-  installs it into a temporary dev state root, enables it, opens its activity
-  surface, prints a browser URL, and cleans up by disabling and uninstalling the
-  plugin with data deletion when the process exits. For the real runtime path,
-  run `npm run demo:browser:real`. That launcher builds `redevplugin-runtime`,
-  starts the host-neutral Go demo server, prints a browser URL, serves the plugin
-  through the sandbox asset-session protocol, and deletes the temporary demo
-  state when the process exits.
-  `npm run test:demo` covers the fake platform API and static sandbox contract;
-  `npm run test:demo:browser` launches a real browser, clicks through the iframe
-  demo flow, generates a fresh plugin with `redevplugin scaffold`, packages it,
-  installs, enables, and opens it through the persistent dev lifecycle harness,
-  serves that generated plugin from the sandbox origin, verifies its backend call
-  UI end to end, then disables and uninstalls it with data deletion. The same
-  browser smoke now also starts `redevplugin demo-real-server`, which wires a
-  scaffolded plugin through the real Go Host library, the HTTP adapter, a
-  fresh asset-ticket/bootstrap exchange, a sandboxed iframe, and the built Rust
-  runtime process. In that real-server path the host page and plugin sandbox use
-  separate `*.redevplugin.localhost` origins, the parent exchanges the asset
-  ticket through the sandbox `/_redevplugin/bootstrap` endpoint, the iframe loads
-  packaged UI through `/_redevplugin/assets/{asset_session_id}/ui/index.html`,
-  and the smoke asserts the path-scoped HttpOnly asset-session cookie plus
-  absence of legacy `/ui/index.html` static loading. The generated plugin UI is
-  clicked in the browser and must
-  receive a `worker.echo` result whose transport is `rust runtime ipc`. It also
-  clicks a `worker.brokerDemo` flow that routes through the Rust runtime and a
-  WASM worker into the Storage Broker and Network Broker, proving the backend
-  worker can persist a file and request host-mediated HTTP without exposing
-  parent-only grants to the iframe. The same real-runtime surface now includes
-  a schedule planner flow whose `worker.schedulePlan` method refreshes
-  parent-only storage grants in the Host page, executes a WASM worker through
-  the Rust runtime, writes file/KV data, creates and queries a plugin SQLite
-  schedule table, and renders the stored schedule row inside the sandboxed
-  iframe without leaking those grants. The real runtime browser smoke also clicks
-  the generated plugin's Network matrix flow, which routes HTTP, WebSocket, TCP,
-  and UDP requests through the same WASM worker -> Rust runtime -> Host Network
-  Broker boundary.
+- The browser demo under `demo/browser/` is a single-host reference integration.
+  `npm run demo:browser` serves a fake Host transport, while
+  `npm run demo:browser:real` starts the Go Host, HTTP adapter, and real Rust
+  runtime. Both paths ask `PluginSurfaceHost.create(...)` to create a fresh
+  opaque `srcdoc` iframe and mount only its `element`; no caller-provided
+  iframe, plugin server, subdomain, cookie bootstrap, GET asset
+  route, or query credential exists. The trusted renderer loads a static
+  validated document, starts one classic Dedicated Worker, and connects it to
+  the parent through typed `MessagePort` channels. `npm run test:demo:browser`
+  proves opaque origin isolation, parent DOM/cookie/storage denial, blocked
+  direct network and browser persistence APIs, first paint before lazy assets,
+  RPC, parent-owned stream redemption, confirmation, Rust runtime storage and
+  network calls, and deterministic worker/iframe disposal.
 - Host-mediated plugin intents are exposed end to end through the Go Host
   library, HTTP adapter, OpenAPI route contract, and `PluginPlatformClient`.
   Host products can list enabled runnable intents and invoke a chosen intent
@@ -437,22 +429,44 @@ provide a local sibling integration path for host products.
 - [Security model](docs/security/plugin-platform-security.md)
 - [Plugin surface SDK](docs/ui/plugin-surface-sdk.md)
 - [CI and release gates](docs/release/ci-and-release-gates.md)
+- [A2 TDD evidence](docs/release/a2-tdd-evidence.md)
 
 ## Release Integrity
 
 Tagged GitHub releases build a platform-specific release bundle for each
-supported runtime target only after release audit and stress gates pass. The
-published evidence includes `redevplugin-release-stress.json`, `SHA256SUMS`, and
-the runtime `.tar.gz` bundles. `SHA256SUMS` covers the runtime bundles and the
-stress summary, and every `.tar.gz`, the stress summary, and `SHA256SUMS` are
-signed with Sigstore keyless `cosign sign-blob`. Each signed artifact is
-uploaded with a detached `.sig` file and a `.bundle` transparency-log bundle.
-Host products should verify the checksum, the stress evidence counters and
-thresholds, and the cosign bundle before consuming a ReDevPlugin runtime
-artifact. Use
-`scripts/verify_redevplugin_release_artifacts.sh <artifact-dir>` after
-downloading a release artifact set; the GitHub Release workflow runs the same
-verifier before publishing.
+supported runtime target only after release audit and stress gates pass. The UI
+package is packed once, and the exact same npm tarball bytes are embedded in
+every runtime bundle and published to npm. The
+published evidence includes `redevplugin-release-stress.json`, the structured
+`redevplugin-a2-acceptance.json` report, supported/unsupported browser
+screenshots, `SHA256SUMS`, and the runtime `.tar.gz` bundles. `SHA256SUMS` covers
+all of them, and every covered artifact plus `SHA256SUMS` is signed with
+Sigstore keyless `cosign sign-blob`. Each signed artifact is uploaded with a
+detached `.sig` file and a `.bundle` transparency-log bundle. Host products
+should verify the checksum, stress counters, A2 opaque-origin/sandbox/CSP and
+credential-isolation assertions, and cosign bundle before consuming a
+ReDevPlugin runtime artifact. Use
+`scripts/verify_redevplugin_release_artifacts.sh --tag vX.Y.Z <artifact-dir>` after
+downloading a release artifact set. Release packing/publishing uses pinned
+`npm@11.18.0`, and signing/readback uses pinned `cosign v2.4.3`. The workflow
+resolves lightweight or annotated GitHub tags to the immutable source commit,
+rejects tags that are not on `origin/main`, uses a strict not-found-only
+preflight plus atomic `gh release create`, and rechecks tag identity immediately
+before npm and GitHub publication and after the non-draft Release exists. It
+verifies an already-published npm version only after downloading the registry
+tarball, recomputing SHA-512, and validating the SLSA DSSE subject, repository,
+release workflow path/ref, tag, and source commit, then performs
+public GitHub, npm, Go direct/proxy module identity,
+runtime matrix, compatibility, checksum, and cosign readback. Runtime artifacts
+execute on their native matrix runners; the aggregate readback checks foreign
+ELF/Mach-O architecture and all signed content structurally.
+
+Every release bundle also contains generated `THIRD_PARTY_NOTICES.md`, dependency
+lockfiles, `notices/THIRD_PARTY_LICENSES.json`, and the actual redistributed
+license/notice/copyright texts under `notices/licenses/`. The bundle verifier
+checks the exact legal-file set and every recorded SHA-256, so license names
+alone are not accepted as release evidence. The root MIT `LICENSE` is included
+in both runtime bundles and the packed npm package.
 
 Tagged releases also publish the matching `@floegence/redevplugin-ui` npm
 package version. The release bundle still includes the npm tarball as checksum
@@ -462,10 +476,11 @@ semver instead of copying the bundled tarball or using a local checkout.
 ## Local Checks
 
 ```bash
+GOWORK=off go list ./...
 GOWORK=off go test ./...
-npm install
-npm run check
+npm ci
 npx playwright install chromium
+npm run check
 npm run demo:browser
 npm run demo:browser:real
 npm run test:demo:browser
@@ -495,8 +510,7 @@ connectivity grant/classifier denials, runtime revoke ACK p95 latency,
 redirect/DNS rebinding denials, HTTP proxy/CONNECT/header hardening, TCP mock
 database round trips, TCP size denials, TCP cancelled reads, UDP source-pin
 mismatch drops, UDP rate-limit denials, WebSocket round trips, WebSocket size
-denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota
-pressure, SQLite sidecar/sparse bypass checks, and CSP report flood rate
-limiting. CI uploads that summary as release evidence for host-neutral
+denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota,
+and SQLite sidecar/sparse bypass checks. CI uploads that summary as release evidence for host-neutral
 broker/backpressure and stream close/cancel, operation cancel dispatch,
 runtime-control, storage, and sandbox telemetry behavior.

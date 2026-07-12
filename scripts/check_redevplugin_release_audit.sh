@@ -13,7 +13,7 @@ echo "==> npm_audit"
 npm audit --audit-level=moderate
 
 echo "==> go_vulncheck"
-GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
 echo "==> cargo_deny"
 if ! command -v cargo-deny >/dev/null 2>&1; then
@@ -21,6 +21,6 @@ if ! command -v cargo-deny >/dev/null 2>&1; then
     echo "cargo-deny is required; set REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 to install it for this run" >&2
     exit 1
   fi
-  cargo install cargo-deny --locked
+  cargo install cargo-deny@0.19.9 --locked
 fi
 cargo deny check

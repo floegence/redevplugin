@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/compatibility-manifest-v2.schema.json",
+  "title": "ReDevPlugin compatibility manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "matrix", "contracts"],
+  "properties": {
+    "schema_version": { "const": "redevplugin.compatibility.v2" },
+    "matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "redevplugin_go_version",
+        "redevplugin_ui_version",
+        "redevplugin_runtime_version",
+        "plugin_ui_protocol_version",
+        "plugin_host_protocol_version",
+        "rust_ipc_version",
+        "wasm_abi_version",
+        "manifest_schema_version",
+        "package_signature_schema_version",
+        "release_metadata_schema_version",
+        "source_policy_schema_version",
+        "source_revocations_schema_version",
+        "token_ticket_schema_version",
+        "bridge_schema_version",
+        "opaque_surface_document_schema_version",
+        "opaque_surface_transport_schema_version",
+        "target_classifier_version",
+        "network_grant_schema_version",
+        "plugin_platform_openapi_version",
+        "compatibility_schema_version",
+        "release_manifest_schema_version",
+        "worker_invocation_schema_version",
+        "error_codes_schema_version",
+        "contract_registry_version"
+      ],
+      "properties": {
+        "redevplugin_go_version": { "type": "string", "minLength": 1 },
+        "redevplugin_ui_version": { "type": "string", "minLength": 1 },
+        "redevplugin_runtime_version": { "type": "string", "minLength": 1 },
+        "plugin_ui_protocol_version": { "const": "plugin-ui-v2" },
+        "plugin_host_protocol_version": { "const": "plugin-host-v2" },
+        "rust_ipc_version": { "const": "rust-ipc-v1" },
+        "wasm_abi_version": { "const": "redevplugin-wasm-worker-v1" },
+        "manifest_schema_version": { "const": "manifest-v2" },
+        "package_signature_schema_version": { "const": "package-signature-v1" },
+        "release_metadata_schema_version": { "const": "release-metadata-v2" },
+        "source_policy_schema_version": { "const": "source-policy-v1" },
+        "source_revocations_schema_version": { "const": "source-revocations-v1" },
+        "token_ticket_schema_version": { "const": "token-ticket-v2" },
+        "bridge_schema_version": { "const": "bridge-v2" },
+        "opaque_surface_document_schema_version": { "const": "opaque-surface-document-v1" },
+        "opaque_surface_transport_schema_version": { "const": "opaque-surface-transport-v1" },
+        "target_classifier_version": { "const": "target-classifier-v1" },
+        "network_grant_schema_version": { "const": "network-grant-v1" },
+        "plugin_platform_openapi_version": { "const": "plugin-platform-v2" },
+        "compatibility_schema_version": { "const": "compatibility-manifest-v2" },
+        "release_manifest_schema_version": { "const": "release-manifest-v2" },
+        "worker_invocation_schema_version": { "const": "worker-invocation-v1" },
+        "error_codes_schema_version": { "const": "error-codes-v1" },
+        "contract_registry_version": { "const": "contract-registry-v1" }
+      }
+    },
+    "contracts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/contract" }
+    }
+  },
+  "$defs": {
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "version", "sha256"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": {
+          "type": "string",
+          "pattern": "^(spec/openapi|spec/plugin)/[A-Za-z0-9._/-]+$"
+        },
+        "version": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

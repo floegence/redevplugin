@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -11,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 const [rawRootDir, rawOutFile] = process.argv.slice(2);
 
@@ -26,6 +28,11 @@ const outFile = resolve(rawOutFile);
 const rustPackages = readRustPackages(rootDir);
 const npmPackages = readNpmPackages(join(rootDir, "package-lock.json"));
 const goModules = readGoModules(rootDir);
+const licenseManifest = writeRedistributedLegalTexts(dirname(outFile), [
+  ...rustPackages.map((pkg) => legalPackage("rust", pkg)),
+  ...npmPackages.map((pkg) => legalPackage("npm", pkg)),
+  ...goModules.map((pkg) => legalPackage("go", pkg)),
+]);
 
 const notice = [
   "# Third-Party Notices",
@@ -39,6 +46,8 @@ const notice = [
   "- `notices/go.sum`",
   "- `notices/package-lock.json`",
   "- `notices/Cargo.lock`",
+  "- `notices/THIRD_PARTY_LICENSES.json`",
+  "- `notices/licenses/**` (redistributed license, notice, and copyright texts)",
   "",
   "The Rust dependency license allowlist is defined in `deny.toml` in the source",
   "repository and is enforced by CI with `cargo deny check`.",
@@ -50,7 +59,7 @@ const notice = [
     rustPackages.map((pkg) => [
       pkg.name,
       pkg.version,
-      pkg.license || licenseFileLabel(pkg.license_file) || "UNKNOWN",
+      pkg.license || detectLicense(pkg.legal_files),
       sourceLabel(pkg.source),
     ]),
   ),
@@ -62,7 +71,7 @@ const notice = [
     npmPackages.map((pkg) => [
       pkg.name,
       pkg.version,
-      pkg.license || "UNKNOWN",
+      pkg.license || detectLicense(pkg.legal_files),
       pkg.optional ? "optional" : pkg.dev ? "dev" : "runtime",
     ]),
   ),
@@ -74,13 +83,17 @@ const notice = [
     goModules.map((mod) => [
       mod.path,
       mod.version || "(main)",
-      mod.license_files.length > 0 ? mod.license_files.join(", ") : "UNKNOWN",
+      detectLicense(mod.legal_files),
     ]),
   ),
   "",
 ].join("\n");
 
 writeFileSync(outFile, notice);
+writeFileSync(
+  join(dirname(outFile), "notices", "THIRD_PARTY_LICENSES.json"),
+  JSON.stringify(licenseManifest, null, 2) + "\n",
+);
 
 function readRustPackages(root) {
   const metadataRaw = execFileSync("cargo", ["metadata", "--format-version", "1", "--locked"], {
@@ -89,36 +102,88 @@ function readRustPackages(root) {
     env: { ...process.env, PATH: cargoPath() },
   });
   const metadata = JSON.parse(metadataRaw);
+  const includedPackageIDs = reachableRustPackageIDs(metadata);
   return metadata.packages
-    .filter((pkg) => typeof pkg.source === "string" && pkg.source.length > 0)
-    .map((pkg) => ({
+    .filter((pkg) => typeof pkg.source === "string" && pkg.source.length > 0 && includedPackageIDs.has(pkg.id))
+    .map((pkg) => {
+      const packageDir = dirname(pkg.manifest_path);
+      return {
       name: pkg.name,
       version: pkg.version,
       license: pkg.license || "",
-      license_file: pkg.license_file || "",
       source: pkg.source || "",
-    }))
+      legal_files: scanLegalFiles(packageDir, [
+        ...(pkg.license_file ? [pkg.license_file] : []),
+        ...rustLegalOverrideFiles(root, pkg.name),
+      ]),
+      };
+    })
     .sort(compareBy("name", "version", "source"));
+}
+
+function rustLegalOverrideFiles(root, packageName) {
+  if (["wasmi", "wasmi_collections", "wasmi_core", "wasmi_ir"].includes(packageName)) {
+    return scanLegalFiles(join(root, "third_party", "legal", "rust", "wasmi"));
+  }
+  if (packageName === "wasmparser") {
+    return scanLegalFiles(join(root, "third_party", "legal", "rust", "wasm-tools"));
+  }
+  return [];
+}
+
+function reachableRustPackageIDs(metadata) {
+  const nodes = new Map((metadata.resolve?.nodes || []).map((node) => [node.id, node]));
+  const included = new Set();
+  const pending = [...(metadata.workspace_members || [])];
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (!id || included.has(id)) continue;
+    included.add(id);
+    const node = nodes.get(id);
+    for (const dependency of node?.deps || []) {
+      if ((dependency.dep_kinds || []).some((kind) => kind.kind === null || kind.kind === "build")) {
+        pending.push(dependency.pkg);
+      }
+    }
+  }
+  return included;
 }
 
 function readNpmPackages(lockfile) {
   const lock = JSON.parse(readFileSync(lockfile, "utf8"));
   const packages = lock.packages || {};
-  const result = [];
+  const rootPackage = JSON.parse(readFileSync(join(dirname(lockfile), "package.json"), "utf8"));
+  const directNames = new Set([
+    ...Object.keys(rootPackage.dependencies || {}),
+    ...Object.keys(rootPackage.optionalDependencies || {}),
+    ...Object.keys(rootPackage.peerDependencies || {}),
+    ...Object.keys(rootPackage.devDependencies || {}),
+  ]);
+  const result = new Map();
   for (const [path, pkg] of Object.entries(packages)) {
     if (!path || !path.startsWith("node_modules/")) {
       continue;
     }
-    const name = path.slice("node_modules/".length);
-    result.push({
+    const name = npmPackageNameFromLockPath(path);
+    if (!directNames.has(name) || path !== `node_modules/${name}`) {
+      continue;
+    }
+    const version = String(pkg.version || "");
+    const key = `${name}@${version}`;
+    const candidate = {
       name,
-      version: String(pkg.version || ""),
+      version,
       license: normalizeLicense(pkg.license),
       dev: Boolean(pkg.dev),
       optional: Boolean(pkg.optional),
-    });
+      legal_files: scanLegalFiles(join(dirname(lockfile), path)),
+    };
+    const existing = result.get(key);
+    if (!existing || existing.legal_files.length === 0) {
+      result.set(key, candidate);
+    }
   }
-  return result.sort(compareBy("name", "version"));
+  return [...result.values()].sort(compareBy("name", "version"));
 }
 
 function readGoModules(root) {
@@ -130,13 +195,16 @@ function readGoModules(root) {
   const downloadedModules = readGoModuleDownloads(root);
   return parseGoListJSON(raw)
     .filter((mod) => !mod.Main)
-    .map((mod) => ({
-      path: mod.Path,
-      version: mod.Version || "",
-      license_files: scanLicenseFiles(
-        mod.Dir || downloadedModules.get(moduleCacheKey(mod.Path, mod.Version || "")),
-      ),
-    }))
+    .map((mod) => {
+      const moduleDir = mod.Dir || downloadedModules.get(moduleCacheKey(mod.Path, mod.Version || ""));
+      return {
+        name: mod.Path,
+        path: mod.Path,
+        version: mod.Version || "(main)",
+        license: "",
+        legal_files: scanLegalFiles(moduleDir),
+      };
+    })
     .sort(compareBy("path", "version"));
 }
 
@@ -214,25 +282,100 @@ function parseGoListJSON(raw) {
   return modules;
 }
 
-function scanLicenseFiles(dir) {
+function scanLegalFiles(dir, explicitFiles = []) {
   if (!dir || !existsSync(dir) || !statSync(dir).isDirectory()) {
-    return [];
+    return explicitFiles.filter((file) => existsSync(file) && statSync(file).isFile()).map((file) => resolve(file));
   }
-  const names = [];
-  for (const entry of readdirSync(dir)) {
-    const lower = entry.toLowerCase();
-    if (
-      lower === "license" ||
-      lower.startsWith("license.") ||
-      lower === "copying" ||
-      lower.startsWith("copying.") ||
-      lower === "notice" ||
-      lower.startsWith("notice.")
-    ) {
-      names.push(entry);
+  const files = new Set(explicitFiles.filter((file) => existsSync(file) && statSync(file).isFile()).map((file) => resolve(file)));
+  walk(dir, 0);
+  return [...files].sort();
+
+  function walk(current, depth) {
+    if (depth > 2) return;
+    for (const entry of readdirSync(current)) {
+      const path = join(current, entry);
+      const stat = statSync(path);
+      if (stat.isDirectory()) {
+        if (depth < 2 && /^(licenses?|legal)$/i.test(entry)) walk(path, depth + 1);
+        continue;
+      }
+      if (stat.isFile() && isLegalFilename(entry)) {
+        files.add(resolve(path));
+      }
     }
   }
-  return names.sort();
+}
+
+function isLegalFilename(name) {
+  return /^(licen[cs]e|copying|notice|copyright|third[-_ ]?party)([-_. ]|$)/i.test(name);
+}
+
+function npmPackageNameFromLockPath(path) {
+  const fragment = path.split("node_modules/").at(-1);
+  if (!fragment) return path;
+  const parts = fragment.split("/");
+  return parts[0].startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+
+function legalPackage(ecosystem, pkg) {
+  const license = pkg.license || detectLicense(pkg.legal_files);
+  return {
+    ecosystem,
+    name: pkg.name,
+    version: pkg.version,
+    license,
+    legal_files: pkg.legal_files,
+  };
+}
+
+function writeRedistributedLegalTexts(bundleRoot, packages) {
+  const licensesRoot = join(bundleRoot, "notices", "licenses");
+  rmSync(licensesRoot, { recursive: true, force: true });
+  mkdirSync(licensesRoot, { recursive: true });
+  const records = packages
+    .sort(compareBy("ecosystem", "name", "version"))
+    .map((pkg) => {
+      if (!pkg.name || !pkg.version || !pkg.license || pkg.license === "UNKNOWN") {
+        throw new Error(`third-party package has incomplete license identity: ${pkg.ecosystem}:${pkg.name}@${pkg.version}`);
+      }
+      if (!Array.isArray(pkg.legal_files) || pkg.legal_files.length === 0) {
+        throw new Error(`third-party package has no redistributable legal text: ${pkg.ecosystem}:${pkg.name}@${pkg.version}`);
+      }
+      const packageID = `${pkg.ecosystem}:${pkg.name}@${pkg.version}`;
+      const packageDir = `${safeSegment(pkg.name)}-${createHash("sha256").update(packageID).digest("hex").slice(0, 12)}`;
+      const files = pkg.legal_files.map((source, index) => {
+        const bytes = readFileSync(source);
+        if (bytes.length === 0 || bytes.length > 4 << 20) {
+          throw new Error(`third-party legal text has invalid size: ${source}`);
+        }
+        const filename = `${String(index + 1).padStart(2, "0")}-${safeSegment(basename(source))}`;
+        const destination = join(licensesRoot, pkg.ecosystem, packageDir, filename);
+        mkdirSync(dirname(destination), { recursive: true });
+        writeFileSync(destination, bytes);
+        return {
+          path: relative(bundleRoot, destination).replaceAll("\\", "/"),
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        };
+      });
+      return { ecosystem: pkg.ecosystem, name: pkg.name, version: pkg.version, license: pkg.license, files };
+    });
+  return { schema_version: "redevplugin.third_party_licenses.v1", packages: records };
+}
+
+function safeSegment(value) {
+  return String(value).replaceAll(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "legal";
+}
+
+function detectLicense(files) {
+  const text = (files || []).map((file) => readFileSync(file, "utf8")).join("\n");
+  if (/Apache License[\s\S]{0,80}Version 2\.0/i.test(text)) return "Apache-2.0";
+  if (/Permission is hereby granted, free of charge/i.test(text)) return "MIT";
+  if (/Redistribution and use in source and binary forms/i.test(text)) {
+    return /Neither the name|contributors may be used to endorse/i.test(text) ? "BSD-3-Clause" : "BSD-2-Clause";
+  }
+  if (/ISC License/i.test(text) || /Permission to use, copy, modify, and\/or distribute this software for any purpose/i.test(text)) return "ISC";
+  if (/Unicode License V3/i.test(text)) return "Unicode-3.0";
+  return files?.length ? "LicenseRef-Redistributed" : "UNKNOWN";
 }
 
 function table(headers, rows) {
@@ -258,10 +401,6 @@ function normalizeLicense(value) {
     return value.join(" OR ");
   }
   return typeof value === "string" ? value : "";
-}
-
-function licenseFileLabel(path) {
-  return path ? `license file: ${basename(path)}` : "";
 }
 
 function sourceLabel(source) {

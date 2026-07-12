@@ -39,6 +39,7 @@ export GOWORK=off
   cd "$ROOT_DIR"
   go test ./pkg/protocol ./pkg/httpadapter ./pkg/connectivity ./pkg/runtimeclient
   cargo test -p redevplugin-target-classifier
+  npm run contracts:check
   grep -q '"target_classifier_version": { "const": "target-classifier-v1" }' spec/plugin/network-grant-v1.schema.json
   grep -q '"fixtures":' spec/plugin/target-classifier-v1.json
   grep -q '"ipv4-mapped-private-resolved"' spec/plugin/target-classifier-v1.json
@@ -46,60 +47,112 @@ export GOWORK=off
   grep -q 'package-signature-v1.schema.json' spec/plugin/package-signature-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.package_signature.v1" }' spec/plugin/package-signature-v1.schema.json
   grep -q '"algorithm": { "enum": \["ed25519"\] }' spec/plugin/package-signature-v1.schema.json
-  grep -q '"schema_version": { "const": "redevplugin.release_metadata.v1" }' spec/plugin/release-metadata-v1.schema.json
-  grep -q '"release_metadata_signature"' spec/plugin/release-metadata-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.release_metadata.v2" }' spec/plugin/release-metadata-v2.schema.json
+  grep -q '"release_metadata_signature"' spec/plugin/release-metadata-v2.schema.json
   grep -q '"schema_version": { "const": "redevplugin.source_policy.v1" }' spec/plugin/source-policy-v1.schema.json
   grep -q '"unsigned_policy": { "enum": \["dev_only", "review_required", "block"\] }' spec/plugin/source-policy-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.source_revocations.v1" }' spec/plugin/source-revocations-v1.schema.json
   grep -q '"revoked_key_ids"' spec/plugin/source-revocations-v1.schema.json
-  grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"handle_grant"' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"runtime_generation_id",' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"runtime_instance_id",' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"ipc_channel_id",' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"connection_nonce",' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"handle_id",' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"stream_id",' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"stream_direction"' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"method"' spec/plugin/token-ticket-v1.schema.json
-  grep -q '"type": { "const": "redevplugin.bridge.handshake" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"type": { "const": "redevplugin.bridge.call" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"type": { "const": "redevplugin.bridge.response" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"type": { "const": "redevplugin.bridge.lifecycle" }' spec/plugin/bridge-v1.schema.json
-  grep -q '"ui_protocol_version": { "const": "plugin-ui-v1" }' spec/plugin/bridge-v1.schema.json
-  grep -q 'handshake_transcript_sha256' spec/openapi/plugin-platform-v1.yaml
-  grep -q '"schema_version": { "const": "redevplugin.compatibility.v1" }' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"bridge_schema_version": { "const": "bridge-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"network_grant_schema_version": { "const": "network-grant-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"release_metadata_schema_version": { "const": "release-metadata-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"source_policy_schema_version": { "const": "source-policy-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"source_revocations_schema_version": { "const": "source-revocations-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"compatibility_schema_version"' spec/plugin/compatibility-manifest-v1.schema.json
-  grep -q '"error_codes_schema_version": { "const": "error-codes-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v2.schema.json
+  grep -q '"handle_grant"' spec/plugin/token-ticket-v2.schema.json
+  ! grep -q '"type": { "const": "redevplugin.bridge.handshake" }' spec/plugin/bridge-v2.schema.json
+  grep -q '"type": { "const": "redevplugin.bridge.call" }' spec/plugin/bridge-v2.schema.json
+  grep -q '"type": { "const": "redevplugin.bridge.cancel" }' spec/plugin/bridge-v2.schema.json
+  grep -q '"type": { "const": "redevplugin.ui.render" }' spec/plugin/bridge-v2.schema.json
+  grep -q '"x-redevplugin-render-policy"' spec/plugin/bridge-v2.schema.json
+  grep -q '"safe_input_types"' spec/plugin/bridge-v2.schema.json
+  grep -q 'handshake_transcript_sha256' spec/openapi/plugin-platform-v2.yaml
+  grep -q 'previous_plugin_gateway_token' spec/openapi/plugin-platform-v2.yaml
+  grep -q '/_redevplugin/api/plugins/surfaces/revoke-scope' spec/openapi/plugin-platform-v2.yaml
+  grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare' spec/openapi/plugin-platform-v2.yaml
+  grep -q '/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read' spec/openapi/plugin-platform-v2.yaml
+  grep -q '"schema_version": { "const": "redevplugin.compatibility.v2" }' spec/plugin/compatibility-manifest-v2.schema.json
+  grep -q '"bridge_schema_version": { "const": "bridge-v2" }' spec/plugin/compatibility-manifest-v2.schema.json
+  grep -q '"release_metadata_schema_version": { "const": "release-metadata-v2" }' spec/plugin/compatibility-manifest-v2.schema.json
+  grep -q '"opaque_surface_document_schema_version"' spec/plugin/compatibility-manifest-v2.schema.json
+  grep -q '"opaque_surface_transport_schema_version"' spec/plugin/compatibility-manifest-v2.schema.json
   grep -q '"title": "ReDevPlugin stable error codes v1"' spec/plugin/error-codes-v1.schema.json
   grep -q '"PLUGIN_JSON_LIMIT_EXCEEDED"' spec/plugin/error-codes-v1.schema.json
   grep -q '"PLUGIN_PLATFORM_REQUEST_FAILED"' spec/plugin/error-codes-v1.schema.json
   grep -q '"RUNTIME_LEASE_SIGNATURE_INVALID"' spec/plugin/error-codes-v1.schema.json
   grep -q '"UNSUPPORTED_FRAME"' spec/plugin/error-codes-v1.schema.json
-  grep -q '"schema_version": { "const": "redevplugin.release_manifest.v1" }' spec/plugin/release-manifest-v1.schema.json
-  grep -q '"runtime_target"' spec/plugin/release-manifest-v1.schema.json
-  grep -q '"files"' spec/plugin/release-manifest-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.release_manifest.v2" }' spec/plugin/release-manifest-v2.schema.json
+  grep -q '"source_commit"' spec/plugin/release-manifest-v2.schema.json
+  grep -q '"npm_package"' spec/plugin/release-manifest-v2.schema.json
+  grep -q '"runtime_target"' spec/plugin/release-manifest-v2.schema.json
+  grep -q '"files"' spec/plugin/release-manifest-v2.schema.json
+  grep -q '"type": { "const": "classic" }' spec/plugin/opaque-surface-document-v1.schema.json
+  grep -q '"surface_handle"' spec/plugin/opaque-surface-transport-v1.schema.json
+  grep -q '"runtime_control"' spec/plugin/opaque-surface-transport-v1.schema.json
+  grep -q '"plugin_bridge"' spec/plugin/opaque-surface-transport-v1.schema.json
+  grep -q '"required": \["method", "effect", "execution", "route", "request_schema", "response_schema"\]' spec/plugin/manifest-v2.schema.json
+  test ! -e spec/openapi/plugin-platform-v1.yaml
+  test ! -e spec/plugin/bridge-v1.schema.json
+  test ! -e spec/plugin/compatibility-manifest-v1.schema.json
+  test ! -e spec/plugin/manifest-v1.schema.json
+  test ! -e spec/plugin/release-manifest-v1.schema.json
+  test ! -e spec/plugin/release-metadata-v1.schema.json
+  test ! -e spec/plugin/token-ticket-v1.schema.json
+  grep -q '^  quality-release:$' .github/workflows/release.yml
+  grep -q 'name: Complete Release Quality Gate' .github/workflows/release.yml
+  grep -q 'GOWORK=off go test ./...' .github/workflows/release.yml
+  grep -q 'GOWORK=off go list ./...' .github/workflows/release.yml
+  grep -q 'GOWORK=off golangci-lint run ./...' .github/workflows/release.yml
+  grep -q 'TypeScript, unit, demo, and browser checks' .github/workflows/release.yml
+  grep -q './scripts/check_redevplugin_ui_bridge.sh' .github/workflows/release.yml
+  grep -q 'cargo clippy --workspace --all-targets -- -D warnings' .github/workflows/release.yml
+  grep -q 'cargo deny check' .github/workflows/release.yml
+  grep -q './scripts/check_redevplugin_runtime_contract.sh --ci' .github/workflows/release.yml
+  grep -q './scripts/check_redevplugin_platform.sh --ci' .github/workflows/release.yml
+  test "$(grep -c '^      - quality-release$' .github/workflows/release.yml)" -eq 4
   grep -q 'audit-release:' .github/workflows/release.yml
   grep -q './scripts/check_redevplugin_release_audit.sh' .github/workflows/release.yml
   grep -q 'REDEVPLUGIN_INSTALL_AUDIT_TOOLS: "1"' .github/workflows/release.yml
   grep -q 'release-audit:' .github/workflows/ci.yml
+  grep -q '^permissions:$' .github/workflows/ci.yml
+  grep -q 'GOWORK=off golangci-lint run ./...' .github/workflows/ci.yml
+  grep -q 'GOWORK=off go list ./...' .github/workflows/ci.yml
+  grep -q 'go list ./...' scripts/check_redevplugin_platform.sh
+  grep -q 'npm run check' .github/workflows/ci.yml
+  grep -q 'Bridge replay and cancellation gate' .github/workflows/ci.yml
+  ! grep -Eq 'uses: [^ ]+@v[0-9]+' .github/workflows/ci.yml .github/workflows/stress.yml
   grep -q 'bash -n scripts/check_redevplugin_release_audit.sh' .github/workflows/ci.yml
   grep -q 'stress-release:' .github/workflows/release.yml
   grep -q './scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json' .github/workflows/release.yml
-  grep -q -- '- audit-release' .github/workflows/release.yml
-  grep -q -- '- stress-release' .github/workflows/release.yml
-  grep -q 'redevplugin-release-stress.json > SHA256SUMS' .github/workflows/release.yml
+  grep -q 'package-ui:' .github/workflows/release.yml
+  grep -q 'Build immutable npm tarball' .github/workflows/release.yml
+  grep -q -- '--npm-package "$npm_package"' .github/workflows/release.yml
+  grep -q 'Publish or verify identical npm bytes' .github/workflows/release.yml
+  test "$(grep -c 'npm i -g npm@11.18.0' .github/workflows/release.yml)" -eq 2
+  grep -q 'git merge-base --is-ancestor' .github/workflows/release.yml
+  grep -q './scripts/assert_github_release_absent.sh' .github/workflows/release.yml
+  grep -q './scripts/verify_github_release_identity.sh' .github/workflows/release.yml
+  grep -q -- '--require-release' .github/workflows/release.yml
+  grep -q 'gh release create' .github/workflows/release.yml
+  ! grep -q 'softprops/action-gh-release' .github/workflows/release.yml
+  grep -q 'fetch-depth: 0' .github/workflows/release.yml
+  grep -q 'verify-published-release:' .github/workflows/release.yml
+  grep -q 'scripts/verify_published_release.mjs' .github/workflows/release.yml
+  grep -q -- '--structural-only' scripts/verify_published_release.mjs
+  grep -q 'scripts/verify_go_module_readback.mjs' .github/workflows/release.yml
+  grep -q 'redevplugin-a2-acceptance.json' .github/workflows/release.yml
+  grep -q 'redevplugin-a2-supported.png' .github/workflows/release.yml
+  grep -q 'redevplugin-a2-unsupported.png' .github/workflows/release.yml
   grep -q 'id-token: write' .github/workflows/release.yml
   grep -q 'sigstore/cosign-installer' .github/workflows/release.yml
+  test "$(grep -c 'cosign-release: v2.4.3' .github/workflows/release.yml)" -eq 2
   grep -q 'cosign sign-blob --yes' .github/workflows/release.yml
-  grep -q 'redevplugin-release-stress.json SHA256SUMS' .github/workflows/release.yml
-  grep -q './scripts/verify_redevplugin_release_artifacts.sh dist/artifacts' .github/workflows/release.yml
+  grep -q './scripts/verify_redevplugin_release_artifacts.sh --tag "$GITHUB_REF_NAME" dist/artifacts' .github/workflows/release.yml
   grep -q 'bash -n scripts/verify_redevplugin_release_artifacts.sh' .github/workflows/ci.yml
+  grep -q 'bash -n scripts/assert_github_release_absent.sh' .github/workflows/ci.yml
+  grep -q 'bash -n scripts/verify_github_release_identity.sh' .github/workflows/ci.yml
+  grep -q 'node --check scripts/verify_published_release.mjs' .github/workflows/ci.yml
+  grep -q 'node --check scripts/verify_go_module_readback.mjs' .github/workflows/ci.yml
+  grep -q 'node --check scripts/test_published_release_verifier.mjs' .github/workflows/ci.yml
+  grep -q 'node --check scripts/verify_npm_registry_release.mjs' .github/workflows/ci.yml
+  grep -q 'node --check scripts/test_npm_registry_release_verifier.mjs' .github/workflows/ci.yml
+  test "$(grep -c 'scripts/verify_npm_registry_release.mjs' .github/workflows/release.yml)" -eq 2
+  node scripts/test_npm_registry_release_verifier.mjs
   grep -Fq 'dist/artifacts/*.tar.gz.sig' .github/workflows/release.yml
   grep -Fq 'dist/artifacts/*.tar.gz.bundle' .github/workflows/release.yml
   grep -q 'dist/artifacts/redevplugin-release-stress.json' .github/workflows/release.yml
@@ -108,69 +161,137 @@ export GOWORK=off
   grep -q 'dist/artifacts/SHA256SUMS.sig' .github/workflows/release.yml
   grep -q 'dist/artifacts/SHA256SUMS.bundle' .github/workflows/release.yml
   verify_artifact_fixture=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-release-artifacts.XXXXXX")
-  trap 'rm -rf "$verify_artifact_fixture"' EXIT
-  printf 'runtime bundle\n' >"$verify_artifact_fixture/redevplugin-v0.0.0-test-linux-amd64.tar.gz"
+  stress_valid_fixture=$(mktemp "${TMPDIR:-/tmp}/redevplugin-release-stress-valid.XXXXXX")
+  trap 'rm -rf "$verify_artifact_fixture"; rm -f "$stress_valid_fixture"' EXIT
+  runtime_fixture_files=(
+    redevplugin-v0.0.0-test-x86_64-unknown-linux-gnu.tar.gz
+    redevplugin-v0.0.0-test-aarch64-unknown-linux-gnu.tar.gz
+    redevplugin-v0.0.0-test-x86_64-apple-darwin.tar.gz
+    redevplugin-v0.0.0-test-aarch64-apple-darwin.tar.gz
+  )
+  for file in "${runtime_fixture_files[@]}"; do
+    printf 'runtime bundle %s\n' "$file" >"$verify_artifact_fixture/$file"
+  done
   cat >"$verify_artifact_fixture/redevplugin-release-stress.json" <<'JSON'
 {
   "ok": true,
   "mode": "release",
-  "stress_categories": ["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota","csp_report_flood","browser_demo","runtime_contract","release_bundle"],
+  "stress_categories": ["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle"],
   "stress_evidence": [
     {"category":"stream_backpressure","counters":{"workers":1,"backpressure_denials":1,"core_operation_checks":1,"stream_close_requests":1,"closed_streams":1,"post_close_append_denials":1,"stream_close_audit_events":1,"stream_close_status_checked":1}},
     {"category":"operation_cancel_dispatch","counters":{"operations_registered":2,"successful_dispatches":1,"failed_dispatches":1,"cancel_requested_records":2,"http_503_failures":1,"runtime_unavailable_errors":1,"audit_cancel_requested_events":2,"adapter_context_fields_checked":8}},
     {"category":"connectivity_classifier","counters":{"minted_grants":1,"stale_grant_denials":1,"blocked_resolved_ips":1,"connector_policy_count":1,"http_redirects_not_followed":1,"dns_rebinding_denials":1,"http_proxy_env_ignored":1,"http_connect_denials":1,"alt_svc_headers_dropped":1,"proxy_auth_headers_dropped":1,"http_stream_round_trips":1,"http_stream_chunks":1,"http_stream_request_denials":1,"http_stream_response_denials":1,"http_stream_cancelled_reads":1,"tcp_database_round_trips":1,"tcp_request_denials":1,"tcp_response_denials":1,"tcp_cancelled_reads":1,"udp_round_trips":1,"udp_source_mismatch_dropped":1,"udp_rate_limit_denials":1,"websocket_round_trips":1,"websocket_request_denials":1,"websocket_response_denials":1,"websocket_cancelled_reads":1}},
     {"category":"runtime_revoke_ack","counters":{"attempts":1,"p95_ms":1,"max_ms":1,"threshold_ms":500,"hard_timeout_ms":2000,"closed_actor":1,"closed_socket":1,"closed_stream":1,"closed_storage":1}},
-    {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"file_quota_denials":1,"file_usage_files":1,"file_quota_files":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}},
-    {"category":"csp_report_flood","counters":{"attempts":2,"accepted_reports":1,"rate_limited_reports":1,"diagnostic_events":1,"audit_events":0,"unique_sandbox_origins":1,"unique_active_fingerprints":1}}
+    {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"file_quota_denials":1,"file_usage_files":1,"file_quota_files":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}}
   ],
   "steps": [{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1}]
 }
 JSON
+  cat >"$verify_artifact_fixture/redevplugin-a2-acceptance.json" <<'JSON'
+{
+  "schema_version": "redevplugin.a2_acceptance.v1",
+  "evidence_source": "go-host-http-adapter-rust-runtime-chromium",
+  "scenarios": [
+    {
+      "credentialless_scenario": "supported",
+      "credentialless": true,
+      "sandbox": "allow-scripts",
+      "allow": "accelerometer 'none'; autoplay 'none'; bluetooth 'none'; camera 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; encrypted-media 'none'; fullscreen 'none'; gamepad 'none'; geolocation 'none'; gyroscope 'none'; hid 'none'; magnetometer 'none'; microphone 'none'; midi 'none'; payment 'none'; picture-in-picture 'none'; publickey-credentials-get 'none'; screen-wake-lock 'none'; serial 'none'; usb 'none'; xr-spatial-tracking 'none'",
+      "referrer_policy": "no-referrer",
+      "csp": "default-src 'none'; script-src 'nonce-<redacted>'; style-src 'nonce-<redacted>'; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src blob:; child-src blob:; form-action 'none'; base-uri 'none'; object-src 'none'; manifest-src 'none'",
+      "frame_origin": "null",
+      "opaque_origin": true,
+      "isolation": {"parent_dom_blocked":true,"parent_cookie_blocked":true,"parent_local_storage_blocked":true,"parent_session_storage_blocked":true,"indexeddb_blocked":true,"cache_storage_blocked":true,"direct_fetch_blocked":true,"service_worker_blocked":true},
+      "worker_probe": {"dedicated_worker":true,"fetch_blocked":true,"websocket_blocked":true,"nested_worker_blocked":true,"indexeddb_blocked":true,"cache_storage_blocked":true,"broadcast_channel_blocked":true,"global_postmessage_blocked":true,"navigator_storage_blocked":true,"eval_blocked":true,"function_constructor_blocked":true,"prototype_descriptors_sealed":true,"message_port_prototype_sealed":true,"prototype_fetch_blocked":true,"prototype_indexeddb_blocked":true,"prototype_nested_blob_worker_blocked":true,"all_blocked":true},
+      "platform_dynamic_import_gate": true,
+      "parent_credentials_absent": true,
+      "credential_query_absent": true,
+      "direct_worker_network_absent": true,
+      "strict_request_allowlist": true,
+      "websocket_absent": true,
+      "service_worker_absent": true,
+      "opening_progress": true,
+      "first_paint_before_lazy_asset": true,
+      "real_stream_redeemed": true,
+      "confirmation_disposal_aborted": true,
+      "server_disposed": true,
+      "disposed": true
+    },
+    {
+      "credentialless_scenario": "unsupported",
+      "credentialless": false,
+      "sandbox": "allow-scripts",
+      "allow": "accelerometer 'none'; autoplay 'none'; bluetooth 'none'; camera 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; encrypted-media 'none'; fullscreen 'none'; gamepad 'none'; geolocation 'none'; gyroscope 'none'; hid 'none'; magnetometer 'none'; microphone 'none'; midi 'none'; payment 'none'; picture-in-picture 'none'; publickey-credentials-get 'none'; screen-wake-lock 'none'; serial 'none'; usb 'none'; xr-spatial-tracking 'none'",
+      "referrer_policy": "no-referrer",
+      "csp": "default-src 'none'; script-src 'nonce-<redacted>'; style-src 'nonce-<redacted>'; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src blob:; child-src blob:; form-action 'none'; base-uri 'none'; object-src 'none'; manifest-src 'none'",
+      "frame_origin": "null",
+      "opaque_origin": true,
+      "isolation": {"parent_dom_blocked":true,"parent_cookie_blocked":true,"parent_local_storage_blocked":true,"parent_session_storage_blocked":true,"indexeddb_blocked":true,"cache_storage_blocked":true,"direct_fetch_blocked":true,"service_worker_blocked":true},
+      "worker_probe": {"dedicated_worker":true,"fetch_blocked":true,"websocket_blocked":true,"nested_worker_blocked":true,"indexeddb_blocked":true,"cache_storage_blocked":true,"broadcast_channel_blocked":true,"global_postmessage_blocked":true,"navigator_storage_blocked":true,"eval_blocked":true,"function_constructor_blocked":true,"prototype_descriptors_sealed":true,"message_port_prototype_sealed":true,"prototype_fetch_blocked":true,"prototype_indexeddb_blocked":true,"prototype_nested_blob_worker_blocked":true,"all_blocked":true},
+      "platform_dynamic_import_gate": true,
+      "parent_credentials_absent": true,
+      "credential_query_absent": true,
+      "direct_worker_network_absent": true,
+      "strict_request_allowlist": true,
+      "websocket_absent": true,
+      "service_worker_absent": true,
+      "opening_progress": true,
+      "first_paint_before_lazy_asset": true,
+      "real_stream_redeemed": true,
+      "confirmation_disposal_aborted": true,
+      "server_disposed": true,
+      "disposed": true
+    }
+  ]
+}
+JSON
+  printf '\211PNG\r\n\032\nfixture\n' >"$verify_artifact_fixture/redevplugin-a2-supported.png"
+  printf '\211PNG\r\n\032\nfixture\n' >"$verify_artifact_fixture/redevplugin-a2-unsupported.png"
+  release_sum_files=(
+    "${runtime_fixture_files[@]}"
+    redevplugin-release-stress.json
+    redevplugin-a2-acceptance.json
+    redevplugin-a2-supported.png
+    redevplugin-a2-unsupported.png
+  )
+  refresh_release_fixture_sums() {
+    (
+      cd "$verify_artifact_fixture"
+      if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "${release_sum_files[@]}" >SHA256SUMS
+      else
+        shasum -a 256 "${release_sum_files[@]}" | awk '{ print $1 "  " $2 }' >SHA256SUMS
+      fi
+    )
+  }
+  refresh_release_fixture_sums
   (
     cd "$verify_artifact_fixture"
-    if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json >SHA256SUMS
-    else
-      shasum -a 256 redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json | awk '{ print $1 "  " $2 }' >SHA256SUMS
-    fi
-    for file in redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json SHA256SUMS; do
+    for file in "${release_sum_files[@]}" SHA256SUMS; do
       : >"${file}.sig"
       : >"${file}.bundle"
     done
   )
-  ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"
-  cp "$verify_artifact_fixture/redevplugin-release-stress.json" "$verify_artifact_fixture/redevplugin-release-stress.valid.json"
-  sed 's/"p95_ms":1/"p95_ms":501/' "$verify_artifact_fixture/redevplugin-release-stress.valid.json" >"$verify_artifact_fixture/redevplugin-release-stress.json"
-  (
-    cd "$verify_artifact_fixture"
-    if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json >SHA256SUMS
-    else
-      shasum -a 256 redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json | awk '{ print $1 "  " $2 }' >SHA256SUMS
-    fi
-  )
-  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"; then
+  ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"
+  cp "$verify_artifact_fixture/redevplugin-release-stress.json" "$stress_valid_fixture"
+  sed 's/"p95_ms":1/"p95_ms":501/' "$stress_valid_fixture" >"$verify_artifact_fixture/redevplugin-release-stress.json"
+  refresh_release_fixture_sums
+  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"; then
     echo "release artifact verifier accepted stress p95 above threshold" >&2
     exit 1
   fi
-  cp "$verify_artifact_fixture/redevplugin-release-stress.valid.json" "$verify_artifact_fixture/redevplugin-release-stress.json"
-  (
-    cd "$verify_artifact_fixture"
-    if command -v sha256sum >/dev/null 2>&1; then
-      sha256sum redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json >SHA256SUMS
-    else
-      shasum -a 256 redevplugin-v0.0.0-test-linux-amd64.tar.gz redevplugin-release-stress.json | awk '{ print $1 "  " $2 }' >SHA256SUMS
-    fi
-  )
-  printf 'unsigned extra tarball\n' >"$verify_artifact_fixture/redevplugin-v0.0.0-extra-linux-amd64.tar.gz"
-  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign "$verify_artifact_fixture"; then
-    echo "release artifact verifier accepted an unchecked tarball" >&2
+  cp "$stress_valid_fixture" "$verify_artifact_fixture/redevplugin-release-stress.json"
+  refresh_release_fixture_sums
+  printf 'unexpected release asset\n' >"$verify_artifact_fixture/unexpected.txt"
+  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"; then
+    echo "release artifact verifier accepted an unexpected non-tar asset" >&2
     exit 1
   fi
+  rm "$verify_artifact_fixture/unexpected.txt"
   grep -q 'name: Publish npm Package' .github/workflows/release.yml
   grep -q '@floegence/redevplugin-ui' .github/workflows/release.yml
   grep -q 'permissions:' .github/workflows/release.yml
-  grep -q 'npm publish --access public --provenance' .github/workflows/release.yml
+  grep -q 'npm publish "$package" --access public --provenance' .github/workflows/release.yml
   grep -q 'registry-url: https://registry.npmjs.org' .github/workflows/release.yml
   grep -q '"repository"' packages/redevplugin-ui/package.json
   grep -q 'git+https://github.com/floegence/redevplugin.git' packages/redevplugin-ui/package.json
@@ -178,8 +299,10 @@ JSON
   grep -q '"publishConfig"' packages/redevplugin-ui/package.json
   grep -q '"access": "public"' packages/redevplugin-ui/package.json
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs
+  grep -q 'verifyExecutableTargets' scripts/verify_redevplugin_release_bundle.mjs
+  grep -q 'test_published_release_verifier.mjs' scripts/check_redevplugin_stress.sh
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
-  go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'
+  go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v2"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-metadata-schema"'

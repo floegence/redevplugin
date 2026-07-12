@@ -15,16 +15,26 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatal("bridge schema missing $defs")
 	}
 
-	requireConst(t, defs, "handshake", "type", "redevplugin.bridge.handshake")
 	requireConst(t, defs, "call", "type", "redevplugin.bridge.call")
+	requireConst(t, defs, "cancel", "type", "redevplugin.bridge.cancel")
 	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
-	requireNestedConst(t, defs, "handshake", []string{"properties", "ui_protocol_version"}, "plugin-ui-v1")
+	if _, ok := defs["handshake"]; ok {
+		t.Fatal("plugin-visible bridge schema must not expose the trusted-parent HTTP handshake")
+	}
 
 	call := requireDef(t, defs, "call")
 	request := requireNestedObject(t, call, "properties", "request")
 	params := requireNestedObject(t, request, "properties", "params")
 	if params["type"] != "object" {
 		t.Fatalf("call params type = %#v, want object", params["type"])
+	}
+	requestID := requireDef(t, defs, "request_id")
+	if got := requestID["pattern"]; got != "^(rpc|stream|render)_[1-9][0-9]{0,15}$" {
+		t.Fatalf("request id pattern = %#v", got)
+	}
+	cancel := requireDef(t, defs, "cancel")
+	if got := requireNestedObject(t, cancel, "properties", "id")["$ref"]; got != "#/$defs/request_id" {
+		t.Fatalf("cancel request id ref = %#v", got)
 	}
 
 	lifecycle := requireDef(t, defs, "lifecycle")
@@ -45,7 +55,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 
 func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,14 +63,81 @@ func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		t.Fatal(err)
 	}
-	defs := schema["$defs"].(map[string]any)
-	responseRaw, err := json.Marshal(defs["response"])
+	bridgeRaw, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"plugin_gateway_token", "confirmation_token"} {
-		if strings.Contains(string(responseRaw), forbidden) {
-			t.Fatalf("bridge response schema must not expose %s", forbidden)
+	for _, forbidden := range []string{
+		"plugin_gateway_token",
+		"confirmation_token",
+		"active_fingerprint",
+		"bridge_nonce",
+		"asset_session_nonce",
+		"plugin_state_version",
+		"revoke_epoch",
+	} {
+		if strings.Contains(string(bridgeRaw), forbidden) {
+			t.Fatalf("plugin-visible bridge schema must not expose %s", forbidden)
+		}
+	}
+}
+
+func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
+	schema := readBridgeSchema(t)
+	policy, ok := schema["x-redevplugin-render-policy"].(map[string]any)
+	if !ok {
+		t.Fatal("bridge schema missing x-redevplugin-render-policy")
+	}
+	for _, key := range []string{
+		"max_message_bytes",
+		"max_render_depth",
+		"max_render_nodes",
+		"max_attributes_per_element",
+		"max_text_length",
+		"max_attribute_value_length",
+		"max_form_fields",
+		"global_attributes",
+		"tag_attributes",
+		"safe_input_types",
+	} {
+		if _, ok := policy[key]; !ok {
+			t.Fatalf("render policy missing %q", key)
+		}
+	}
+
+	defs := schema["$defs"].(map[string]any)
+	vnode := requireDef(t, defs, "vnode")
+	variants, ok := vnode["oneOf"].([]any)
+	if !ok || len(variants) != 2 {
+		t.Fatalf("vnode oneOf = %#v, want text and element variants", vnode["oneOf"])
+	}
+	element := variants[1].(map[string]any)
+	tags := requireStringSlice(t, requireNestedObject(t, element, "properties", "tag")["enum"], "render tag enum")
+	wantTags := map[string]bool{"main": false, "button": false, "input": false, "table": false, "img": false, "video": false}
+	for _, tag := range tags {
+		if _, ok := wantTags[tag]; ok {
+			wantTags[tag] = true
+		}
+	}
+	for tag, found := range wantTags {
+		if !found {
+			t.Fatalf("render tag enum missing %q", tag)
+		}
+	}
+
+	globalAttributes := requireStringSlice(t, policy["global_attributes"], "global attributes")
+	for _, required := range []string{"id", "class", "role", "data-redevplugin-action", "data-redevplugin-asset-binding", "data-redevplugin-asset-attr"} {
+		if !containsStringValue(globalAttributes, required) {
+			t.Fatalf("global attributes missing %q", required)
+		}
+	}
+	tagAttributes, ok := policy["tag_attributes"].(map[string]any)
+	if !ok {
+		t.Fatal("render policy tag_attributes must be an object")
+	}
+	for tag := range tagAttributes {
+		if !containsStringValue(tags, tag) {
+			t.Fatalf("tag_attributes defines unsupported tag %q", tag)
 		}
 	}
 }
@@ -68,7 +145,7 @@ func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 func readBridgeSchema(t *testing.T) map[string]any {
 	t.Helper()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,4 +215,13 @@ func requireStringSlice(t *testing.T, value any, label string) []string {
 		out = append(out, text)
 	}
 	return out
+}
+
+func containsStringValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

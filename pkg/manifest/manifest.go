@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 )
@@ -138,19 +139,27 @@ const (
 type SurfaceKind string
 
 const (
-	SurfaceActivity  SurfaceKind = "activity"
-	SurfaceWorkbench SurfaceKind = "workbench_widget"
-	SurfaceSettings  SurfaceKind = "settings_embed"
+	SurfaceView       SurfaceKind = "view"
+	SurfaceCommand    SurfaceKind = "command"
+	SurfaceBackground SurfaceKind = "background"
+)
+
+type SurfaceIntent string
+
+const (
+	SurfaceIntentPrimary   SurfaceIntent = "primary"
+	SurfaceIntentSecondary SurfaceIntent = "secondary"
+	SurfaceIntentUtility   SurfaceIntent = "utility"
 )
 
 type SurfaceSpec struct {
 	SurfaceID   string          `json:"surface_id"`
 	Kind        SurfaceKind     `json:"kind"`
+	Intent      SurfaceIntent   `json:"intent,omitempty"`
 	Label       string          `json:"label"`
 	Entry       string          `json:"entry"`
 	Icon        string          `json:"icon,omitempty"`
 	DefaultSize *WidgetSizeSpec `json:"default_size,omitempty"`
-	Method      string          `json:"method,omitempty"`
 }
 
 type WidgetSizeSpec struct {
@@ -264,8 +273,8 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if m.SchemaVersion != "redevplugin.manifest.v1" {
-		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v1"}
+	if m.SchemaVersion != "redevplugin.manifest.v2" {
+		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v2"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -279,8 +288,8 @@ func Validate(m Manifest) error {
 	if m.Plugin.APIVersion != "plugin-v1" {
 		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
 	}
-	if m.Plugin.UIProtocolVersion != "plugin-ui-v1" {
-		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be plugin-ui-v1"}
+	if m.Plugin.UIProtocolVersion != "plugin-ui-v2" {
+		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be plugin-ui-v2"}
 	}
 
 	bindings := map[string]struct{}{}
@@ -343,6 +352,13 @@ func Validate(m Manifest) error {
 		if err := validateMethodCancelPolicy(fmt.Sprintf("methods[%d]", i), method); err != nil {
 			return err
 		}
+		if _, err := CompileMethodSchemas(method); err != nil {
+			var schemaErr methodSchemaError
+			if errors.As(err, &schemaErr) {
+				return ValidationError{Field: fmt.Sprintf("methods[%d].%s", i, schemaErr.path), Message: schemaErr.message}
+			}
+			return ValidationError{Field: fmt.Sprintf("methods[%d]", i), Message: err.Error()}
+		}
 		methods[method.Method] = method
 	}
 	for i, method := range m.Methods {
@@ -370,17 +386,33 @@ func Validate(m Manifest) error {
 
 	surfaces := map[string]struct{}{}
 	for i, surface := range m.Surfaces {
+		if strings.TrimSpace(surface.SurfaceID) == "" {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].surface_id", i), Message: "is required"}
+		}
 		if _, ok := surfaces[surface.SurfaceID]; ok {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].surface_id", i), Message: "must be globally unique"}
 		}
 		surfaces[surface.SurfaceID] = struct{}{}
+		if !validSurfaceKind(surface.Kind) {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].kind", i), Message: "must be view, command, or background"}
+		}
+		if surface.Intent != "" && !validSurfaceIntent(surface.Intent) {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].intent", i), Message: "must be primary, secondary, or utility"}
+		}
+		if strings.TrimSpace(surface.Label) == "" {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].label", i), Message: "is required"}
+		}
 		if strings.TrimSpace(surface.Entry) == "" {
 			return ValidationError{Field: fmt.Sprintf("surfaces[%d].entry", i), Message: "is required"}
 		}
-		if surface.Method != "" {
-			if _, ok := methods[surface.Method]; !ok {
-				return ValidationError{Field: fmt.Sprintf("surfaces[%d].method", i), Message: "must reference a declared method"}
-			}
+		if err := validateSurfaceIcon(surface.Icon); err != nil {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].icon", i), Message: err.Error()}
+		}
+		if surface.DefaultSize != nil && surface.DefaultSize.Width <= 0 {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].default_size.width", i), Message: "must be positive"}
+		}
+		if surface.DefaultSize != nil && surface.DefaultSize.Height <= 0 {
+			return ValidationError{Field: fmt.Sprintf("surfaces[%d].default_size.height", i), Message: "must be positive"}
 		}
 	}
 
@@ -459,6 +491,37 @@ func Validate(m Manifest) error {
 	}
 
 	return nil
+}
+
+func validSurfaceKind(kind SurfaceKind) bool {
+	return kind == SurfaceView || kind == SurfaceCommand || kind == SurfaceBackground
+}
+
+func validSurfaceIntent(intent SurfaceIntent) bool {
+	return intent == SurfaceIntentPrimary || intent == SurfaceIntentSecondary || intent == SurfaceIntentUtility
+}
+
+func validateSurfaceIcon(icon string) error {
+	if icon == "" {
+		return nil
+	}
+	if strings.EqualFold(path.Ext(icon), ".svg") {
+		return errors.New("SVG icons are not allowed")
+	}
+	if strings.TrimSpace(icon) != icon || strings.HasPrefix(icon, "/") || strings.ContainsAny(icon, "\\?#:\r\n\t\x00") {
+		return errors.New("must reference a package-local relative raster image asset")
+	}
+	for _, part := range strings.Split(icon, "/") {
+		if part == "" || strings.HasPrefix(part, ".") {
+			return errors.New("must reference a package-local relative raster image asset")
+		}
+	}
+	switch strings.ToLower(path.Ext(icon)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico":
+		return nil
+	default:
+		return errors.New("must reference a package-local relative raster image asset")
+	}
 }
 
 func validateMigrationSpec(field string, schemaVersion int, migration MigrationSpec) error {

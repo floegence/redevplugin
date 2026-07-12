@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
+	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
@@ -28,11 +30,37 @@ import (
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
+func TestGeneratedWorkerResponseSchemaAcceptsRuntimeMetadata(t *testing.T) {
+	compiled, err := manifest.CompileMethodSchemas(manifest.MethodSpec{
+		Method:         "worker.echo",
+		RequestSchema:  closedMethodObjectSchema(nil),
+		ResponseSchema: generatedWorkerResponseSchema(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.ValidateResponse(map[string]any{
+		"method":                    "worker.echo",
+		"worker_id":                 "backend",
+		"backend":                   "executed wasm worker scaffold",
+		"transport":                 "rust runtime ipc",
+		"wasm_abi":                  "redevplugin-wasm-worker-v1",
+		"wasm_byte_len":             float64(128),
+		"network_execute":           map[string]any{"transport": "http"},
+		"network_execute_websocket": map[string]any{"transport": "websocket"},
+		"network_execute_tcp":       map[string]any{"transport": "tcp"},
+		"network_execute_udp":       map[string]any{"transport": "udp"},
+		"stream_id":                 "stream_1",
+	}); err != nil {
+		t.Fatalf("generated worker response schema rejected runtime metadata: %v", err)
+	}
+}
+
 func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "plugin")
 	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.cli",
@@ -40,13 +68,14 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "cli.activity", "kind": "activity", "label": "CLI", "entry": "ui/index.html"}
+			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html"}
 		]
 	}`)
-	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), "<!doctype html><title>CLI</title>")
+	writeCLITestFile(t, filepath.Join(srcDir, "ui", "index.html"), `<!doctype html><title>CLI</title><body><main>CLI</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`)
+	writeCLITestFile(t, filepath.Join(srcDir, "ui", "assets", "app.js"), "void 0;")
 
 	unsignedPackage := filepath.Join(dir, "unsigned.redevplugin")
 	signedPackage := filepath.Join(dir, "signed.redevplugin")
@@ -166,19 +195,26 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(indexRaw, []byte(`data-plugin-id="com.example.generated"`)) || !bytes.Contains(indexRaw, []byte(`data-surface-id="com.example.generated.activity"`)) {
-		t.Fatalf("scaffold index missing plugin bootstrap data: %s", indexRaw)
+	if !bytes.Contains(indexRaw, []byte(`<title>Generated Plugin</title>`)) || !bytes.Contains(indexRaw, []byte(`type="text/redevplugin-worker"`)) {
+		t.Fatalf("scaffold index missing opaque worker declaration: %s", indexRaw)
 	}
-	if !bytes.Contains(indexRaw, []byte(`Storage + network`)) {
-		t.Fatalf("scaffold index missing brokered backend control: %s", indexRaw)
+	for _, forbidden := range []string{`data-plugin-id`, `data-surface-id`, `parent_origin`, `surface_instance_id`, `active_fingerprint`, `bridge_nonce`, `allow-same-origin`} {
+		if bytes.Contains(indexRaw, []byte(forbidden)) {
+			t.Fatalf("scaffold index retained browser bootstrap field %q: %s", forbidden, indexRaw)
+		}
 	}
 	appRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "ui", "assets", "app.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"redevplugin.bridge.handshake", "redevplugin.bridge.call", "parent_origin", "worker.echo", "worker.brokerDemo", "invoke-broker", "storage_sqlite_handle_grant_token", "tokenLeakCheck"} {
+	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "worker.brokerDemo", "invoke-broker", "tokenLeakCheck"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
+		}
+	}
+	for _, forbidden := range []string{"window.parent.postMessage", "parent_origin", "redevplugin.bridge.handshake", "asset_ticket", "plugin_gateway_token", "stream_ticket"} {
+		if bytes.Contains(appRaw, []byte(forbidden)) {
+			t.Fatalf("scaffold app.js retained parent-only or hand-written bridge field %q", forbidden)
 		}
 	}
 	wasmRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "backend.wasm"))
@@ -212,6 +248,27 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	packageFile := filepath.Join(dir, "generated.redevplugin")
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
 		t.Fatalf("package scaffold error = %v", err)
+	}
+	generatedPackage, err := pluginpkg.ReadFile(context.Background(), packageFile, pluginpkg.DefaultReadOptions())
+	if err != nil {
+		t.Fatalf("ReadFile(scaffold) error = %v", err)
+	}
+	entries := make(map[string]pluginpkg.Entry, len(generatedPackage.Entries))
+	for _, entry := range generatedPackage.Entries {
+		entries[entry.Path] = entry
+	}
+	document, err := pluginpkg.BuildOpaqueSurfaceDocument("ui/index.html", func(assetPath string) (pluginpkg.Asset, error) {
+		entry, ok := entries[assetPath]
+		if !ok {
+			return pluginpkg.Asset{}, fmt.Errorf("missing scaffold asset %s", assetPath)
+		}
+		return pluginpkg.Asset{Entry: entry, Content: generatedPackage.Files[assetPath]}, nil
+	})
+	if err != nil {
+		t.Fatalf("BuildOpaqueSurfaceDocument(scaffold) error = %v", err)
+	}
+	if document.Worker.Type != pluginpkg.OpaqueSurfaceWorkerClassic || document.Worker.Path != "ui/assets/app.js" {
+		t.Fatalf("scaffold opaque worker = %#v", document.Worker)
 	}
 	if _, err := captureCLIOutput(t, "install-local", packageFile); err != nil {
 		t.Fatalf("install-local scaffold package error = %v", err)
@@ -259,11 +316,12 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 	connectivityBroker := connectivity.NewMemoryBroker()
 	networkExecutor := &cliRecordingNetworkExecutor{
-		httpStatus: http.StatusAccepted,
-		httpBody:   []byte(`{"ok":true,"source":"cli-scaffold"}`),
-		wsPayload:  []byte("websocket:generated websocket round trip"),
-		tcpPayload: []byte("tcp:generated tcp round trip"),
-		udpPayload: []byte("udp:generated udp round trip"),
+		httpStatus:  http.StatusAccepted,
+		httpBody:    []byte(`{"ok":true,"source":"cli-scaffold"}`),
+		httpHeaders: http.Header{"Content-Type": []string{"application/json"}},
+		wsPayload:   []byte("websocket:generated websocket round trip"),
+		tcpPayload:  []byte("tcp:generated tcp round trip"),
+		udpPayload:  []byte("udp:generated udp round trip"),
 	}
 	h, err := host.New(host.Adapters{
 		SessionResolver:         staticSessionResolver{},
@@ -298,12 +356,18 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
 	now := time.Now().UTC()
-	if _, err := h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+	enabled, err := h.EnablePlugin(ctx, host.EnableRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		PluginStateVersion: installed.ManagementRevision,
+		Now:                now,
+	})
+	if err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
 	bootstrap, err := h.OpenSurface(ctx, host.OpenSurfaceRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceID:            "com.example.generated.runtime.activity",
+		PluginInstanceID:     enabled.PluginInstanceID,
+		PluginStateVersion:   enabled.ManagementRevision,
+		SurfaceID:            "com.example.generated.runtime.view",
 		SurfaceInstanceID:    "surface_generated_runtime",
 		OwnerSessionHash:     "owner_session_hash",
 		OwnerUserHash:        "owner_user_hash",
@@ -313,25 +377,38 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSurface() error = %v", err)
 	}
-	if _, err := h.ExchangeAssetTicket(ctx, host.ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(2 * time.Second),
-	}); err != nil {
-		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	prepared, err := h.PrepareSurface(ctx, host.ExchangeAssetTicketRequest{
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		AssetTicket:          bootstrap.AssetTicket,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatalf("PrepareSurface() error = %v", err)
+	}
+	if prepared.Document.EntryPath != bootstrap.EntryPath || prepared.Document.EntrySHA256 != bootstrap.EntrySHA256 {
+		t.Fatalf("PrepareSurface() document mismatch: %#v", prepared.Document)
 	}
 	handshake := bridge.Handshake{
-		PluginID:          bootstrap.PluginID,
-		SurfaceID:         bootstrap.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		ActiveFingerprint: bootstrap.ActiveFingerprint,
-		BridgeNonce:       bootstrap.BridgeNonce,
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}
 	gateway, err := h.MintBridgeToken(ctx, host.MintBridgeTokenRequest{
 		Handshake:                 handshake,
 		BridgeChannelID:           "bridge_generated_runtime",
 		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_generated_runtime"),
+		OwnerSessionHash:          bootstrap.OwnerSessionHash,
+		OwnerUserHash:             bootstrap.OwnerUserHash,
+		SessionChannelIDHash:      bootstrap.SessionChannelIDHash,
 		Now:                       now.Add(3 * time.Second),
 	})
 	if err != nil {
@@ -541,7 +618,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "dev-enable", stateRoot); !errors.Is(err, errDevStateNotInstalled) {
 		t.Fatalf("dev-enable before install error = %v, want %v", err, errDevStateNotInstalled)
 	}
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity"); !errors.Is(err, errDevStateNotInstalled) {
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view"); !errors.Is(err, errDevStateNotInstalled) {
 		t.Fatalf("dev-open before install error = %v, want %v", err, errDevStateNotInstalled)
 	}
 
@@ -560,7 +637,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 		t.Fatalf("dev package copy missing: %v", err)
 	}
 
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
 		t.Fatalf("dev-open disabled error = %v, want must be enabled", err)
 	}
 
@@ -613,7 +690,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity", "http://127.0.0.1:4999")
+	openOutput, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view")
 	if err != nil {
 		t.Fatalf("dev-open error = %v", err)
 	}
@@ -623,10 +700,9 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	}
 	if !openSummary.OK ||
 		openSummary.PluginInstanceID != installSummary.PluginInstanceID ||
-		openSummary.SurfaceID != "com.example.generated.lifecycle.activity" ||
+		openSummary.SurfaceID != "com.example.generated.lifecycle.view" ||
 		openSummary.BridgeNonce == "" ||
-		openSummary.AssetTicketID == "" ||
-		openSummary.BrowserOriginCount != 1 {
+		openSummary.AssetTicketID == "" {
 		t.Fatalf("dev-open summary mismatch: %#v", openSummary)
 	}
 
@@ -638,10 +714,10 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(disableOutput, &disableSummary); err != nil {
 		t.Fatalf("dev-disable output decode error = %v: %s", err, disableOutput)
 	}
-	if disableSummary.EnableState != registry.EnableDisabled || disableSummary.BrowserOriginCount != 1 {
+	if disableSummary.EnableState != registry.EnableDisabled {
 		t.Fatalf("dev-disable summary mismatch: %#v", disableSummary)
 	}
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.activity"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.lifecycle.view"); err == nil || !strings.Contains(err.Error(), "must be enabled") {
 		t.Fatalf("dev-open after disable error = %v, want must be enabled", err)
 	}
 
@@ -654,8 +730,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 		t.Fatalf("dev-uninstall output decode error = %v: %s", err, uninstallOutput)
 	}
 	if uninstallSummary.RetainedDataState != registry.RetainedDataDeleted ||
-		uninstallSummary.PackageRetained ||
-		uninstallSummary.BrowserOriginCount != 1 {
+		uninstallSummary.PackageRetained {
 		t.Fatalf("dev-uninstall summary mismatch: %#v", uninstallSummary)
 	}
 	if _, err := os.Stat(filepath.Join(stateRoot, devPackageFile)); !errors.Is(err, os.ErrNotExist) {
@@ -807,7 +882,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	state.Settings = restoredSettings.State()
 	saveDevStateForTest(t, stateRoot, state)
 
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.settings.activity", "http://127.0.0.1:4999"); err != nil {
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.settings.view"); err != nil {
 		t.Fatalf("dev-open error = %v", err)
 	}
 	openedState := loadDevStateForTest(t, stateRoot)
@@ -1085,7 +1160,7 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 		t.Fatalf("dev-permission-list summary mismatch: %#v", listSummary)
 	}
 
-	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.permissions.activity", "http://127.0.0.1:4999"); err != nil {
+	if _, err := captureCLIOutput(t, "dev-open", stateRoot, "com.example.generated.permissions.view"); err != nil {
 		t.Fatalf("dev-open error = %v", err)
 	}
 	if len(loadDevStateForTest(t, stateRoot).Permissions.Records) != 1 {
@@ -1174,7 +1249,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		contracts[contract.ID] = contract
 	}
 	bridge := contracts["iframe-bridge-schema"]
-	if bridge.Path != "spec/plugin/bridge-v1.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
+	if bridge.Path != "spec/plugin/bridge-v2.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
 		t.Fatalf("bridge contract mismatch: %#v", bridge)
 	}
 	openapi := contracts["plugin-platform-openapi"]
@@ -1186,7 +1261,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		path    string
 		version string
 	}{
-		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v1.schema.json", version: version.ReleaseMetadataSchemaVersion},
+		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v2.schema.json", version: version.ReleaseMetadataSchemaVersion},
 		{id: "source-policy-schema", path: "spec/plugin/source-policy-v1.schema.json", version: version.SourcePolicySchemaVersion},
 		{id: "source-revocations-schema", path: "spec/plugin/source-revocations-v1.schema.json", version: version.SourceRevocationsSchemaVersion},
 	} {
@@ -1224,7 +1299,7 @@ func TestCLIVerifyCompatibilityManifest(t *testing.T) {
 	if err := json.Unmarshal(versionOutput, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	manifest.Matrix.PluginHostProtocolVersion = "plugin-host-v2"
+	manifest.Matrix.PluginHostProtocolVersion = "plugin-host-v999"
 	tamperedFile := filepath.Join(dir, "tampered.json")
 	raw, err := json.Marshal(manifest)
 	if err != nil {
@@ -1347,19 +1422,20 @@ func (r cliRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (st
 }
 
 type cliRecordingNetworkExecutor struct {
-	httpCalls  int
-	wsCalls    int
-	tcpCalls   int
-	udpCalls   int
-	lastHTTP   connectivity.HTTPRequest
-	lastWS     connectivity.WebSocketRoundTripRequest
-	lastTCP    connectivity.TCPRoundTripRequest
-	lastUDP    connectivity.UDPRoundTripRequest
-	httpStatus int
-	httpBody   []byte
-	wsPayload  []byte
-	tcpPayload []byte
-	udpPayload []byte
+	httpCalls   int
+	wsCalls     int
+	tcpCalls    int
+	udpCalls    int
+	lastHTTP    connectivity.HTTPRequest
+	lastWS      connectivity.WebSocketRoundTripRequest
+	lastTCP     connectivity.TCPRoundTripRequest
+	lastUDP     connectivity.UDPRoundTripRequest
+	httpStatus  int
+	httpBody    []byte
+	httpHeaders http.Header
+	wsPayload   []byte
+	tcpPayload  []byte
+	udpPayload  []byte
 }
 
 func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
@@ -1369,7 +1445,7 @@ func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity
 	if status == 0 {
 		status = http.StatusOK
 	}
-	return connectivity.HTTPResponse{StatusCode: status, Body: append([]byte(nil), e.httpBody...)}, nil
+	return connectivity.HTTPResponse{StatusCode: status, Headers: e.httpHeaders.Clone(), Body: append([]byte(nil), e.httpBody...)}, nil
 }
 
 func (e *cliRecordingNetworkExecutor) StreamHTTP(_ context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {

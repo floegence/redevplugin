@@ -9,9 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 const repoRoot = new URL("../..", import.meta.url);
 const toolEnv = withUserToolchainPath(process.env);
 const hostPort = Number(process.env.REAL_DEMO_HOST_PORT || (await getFreePort()));
-const pluginPort = Number(process.env.REAL_DEMO_PLUGIN_PORT || (await getFreePort(hostPort)));
 const hostName = process.env.REAL_DEMO_HOST_NAME || "app.redevplugin.localhost";
-const sandboxHost = process.env.REAL_DEMO_SANDBOX_HOST || "plg-real.redevplugin.localhost";
 const stateRoot = await mkdtemp(join(tmpdir(), "redevplugin-real-demo-"));
 const binRoot = await mkdtemp(join(tmpdir(), "redevplugin-real-demo-bin-"));
 let server;
@@ -26,9 +24,7 @@ try {
       ...toolEnv,
       GOWORK: "off",
       REAL_DEMO_HOST_PORT: String(hostPort),
-      REAL_DEMO_PLUGIN_PORT: String(pluginPort),
       REAL_DEMO_HOST_NAME: hostName,
-      REAL_DEMO_SANDBOX_HOST: sandboxHost,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -55,7 +51,6 @@ try {
   console.log("ReDevPlugin real runtime demo is ready.");
   console.log(`Open: ${hostURL}`);
   console.log(`State root: ${stateRoot}`);
-  console.log(`Sandbox origin: http://${sandboxHost}:${pluginPort}`);
   console.log("Press Ctrl+C to stop the demo server and delete the temporary demo state.");
 
   process.on("SIGINT", () => {
@@ -146,7 +141,7 @@ async function waitForHTTP(url, outputProvider, timeoutMs = 10_000) {
   throw new Error(`real demo server was not ready: ${lastError?.message ?? "unknown error"}\n${outputProvider()}`);
 }
 
-function getFreePort(except) {
+function getFreePort() {
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.on("error", reject);
@@ -158,10 +153,6 @@ function getFreePort(except) {
       }
       const port = address.port;
       probe.close(() => {
-        if (port === except) {
-          getFreePort(except).then(resolve, reject);
-          return;
-        }
         resolve(port);
       });
     });

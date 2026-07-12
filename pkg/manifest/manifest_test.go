@@ -36,6 +36,195 @@ func TestDecodeRejectsTrailingJSONValue(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresClosedMethodSchemas(t *testing.T) {
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*MethodSpec)
+	}{
+		{
+			name:  "request schema is required",
+			field: "methods[0].request_schema",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = nil
+			},
+		},
+		{
+			name:  "response schema is required",
+			field: "methods[0].response_schema",
+			mutate: func(method *MethodSpec) {
+				method.ResponseSchema = nil
+			},
+		},
+		{
+			name:  "request schema must describe an object",
+			field: "methods[0].request_schema.type",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+			},
+		},
+		{
+			name:  "response schema must reject unknown fields",
+			field: "methods[0].response_schema.additionalProperties",
+			mutate: func(method *MethodSpec) {
+				method.ResponseSchema = map[string]any{"type": "object", "additionalProperties": true}
+			},
+		},
+		{
+			name:  "nested objects must reject unknown fields",
+			field: "methods[0].request_schema.properties.filter.additionalProperties",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{"type": "object"},
+					},
+				}
+			},
+		},
+		{
+			name:  "nullable nested objects must reject unknown fields",
+			field: "methods[0].request_schema.properties.filter.additionalProperties",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{"type": []any{"object", "null"}},
+					},
+				}
+			},
+		},
+		{
+			name:  "implicit object schemas must reject unknown fields",
+			field: "methods[0].request_schema.properties.filter.additionalProperties",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{"properties": map[string]any{"name": map[string]any{"type": "string"}}},
+					},
+				}
+			},
+		},
+		{
+			name:  "unconstrained nested schemas must be rejected",
+			field: "methods[0].request_schema.properties.filter",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{},
+					},
+				}
+			},
+		},
+		{
+			name:  "negative composition cannot imply an open object domain",
+			field: "methods[0].request_schema.properties.filter",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": map[string]any{"not": map[string]any{"type": "string"}},
+					},
+				}
+			},
+		},
+		{
+			name:  "true nested schemas must be rejected",
+			field: "methods[0].request_schema.properties.filter",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"filter": true,
+					},
+				}
+			},
+		},
+		{
+			name:  "external references are forbidden",
+			field: "methods[0].request_schema.$ref",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"$ref":                 "https://schemas.example.test/request.json",
+				}
+			},
+		},
+		{
+			name:  "invalid schema keywords are rejected",
+			field: "methods[0].request_schema",
+			mutate: func(method *MethodSpec) {
+				method.RequestSchema = map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"minProperties":        "invalid",
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := validManifest()
+			tt.mutate(&m.Methods[0])
+			expectValidationField(t, m, tt.field)
+		})
+	}
+}
+
+func TestCompileMethodSchemasValidatesInstances(t *testing.T) {
+	method := validManifest().Methods[0]
+	compiled, err := CompileMethodSchemas(method)
+	if err != nil {
+		t.Fatalf("CompileMethodSchemas() error = %v", err)
+	}
+	if err := compiled.ValidateRequest(map[string]any{}); err != nil {
+		t.Fatalf("ValidateRequest(valid) error = %v", err)
+	}
+	if err := compiled.ValidateRequest(map[string]any{"unknown": true}); err == nil {
+		t.Fatal("ValidateRequest(unknown field) expected error")
+	}
+	if err := compiled.ValidateResponse(map[string]any{}); err != nil {
+		t.Fatalf("ValidateResponse(valid) error = %v", err)
+	}
+	if err := compiled.ValidateResponse(map[string]any{"unknown": true}); err == nil {
+		t.Fatal("ValidateResponse(unknown field) expected error")
+	}
+}
+
+func TestCompileMethodSchemasTraversesOnlySubschemaKeywords(t *testing.T) {
+	method := validManifest().Methods[0]
+	method.RequestSchema = map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"properties": map[string]any{"type": "string"},
+			"settings": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"mode": map[string]any{"type": "string"},
+				},
+				"default":  map[string]any{"properties": "literal default data"},
+				"const":    map[string]any{"properties": "literal const data"},
+				"examples": []any{map[string]any{"properties": "literal example data"}},
+			},
+		},
+	}
+	if _, err := CompileMethodSchemas(method); err != nil {
+		t.Fatalf("CompileMethodSchemas() annotation data error = %v", err)
+	}
+}
+
 func TestValidateRejectsIntentMissingMethod(t *testing.T) {
 	m := validManifest()
 	m.Intents = []IntentSpec{{IntentID: "missing", Method: "resources.inspect"}}
@@ -48,12 +237,34 @@ func TestValidateRejectsIntentMissingMethod(t *testing.T) {
 func TestValidateRejectsSameSurfaceIDAcrossKinds(t *testing.T) {
 	m := validManifest()
 	m.Surfaces = []SurfaceSpec{
-		{SurfaceID: "resources", Kind: SurfaceActivity, Label: "Resources", Entry: "ui/index.html"},
-		{SurfaceID: "resources", Kind: SurfaceWorkbench, Label: "Resources", Entry: "ui/index.html"},
+		{SurfaceID: "resources", Kind: SurfaceView, Label: "Resources", Entry: "ui/index.html"},
+		{SurfaceID: "resources", Kind: SurfaceCommand, Label: "Resources", Entry: "ui/index.html"},
 	}
 
 	if err := Validate(m); err == nil {
 		t.Fatal("Validate() expected duplicate surface_id error")
+	}
+}
+
+func TestValidateRejectsInvalidHostNeutralSurfaceContract(t *testing.T) {
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*SurfaceSpec)
+	}{
+		{name: "missing id", field: "surfaces[0].surface_id", mutate: func(surface *SurfaceSpec) { surface.SurfaceID = " " }},
+		{name: "product placement kind", field: "surfaces[0].kind", mutate: func(surface *SurfaceSpec) { surface.Kind = SurfaceKind("activity") }},
+		{name: "invalid intent", field: "surfaces[0].intent", mutate: func(surface *SurfaceSpec) { surface.Intent = SurfaceIntent("modal") }},
+		{name: "missing label", field: "surfaces[0].label", mutate: func(surface *SurfaceSpec) { surface.Label = " " }},
+		{name: "invalid width", field: "surfaces[0].default_size.width", mutate: func(surface *SurfaceSpec) { surface.DefaultSize = &WidgetSizeSpec{Width: 0, Height: 400} }},
+		{name: "invalid height", field: "surfaces[0].default_size.height", mutate: func(surface *SurfaceSpec) { surface.DefaultSize = &WidgetSizeSpec{Width: 600, Height: -1} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := validManifest()
+			tt.mutate(&m.Surfaces[0])
+			expectValidationField(t, m, tt.field)
+		})
 	}
 }
 
@@ -512,10 +723,12 @@ func TestValidateWorkers(t *testing.T) {
 		MemoryLimitBytes: 16 << 20,
 	}}
 	m.Methods = append(m.Methods, MethodSpec{
-		Method:    "worker.echo",
-		Effect:    MethodEffectRead,
-		Execution: MethodExecutionSync,
-		Route:     MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+		Method:         "worker.echo",
+		Effect:         MethodEffectRead,
+		Execution:      MethodExecutionSync,
+		Route:          MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+		RequestSchema:  closedObjectSchema(),
+		ResponseSchema: closedObjectSchema(),
 	})
 	if err := Validate(m); err != nil {
 		t.Fatalf("Validate() worker manifest error = %v", err)
@@ -603,10 +816,12 @@ func TestValidateWorkers(t *testing.T) {
 func TestValidateCoreActionRouteRequiresActionID(t *testing.T) {
 	m := validManifest()
 	m.Methods = append(m.Methods, MethodSpec{
-		Method:    "core.open",
-		Effect:    MethodEffectRead,
-		Execution: MethodExecutionSync,
-		Route:     MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "example.open_settings"},
+		Method:         "core.open",
+		Effect:         MethodEffectRead,
+		Execution:      MethodExecutionSync,
+		Route:          MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "example.open_settings"},
+		RequestSchema:  closedObjectSchema(),
+		ResponseSchema: closedObjectSchema(),
 	})
 	if err := Validate(m); err != nil {
 		t.Fatalf("Validate() core_action manifest error = %v", err)
@@ -640,10 +855,12 @@ func validManifestWithWorkerMethod() Manifest {
 		MemoryLimitBytes: 16 << 20,
 	}}
 	m.Methods = append(m.Methods, MethodSpec{
-		Method:    "worker.echo",
-		Effect:    MethodEffectRead,
-		Execution: MethodExecutionSync,
-		Route:     MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+		Method:         "worker.echo",
+		Effect:         MethodEffectRead,
+		Execution:      MethodExecutionSync,
+		Route:          MethodRouteSpec{Kind: MethodRouteWorker, WorkerID: "echo_worker", Export: "redevplugin_worker_invoke"},
+		RequestSchema:  closedObjectSchema(),
+		ResponseSchema: closedObjectSchema(),
 	})
 	return m
 }
@@ -656,25 +873,37 @@ func validManifestWithRiskPreflightOperation() Manifest {
 
 func riskPreflightMethod() MethodSpec {
 	return MethodSpec{
-		Method:        "resources.start.preflight",
-		Effect:        MethodEffectRead,
-		Execution:     MethodExecutionSync,
-		PreflightOnly: true,
-		Route:         MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start.preflight"},
+		Method:         "resources.start.preflight",
+		Effect:         MethodEffectRead,
+		Execution:      MethodExecutionSync,
+		PreflightOnly:  true,
+		Route:          MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start.preflight"},
+		RequestSchema:  closedObjectSchema(),
+		ResponseSchema: closedObjectSchema(),
 	}
 }
 
 func riskyOperationMethod() MethodSpec {
 	return MethodSpec{
-		Method:        "resources.start",
-		Effect:        MethodEffectExecute,
-		Execution:     MethodExecutionOperation,
-		Dangerous:     true,
-		Confirmation:  &ConfirmationSpec{Mode: ConfirmationRiskBased, PreflightMethod: stringPtr("resources.start.preflight"), RequestHashFields: []string{"resource_id"}, PlanHashRequired: true},
-		CancelPolicy:  &CancelPolicySpec{Cancelable: true, DisableBehavior: CancelDisableBehaviorCancel, UninstallBehavior: CancelUninstallBehaviorCancelThenBlockDelete, AckTimeoutMS: 2000},
-		Route:         MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start"},
-		RequestSchema: map[string]any{"type": "object", "required": []string{"resource_id"}},
+		Method:       "resources.start",
+		Effect:       MethodEffectExecute,
+		Execution:    MethodExecutionOperation,
+		Dangerous:    true,
+		Confirmation: &ConfirmationSpec{Mode: ConfirmationRiskBased, PreflightMethod: stringPtr("resources.start.preflight"), RequestHashFields: []string{"resource_id"}, PlanHashRequired: true},
+		CancelPolicy: &CancelPolicySpec{Cancelable: true, DisableBehavior: CancelDisableBehaviorCancel, UninstallBehavior: CancelUninstallBehaviorCancelThenBlockDelete, AckTimeoutMS: 2000},
+		Route:        MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start"},
+		RequestSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"resource_id"},
+			"properties":           map[string]any{"resource_id": map[string]any{"type": "string"}},
+		},
+		ResponseSchema: closedObjectSchema(),
 	}
+}
+
+func closedObjectSchema() map[string]any {
+	return map[string]any{"type": "object", "additionalProperties": false}
 }
 
 func stringPtr(value string) *string {
@@ -683,7 +912,7 @@ func stringPtr(value string) *string {
 
 func validManifest() Manifest {
 	return Manifest{
-		SchemaVersion: "redevplugin.manifest.v1",
+		SchemaVersion: "redevplugin.manifest.v2",
 		Publisher:     Publisher{PublisherID: "example", DisplayName: "Example"},
 		Plugin: Plugin{
 			PluginID:          "com.example.resources",
@@ -691,10 +920,10 @@ func validManifest() Manifest {
 			Version:           "1.0.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v1",
+			UIProtocolVersion: "plugin-ui-v2",
 		},
 		Surfaces: []SurfaceSpec{
-			{SurfaceID: "resources.activity", Kind: SurfaceActivity, Label: "Resources", Entry: "ui/index.html", Method: "resources.list"},
+			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html"},
 		},
 		CapabilityBindings: []CapabilityBinding{
 			{BindingID: "resource_provider", CapabilityID: "example.capability.resources", MinCapabilityVersion: "1.0.0", RequiredPermissions: []string{"read"}},
@@ -706,7 +935,7 @@ func validManifest() Manifest {
 				Execution:      MethodExecutionSync,
 				Route:          MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.list"},
 				RequestSchema:  map[string]any{"type": "object", "additionalProperties": false},
-				ResponseSchema: map[string]any{"type": "object"},
+				ResponseSchema: map[string]any{"type": "object", "additionalProperties": false},
 			},
 		},
 		Settings: &SettingsSpec{
@@ -732,7 +961,7 @@ func noopMigration() MigrationSpec {
 
 func validManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v1",
+		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.resources",
@@ -740,10 +969,10 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v1"
+			"ui_protocol_version": "plugin-ui-v2"
 		},
 		"surfaces": [
-			{"surface_id": "resources.activity", "kind": "activity", "label": "Resources", "entry": "ui/index.html", "method": "resources.list"}
+			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
 			{"binding_id": "resource_provider", "capability_id": "example.capability.resources", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
@@ -755,7 +984,7 @@ func validManifestJSON() string {
 				"execution": "sync",
 				"route": {"kind": "capability", "binding_id": "resource_provider", "target_method": "resources.list"},
 				"request_schema": {"type": "object", "additionalProperties": false},
-				"response_schema": {"type": "object"}
+				"response_schema": {"type": "object", "additionalProperties": false}
 			}
 		],
 		"settings": {

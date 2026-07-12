@@ -20,17 +20,14 @@ func TestSurfaceBootstrapExchangeAndGatewayToken(t *testing.T) {
 		t.Fatalf("bootstrap missing credential fields: %#v", bootstrap)
 	}
 
-	assetSession, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(time.Second),
-	})
+	assetSession, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second)))
 	if err != nil {
 		t.Fatalf("ExchangeAssetTicket() error = %v", err)
 	}
 	if assetSession.AssetSession == "" {
 		t.Fatalf("assetSession = %#v", assetSession)
 	}
+	markTestSurfacePrepared(t, service, bootstrap, assetSession, now.Add(time.Second))
 
 	handshake := handshakeFromBootstrap(bootstrap)
 	gateway, err := service.MintGatewayToken(MintGatewayTokenRequest{
@@ -46,13 +43,161 @@ func TestSurfaceBootstrapExchangeAndGatewayToken(t *testing.T) {
 		t.Fatalf("gateway = %#v", gateway)
 	}
 
-	audience := testSurfaceAudience("bridge_1")
+	audience := surfaceAudienceFromBootstrap(bootstrap, "bridge_1")
 	record, err := service.ValidateGatewayToken(gateway.GatewayToken, audience, testRevision(4), now.Add(3*time.Second))
 	if err != nil {
 		t.Fatalf("ValidateGatewayToken() error = %v", err)
 	}
 	if record.BoundBridgeChannelID != "bridge_1" {
 		t.Fatalf("BoundBridgeChannelID = %q", record.BoundBridgeChannelID)
+	}
+}
+
+func TestSurfaceGatewayRenewalRotatesLeaseCredentialsAndExtendsSession(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{
+		AssetSessionTTL: time.Minute,
+		GatewayTokenTTL: time.Minute,
+	})
+	now := testNow()
+	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markTestSurfacePrepared(t, service, bootstrap, prepared, now.Add(time.Second))
+	handshake := handshakeFromBootstrap(bootstrap)
+	request := MintGatewayTokenRequest{
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_1",
+		HandshakeTranscriptSHA256: HandshakeTranscriptSHA256(handshake, "bridge_1"),
+		Now:                       now.Add(2 * time.Second),
+	}
+	first, err := service.MintGatewayToken(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AssetSession == "" || first.AssetSessionID == "" || !first.ExpiresAt.Equal(now.Add(62*time.Second)) {
+		t.Fatalf("first gateway lease = %#v", first)
+	}
+	if _, err := service.ValidateAssetSession(ValidateAssetSessionRequest{
+		AssetSession:         prepared.AssetSession,
+		AssetSessionID:       prepared.AssetSessionID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(3 * time.Second),
+	}); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("prepared asset session after gateway mint error = %v, want %v", err, ErrTokenRevoked)
+	}
+
+	request.PreviousGatewayToken = first.GatewayToken
+	request.Now = now.Add(50 * time.Second)
+	second, err := service.MintGatewayToken(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.GatewayToken == first.GatewayToken || second.AssetSession == first.AssetSession || !second.ExpiresAt.Equal(now.Add(110*time.Second)) {
+		t.Fatalf("renewed gateway lease = %#v, first = %#v", second, first)
+	}
+	audience := surfaceAudienceFromBootstrap(bootstrap, "bridge_1")
+	if _, err := service.ValidateGatewayToken(first.GatewayToken, audience, testRevision(4), now.Add(51*time.Second)); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("old gateway token error = %v, want %v", err, ErrTokenRevoked)
+	}
+	if _, err := service.ValidateAssetSession(ValidateAssetSessionRequest{
+		AssetSession:         first.AssetSession,
+		AssetSessionID:       first.AssetSessionID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(51 * time.Second),
+	}); !errors.Is(err, ErrTokenRevoked) {
+		t.Fatalf("old asset session error = %v, want %v", err, ErrTokenRevoked)
+	}
+	if _, err := service.ValidateSurfaceGatewayToken(ValidateSurfaceGatewayTokenRequest{
+		GatewayToken:         second.GatewayToken,
+		PluginInstanceID:     bootstrap.PluginInstanceID,
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		BridgeChannelID:      "bridge_1",
+		Revision:             testRevision(4),
+		Now:                  now.Add(51 * time.Second),
+	}); err != nil {
+		t.Fatalf("renewed gateway validation error = %v", err)
+	}
+}
+
+func TestSurfaceSessionsRejectDuplicatesAndEnforceLimits(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{
+		MaxActiveSessions:         2,
+		MaxActiveSessionsPerOwner: 1,
+	})
+	now := testNow()
+	first := testOpenSurfaceRequest(now)
+	if _, err := service.OpenSurface(first); err != nil {
+		t.Fatalf("OpenSurface(first) error = %v", err)
+	}
+
+	if _, err := service.OpenSurface(first); !errors.Is(err, ErrSurfaceSessionAlreadyExists) {
+		t.Fatalf("OpenSurface(duplicate) error = %v, want %v", err, ErrSurfaceSessionAlreadyExists)
+	}
+	staleReplacement := first
+	staleReplacement.Revision.ManagementRevision++
+	if _, err := service.OpenSurface(staleReplacement); err != nil {
+		t.Fatalf("OpenSurface(stale replacement) error = %v", err)
+	}
+
+	sameOwner := first
+	sameOwner.SurfaceInstanceID = "surface_same_owner"
+	if _, err := service.OpenSurface(sameOwner); !errors.Is(err, ErrSurfaceSessionLimitReached) {
+		t.Fatalf("OpenSurface(same owner) error = %v, want %v", err, ErrSurfaceSessionLimitReached)
+	}
+
+	secondOwner := first
+	secondOwner.SurfaceInstanceID = "surface_second_owner"
+	secondOwner.OwnerSessionHash = "sess_hash_2"
+	secondOwner.OwnerUserHash = "user_hash_2"
+	secondOwner.SessionChannelIDHash = "channel_hash_2"
+	if _, err := service.OpenSurface(secondOwner); err != nil {
+		t.Fatalf("OpenSurface(second owner) error = %v", err)
+	}
+
+	thirdOwner := first
+	thirdOwner.SurfaceInstanceID = "surface_third_owner"
+	thirdOwner.OwnerSessionHash = "sess_hash_3"
+	thirdOwner.OwnerUserHash = "user_hash_3"
+	thirdOwner.SessionChannelIDHash = "channel_hash_3"
+	if _, err := service.OpenSurface(thirdOwner); !errors.Is(err, ErrSurfaceSessionLimitReached) {
+		t.Fatalf("OpenSurface(global limit) error = %v, want %v", err, ErrSurfaceSessionLimitReached)
+	}
+}
+
+func TestSurfaceSessionsPruneExpiredEntriesBeforeApplyingLimits(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{
+		AssetSessionTTL:           time.Minute,
+		MaxActiveSessions:         1,
+		MaxActiveSessionsPerOwner: 1,
+	})
+	now := testNow()
+	firstRequest := testOpenSurfaceRequest(now)
+	first, err := service.OpenSurface(firstRequest)
+	if err != nil {
+		t.Fatalf("OpenSurface(first) error = %v", err)
+	}
+
+	secondRequest := firstRequest
+	secondRequest.SurfaceInstanceID = "surface_after_expiry"
+	secondRequest.Now = now.Add(2 * time.Minute)
+	if _, err := service.OpenSurface(secondRequest); err != nil {
+		t.Fatalf("OpenSurface(after expiry) error = %v", err)
+	}
+
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(first, now.Add(2*time.Minute))); !errors.Is(err, ErrSurfaceSessionNotFound) {
+		t.Fatalf("ExchangeAssetTicket(expired surface) error = %v, want %v", err, ErrSurfaceSessionNotFound)
 	}
 }
 
@@ -82,17 +227,17 @@ func TestValidateAssetSessionReturnsSurfaceSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(time.Second),
-	})
+	result, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	validation, err := service.ValidateAssetSession(ValidateAssetSessionRequest{
-		AssetSession: result.AssetSession,
-		Now:          now.Add(2 * time.Second),
+		AssetSession:         result.AssetSession,
+		AssetSessionID:       result.AssetSessionID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(2 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("ValidateAssetSession() error = %v", err)
@@ -101,6 +246,37 @@ func TestValidateAssetSessionReturnsSurfaceSession(t *testing.T) {
 		validation.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID ||
 		validation.Session.BridgeNonce != bootstrap.BridgeNonce {
 		t.Fatalf("asset session validation mismatch: %#v", validation)
+	}
+	if _, err := service.ValidateAssetSession(ValidateAssetSessionRequest{
+		AssetSession:         result.AssetSession,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(2 * time.Second),
+	}); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("ValidateAssetSession() without asset_session_id error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+}
+
+func TestSurfaceGatewayRequiresPreparedSurfaceDocument(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	bootstrap, err := service.OpenSurface(testOpenSurfaceRequest(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	handshake := handshakeFromBootstrap(bootstrap)
+	_, err = service.MintGatewayToken(MintGatewayTokenRequest{
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_1",
+		HandshakeTranscriptSHA256: HandshakeTranscriptSHA256(handshake, "bridge_1"),
+		Now:                       now.Add(2 * time.Second),
+	})
+	if !errors.Is(err, ErrAssetSessionRequired) {
+		t.Fatalf("MintGatewayToken() before surface preparation error = %v, want %v", err, ErrAssetSessionRequired)
 	}
 }
 
@@ -111,13 +287,11 @@ func TestSurfaceHandshakeMismatchFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(time.Second),
-	}); err != nil {
+	assetSession, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second)))
+	if err != nil {
 		t.Fatal(err)
 	}
+	markTestSurfacePrepared(t, service, bootstrap, assetSession, now.Add(time.Second))
 
 	handshake := handshakeFromBootstrap(bootstrap)
 	handshake.BridgeNonce = "wrong_nonce"
@@ -139,13 +313,11 @@ func TestSurfaceGatewayRequiresHandshakeTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(time.Second),
-	}); err != nil {
+	assetSession, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second)))
+	if err != nil {
 		t.Fatal(err)
 	}
+	markTestSurfacePrepared(t, service, bootstrap, assetSession, now.Add(time.Second))
 
 	handshake := handshakeFromBootstrap(bootstrap)
 	req := MintGatewayTokenRequest{
@@ -164,14 +336,17 @@ func TestSurfaceGatewayRequiresHandshakeTranscript(t *testing.T) {
 
 func TestHandshakeTranscriptSHA256StableVector(t *testing.T) {
 	got := HandshakeTranscriptSHA256(Handshake{
-		PluginID:          "com.example.plugin",
-		SurfaceID:         "example.activity",
-		SurfaceInstanceID: "surface_1",
-		ActiveFingerprint: "sha256:abc",
-		BridgeNonce:       "nonce_1",
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           "com.example.plugin",
+		SurfaceID:          "example.view",
+		SurfaceInstanceID:  "surface_1",
+		ActiveFingerprint:  "sha256:abc",
+		BridgeNonce:        "nonce_1",
+		AssetSessionNonce:  "asset_nonce_1",
+		PluginStateVersion: 7,
+		RevokeEpoch:        3,
+		UIProtocolVersion:  "plugin-ui-v2",
 	}, "bridge_channel_1")
-	const want = "sha256:94393d8980a4e43e287bab18b98531cbd7025fc38c25beea5c4ad2b9170593f2"
+	const want = "sha256:ce195f9c17851847c9615a5ad0267c722388acea3375d77ee2aca1fd75f597ad"
 	if got != want {
 		t.Fatalf("HandshakeTranscriptSHA256() = %q, want %q", got, want)
 	}
@@ -181,7 +356,7 @@ func TestSurfaceDisposeRevokesGatewayToken(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	bootstrap, gateway := mintTestGatewayToken(t, service, now)
-	audience := testSurfaceAudience("bridge_1")
+	audience := surfaceAudienceFromBootstrap(bootstrap, "bridge_1")
 
 	if !service.DisposeSurface(bootstrap.SurfaceInstanceID, now.Add(4*time.Second)) {
 		t.Fatal("DisposeSurface() = false")
@@ -192,24 +367,115 @@ func TestSurfaceDisposeRevokesGatewayToken(t *testing.T) {
 	}
 }
 
+func TestBoundSurfaceDisposeRequiresGenerationBinding(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	bootstrap, _ := mintTestGatewayToken(t, service, now)
+
+	err := service.DisposeBoundSurface(DisposeSurfaceRequest{
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now.Add(4 * time.Second),
+	})
+	if !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("DisposeBoundSurface() without generation binding error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+}
+
+func TestStaleSurfaceGenerationCannotDisposeReplacement(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	request := testOpenSurfaceRequest(now)
+	first, err := service.OpenSurface(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ActiveFingerprint = "sha256:replacement"
+	request.Revision.ManagementRevision++
+	request.Now = now.Add(time.Second)
+	replacement, err := service.OpenSurface(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dispose := func(bridgeNonce string) error {
+		return service.DisposeBoundSurface(DisposeSurfaceRequest{
+			SurfaceInstanceID:    request.SurfaceInstanceID,
+			BridgeNonce:          bridgeNonce,
+			OwnerSessionHash:     request.OwnerSessionHash,
+			OwnerUserHash:        request.OwnerUserHash,
+			SessionChannelIDHash: request.SessionChannelIDHash,
+			Now:                  now.Add(2 * time.Second),
+		})
+	}
+	if err := dispose(first.BridgeNonce); !errors.Is(err, ErrTokenAudience) {
+		t.Fatalf("stale DisposeBoundSurface() error = %v, want %v", err, ErrTokenAudience)
+	}
+	if err := dispose(replacement.BridgeNonce); err != nil {
+		t.Fatalf("replacement DisposeBoundSurface() error = %v", err)
+	}
+}
+
 func TestSurfaceRevokePluginDropsSessionsAndTokens(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
 	bootstrap, gateway := mintTestGatewayToken(t, service, now)
-	audience := testSurfaceAudience("bridge_1")
+	audience := surfaceAudienceFromBootstrap(bootstrap, "bridge_1")
 
-	if revoked := service.RevokePlugin(audience.PluginInstanceID, 0, now.Add(4*time.Second)); revoked == 0 {
+	if revoked, err := service.RevokePlugin(audience.PluginInstanceID, 0, now.Add(4*time.Second)); err != nil || revoked == 0 {
 		t.Fatal("RevokePlugin() revoked no tokens")
 	}
 	if _, err := service.ValidateGatewayToken(gateway.GatewayToken, audience, testRevision(4), now.Add(5*time.Second)); !errors.Is(err, ErrTokenRevoked) {
 		t.Fatalf("ValidateGatewayToken() after plugin revoke error = %v, want %v", err, ErrTokenRevoked)
 	}
-	if _, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(6 * time.Second),
-	}); !errors.Is(err, ErrSurfaceSessionNotFound) {
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(6*time.Second))); !errors.Is(err, ErrSurfaceSessionNotFound) {
 		t.Fatalf("ExchangeAssetTicket() after plugin revoke error = %v, want %v", err, ErrSurfaceSessionNotFound)
+	}
+}
+
+func TestSurfaceScopeRevocationMatchesOwnerAndChannel(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	target, err := service.OpenSurface(testOpenSurfaceRequest(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	siblingRequest := testOpenSurfaceRequest(now)
+	siblingRequest.SurfaceInstanceID = "surface_sibling"
+	siblingRequest.SessionChannelIDHash = "channel_sibling"
+	sibling, err := service.OpenSurface(siblingRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRequest := testOpenSurfaceRequest(now)
+	otherRequest.SurfaceInstanceID = "surface_other"
+	otherRequest.OwnerSessionHash = "sess_other"
+	other, err := service.OpenSurface(otherRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	revoked, err := service.RevokeSurfaceScope(RevokeSurfaceScopeRequest{
+		OwnerSessionHash:     target.OwnerSessionHash,
+		SessionChannelIDHash: target.SessionChannelIDHash,
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil || revoked != 1 {
+		t.Fatalf("RevokeSurfaceScope() = %d, %v, want 1", revoked, err)
+	}
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(target, now.Add(2*time.Second))); !errors.Is(err, ErrSurfaceSessionNotFound) {
+		t.Fatalf("target surface remained active: %v", err)
+	}
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(sibling, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("sibling channel was revoked: %v", err)
+	}
+	if _, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(other, now.Add(2*time.Second))); err != nil {
+		t.Fatalf("other owner was revoked: %v", err)
+	}
+	if _, err := service.RevokeSurfaceScope(RevokeSurfaceScopeRequest{}); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("empty scope error = %v, want %v", err, ErrMissingTokenAudience)
 	}
 }
 
@@ -222,14 +488,22 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
+		PluginID:             audience.PluginID,
 		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
 		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
 		ConfirmationID:       audience.ConfirmationID,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		Method:               audience.Method,
 		RequestHash:          audience.RequestHash,
 		PlanHash:             audience.PlanHash,
@@ -291,14 +565,22 @@ func TestConfirmationTokenCanBeConsumedByServerHeldTokenID(t *testing.T) {
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
+		PluginID:             audience.PluginID,
 		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
 		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
 		ConfirmationID:       audience.ConfirmationID,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		Method:               audience.Method,
 		RequestHash:          audience.RequestHash,
 		PlanHash:             audience.PlanHash,
@@ -326,6 +608,84 @@ func TestConfirmationTokenCanBeConsumedByServerHeldTokenID(t *testing.T) {
 	}
 }
 
+func TestConfirmationTokenTTLIsClamped(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.ConfirmationID = "confirmation_ttl"
+	audience.Method = "danger.run"
+	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
+		PluginID:             audience.PluginID,
+		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
+		ConfirmationID:       audience.ConfirmationID,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
+		Method:               audience.Method,
+		RequestHash:          audience.RequestHash,
+		PlanHash:             audience.PlanHash,
+		Revision:             testRevision(4),
+		ExpiresAt:            now.Add(time.Hour),
+		Now:                  now,
+	})
+	if err != nil {
+		t.Fatalf("MintConfirmationToken() error = %v", err)
+	}
+	if got := result.ExpiresAt.Sub(now); got != MaxConfirmationTTL {
+		t.Fatalf("confirmation TTL = %s, want %s", got, MaxConfirmationTTL)
+	}
+}
+
+func TestStreamTicketTTLIsClamped(t *testing.T) {
+	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
+	now := testNow()
+	audience := testSurfaceAudience("bridge_1")
+	audience.StreamID = "stream_ttl"
+	audience.StreamDirection = "read"
+	audience.Method = "logs.tail"
+	result, err := service.MintStreamTicket(MintStreamTicketRequest{
+		PluginID:             audience.PluginID,
+		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
+		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
+		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
+		OwnerSessionHash:     audience.OwnerSessionHash,
+		OwnerUserHash:        audience.OwnerUserHash,
+		SessionChannelIDHash: audience.SessionChannelIDHash,
+		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
+		StreamID:             audience.StreamID,
+		StreamDirection:      audience.StreamDirection,
+		Method:               audience.Method,
+		Revision:             testRevision(11),
+		ExpiresAt:            now.Add(time.Hour),
+		Now:                  now,
+	})
+	if err != nil {
+		t.Fatalf("MintStreamTicket() error = %v", err)
+	}
+	if got := result.ExpiresAt.Sub(now); got != MaxStreamTicketTTL {
+		t.Fatalf("stream ticket TTL = %s, want %s", got, MaxStreamTicketTTL)
+	}
+}
+
 func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	now := testNow()
@@ -335,14 +695,22 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 	req := MintConfirmationTokenRequest{
+		PluginID:             audience.PluginID,
 		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
 		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
 		ConfirmationID:       audience.ConfirmationID,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		Method:               audience.Method,
 		RequestHash:          audience.RequestHash,
 		PlanHash:             audience.PlanHash,
@@ -449,7 +817,9 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 	}
 
 	managerRecordAudience := Audience{
+		PluginID:             "com.example.worker",
 		PluginInstanceID:     "plugini_test",
+		PluginVersion:        "1.2.3",
 		ActiveFingerprint:    "sha256:package",
 		SurfaceInstanceID:    "surface_runtime",
 		OwnerSessionHash:     "session_hash",
@@ -692,13 +1062,21 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 	audience.StreamDirection = "read"
 	audience.Method = "logs.tail"
 	result, err := service.MintStreamTicket(MintStreamTicketRequest{
+		PluginID:             audience.PluginID,
 		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
 		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		StreamID:             audience.StreamID,
 		StreamDirection:      audience.StreamDirection,
 		Method:               audience.Method,
@@ -749,13 +1127,21 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 	audience.Method = "logs.tail"
 
 	expiring, err := service.MintStreamTicket(MintStreamTicketRequest{
+		PluginID:             audience.PluginID,
 		PluginInstanceID:     audience.PluginInstanceID,
+		PluginVersion:        audience.PluginVersion,
 		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
+		EntrySHA256:          audience.EntrySHA256,
+		AssetSessionNonce:    audience.AssetSessionNonce,
+		RouteRole:            audience.RouteRole,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
+		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		StreamID:             audience.StreamID,
 		StreamDirection:      audience.StreamDirection,
 		Method:               audience.Method,
@@ -797,13 +1183,21 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := service.MintStreamTicket(MintStreamTicketRequest{
+				PluginID:             audience.PluginID,
 				PluginInstanceID:     audience.PluginInstanceID,
+				PluginVersion:        audience.PluginVersion,
 				ActiveFingerprint:    audience.ActiveFingerprint,
+				SurfaceID:            audience.SurfaceID,
 				SurfaceInstanceID:    audience.SurfaceInstanceID,
+				EntryPath:            audience.EntryPath,
+				EntrySHA256:          audience.EntrySHA256,
+				AssetSessionNonce:    audience.AssetSessionNonce,
+				RouteRole:            audience.RouteRole,
 				OwnerSessionHash:     audience.OwnerSessionHash,
 				OwnerUserHash:        audience.OwnerUserHash,
 				SessionChannelIDHash: audience.SessionChannelIDHash,
 				BridgeChannelID:      audience.BridgeChannelID,
+				RuntimeGenerationID:  audience.RuntimeGenerationID,
 				StreamID:             audience.StreamID,
 				StreamDirection:      audience.StreamDirection,
 				Method:               audience.Method,
@@ -831,7 +1225,9 @@ func TestStreamTicketRequiresStreamDirectionAndMethod(t *testing.T) {
 	req := MintStreamTicketRequest{
 		PluginInstanceID:     audience.PluginInstanceID,
 		ActiveFingerprint:    audience.ActiveFingerprint,
+		SurfaceID:            audience.SurfaceID,
 		SurfaceInstanceID:    audience.SurfaceInstanceID,
+		EntryPath:            audience.EntryPath,
 		OwnerSessionHash:     audience.OwnerSessionHash,
 		OwnerUserHash:        audience.OwnerUserHash,
 		SessionChannelIDHash: audience.SessionChannelIDHash,
@@ -865,13 +1261,11 @@ func mintTestGatewayToken(t *testing.T, service *SurfaceTokenService, now time.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ExchangeAssetTicket(ExchangeAssetTicketRequest{
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		AssetTicket:       bootstrap.AssetTicket,
-		Now:               now.Add(time.Second),
-	}); err != nil {
+	assetSession, err := service.ExchangeAssetTicket(exchangeAssetTicketRequest(bootstrap, now.Add(time.Second)))
+	if err != nil {
 		t.Fatal(err)
 	}
+	markTestSurfacePrepared(t, service, bootstrap, assetSession, now.Add(time.Second))
 	gateway, err := service.MintGatewayToken(MintGatewayTokenRequest{
 		Handshake:                 handshakeFromBootstrap(bootstrap),
 		BridgeChannelID:           "bridge_1",
@@ -884,13 +1278,33 @@ func mintTestGatewayToken(t *testing.T, service *SurfaceTokenService, now time.T
 	return bootstrap, gateway
 }
 
+func markTestSurfacePrepared(t *testing.T, service *SurfaceTokenService, bootstrap SurfaceBootstrap, assetSession AssetSessionResult, now time.Time) {
+	t.Helper()
+	if err := service.MarkSurfacePrepared(MarkSurfacePreparedRequest{
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		AssetSessionID:       assetSession.AssetSessionID,
+		BridgeNonce:          bootstrap.BridgeNonce,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now,
+	}); err != nil {
+		t.Fatalf("MarkSurfacePrepared() error = %v", err)
+	}
+}
+
 func testOpenSurfaceRequest(now time.Time) OpenSurfaceRequest {
 	return OpenSurfaceRequest{
 		PluginID:             "com.example.plugin",
 		PluginInstanceID:     "plugini_test",
-		SurfaceID:            "main.activity",
+		PluginVersion:        "1.2.3",
+		SurfaceID:            "main.view",
 		SurfaceInstanceID:    "surface_test",
 		ActiveFingerprint:    "sha256:package",
+		EntryPath:            "ui/index.html",
+		EntrySHA256:          "sha256:entry",
+		RouteRole:            "trusted_parent",
+		RuntimeGenerationID:  "runtime_gen_1",
 		OwnerSessionHash:     "sess_hash",
 		OwnerUserHash:        "user_hash",
 		SessionChannelIDHash: "channel_hash",
@@ -901,12 +1315,26 @@ func testOpenSurfaceRequest(now time.Time) OpenSurfaceRequest {
 
 func handshakeFromBootstrap(bootstrap SurfaceBootstrap) Handshake {
 	return Handshake{
-		PluginID:          bootstrap.PluginID,
-		SurfaceID:         bootstrap.SurfaceID,
-		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
-		ActiveFingerprint: bootstrap.ActiveFingerprint,
-		BridgeNonce:       bootstrap.BridgeNonce,
-		UIProtocolVersion: "plugin-ui-v1",
+		PluginID:           bootstrap.PluginID,
+		SurfaceID:          bootstrap.SurfaceID,
+		SurfaceInstanceID:  bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:  bootstrap.ActiveFingerprint,
+		BridgeNonce:        bootstrap.BridgeNonce,
+		AssetSessionNonce:  bootstrap.AssetSessionNonce,
+		PluginStateVersion: bootstrap.PluginStateVersion,
+		RevokeEpoch:        bootstrap.RevokeEpoch,
+		UIProtocolVersion:  "plugin-ui-v2",
+	}
+}
+
+func exchangeAssetTicketRequest(bootstrap SurfaceBootstrap, now time.Time) ExchangeAssetTicketRequest {
+	return ExchangeAssetTicketRequest{
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		AssetTicket:          bootstrap.AssetTicket,
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		Now:                  now,
 	}
 }
 
@@ -914,4 +1342,24 @@ func testSurfaceAudience(bridgeChannelID string) Audience {
 	audience := testAudience()
 	audience.BridgeChannelID = bridgeChannelID
 	return audience
+}
+
+func surfaceAudienceFromBootstrap(bootstrap SurfaceBootstrap, bridgeChannelID string) Audience {
+	return Audience{
+		PluginID:             bootstrap.PluginID,
+		PluginInstanceID:     bootstrap.PluginInstanceID,
+		PluginVersion:        bootstrap.PluginVersion,
+		ActiveFingerprint:    bootstrap.ActiveFingerprint,
+		SurfaceID:            bootstrap.SurfaceID,
+		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
+		EntryPath:            bootstrap.EntryPath,
+		EntrySHA256:          bootstrap.EntrySHA256,
+		AssetSessionNonce:    bootstrap.AssetSessionNonce,
+		RouteRole:            "trusted_parent",
+		OwnerSessionHash:     bootstrap.OwnerSessionHash,
+		OwnerUserHash:        bootstrap.OwnerUserHash,
+		SessionChannelIDHash: bootstrap.SessionChannelIDHash,
+		BridgeChannelID:      bridgeChannelID,
+		RuntimeGenerationID:  bootstrap.RuntimeGenerationID,
+	}
 }

@@ -2,6 +2,7 @@ package retaineddata
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -23,7 +24,6 @@ func TestStoreRetainTouchBindAndDelete(t *testing.T) {
 			if record.State != StateRetained ||
 				!record.StorageRetained ||
 				!record.SettingsRetained ||
-				record.BrowserSiteRetained ||
 				record.UsageBytes != 4096 ||
 				record.DeleteAfter == nil ||
 				!reflect.DeepEqual(record.Metadata, map[string]string{"reason": "uninstall_keep_data"}) {
@@ -156,7 +156,6 @@ func TestStoreRejectsInvalidRequests(t *testing.T) {
 			req := fixtureRetainRequest("retained_invalid", now)
 			req.StorageRetained = false
 			req.SettingsRetained = false
-			req.BrowserSiteRetained = false
 			if _, err := store.Retain(context.Background(), req); !errors.Is(err, ErrInvalidRecord) {
 				t.Fatalf("Retain(no data) error = %v, want ErrInvalidRecord", err)
 			}
@@ -248,6 +247,93 @@ func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
 	}
 	if _, err := NewSQLiteStore(ctx, path); err == nil {
 		t.Fatal("NewSQLiteStore() accepted newer schema version")
+	}
+}
+
+func TestSQLiteStoreMigratesBrowserSiteRowsToV2(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "retained-data.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySchema := `
+CREATE TABLE plugin_retained_data_schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+INSERT INTO plugin_retained_data_schema_migrations(version, applied_at) VALUES(1, 1);
+CREATE TABLE plugin_retained_data_records (
+	retained_id TEXT PRIMARY KEY,
+	source_plugin_instance_id TEXT NOT NULL,
+	bound_plugin_instance_id TEXT NOT NULL,
+	publisher_id TEXT NOT NULL,
+	plugin_id TEXT NOT NULL,
+	version TEXT NOT NULL,
+	package_hash TEXT NOT NULL,
+	manifest_hash TEXT NOT NULL,
+	state TEXT NOT NULL,
+	storage_retained INTEGER NOT NULL,
+	settings_retained INTEGER NOT NULL,
+	browser_site_retained INTEGER NOT NULL,
+	usage_bytes INTEGER NOT NULL,
+	delete_after INTEGER,
+	delete_error TEXT NOT NULL,
+	metadata_json TEXT NOT NULL,
+	retained_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	bound_at INTEGER,
+	deleted_at INTEGER,
+	last_accessed_at INTEGER
+);
+INSERT INTO plugin_retained_data_records VALUES
+	('retained_mixed','old_mixed','','com.example','com.example.plugin','1.0.0','sha256:p','sha256:m','retained',1,0,1,10,NULL,'','{}',1,1,NULL,NULL,NULL),
+	('retained_browser_only','old_browser','','com.example','com.example.plugin','1.0.0','sha256:p','sha256:m','retained',0,0,1,0,NULL,'','{}',1,1,NULL,NULL,NULL);`
+	if _, err := db.ExecContext(ctx, legacySchema); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	mixed, err := store.Get(ctx, "retained_mixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mixed.State != StateRetained || !mixed.StorageRetained || mixed.SettingsRetained {
+		t.Fatalf("mixed retained row mismatch after migration: %#v", mixed)
+	}
+	browserOnly, err := store.Get(ctx, "retained_browser_only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if browserOnly.State != StateDeleted || browserOnly.DeletedAt == nil || browserOnly.StorageRetained || browserOnly.SettingsRetained {
+		t.Fatalf("browser-only row was not closed during migration: %#v", browserOnly)
+	}
+	rows, err := store.db.QueryContext(ctx, `PRAGMA table_info(plugin_retained_data_records)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if name == "browser_site_retained" {
+			t.Fatal("browser_site_retained column remained after v2 migration")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 

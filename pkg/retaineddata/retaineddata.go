@@ -38,7 +38,6 @@ type Record struct {
 	State                  State             `json:"state"`
 	StorageRetained        bool              `json:"storage_retained"`
 	SettingsRetained       bool              `json:"settings_retained"`
-	BrowserSiteRetained    bool              `json:"browser_site_retained"`
 	UsageBytes             int64             `json:"usage_bytes,omitempty"`
 	DeleteAfter            *time.Time        `json:"delete_after,omitempty"`
 	DeleteError            string            `json:"delete_error,omitempty"`
@@ -60,7 +59,6 @@ type RetainRequest struct {
 	ManifestHash           string            `json:"manifest_hash"`
 	StorageRetained        bool              `json:"storage_retained"`
 	SettingsRetained       bool              `json:"settings_retained"`
-	BrowserSiteRetained    bool              `json:"browser_site_retained"`
 	UsageBytes             int64             `json:"usage_bytes,omitempty"`
 	DeleteAfter            *time.Time        `json:"delete_after,omitempty"`
 	Metadata               map[string]string `json:"metadata,omitempty"`
@@ -328,7 +326,7 @@ func recordFromRetain(req RetainRequest, now time.Time) (Record, error) {
 	if retainedID == "" || sourcePluginInstanceID == "" || publisherID == "" || pluginID == "" || version == "" || packageHash == "" || manifestHash == "" {
 		return Record{}, ErrInvalidRecord
 	}
-	if !req.StorageRetained && !req.SettingsRetained && !req.BrowserSiteRetained {
+	if !req.StorageRetained && !req.SettingsRetained {
 		return Record{}, ErrInvalidRecord
 	}
 	if req.UsageBytes < 0 {
@@ -345,7 +343,6 @@ func recordFromRetain(req RetainRequest, now time.Time) (Record, error) {
 		State:                  StateRetained,
 		StorageRetained:        req.StorageRetained,
 		SettingsRetained:       req.SettingsRetained,
-		BrowserSiteRetained:    req.BrowserSiteRetained,
 		UsageBytes:             req.UsageBytes,
 		DeleteAfter:            cloneTimePtr(req.DeleteAfter),
 		Metadata:               cloneStringMap(req.Metadata),

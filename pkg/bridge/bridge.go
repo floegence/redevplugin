@@ -32,22 +32,39 @@ const (
 )
 
 var (
-	ErrTokenInvalid         = errors.New("token is invalid")
-	ErrTokenExpired         = errors.New("token is expired")
-	ErrTokenReplay          = errors.New("token has already been consumed")
-	ErrTokenAudience        = errors.New("token audience mismatch")
-	ErrTokenKind            = errors.New("token kind mismatch")
-	ErrTokenRevoked         = errors.New("token has been revoked")
-	ErrTokenAlreadyBound    = errors.New("token is already bound to a different channel")
-	ErrMissingTokenAudience = errors.New("token audience is incomplete")
+	ErrTokenInvalid             = errors.New("token is invalid")
+	ErrTokenExpired             = errors.New("token is expired")
+	ErrTokenReplay              = errors.New("token has already been consumed")
+	ErrTokenAudience            = errors.New("token audience mismatch")
+	ErrTokenKind                = errors.New("token kind mismatch")
+	ErrTokenRevoked             = errors.New("token has been revoked")
+	ErrTokenAlreadyBound        = errors.New("token is already bound to a different channel")
+	ErrMissingTokenAudience     = errors.New("token audience is incomplete")
+	ErrTokenCapacity            = errors.New("token manager capacity is exhausted")
+	ErrTokenPluginCapacity      = errors.New("plugin token capacity is exhausted")
+	ErrTokenTTLExceeded         = errors.New("token TTL exceeds the configured maximum")
+	ErrTokenRevokeFloorCapacity = errors.New("token revoke-floor capacity is exhausted")
+)
+
+const (
+	DefaultMaxTokenRecords          = 16_384
+	DefaultMaxTokenRecordsPerPlugin = 2_048
+	DefaultMaxTokenRevokeFloors     = 4_096
+	DefaultMaxTokenTTL              = 15 * time.Minute
 )
 
 type SurfaceSession struct {
 	PluginID             string    `json:"plugin_id"`
 	PluginInstanceID     string    `json:"plugin_instance_id"`
+	PluginVersion        string    `json:"plugin_version"`
 	SurfaceInstanceID    string    `json:"surface_instance_id"`
 	SurfaceID            string    `json:"surface_id"`
 	ActiveFingerprint    string    `json:"active_fingerprint"`
+	EntryPath            string    `json:"entry_path"`
+	EntrySHA256          string    `json:"entry_sha256"`
+	AssetSessionNonce    string    `json:"asset_session_nonce"`
+	RouteRole            string    `json:"route_role"`
+	RuntimeGenerationID  string    `json:"runtime_generation_id,omitempty"`
 	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
@@ -85,12 +102,15 @@ type GatewayToken struct {
 }
 
 type Handshake struct {
-	PluginID          string `json:"plugin_id"`
-	SurfaceID         string `json:"surface_id"`
-	SurfaceInstanceID string `json:"surface_instance_id"`
-	ActiveFingerprint string `json:"active_fingerprint"`
-	BridgeNonce       string `json:"bridge_nonce"`
-	UIProtocolVersion string `json:"ui_protocol_version"`
+	PluginID           string `json:"plugin_id"`
+	SurfaceID          string `json:"surface_id"`
+	SurfaceInstanceID  string `json:"surface_instance_id"`
+	ActiveFingerprint  string `json:"active_fingerprint"`
+	BridgeNonce        string `json:"bridge_nonce"`
+	AssetSessionNonce  string `json:"asset_session_nonce"`
+	PluginStateVersion uint64 `json:"plugin_state_version"`
+	RevokeEpoch        uint64 `json:"revoke_epoch"`
+	UIProtocolVersion  string `json:"ui_protocol_version"`
 }
 
 type CallRequest struct {
@@ -100,9 +120,16 @@ type CallRequest struct {
 }
 
 type Audience struct {
+	PluginID             string `json:"plugin_id,omitempty"`
 	PluginInstanceID     string `json:"plugin_instance_id"`
+	PluginVersion        string `json:"plugin_version,omitempty"`
 	ActiveFingerprint    string `json:"active_fingerprint"`
+	SurfaceID            string `json:"surface_id,omitempty"`
 	SurfaceInstanceID    string `json:"surface_instance_id,omitempty"`
+	EntryPath            string `json:"entry_path,omitempty"`
+	EntrySHA256          string `json:"entry_sha256,omitempty"`
+	AssetSessionNonce    string `json:"asset_session_nonce,omitempty"`
+	RouteRole            string `json:"route_role,omitempty"`
 	OwnerSessionHash     string `json:"owner_session_hash,omitempty"`
 	OwnerUserHash        string `json:"owner_user_hash,omitempty"`
 	SessionChannelIDHash string `json:"session_channel_id_hash,omitempty"`
@@ -139,7 +166,7 @@ type MintRequest struct {
 	Revision  RevisionBinding `json:"revision"`
 	ExpiresAt time.Time       `json:"expires_at"`
 	Now       time.Time       `json:"now,omitempty"`
-	Limits    Limits          `json:"limits,omitempty"`
+	Limits    Limits          `json:"limits,omitzero"`
 }
 
 type MintedToken struct {
@@ -152,7 +179,7 @@ type MintedToken struct {
 	ExpiresAt time.Time       `json:"expires_at"`
 	Nonce     string          `json:"nonce"`
 	Use       TokenUse        `json:"use"`
-	Limits    Limits          `json:"limits,omitempty"`
+	Limits    Limits          `json:"limits,omitzero"`
 }
 
 type ValidateRequest struct {
@@ -194,7 +221,7 @@ type TokenRecord struct {
 	ExpiresAt            time.Time       `json:"expires_at"`
 	Nonce                string          `json:"nonce"`
 	Use                  TokenUse        `json:"use"`
-	Limits               Limits          `json:"limits,omitempty"`
+	Limits               Limits          `json:"limits,omitzero"`
 	Consumed             bool            `json:"consumed"`
 	ConsumedAt           *time.Time      `json:"consumed_at,omitempty"`
 	Revoked              bool            `json:"revoked"`
@@ -202,13 +229,57 @@ type TokenRecord struct {
 	BoundBridgeChannelID string          `json:"bound_bridge_channel_id,omitempty"`
 }
 
-type TokenManager struct {
-	mu      sync.Mutex
-	records map[string]TokenRecord
+type TokenManagerOptions struct {
+	MaxRecords          int
+	MaxRecordsPerPlugin int
+	MaxRevokeFloors     int
+	MaxTTL              time.Duration
 }
 
-func NewTokenManager() *TokenManager {
-	return &TokenManager{records: map[string]TokenRecord{}}
+type TokenManager struct {
+	mu                    sync.Mutex
+	options               TokenManagerOptions
+	records               map[string]TokenRecord
+	idIndex               map[string]string
+	pluginIndex           map[string]map[string]struct{}
+	surfaceIndex          map[string]map[string]struct{}
+	pluginRevokeFloors    map[string]uint64
+	revokeFloorsSaturated bool
+}
+
+func NewTokenManager(options ...TokenManagerOptions) *TokenManager {
+	configured := TokenManagerOptions{}
+	if len(options) > 0 {
+		configured = options[0]
+	}
+	configured = normalizeTokenManagerOptions(configured)
+	return &TokenManager{
+		options:            configured,
+		records:            map[string]TokenRecord{},
+		idIndex:            map[string]string{},
+		pluginIndex:        map[string]map[string]struct{}{},
+		surfaceIndex:       map[string]map[string]struct{}{},
+		pluginRevokeFloors: map[string]uint64{},
+	}
+}
+
+func normalizeTokenManagerOptions(options TokenManagerOptions) TokenManagerOptions {
+	if options.MaxRecords <= 0 {
+		options.MaxRecords = DefaultMaxTokenRecords
+	}
+	if options.MaxRecordsPerPlugin <= 0 {
+		options.MaxRecordsPerPlugin = DefaultMaxTokenRecordsPerPlugin
+	}
+	if options.MaxRecordsPerPlugin > options.MaxRecords {
+		options.MaxRecordsPerPlugin = options.MaxRecords
+	}
+	if options.MaxRevokeFloors <= 0 {
+		options.MaxRevokeFloors = DefaultMaxTokenRevokeFloors
+	}
+	if options.MaxTTL <= 0 {
+		options.MaxTTL = DefaultMaxTokenTTL
+	}
+	return options
 }
 
 func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
@@ -222,10 +293,10 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	use := req.Use
-	if use == "" {
-		use = defaultTokenUse(req.Kind)
+	if req.ExpiresAt.Sub(now) > m.options.MaxTTL {
+		return MintedToken{}, ErrTokenTTLExceeded
 	}
+	use := defaultTokenUse(req.Kind)
 	tokenID, err := prefixedID(req.Kind)
 	if err != nil {
 		return MintedToken{}, err
@@ -254,7 +325,28 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.records[record.TokenHash] = record
+	m.pruneExpiredRecordsLocked(now)
+	if m.revokeFloorsSaturated {
+		if _, tracked := m.pluginRevokeFloors[record.Audience.PluginInstanceID]; !tracked {
+			return MintedToken{}, ErrTokenRevokeFloorCapacity
+		}
+	}
+	if floor := m.pluginRevokeFloors[record.Audience.PluginInstanceID]; floor > 0 && record.Revision.RevokeEpoch < floor {
+		return MintedToken{}, ErrTokenRevoked
+	}
+	if len(m.records) >= m.options.MaxRecords {
+		return MintedToken{}, ErrTokenCapacity
+	}
+	if len(m.pluginIndex[record.Audience.PluginInstanceID]) >= m.options.MaxRecordsPerPlugin {
+		return MintedToken{}, ErrTokenPluginCapacity
+	}
+	if _, exists := m.records[record.TokenHash]; exists {
+		return MintedToken{}, errors.New("generated token hash collision")
+	}
+	if _, exists := m.idIndex[tokenIDIndexKey(record.Kind, record.TokenID)]; exists {
+		return MintedToken{}, errors.New("generated token ID collision")
+	}
+	m.addRecordLocked(record)
 
 	return MintedToken{
 		Kind:      record.Kind,
@@ -268,6 +360,55 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 		Use:       record.Use,
 		Limits:    record.Limits,
 	}, nil
+}
+
+func (m *TokenManager) pruneExpiredRecordsLocked(now time.Time) {
+	for tokenHash, record := range m.records {
+		if !now.Before(record.ExpiresAt) {
+			m.removeRecordLocked(tokenHash, record)
+		}
+	}
+}
+
+func (m *TokenManager) addRecordLocked(record TokenRecord) {
+	m.records[record.TokenHash] = record
+	m.idIndex[tokenIDIndexKey(record.Kind, record.TokenID)] = record.TokenHash
+	addTokenIndexEntry(m.pluginIndex, record.Audience.PluginInstanceID, record.TokenHash)
+	addTokenIndexEntry(m.surfaceIndex, record.Audience.SurfaceInstanceID, record.TokenHash)
+}
+
+func (m *TokenManager) removeRecordLocked(tokenHash string, record TokenRecord) {
+	delete(m.records, tokenHash)
+	delete(m.idIndex, tokenIDIndexKey(record.Kind, record.TokenID))
+	removeTokenIndexEntry(m.pluginIndex, record.Audience.PluginInstanceID, tokenHash)
+	removeTokenIndexEntry(m.surfaceIndex, record.Audience.SurfaceInstanceID, tokenHash)
+}
+
+func addTokenIndexEntry(index map[string]map[string]struct{}, key string, tokenHash string) {
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	entries := index[key]
+	if entries == nil {
+		entries = map[string]struct{}{}
+		index[key] = entries
+	}
+	entries[tokenHash] = struct{}{}
+}
+
+func removeTokenIndexEntry(index map[string]map[string]struct{}, key string, tokenHash string) {
+	entries := index[key]
+	if entries == nil {
+		return
+	}
+	delete(entries, tokenHash)
+	if len(entries) == 0 {
+		delete(index, key)
+	}
+}
+
+func tokenIDIndexKey(kind TokenKind, tokenID string) string {
+	return string(kind) + "\x00" + tokenID
 }
 
 func (m *TokenManager) Validate(req ValidateRequest) (TokenRecord, error) {
@@ -373,25 +514,28 @@ func (m *TokenManager) Inspect(req InspectRequest) (TokenRecord, error) {
 }
 
 func (m *TokenManager) loadTokenRecordByIDLocked(kind TokenKind, tokenID string, now time.Time) (string, TokenRecord, error) {
-	for tokenHash, record := range m.records {
-		if record.TokenID != tokenID {
-			continue
-		}
-		if record.Kind != kind {
-			return "", TokenRecord{}, ErrTokenKind
-		}
-		if record.Revoked {
-			return "", TokenRecord{}, ErrTokenRevoked
-		}
-		if !now.Before(record.ExpiresAt) {
-			return "", TokenRecord{}, ErrTokenExpired
-		}
-		if record.Consumed {
-			return "", TokenRecord{}, ErrTokenReplay
-		}
-		return tokenHash, record, nil
+	tokenHash, ok := m.idIndex[tokenIDIndexKey(kind, tokenID)]
+	if !ok {
+		return "", TokenRecord{}, ErrTokenInvalid
 	}
-	return "", TokenRecord{}, ErrTokenInvalid
+	record, ok := m.records[tokenHash]
+	if !ok {
+		delete(m.idIndex, tokenIDIndexKey(kind, tokenID))
+		return "", TokenRecord{}, ErrTokenInvalid
+	}
+	if record.Kind != kind {
+		return "", TokenRecord{}, ErrTokenKind
+	}
+	if record.Revoked {
+		return "", TokenRecord{}, ErrTokenRevoked
+	}
+	if !now.Before(record.ExpiresAt) {
+		return "", TokenRecord{}, ErrTokenExpired
+	}
+	if record.Consumed {
+		return "", TokenRecord{}, ErrTokenReplay
+	}
+	return tokenHash, record, nil
 }
 
 func (m *TokenManager) loadTokenRecordLocked(req InspectRequest, tokenHash string) (TokenRecord, error) {
@@ -414,29 +558,42 @@ func (m *TokenManager) loadTokenRecordLocked(req InspectRequest, tokenHash strin
 	return record, nil
 }
 
-func (m *TokenManager) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) int {
+func (m *TokenManager) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) (int, error) {
 	if m == nil {
-		return 0
+		return 0, nil
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var floorErr error
+	if minimumRevokeEpoch > m.pluginRevokeFloors[pluginInstanceID] {
+		if _, exists := m.pluginRevokeFloors[pluginInstanceID]; !exists && len(m.pluginRevokeFloors) >= m.options.MaxRevokeFloors {
+			m.revokeFloorsSaturated = true
+			floorErr = ErrTokenRevokeFloorCapacity
+		} else {
+			m.pluginRevokeFloors[pluginInstanceID] = minimumRevokeEpoch
+		}
+	}
 
 	count := 0
-	for key, record := range m.records {
-		if record.Audience.PluginInstanceID != pluginInstanceID {
+	for key := range m.pluginIndex[pluginInstanceID] {
+		record, ok := m.records[key]
+		if !ok {
 			continue
 		}
 		if record.Revision.RevokeEpoch < minimumRevokeEpoch || minimumRevokeEpoch == 0 {
+			if record.Revoked {
+				continue
+			}
 			record.Revoked = true
 			record.RevokedAt = &now
 			m.records[key] = record
 			count++
 		}
 	}
-	return count
+	return count, floorErr
 }
 
 func (m *TokenManager) RevokeSurface(surfaceInstanceID string, now time.Time) int {
@@ -450,8 +607,9 @@ func (m *TokenManager) RevokeSurface(surfaceInstanceID string, now time.Time) in
 	defer m.mu.Unlock()
 
 	count := 0
-	for key, record := range m.records {
-		if record.Audience.SurfaceInstanceID != surfaceInstanceID || record.Revoked {
+	for key := range m.surfaceIndex[surfaceInstanceID] {
+		record, ok := m.records[key]
+		if !ok || record.Revoked {
 			continue
 		}
 		record.Revoked = true
@@ -460,6 +618,29 @@ func (m *TokenManager) RevokeSurface(surfaceInstanceID string, now time.Time) in
 		count++
 	}
 	return count
+}
+
+func (m *TokenManager) RevokeTokenID(kind TokenKind, tokenID string, now time.Time) bool {
+	if m == nil || strings.TrimSpace(tokenID) == "" {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, ok := m.idIndex[tokenIDIndexKey(kind, tokenID)]
+	if !ok {
+		return false
+	}
+	record, ok := m.records[key]
+	if !ok || record.Kind != kind || record.TokenID != tokenID || record.Revoked {
+		return false
+	}
+	record.Revoked = true
+	record.RevokedAt = &now
+	m.records[key] = record
+	return true
 }
 
 func (m *TokenManager) Snapshot() []TokenRecord {
@@ -480,11 +661,15 @@ func validateMintRequest(req MintRequest) error {
 	if !validTokenKind(req.Kind) {
 		return ErrTokenKind
 	}
-	if req.Use != "" && req.Use != TokenUseSingleUse && req.Use != TokenUseReusable {
-		return fmt.Errorf("unsupported token use %q", req.Use)
+	expectedUse := defaultTokenUse(req.Kind)
+	if req.Use != "" && req.Use != expectedUse {
+		return fmt.Errorf("token kind %q requires use %q", req.Kind, expectedUse)
 	}
 	if strings.TrimSpace(req.Audience.PluginInstanceID) == "" || strings.TrimSpace(req.Audience.ActiveFingerprint) == "" {
 		return ErrMissingTokenAudience
+	}
+	if err := validateTokenAudience(req.Kind, req.Audience); err != nil {
+		return err
 	}
 	if req.ExpiresAt.IsZero() {
 		return errors.New("expires_at is required")
@@ -497,6 +682,108 @@ func validateMintRequest(req MintRequest) error {
 		return ErrTokenExpired
 	}
 	return nil
+}
+
+func validateTokenAudience(kind TokenKind, audience Audience) error {
+	require := func(values ...string) error {
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				return ErrMissingTokenAudience
+			}
+		}
+		return nil
+	}
+	switch kind {
+	case TokenKindAssetTicket, TokenKindAssetSession:
+		return require(
+			audience.PluginID,
+			audience.PluginVersion,
+			audience.SurfaceID,
+			audience.SurfaceInstanceID,
+			audience.EntryPath,
+			audience.EntrySHA256,
+			audience.AssetSessionNonce,
+			audience.RouteRole,
+			audience.OwnerSessionHash,
+			audience.SessionChannelIDHash,
+			audience.RuntimeGenerationID,
+		)
+	case TokenKindPluginGatewayToken:
+		return require(
+			audience.PluginID,
+			audience.PluginVersion,
+			audience.SurfaceID,
+			audience.SurfaceInstanceID,
+			audience.EntryPath,
+			audience.EntrySHA256,
+			audience.AssetSessionNonce,
+			audience.RouteRole,
+			audience.OwnerSessionHash,
+			audience.SessionChannelIDHash,
+			audience.BridgeChannelID,
+			audience.RuntimeGenerationID,
+		)
+	case TokenKindConfirmationToken:
+		return require(
+			audience.PluginID,
+			audience.PluginVersion,
+			audience.SurfaceID,
+			audience.SurfaceInstanceID,
+			audience.EntryPath,
+			audience.EntrySHA256,
+			audience.AssetSessionNonce,
+			audience.RouteRole,
+			audience.OwnerSessionHash,
+			audience.SessionChannelIDHash,
+			audience.BridgeChannelID,
+			audience.ConfirmationID,
+			audience.Method,
+			audience.RequestHash,
+			audience.PlanHash,
+			audience.RuntimeGenerationID,
+		)
+	case TokenKindRuntimeExecutionLease:
+		return require(
+			audience.RuntimeInstanceID,
+			audience.RuntimeGenerationID,
+			audience.IPCChannelID,
+			audience.ConnectionNonce,
+			audience.Method,
+		)
+	case TokenKindHandleGrant:
+		return require(audience.RuntimeGenerationID, audience.HandleID, audience.Method)
+	case TokenKindStreamTicket:
+		if err := require(
+			audience.PluginID,
+			audience.PluginVersion,
+			audience.RouteRole,
+			audience.OwnerSessionHash,
+			audience.SessionChannelIDHash,
+			audience.StreamID,
+			audience.StreamDirection,
+			audience.Method,
+		); err != nil {
+			return err
+		}
+		switch audience.RouteRole {
+		case RouteRoleTrustedParent:
+			return require(
+				audience.SurfaceID,
+				audience.SurfaceInstanceID,
+				audience.EntryPath,
+				audience.EntrySHA256,
+				audience.AssetSessionNonce,
+				audience.BridgeChannelID,
+				audience.RuntimeGenerationID,
+			)
+		case RouteRoleTrustedIntent:
+			return nil
+		default:
+			return ErrMissingTokenAudience
+		}
+	default:
+		return ErrTokenKind
+	}
 }
 
 func defaultTokenUse(kind TokenKind) TokenUse {
@@ -518,9 +805,16 @@ func validTokenKind(kind TokenKind) bool {
 }
 
 func audienceMatches(expected Audience, got Audience) bool {
-	return expected.PluginInstanceID == got.PluginInstanceID &&
+	return expected.PluginID == got.PluginID &&
+		expected.PluginInstanceID == got.PluginInstanceID &&
+		expected.PluginVersion == got.PluginVersion &&
 		expected.ActiveFingerprint == got.ActiveFingerprint &&
+		expected.SurfaceID == got.SurfaceID &&
 		expected.SurfaceInstanceID == got.SurfaceInstanceID &&
+		expected.EntryPath == got.EntryPath &&
+		expected.EntrySHA256 == got.EntrySHA256 &&
+		expected.AssetSessionNonce == got.AssetSessionNonce &&
+		expected.RouteRole == got.RouteRole &&
 		expected.OwnerSessionHash == got.OwnerSessionHash &&
 		expected.OwnerUserHash == got.OwnerUserHash &&
 		expected.SessionChannelIDHash == got.SessionChannelIDHash &&

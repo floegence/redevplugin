@@ -25,7 +25,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "bridge_error_code"), bridgeCodes, "error-codes schema bridge_error_code")
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "typescript_client_error_code"), clientCodes, "error-codes schema typescript_client_error_code")
 
-	openAPICodes, err := readOpenAPIErrorCodes(filepath.Join(root, "spec", "openapi", "plugin-platform-v1.yaml"))
+	openAPICodes, err := readOpenAPIErrorCodes(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	bridgeCode := requireNestedObject(t, errorVariant, "properties", "error_code")
 	assertStringSlicesEqual(t, requireStringSlice(t, bridgeCode["enum"], "bridge error_code enum"), bridgeCodes, "bridge schema error_code enum")
 
-	tsSource, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "index.ts"))
+	tsSource, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "errors.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}

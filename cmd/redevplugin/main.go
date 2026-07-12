@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -70,6 +71,12 @@ type scaffoldSummary struct {
 	Files       []string       `json:"files"`
 	VersionInfo version.Matrix `json:"version_matrix"`
 }
+
+//go:embed demo_assets/scaffold-plugin-worker.js
+var scaffoldPluginWorkerJS []byte
+
+//go:embed demo_assets/real-plugin-worker.js
+var realDemoPluginWorkerJS []byte
 
 type compatibilityVerifySummary struct {
 	OK            bool   `json:"ok"`
@@ -189,14 +196,10 @@ func run(ctx context.Context, args []string) error {
 		}
 		return devEnable(ctx, args[1])
 	case "dev-open":
-		if len(args) != 3 && len(args) != 4 {
+		if len(args) != 3 {
 			return usage()
 		}
-		sandboxOrigin := ""
-		if len(args) == 4 {
-			sandboxOrigin = args[3]
-		}
-		return devOpen(ctx, args[1], args[2], sandboxOrigin)
+		return devOpen(ctx, args[1], args[2])
 	case "dev-secret-bind":
 		if len(args) != 3 && len(args) != 4 {
 			return usage()
@@ -463,7 +466,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
 	manifestDoc := manifest.Manifest{
-		SchemaVersion: "redevplugin.manifest.v1",
+		SchemaVersion: "redevplugin.manifest.v2",
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
@@ -474,14 +477,14 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Version:           "0.1.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v1",
+			UIProtocolVersion: "plugin-ui-v2",
 		},
 		Surfaces: []manifest.SurfaceSpec{{
-			SurfaceID: pluginID + ".activity",
-			Kind:      manifest.SurfaceActivity,
+			SurfaceID: pluginID + ".view",
+			Kind:      manifest.SurfaceView,
+			Intent:    manifest.SurfaceIntentPrimary,
 			Label:     displayName,
 			Entry:     "ui/index.html",
-			Method:    "worker.echo",
 		}},
 		Workers: []manifest.WorkerSpec{{
 			WorkerID:         "backend",
@@ -499,19 +502,26 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			MemoryLimitBytes: 16 << 20,
 		}},
 		Methods: []manifest.MethodSpec{{
-			Method:         "worker.echo",
-			Effect:         manifest.MethodEffectRead,
-			Execution:      manifest.MethodExecutionSync,
-			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redevplugin_worker_invoke"},
-			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
-			ResponseSchema: map[string]any{"type": "object"},
+			Method:    "worker.echo",
+			Effect:    manifest.MethodEffectRead,
+			Execution: manifest.MethodExecutionSync,
+			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redevplugin_worker_invoke"},
+			RequestSchema: closedMethodObjectSchema(map[string]any{
+				"message": map[string]any{"type": "string"},
+			}),
+			ResponseSchema: generatedWorkerResponseSchema(),
 		}, {
-			Method:         "worker.brokerDemo",
-			Effect:         manifest.MethodEffectWrite,
-			Execution:      manifest.MethodExecutionSync,
-			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
-			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
-			ResponseSchema: map[string]any{"type": "object"},
+			Method:    "worker.brokerDemo",
+			Effect:    manifest.MethodEffectWrite,
+			Execution: manifest.MethodExecutionSync,
+			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
+			RequestSchema: closedMethodObjectSchema(map[string]any{
+				"note":                              map[string]any{"type": "string"},
+				"storage_handle_grant_token":        map[string]any{"type": "string"},
+				"storage_kv_handle_grant_token":     map[string]any{"type": "string"},
+				"storage_sqlite_handle_grant_token": map[string]any{"type": "string"},
+			}),
+			ResponseSchema: generatedWorkerResponseSchema(),
 		}},
 		Storage: &manifest.StorageSpec{
 			Stores: []manifest.StoreSpec{{
@@ -595,7 +605,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 	files := map[string][]byte{
 		"manifest.json":        append(rawManifest, '\n'),
 		"ui/index.html":        []byte(scaffoldIndexHTML(pluginID, displayName)),
-		"ui/assets/app.js":     []byte(scaffoldAppJS(displayName)),
+		"ui/assets/app.js":     append([]byte(nil), scaffoldPluginWorkerJS...),
 		"ui/assets/styles.css": []byte(scaffoldStylesCSS()),
 		"workers/backend.wat":  []byte(scaffoldWorkerWAT()),
 		"workers/backend.wasm": minimalWorkerWASM(),
@@ -632,6 +642,129 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		Files:       created,
 		VersionInfo: version.CurrentMatrix(),
 	}, nil
+}
+
+func closedMethodObjectSchema(properties map[string]any) map[string]any {
+	if properties == nil {
+		properties = map[string]any{}
+	}
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           properties,
+	}
+}
+
+func generatedWorkerResponseSchema() map[string]any {
+	storageUsage := closedMethodObjectSchema(map[string]any{
+		"plugin_instance_id": map[string]any{"type": "string"},
+		"store_id":           map[string]any{"type": "string"},
+		"usage_bytes":        map[string]any{"type": "integer", "minimum": 0},
+		"quota_bytes":        map[string]any{"type": "integer", "minimum": 0},
+		"usage_files":        map[string]any{"type": "integer", "minimum": 0},
+		"quota_files":        map[string]any{"type": "integer", "minimum": 0},
+	})
+	fileEntry := closedMethodObjectSchema(map[string]any{
+		"path":       map[string]any{"type": "string"},
+		"dir":        map[string]any{"type": "boolean"},
+		"size_bytes": map[string]any{"type": "integer", "minimum": 0},
+		"updated_at": map[string]any{"type": "string"},
+	})
+	kvEntry := closedMethodObjectSchema(map[string]any{
+		"key":        map[string]any{"type": "string"},
+		"size_bytes": map[string]any{"type": "integer", "minimum": 0},
+		"updated_at": map[string]any{"type": "string"},
+	})
+	sqliteValue := closedMethodObjectSchema(map[string]any{
+		"null":        map[string]any{"type": "boolean"},
+		"int":         map[string]any{"type": "integer"},
+		"float":       map[string]any{"type": "number"},
+		"text":        map[string]any{"type": "string"},
+		"blob_base64": map[string]any{"type": "string"},
+	})
+	storageFile := closedMethodObjectSchema(map[string]any{
+		"ok":          map[string]any{"type": "boolean"},
+		"path":        map[string]any{"type": "string"},
+		"data_base64": map[string]any{"type": "string"},
+		"size_bytes":  map[string]any{"type": "integer", "minimum": 0},
+		"entries":     map[string]any{"type": "array", "items": fileEntry},
+		"usage":       storageUsage,
+		"code":        map[string]any{"type": "string"},
+		"message":     map[string]any{"type": "string"},
+	})
+	storageKV := closedMethodObjectSchema(map[string]any{
+		"ok":           map[string]any{"type": "boolean"},
+		"key":          map[string]any{"type": "string"},
+		"value_base64": map[string]any{"type": "string"},
+		"size_bytes":   map[string]any{"type": "integer", "minimum": 0},
+		"prefix":       map[string]any{"type": "string"},
+		"entries":      map[string]any{"type": "array", "items": kvEntry},
+		"usage":        storageUsage,
+		"code":         map[string]any{"type": "string"},
+		"message":      map[string]any{"type": "string"},
+	})
+	storageSQLite := closedMethodObjectSchema(map[string]any{
+		"ok":             map[string]any{"type": "boolean"},
+		"database":       map[string]any{"type": "string"},
+		"rows_affected":  map[string]any{"type": "integer", "minimum": 0},
+		"last_insert_id": map[string]any{"type": "integer", "minimum": 0},
+		"columns":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"rows":           map[string]any{"type": "array", "items": map[string]any{"type": "array", "items": sqliteValue}},
+		"usage":          storageUsage,
+		"code":           map[string]any{"type": "string"},
+		"message":        map[string]any{"type": "string"},
+	})
+	networkDestination := closedMethodObjectSchema(map[string]any{
+		"transport": map[string]any{"type": "string"},
+		"scheme":    map[string]any{"type": "string"},
+		"host":      map[string]any{"type": "string"},
+		"port":      map[string]any{"type": "integer", "minimum": 0},
+	})
+	networkHeaders := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"patternProperties": map[string]any{
+			"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+		},
+	}
+	networkExecute := closedMethodObjectSchema(map[string]any{
+		"ok":                    map[string]any{"type": "boolean"},
+		"transport":             map[string]any{"type": "string"},
+		"destination":           networkDestination,
+		"status_code":           map[string]any{"type": "integer"},
+		"headers":               networkHeaders,
+		"message_type":          map[string]any{"type": "string"},
+		"body_base64":           map[string]any{"type": "string"},
+		"payload_base64":        map[string]any{"type": "string"},
+		"stream_id":             map[string]any{"type": "string"},
+		"bytes_read":            map[string]any{"type": "integer", "minimum": 0},
+		"chunk_count":           map[string]any{"type": "integer", "minimum": 0},
+		"grant_id":              map[string]any{"type": "string"},
+		"connector_id":          map[string]any{"type": "string"},
+		"runtime_generation_id": map[string]any{"type": "string"},
+		"code":                  map[string]any{"type": "string"},
+		"message":               map[string]any{"type": "string"},
+	})
+	return closedMethodObjectSchema(map[string]any{
+		"backend":                   map[string]any{"type": "string"},
+		"transport":                 map[string]any{"type": "string"},
+		"method":                    map[string]any{"type": "string"},
+		"worker_id":                 map[string]any{"type": "string"},
+		"wasm_abi":                  map[string]any{"type": "string"},
+		"wasm_byte_len":             map[string]any{"type": "integer", "minimum": 0},
+		"storage_file":              storageFile,
+		"storage_kv":                storageKV,
+		"storage_sqlite":            storageSQLite,
+		"network_execute":           networkExecute,
+		"network_execute_http":      networkExecute,
+		"network_execute_websocket": networkExecute,
+		"network_execute_tcp":       networkExecute,
+		"network_execute_udp":       networkExecute,
+		"stream_id":                 map[string]any{"type": "string"},
+	})
 }
 
 func keygen(keyID string, privateFile string, publicFile string) error {
@@ -827,7 +960,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> [sandbox-origin] | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> [granted-by] | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> [--include-secrets] | redevplugin dev-import-data <state-root> [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> [granted-by] | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> [--include-secrets] | redevplugin dev-import-data <state-root> [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -851,14 +984,14 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	case "install-local":
 		return writeLifecycle(action, record)
 	case "enable":
-		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})
+		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision})
 	case "disable":
-		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})
+		record, err = h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision})
 		if err == nil {
-			record, err = h.DisablePlugin(ctx, host.DisableRequest{PluginInstanceID: record.PluginInstanceID, Reason: "cli"})
+			record, err = h.DisablePlugin(ctx, host.DisableRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision, Reason: "cli"})
 		}
 	case "uninstall":
-		record, err = h.UninstallPlugin(ctx, host.UninstallRequest{PluginInstanceID: record.PluginInstanceID, DeleteData: true})
+		record, err = h.UninstallPlugin(ctx, host.UninstallRequest{PluginInstanceID: record.PluginInstanceID, PluginStateVersion: record.ManagementRevision, DeleteData: true})
 	}
 	if err != nil {
 		return err
@@ -942,10 +1075,8 @@ func readSigningPublicKey(filename string) (signingPublicKeyFile, ed25519.Public
 	return doc, ed25519.PublicKey(publicKey), nil
 }
 
-func scaffoldIndexHTML(pluginID string, displayName string) string {
-	pluginID = htmlEscape(pluginID)
+func scaffoldIndexHTML(_ string, displayName string) string {
 	title := htmlEscape(displayName)
-	surfaceID := htmlEscape(pluginID + ".activity")
 	return "<!doctype html>\n" +
 		"<html lang=\"en\">\n" +
 		"  <head>\n" +
@@ -953,142 +1084,18 @@ func scaffoldIndexHTML(pluginID string, displayName string) string {
 		"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
 		"    <title>" + title + "</title>\n" +
 		"    <link rel=\"stylesheet\" href=\"assets/styles.css\">\n" +
-		"    <script src=\"assets/app.js\" defer></script>\n" +
 		"  </head>\n" +
 		"  <body>\n" +
-		"    <main id=\"app\" data-plugin-title=\"" + title + "\" data-plugin-id=\"" + pluginID + "\" data-surface-id=\"" + surfaceID + "\">\n" +
+		"    <main class=\"surface\">\n" +
 		"      <section class=\"surface\">\n" +
 		"        <p class=\"eyebrow\">Plugin surface</p>\n" +
 		"        <h1>" + title + "</h1>\n" +
-		"        <div class=\"toolbar\">\n" +
-		"          <p class=\"status\" id=\"status\">Ready</p>\n" +
-		"          <button id=\"invoke-worker\" type=\"button\">Invoke backend</button>\n" +
-		"          <button id=\"invoke-broker\" type=\"button\">Storage + network</button>\n" +
-		"        </div>\n" +
-		"        <pre id=\"result\" aria-label=\"Latest result\">Waiting for bridge handshake...</pre>\n" +
+		"        <p class=\"status\">Starting isolated worker...</p>\n" +
 		"      </section>\n" +
 		"    </main>\n" +
+		"    <script type=\"text/redevplugin-worker\" src=\"assets/app.js\"></script>\n" +
 		"  </body>\n" +
 		"</html>\n"
-}
-
-func scaffoldAppJS(displayName string) string {
-	message, _ := json.Marshal("Hello from " + displayName)
-	return "const status = document.getElementById('status');\n" +
-		"const invokeButton = document.getElementById('invoke-worker');\n" +
-		"const brokerButton = document.getElementById('invoke-broker');\n" +
-		"const result = document.getElementById('result');\n" +
-		"const params = new URLSearchParams(window.location.search);\n" +
-		"const parentOrigin = params.get('parent_origin');\n" +
-		"const bootstrap = {\n" +
-		"  pluginId: params.get('plugin_id') || document.getElementById('app')?.dataset.pluginId || 'local.generated.plugin',\n" +
-		"  surfaceId: params.get('surface_id') || document.getElementById('app')?.dataset.surfaceId || 'local.generated.plugin.activity',\n" +
-		"  surfaceInstanceId: params.get('surface_instance_id') || 'surface_generated_preview',\n" +
-		"  activeFingerprint: params.get('active_fingerprint') || 'sha256:generated-preview',\n" +
-		"  bridgeNonce: params.get('bridge_nonce') || 'bridge_nonce_generated_preview',\n" +
-		"};\n" +
-		"let nextID = 1;\n" +
-		"const pending = new Map();\n" +
-		"if (!parentOrigin || parentOrigin === '*') {\n" +
-		"  setStatus('Missing exact parent_origin');\n" +
-		"} else {\n" +
-		"  window.addEventListener('message', handleMessage);\n" +
-		"  window.parent.postMessage({\n" +
-		"    type: 'redevplugin.bridge.handshake',\n" +
-		"    plugin_id: bootstrap.pluginId,\n" +
-		"    surface_id: bootstrap.surfaceId,\n" +
-		"    surface_instance_id: bootstrap.surfaceInstanceId,\n" +
-		"    active_fingerprint: bootstrap.activeFingerprint,\n" +
-		"    bridge_nonce: bootstrap.bridgeNonce,\n" +
-		"    ui_protocol_version: 'plugin-ui-v1',\n" +
-		"  }, parentOrigin);\n" +
-		"  setStatus('Handshaking with host...');\n" +
-		"}\n" +
-		"if (invokeButton) {\n" +
-		"  invokeButton.addEventListener('click', async () => {\n" +
-		"    try {\n" +
-		"      setStatus('Calling worker.echo...');\n" +
-		"      const response = await callHost('worker.echo', { message: " + string(message) + " });\n" +
-		"      setStatus('Backend responded');\n" +
-		"      writeResult({ method: 'worker.echo', response });\n" +
-		"    } catch (error) {\n" +
-		"      setStatus('Backend call failed');\n" +
-		"      writeResult({ error: String(error?.message || error), error_code: error?.errorCode });\n" +
-		"    }\n" +
-		"  });\n" +
-		"}\n" +
-		"if (brokerButton) {\n" +
-		"  brokerButton.addEventListener('click', async () => {\n" +
-		"    try {\n" +
-		"      setStatus('Calling worker.brokerDemo...');\n" +
-		"      const response = await callHost('worker.brokerDemo', { note: 'Generated plugin storage and network sample' });\n" +
-		"      setStatus('Brokered backend responded');\n" +
-		"      writeResult({ method: 'worker.brokerDemo', response, token_leak_check: tokenLeakCheck(response) });\n" +
-		"    } catch (error) {\n" +
-		"      setStatus('Brokered backend failed');\n" +
-		"      writeResult({ method: 'worker.brokerDemo', error: String(error?.message || error), error_code: error?.errorCode });\n" +
-		"    }\n" +
-		"  });\n" +
-		"}\n" +
-		"function handleMessage(event) {\n" +
-		"  if (event.origin !== parentOrigin) {\n" +
-		"    return;\n" +
-		"  }\n" +
-		"  const data = event.data;\n" +
-		"  if (data?.type === 'redevplugin.bridge.lifecycle') {\n" +
-		"    setStatus(data.event?.type === 'ready' ? 'Ready' : `Lifecycle: ${data.event?.type || 'unknown'}`);\n" +
-		"    return;\n" +
-		"  }\n" +
-		"  if (data?.type !== 'redevplugin.bridge.response' || typeof data.id !== 'string') {\n" +
-		"    return;\n" +
-		"  }\n" +
-		"  const call = pending.get(data.id);\n" +
-		"  if (!call) {\n" +
-		"    return;\n" +
-		"  }\n" +
-		"  pending.delete(data.id);\n" +
-		"  window.clearTimeout(call.timer);\n" +
-		"  if (data.ok) {\n" +
-		"    call.resolve(data.data);\n" +
-		"  } else {\n" +
-		"    const error = new Error(data.error || 'Plugin call failed');\n" +
-		"    error.errorCode = data.error_code || 'PLUGIN_CALL_FAILED';\n" +
-		"    call.reject(error);\n" +
-		"  }\n" +
-		"}\n" +
-		"function callHost(method, callParams) {\n" +
-		"  if (!parentOrigin || parentOrigin === '*') {\n" +
-		"    return Promise.reject(new Error('parent_origin must be an exact origin'));\n" +
-		"  }\n" +
-		"  const id = String(nextID++);\n" +
-		"  const promise = new Promise((resolve, reject) => {\n" +
-		"    const timer = window.setTimeout(() => {\n" +
-		"      pending.delete(id);\n" +
-		"      reject(new Error(`Plugin bridge call ${id} timed out`));\n" +
-		"    }, 30000);\n" +
-		"    pending.set(id, { resolve, reject, timer });\n" +
-		"  });\n" +
-		"  window.parent.postMessage({ type: 'redevplugin.bridge.call', request: { id, method, params: callParams } }, parentOrigin);\n" +
-		"  return promise;\n" +
-		"}\n" +
-		"function setStatus(value) {\n" +
-		"  if (status) {\n" +
-		"    status.textContent = value;\n" +
-		"  }\n" +
-		"}\n" +
-		"function writeResult(value) {\n" +
-		"  if (result) {\n" +
-		"    result.textContent = JSON.stringify(value, null, 2);\n" +
-		"  }\n" +
-		"}\n" +
-		"function tokenLeakCheck(value) {\n" +
-		"  const raw = JSON.stringify(value || {});\n" +
-		"  return {\n" +
-		"    gateway_token_visible: raw.includes('gateway_token'),\n" +
-		"    storage_grant_visible: raw.includes('storage_handle_grant_token') || raw.includes('storage_kv_handle_grant_token') || raw.includes('storage_sqlite_handle_grant_token'),\n" +
-		"    network_grant_visible: raw.includes('connection_grant_token'),\n" +
-		"  };\n" +
-		"}\n"
 }
 
 func scaffoldStylesCSS() string {

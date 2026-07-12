@@ -15,11 +15,11 @@ ReDevPlugin owns reusable extension mechanics:
   export/import, retained data, and cleanup orchestration;
 - permission grants, security policy evaluation, confirmation outcomes,
   stable errors, audit events, and diagnostics;
-- sandbox bootstrap, asset tickets, asset sessions, bridge messages, operation
-  and stream envelopes, and TypeScript SDK helpers;
-- storage, settings, browser-site origin, observability, secret binding
-  metadata, permission, cleanup, retained-data, and staged-install durable
-  stores;
+- opaque iframe bootstrap, validated surface documents, asset tickets and
+  sessions, typed `MessagePort` bridge messages, operation and stream envelopes,
+  and TypeScript SDK helpers;
+- storage, settings, observability, secret binding metadata, permission,
+  cleanup, retained-data, and staged-install durable stores;
 - Rust runtime IPC, WASM worker ABI validation, brokered storage/network
   hostcalls, runtime revocation state, and worker invocation payload contracts;
 - OpenAPI, JSON schemas, compatibility manifests, release manifests, release
@@ -38,16 +38,35 @@ If a host needs more than adapter registration, route mounting, artifact
 selection, or product UI around ReDevPlugin, the missing reusable behavior
 belongs in ReDevPlugin first.
 
+Manifest v2 methods are executable contracts, not descriptive metadata. Both
+request and response schemas are closed draft 2020-12 object schemas compiled
+during package validation. The Host keeps a bounded fingerprint+method LRU of
+compiled validators, rejects request mismatches before dispatch, canonicalizes
+and redacts adapter/runtime data, and rejects response mismatches before an
+operation or stream becomes visible.
+
+Manifest v2 surfaces express only host-neutral `view`, `command`, or
+`background` roles plus optional `primary`, `secondary`, or `utility` intent.
+They do not encode product placement. A host maps those roles into its own
+navigation, workspace, settings, or command UI.
+
 ## Core Go Packages
 
 The Go module `github.com/floegence/redevplugin` exposes the embeddable Host
 library and platform contracts.
 
+`pkg/bridge` owns token/ticket audiences, MessageChannel handshake state,
+surface/stream credentials, and runtime leases. Active surface sessions are
+bounded globally and per owner, duplicate ids are rejected, and expired
+session/token state is pruned rather than retained indefinitely. A gateway
+token cannot be minted until the Host has completed closed-document preparation
+and marked that exact asset session prepared.
+
 - `pkg/manifest` validates the plugin manifest model and cross-field
   references.
-- `pkg/pluginpkg` reads and writes deterministic packages, validates package
-  assets, rejects native backend artifacts, and exposes filesystem-backed asset
-  storage.
+- `pkg/pluginpkg` reads and writes deterministic packages, builds validated
+  opaque surface documents from the generated bridge render policy, rejects
+  native backend artifacts, and exposes filesystem-backed asset storage.
 - `pkg/host` coordinates lifecycle, permissions, policy, settings, storage,
   network grants, runtime execution, retained data, cleanup, audit, and
   diagnostics through host-provided adapters. Official or registry-backed
@@ -56,12 +75,12 @@ library and platform contracts.
   still owns package reading, hash comparison, trust verification, staged
   install, registry mutation, audit, and diagnostics.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
-  management, sandbox bootstrap/assets, streams, CSP reports, compatibility, and
-  diagnostics.
+  management, surface prepare/token/dispose, parent-only POST asset and stream
+  reads, compatibility, and diagnostics.
 - `pkg/runtimeclient` manages the Rust runtime subprocess and newline-delimited
   JSON IPC frames.
-- `pkg/storage`, `pkg/settings`, `pkg/browsersite`, `pkg/observability`,
-  `pkg/secrets`, `pkg/permissions`, `pkg/stream`, `pkg/operation`,
+- `pkg/storage`, `pkg/settings`, `pkg/observability`, `pkg/secrets`,
+  `pkg/permissions`, `pkg/stream`, `pkg/operation`,
   `pkg/installstage`, `pkg/retaineddata`, `pkg/cleanup`, and `pkg/security`
   provide memory and durable store implementations or shared lifecycle state.
 - `pkg/protocol` tests keep OpenAPI, schemas, route fixtures, Go DTOs,
@@ -129,10 +148,8 @@ epoch, and closed actor/socket/stream/storage-handle counters. The Rust runtime
 maintains an in-process registry for worker actor entries, brokered storage
 handles, network socket leases, and Host stream-store bridge stream IDs. A
 revoke epoch removes the matching plugin resources from that registry and
-reports the actual close counts. Counters remain zero for resource classes that
-are still purely Host-owned or not yet implemented as Rust hot-path handles,
-such as the future persistent stream transport with credit, resume, and
-bidirectional flow control.
+  reports the actual close counts. Counters remain zero for resource classes
+  that are purely Host-owned and therefore have no Rust-side handle to close.
 
 The runtime contract is versioned by:
 
@@ -156,40 +173,73 @@ error instead of silently running a plugin.
 
 ## TypeScript Surface Package
 
-The package `@floegence/redevplugin-ui` provides sandbox iframe bridge helpers
-and a host-side `PluginPlatformClient` for management routes. It is a released
-npm artifact, not copied into host products through local paths.
+The package `@floegence/redevplugin-ui` provides `PluginSurfaceHost`, the trusted
+opaque renderer, the plugin-side `PluginBridgeClient`, generated render-policy
+constants, and a host-side `PluginPlatformClient`. It is a released npm artifact,
+not copied into host products through local paths.
 
-The bridge package keeps parent-only credentials out of plugin UI responses. The
-management client is for trusted host pages, while sandboxed plugin UI talks to
-the parent through source/port-bound MessageChannel bridge messages and
-short-lived token/session routes issued by the Host.
+`PluginSurfaceHost.create(...)` is the sole public constructor. It creates and
+owns a fresh iframe, hardens it before returning, and exposes only its read-only
+`element` for host-product placement. Callers cannot supply an existing frame.
+The frame uses explicit `src="about:blank"`, `sandbox="allow-scripts"`, a
+Permissions Policy deny-list for browser capabilities, and a generated
+`srcdoc`. It has a unique opaque
+origin and a restrictive CSP. The
+trusted renderer validates the prepared static document, injects nonce-bound
+styles, starts one classic Blob-backed Dedicated Worker, and transfers separate
+`runtime_control` and `plugin_bridge` ports. The parent transfers one distinct
+bootstrap port to the current frame generation and waits for a generation-bound
+`port_ack` before requesting the parent-only gateway lease; all later lifecycle, RPC,
+cancel, render, asset, stream, and confirmation traffic is typed and port-bound.
+The worker receives only opaque
+surface and stream handles. Asset tickets, sessions, gateway credentials,
+stream tickets, confirmation tokens, plugin identity bindings, and owner/session
+hashes remain in the trusted parent.
+
+Lazy assets are addressed across the worker boundary by opaque `binding_id`
+values derived by the package builder and carried in the prepared surface
+document. The parent-side HTTP request contains that binding rather than a
+caller-selected path. The Go Host resolves the bound path and digest from the
+prepared-document cache keyed by active fingerprint, entry path, and entry
+digest, then revalidates path, size, content type, and package bytes before returning them to the trusted
+renderer.
 
 ## Contracts
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v1.yaml`;
-- `spec/plugin/manifest-v1.schema.json`;
+- `spec/openapi/plugin-platform-v2.yaml`;
+- `spec/plugin/manifest-v2.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v1.schema.json`;
+- `spec/plugin/release-metadata-v2.schema.json`;
 - `spec/plugin/source-policy-v1.schema.json`;
 - `spec/plugin/source-revocations-v1.schema.json`;
-- `spec/plugin/token-ticket-v1.schema.json`;
-- `spec/plugin/bridge-v1.schema.json`;
-- `spec/plugin/compatibility-manifest-v1.schema.json`;
-- `spec/plugin/release-manifest-v1.schema.json`;
+- `spec/plugin/token-ticket-v2.schema.json`;
+- `spec/plugin/bridge-v2.schema.json`;
+- `spec/plugin/opaque-surface-document-v1.schema.json`;
+- `spec/plugin/opaque-surface-transport-v1.schema.json`;
+- `spec/plugin/compatibility-manifest-v2.schema.json`;
+- `spec/plugin/release-manifest-v2.schema.json`;
 - `spec/plugin/ipc-v1.schema.json`;
 - `spec/plugin/wasm-worker-v1.schema.json`;
 - `spec/plugin/worker-invocation-v1.schema.json`;
 - `spec/plugin/network-grant-v1.schema.json`;
 - `spec/plugin/error-codes-v1.schema.json`;
-- `spec/plugin/target-classifier-v1.json`.
+- `spec/plugin/target-classifier-v1.json`;
+- `spec/plugin/contract-registry-v1.json`, the generated inventory and SHA-256
+  identity for every public contract above.
 
 `redevplugin version` emits the compatibility manifest for the current artifact
 set. `redevplugin verify-compatibility <compatibility.json> <artifact-root>`
 checks the version matrix and contract hashes before a host product consumes a
 published dependency set.
+
+`PluginSurfaceHost.open()` applies one aggregate opening deadline across frame
+load, surface preparation, port acknowledgement, initial lease minting, first
+paint, and worker readiness. A deadline failure aborts parent transport,
+revokes the server surface, clears the iframe and ports, and records one crash in
+the shared reload limiter so a host can perform a bounded retry without retaining
+stale authority.
 
 The plugin-platform OpenAPI contract defines release-reference management routes
 and opt-in local-import package routes. Local-import install/update requests are
@@ -200,10 +250,11 @@ registry-backed product installs should call
 `install-release-ref` / `update-release-ref` with a `PluginReleaseRef`; the host
 source policy resolver freezes the source policy snapshot before the artifact
 resolver runs. The artifact resolver receives that snapshot and returns only an
-untrusted artifact handle plus release metadata that separates release metadata
-signature from package signature metadata; ReDevPlugin verifies release metadata
-hash, package, manifest, entries, signature/trust result, and identity before
-mutating the registry.
+untrusted artifact handle plus signed release-metadata bytes and signature
+bytes. ReDevPlugin verifies and closed-world decodes that metadata, derives the
+canonical release, then verifies package hash, manifest, entries, package
+signature/trust result, compatibility, and identity before mutating the
+registry.
 
 Manifest storage and settings migration metadata is part of that contract. A
 bootstrap migration may use `from_version: 0`, but the manifest validator and
@@ -230,7 +281,6 @@ ReDevPlugin uses explicit stores instead of implicit process memory:
 - registry records track installed plugin package and lifecycle state;
 - staged install records capture pre-commit install/update progress;
 - storage and settings stores keep plugin data and redacted settings state;
-- browser-site records track sandbox origin registration and cleanup status;
 - secret binding stores track secret references without secret plaintext;
 - permission and security policy stores drive authorization and revoke epochs;
 - confirmation intent stores keep dangerous-method approval state without

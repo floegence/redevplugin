@@ -6,54 +6,74 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   go:
     name: Go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - run: rustup show
+      - name: Go formatting
+        run: test -z "$(gofmt -l .)"
+      - run: GOWORK=off go list ./...
       - run: GOWORK=off go test ./...
+      - name: Install golangci-lint
+        run: GOWORK=off go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
+      - name: Go lint
+        run: GOWORK=off golangci-lint run ./...
 
   typescript:
     name: TypeScript and Browser Demo
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+        env:
+          REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-evidence
+      - name: Bridge replay and cancellation gate
+        run: ./scripts/check_redevplugin_ui_bridge.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: redevplugin-a2-acceptance
+          path: dist/a2-evidence/redevplugin-a2-*
+          if-no-files-found: error
 
   rust:
     name: Rust Runtime
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - run: rustup show
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - name: Cargo deny
         run: |
-          cargo install cargo-deny --locked
+          cargo install cargo-deny@0.19.9 --locked
           cargo deny check
 
   release-audit:
     name: Release Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -67,8 +87,8 @@ jobs:
     name: Stress Fast Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - name: Shell syntax
@@ -80,8 +100,15 @@ jobs:
           bash -n scripts/check_redevplugin_stress.sh
           bash -n scripts/check_redevplugin_ui_bridge.sh
           bash -n scripts/build_redevplugin_release.sh
+          bash -n scripts/assert_github_release_absent.sh
+          bash -n scripts/verify_github_release_identity.sh
+          node --check scripts/verify_published_release.mjs
+          node --check scripts/verify_npm_registry_release.mjs
+          node --check scripts/verify_go_module_readback.mjs
+          node --check scripts/test_published_release_verifier.mjs
+          node --check scripts/test_npm_registry_release_verifier.mjs
       - run: ./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: redevplugin-stress-fast
@@ -92,11 +119,11 @@ jobs:
     name: Platform Contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -109,11 +136,11 @@ jobs:
     name: Release Bundle Smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm

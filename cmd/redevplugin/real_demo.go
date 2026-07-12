@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
@@ -24,28 +25,43 @@ import (
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
 	"github.com/floegence/redevplugin/pkg/storage"
+	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
 const (
 	realDemoPluginID            = "com.example.real.demo"
 	realDemoPluginName          = "Real Runtime Demo Plugin"
-	realDemoSurfaceID           = realDemoPluginID + ".activity"
+	realDemoSurfaceID           = realDemoPluginID + ".view"
 	realDemoHostName            = "app.redevplugin.localhost"
-	realDemoSandboxHost         = "plg-real.redevplugin.localhost"
 	realDemoHostPort            = "4175"
-	realDemoPluginPort          = "4176"
 	realDemoOwner               = "real_demo_owner_session"
 	realDemoUser                = "real_demo_owner_user"
 	realDemoChannel             = "real_demo_session_channel"
 	realDemoCapability          = "example.capability.real_demo"
-	realDemoAssetCookieName     = "__Secure-redevplugin-asset-session"
 	realDemoBrokerStoreID       = "workspace"
 	realDemoBrokerKVStoreID     = "settings"
 	realDemoBrokerSQLiteStoreID = "db"
 	realDemoScheduleMethod      = "worker.schedulePlan"
 	realDemoScheduleWorkerID    = "schedule_backend"
 	realDemoScheduleArtifact    = "workers/schedule.wasm"
+	realDemoStreamMethod        = "worker.httpStream"
+	realDemoStreamWorkerID      = "network_http_stream"
+	realDemoStreamArtifact      = "workers/network-http-stream.wasm"
+	realDemoLazyImageBase64     = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+
+var realDemoHTTPStreamCase = realDemoNetworkCase{
+	Method:       realDemoStreamMethod,
+	WorkerID:     realDemoStreamWorkerID,
+	Artifact:     realDemoStreamArtifact,
+	Transport:    connectivity.TransportHTTP,
+	Operation:    "http_stream",
+	ConnectorID:  "api",
+	Destination:  "https://api.example.com",
+	MethodName:   http.MethodGet,
+	Path:         "/v1/stream",
+	ExpectedText: "real stream line 1\nreal stream line 2\n",
+}
 
 var realDemoNetworkMatrix = []realDemoNetworkCase{
 	{
@@ -165,18 +181,22 @@ func (realDemoNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRe
 }
 
 func (e realDemoNetworkExecutor) StreamHTTP(ctx context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
-	response, err := e.DoHTTP(ctx, req)
-	if err != nil {
-		return connectivity.HTTPStreamResponse{}, err
+	chunks := [][]byte{
+		[]byte("real stream line 1\n"),
+		[]byte("real stream line 2\n"),
 	}
-	if err := onChunk(connectivity.HTTPResponseChunk{Data: append([]byte(nil), response.Body...)}); err != nil {
-		return connectivity.HTTPStreamResponse{}, err
+	var bytesRead int64
+	for _, chunk := range chunks {
+		if err := onChunk(connectivity.HTTPResponseChunk{Data: append([]byte(nil), chunk...)}); err != nil {
+			return connectivity.HTTPStreamResponse{}, err
+		}
+		bytesRead += int64(len(chunk))
 	}
 	return connectivity.HTTPStreamResponse{
-		StatusCode: response.StatusCode,
-		Headers:    response.Headers,
-		BytesRead:  int64(len(response.Body)),
-		ChunkCount: 1,
+		StatusCode: http.StatusOK,
+		Headers:    http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		BytesRead:  bytesRead,
+		ChunkCount: len(chunks),
 	}, nil
 }
 
@@ -233,10 +253,20 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 			return err
 		}
 	}
+	if err := writeBytesFile(filepath.Join(pluginDir, realDemoStreamArtifact), realDemoNetworkWorkerWASM(realDemoHTTPStreamCase), 0o644); err != nil {
+		return err
+	}
 	if err := writeBytesFile(filepath.Join(pluginDir, "ui", "index.html"), []byte(realDemoPluginHTML()), 0o644); err != nil {
 		return err
 	}
-	if err := writeBytesFile(filepath.Join(pluginDir, "ui", "assets", "app.js"), []byte(realDemoPluginJS()), 0o644); err != nil {
+	if err := writeBytesFile(filepath.Join(pluginDir, "ui", "assets", "app.js"), append([]byte(nil), realDemoPluginWorkerJS...), 0o644); err != nil {
+		return err
+	}
+	lazyImage, err := base64.StdEncoding.DecodeString(realDemoLazyImageBase64)
+	if err != nil {
+		return err
+	}
+	if err := writeBytesFile(filepath.Join(pluginDir, "ui", "assets", "lazy.png"), lazyImage, 0o644); err != nil {
 		return err
 	}
 	packageBytes, err := packageDirectoryBytes(ctx, pluginDir, packageFile)
@@ -274,39 +304,64 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if err != nil {
 		return err
 	}
-	record, err = pluginHost.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})
+	record, err = pluginHost.EnablePlugin(ctx, host.EnableRequest{
+		PluginInstanceID:   record.PluginInstanceID,
+		PluginStateVersion: record.ManagementRevision,
+	})
 	if err != nil {
 		return err
 	}
 	if err := grantRealDemoDeclaredPermissions(ctx, pluginHost, record); err != nil {
 		return err
 	}
-	record, err = pluginHost.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: record.PluginInstanceID})
+	record, err = currentPluginRecord(ctx, pluginHost, record.PluginInstanceID)
+	if err != nil {
+		return err
+	}
+	record, err = pluginHost.EnablePlugin(ctx, host.EnableRequest{
+		PluginInstanceID:   record.PluginInstanceID,
+		PluginStateVersion: record.ManagementRevision,
+	})
 	if err != nil {
 		return err
 	}
 	hostPort := demoEnv("REAL_DEMO_HOST_PORT", realDemoHostPort)
-	pluginPort := demoEnv("REAL_DEMO_PLUGIN_PORT", realDemoPluginPort)
 	hostName := demoEnv("REAL_DEMO_HOST_NAME", realDemoHostName)
-	sandboxHost := demoEnv("REAL_DEMO_SANDBOX_HOST", realDemoSandboxHost)
-	sandboxOrigin := "http://" + sandboxHost + ":" + pluginPort
 	hostOrigin := "http://" + hostName + ":" + hostPort
-	platformHandler := httpadapter.Handler{
-		Host: pluginHost,
-		SandboxAssetSecurity: httpadapter.SandboxAssetSecurity{
-			FrameAncestors: []string{hostOrigin},
-		},
-	}
+	platformHandler := httpadapter.Handler{Host: pluginHost, WebSecurity: realDemoWebSecurityGuard{hostOrigin: hostOrigin}}
 	hostMux := http.NewServeMux()
+	var prepareCompletedAt atomic.Int64
+	var assetCompletedAt atomic.Int64
+	var disposeCompletedAt atomic.Int64
+	var assetReadCount atomic.Int64
+	var disposeCount atomic.Int64
 	hostMux.HandleFunc("/favicon.ico", noContentHandler)
-	hostMux.Handle("/_redevplugin/api/plugins/", platformHandler)
-	hostMux.HandleFunc("/packages/redevplugin-ui/dist/index.js", realDemoSDKHandler)
+	hostMux.Handle("/_redevplugin/api/plugins/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/prepare"):
+			time.Sleep(350 * time.Millisecond)
+			platformHandler.ServeHTTP(w, r)
+			prepareCompletedAt.Store(time.Now().UnixMilli())
+		case strings.HasSuffix(r.URL.Path, "/assets/read"):
+			time.Sleep(650 * time.Millisecond)
+			platformHandler.ServeHTTP(w, r)
+			assetReadCount.Add(1)
+			assetCompletedAt.Store(time.Now().UnixMilli())
+		case strings.HasSuffix(r.URL.Path, "/dispose"):
+			platformHandler.ServeHTTP(w, r)
+			disposeCount.Add(1)
+			disposeCompletedAt.Store(time.Now().UnixMilli())
+		default:
+			platformHandler.ServeHTTP(w, r)
+		}
+	}))
+	hostMux.HandleFunc("/packages/redevplugin-ui/dist/", realDemoSDKHandler)
 	hostMux.HandleFunc("/demo/real/broker-grants", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && origin != hostOrigin {
+		if strings.TrimSpace(r.Header.Get("Origin")) != hostOrigin {
 			http.Error(w, "origin is not allowed", http.StatusForbidden)
 			return
 		}
@@ -319,45 +374,76 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": broker})
 	})
-	hostMux.HandleFunc("/demo/real/index.html", func(w http.ResponseWriter, _ *http.Request) {
-		bootstrap, err := pluginHost.OpenSurface(ctx, host.OpenSurfaceRequest{
+	hostMux.HandleFunc("/demo/real/bootstrap", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.TrimSpace(r.Header.Get("Origin")) != hostOrigin {
+			http.Error(w, "origin is not allowed", http.StatusForbidden)
+			return
+		}
+		prepareCompletedAt.Store(0)
+		assetCompletedAt.Store(0)
+		disposeCompletedAt.Store(0)
+		assetReadCount.Store(0)
+		disposeCount.Store(0)
+		bootstrap, err := pluginHost.OpenSurface(r.Context(), host.OpenSurfaceRequest{
 			PluginInstanceID:     record.PluginInstanceID,
+			PluginStateVersion:   record.ManagementRevision,
 			SurfaceID:            realDemoSurfaceID,
 			SurfaceInstanceID:    fmt.Sprintf("surface_real_demo_%d", time.Now().UnixNano()),
 			OwnerSessionHash:     realDemoOwner,
 			OwnerUserHash:        realDemoUser,
 			SessionChannelIDHash: realDemoChannel,
-			SandboxOrigin:        sandboxOrigin,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		broker := realDemoBrokerConfig{BrokerGrantsURL: "/demo/real/broker-grants"}
-		writeNoStoreHTML(w, realDemoHostHTML(hostOrigin, sandboxOrigin, bootstrapJSON(realDemoBootstrap(bootstrap)), bootstrapJSON(broker), health.RuntimeGenerationID))
+		payload := realDemoHostBootstrapPayload{
+			Bootstrap: realDemoBootstrap(bootstrap),
+			Broker:    realDemoBrokerConfig{BrokerGrantsURL: "/demo/real/broker-grants"},
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": payload})
 	})
-	pluginMux := http.NewServeMux()
-	pluginMux.HandleFunc("/favicon.ico", noContentHandler)
-	pluginMux.Handle("/_redevplugin/", realDemoSandboxHandler(hostOrigin, platformHandler))
-	pluginMux.HandleFunc("/", http.NotFound)
+	hostMux.HandleFunc("/demo/real/diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"prepare_completed_at": prepareCompletedAt.Load(),
+			"asset_completed_at":   assetCompletedAt.Load(),
+			"dispose_completed_at": disposeCompletedAt.Load(),
+			"asset_read_count":     assetReadCount.Load(),
+			"dispose_count":        disposeCount.Load(),
+		})
+	})
+	hostMux.HandleFunc("/demo/real/index.html", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		writeNoStoreHTML(w, realDemoHostHTML())
+	})
 	hostServer := &http.Server{Addr: "127.0.0.1:" + hostPort, Handler: hostMux}
-	pluginServer := &http.Server{Addr: "127.0.0.1:" + pluginPort, Handler: pluginMux}
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 1)
 	go func() {
 		errCh <- hostServer.ListenAndServe()
 	}()
-	go func() {
-		errCh <- pluginServer.ListenAndServe()
-	}()
 	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo host: %s/demo/real/index.html\n", hostOrigin)
-	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo plugin sandbox assets: %s/_redevplugin/assets/{asset_session_id}/ui/index.html\n", sandboxOrigin)
 	fmt.Fprintf(os.Stdout, "ReDevPlugin real runtime demo runtime_generation_id: %s\n", health.RuntimeGenerationID)
 	select {
 	case <-ctx.Done():
-		shutdownDemoServers(hostServer, pluginServer)
+		shutdownDemoServers(hostServer)
 		return ctx.Err()
 	case err := <-errCh:
-		shutdownDemoServers(hostServer, pluginServer)
+		shutdownDemoServers(hostServer)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
@@ -366,17 +452,21 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 }
 
 type realDemoBootstrapPayload struct {
-	PluginID             string `json:"plugin_id"`
-	PluginInstanceID     string `json:"plugin_instance_id"`
-	SurfaceID            string `json:"surface_id"`
-	SurfaceInstanceID    string `json:"surface_instance_id"`
-	ActiveFingerprint    string `json:"active_fingerprint"`
-	OwnerSessionHash     string `json:"owner_session_hash"`
-	OwnerUserHash        string `json:"owner_user_hash"`
-	SessionChannelIDHash string `json:"session_channel_id_hash"`
-	AssetTicket          string `json:"asset_ticket"`
-	AssetTicketID        string `json:"asset_ticket_id"`
-	BridgeNonce          string `json:"bridge_nonce"`
+	PluginID            string `json:"plugin_id"`
+	PluginInstanceID    string `json:"plugin_instance_id"`
+	PluginVersion       string `json:"plugin_version"`
+	SurfaceID           string `json:"surface_id"`
+	SurfaceInstanceID   string `json:"surface_instance_id"`
+	ActiveFingerprint   string `json:"active_fingerprint"`
+	EntryPath           string `json:"entry_path"`
+	EntrySHA256         string `json:"entry_sha256"`
+	AssetSessionNonce   string `json:"asset_session_nonce"`
+	PluginStateVersion  uint64 `json:"plugin_state_version"`
+	RevokeEpoch         uint64 `json:"revoke_epoch"`
+	RuntimeGenerationID string `json:"runtime_generation_id"`
+	AssetTicket         string `json:"asset_ticket"`
+	AssetTicketID       string `json:"asset_ticket_id"`
+	BridgeNonce         string `json:"bridge_nonce"`
 }
 
 type realDemoBrokerPayload struct {
@@ -389,19 +479,28 @@ type realDemoBrokerConfig struct {
 	BrokerGrantsURL string `json:"broker_grants_url"`
 }
 
+type realDemoHostBootstrapPayload struct {
+	Bootstrap realDemoBootstrapPayload `json:"bootstrap"`
+	Broker    realDemoBrokerConfig     `json:"broker"`
+}
+
 func realDemoBootstrap(bootstrap bridge.SurfaceBootstrap) realDemoBootstrapPayload {
 	return realDemoBootstrapPayload{
-		PluginID:             bootstrap.PluginID,
-		PluginInstanceID:     bootstrap.PluginInstanceID,
-		SurfaceID:            bootstrap.SurfaceID,
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		ActiveFingerprint:    bootstrap.ActiveFingerprint,
-		OwnerSessionHash:     realDemoOwner,
-		OwnerUserHash:        realDemoUser,
-		SessionChannelIDHash: realDemoChannel,
-		AssetTicket:          bootstrap.AssetTicket,
-		AssetTicketID:        bootstrap.AssetTicketID,
-		BridgeNonce:          bootstrap.BridgeNonce,
+		PluginID:            bootstrap.PluginID,
+		PluginInstanceID:    bootstrap.PluginInstanceID,
+		PluginVersion:       bootstrap.PluginVersion,
+		SurfaceID:           bootstrap.SurfaceID,
+		SurfaceInstanceID:   bootstrap.SurfaceInstanceID,
+		ActiveFingerprint:   bootstrap.ActiveFingerprint,
+		EntryPath:           bootstrap.EntryPath,
+		EntrySHA256:         bootstrap.EntrySHA256,
+		AssetSessionNonce:   bootstrap.AssetSessionNonce,
+		PluginStateVersion:  bootstrap.PluginStateVersion,
+		RevokeEpoch:         bootstrap.RevokeEpoch,
+		RuntimeGenerationID: bootstrap.RuntimeGenerationID,
+		AssetTicket:         bootstrap.AssetTicket,
+		AssetTicketID:       bootstrap.AssetTicketID,
+		BridgeNonce:         bootstrap.BridgeNonce,
 	}
 }
 
@@ -483,6 +582,14 @@ func addRealDemoMethods(manifestFile string) error {
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
 	})
+	doc.Workers = appendWorkerIfMissing(doc.Workers, manifest.WorkerSpec{
+		WorkerID:         realDemoStreamWorkerID,
+		Artifact:         realDemoStreamArtifact,
+		ABI:              "redevplugin-wasm-worker-v1",
+		Mode:             manifest.WorkerModeJob,
+		Scope:            "user",
+		MemoryLimitBytes: 16 << 20,
+	})
 	for _, networkCase := range realDemoNetworkMatrix {
 		doc.Workers = appendWorkerIfMissing(doc.Workers, manifest.WorkerSpec{
 			WorkerID:         networkCase.WorkerID,
@@ -493,6 +600,20 @@ func addRealDemoMethods(manifestFile string) error {
 			MemoryLimitBytes: 16 << 20,
 		})
 	}
+	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
+		Method:    realDemoStreamMethod,
+		Effect:    manifest.MethodEffectRead,
+		Execution: manifest.MethodExecutionSubscription,
+		CancelPolicy: &manifest.CancelPolicySpec{
+			Cancelable:        true,
+			DisableBehavior:   manifest.CancelDisableBehaviorOrphan,
+			UninstallBehavior: manifest.CancelUninstallBehaviorForceCleanupAllowed,
+			AckTimeoutMS:      2000,
+		},
+		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: realDemoStreamWorkerID, Export: "redevplugin_worker_invoke"},
+		RequestSchema:  closedMethodObjectSchema(nil),
+		ResponseSchema: generatedWorkerResponseSchema(),
+	})
 	doc.Storage = &manifest.StorageSpec{
 		Stores: []manifest.StoreSpec{{
 			StoreID:       realDemoBrokerStoreID,
@@ -567,24 +688,45 @@ func addRealDemoMethods(manifestFile string) error {
 			BindingID:    "real_demo",
 			TargetMethod: "danger.run",
 		},
-		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
-		ResponseSchema: map[string]any{"type": "object"},
+		RequestSchema: closedMethodObjectSchema(map[string]any{
+			"target": map[string]any{"type": "string"},
+		}),
+		ResponseSchema: closedMethodObjectSchema(map[string]any{
+			"done":          map[string]any{"type": "boolean"},
+			"method":        map[string]any{"type": "string"},
+			"target_method": map[string]any{"type": "string"},
+			"effect":        map[string]any{"type": "string"},
+			"target":        map[string]any{"type": "string"},
+			"transport":     map[string]any{"type": "string"},
+		}),
 	})
 	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
-		Method:         "worker.brokerDemo",
-		Effect:         manifest.MethodEffectWrite,
-		Execution:      manifest.MethodExecutionSync,
-		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
-		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
-		ResponseSchema: map[string]any{"type": "object"},
+		Method:    "worker.brokerDemo",
+		Effect:    manifest.MethodEffectWrite,
+		Execution: manifest.MethodExecutionSync,
+		Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
+		RequestSchema: closedMethodObjectSchema(map[string]any{
+			"note":                              map[string]any{"type": "string"},
+			"storage_handle_grant_token":        map[string]any{"type": "string"},
+			"storage_kv_handle_grant_token":     map[string]any{"type": "string"},
+			"storage_sqlite_handle_grant_token": map[string]any{"type": "string"},
+		}),
+		ResponseSchema: generatedWorkerResponseSchema(),
 	})
 	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
-		Method:         realDemoScheduleMethod,
-		Effect:         manifest.MethodEffectWrite,
-		Execution:      manifest.MethodExecutionSync,
-		Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: realDemoScheduleWorkerID, Export: "redevplugin_worker_invoke"},
-		RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
-		ResponseSchema: map[string]any{"type": "object"},
+		Method:    realDemoScheduleMethod,
+		Effect:    manifest.MethodEffectWrite,
+		Execution: manifest.MethodExecutionSync,
+		Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: realDemoScheduleWorkerID, Export: "redevplugin_worker_invoke"},
+		RequestSchema: closedMethodObjectSchema(map[string]any{
+			"title":                             map[string]any{"type": "string"},
+			"starts_at":                         map[string]any{"type": "string"},
+			"location":                          map[string]any{"type": "string"},
+			"storage_handle_grant_token":        map[string]any{"type": "string"},
+			"storage_kv_handle_grant_token":     map[string]any{"type": "string"},
+			"storage_sqlite_handle_grant_token": map[string]any{"type": "string"},
+		}),
+		ResponseSchema: generatedWorkerResponseSchema(),
 	})
 	for _, networkCase := range realDemoNetworkMatrix {
 		doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
@@ -592,8 +734,8 @@ func addRealDemoMethods(manifestFile string) error {
 			Effect:         manifest.MethodEffectRead,
 			Execution:      manifest.MethodExecutionSync,
 			Route:          manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: networkCase.WorkerID, Export: "redevplugin_worker_invoke"},
-			RequestSchema:  map[string]any{"type": "object", "additionalProperties": true},
-			ResponseSchema: map[string]any{"type": "object"},
+			RequestSchema:  closedMethodObjectSchema(nil),
+			ResponseSchema: generatedWorkerResponseSchema(),
 		})
 	}
 	updated, err := json.MarshalIndent(doc, "", "  ")
@@ -641,6 +783,12 @@ func realDemoNetworkConnectors() []manifest.NetworkConnectorSpec {
 		}
 		connectors = mergeNetworkConnector(connectors, connector)
 	}
+	connectors = mergeNetworkConnector(connectors, manifest.NetworkConnectorSpec{
+		ConnectorID:  realDemoHTTPStreamCase.ConnectorID,
+		Transport:    string(realDemoHTTPStreamCase.Transport),
+		Scope:        string(connectivity.ScopeUser),
+		Destinations: []string{realDemoHTTPStreamCase.Destination},
+	})
 	for _, call := range scaffoldBrokerHostcalls() {
 		if call.Module != "redevplugin.network" || call.Name != "execute" {
 			continue
@@ -809,6 +957,8 @@ func realDemoNetworkWorkerWASM(networkCase realDemoNetworkCase) []byte {
 		"payload_base64":     networkCase.PayloadBase64,
 		"max_request_bytes":  1024,
 		"max_response_bytes": 4096,
+		"max_chunk_bytes":    1024,
+		"max_buffered_bytes": 65536,
 		"timeout_ms":         1000,
 	}
 	if networkCase.MethodName == "" {
@@ -963,46 +1113,46 @@ func grantRealDemoDeclaredPermissions(ctx context.Context, pluginHost *host.Host
 	return nil
 }
 
+func currentPluginRecord(ctx context.Context, pluginHost *host.Host, pluginInstanceID string) (registry.PluginRecord, error) {
+	records, err := pluginHost.ListPlugins(ctx)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	for _, record := range records {
+		if record.PluginInstanceID == pluginInstanceID {
+			return record, nil
+		}
+	}
+	return registry.PluginRecord{}, fmt.Errorf("plugin %q is not installed", pluginInstanceID)
+}
+
 func noContentHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func realDemoSandboxHandler(hostOrigin string, platformHandler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodOptions && r.URL.Path == "/_redevplugin/bootstrap":
-			if !writeRealDemoBootstrapCORS(w, r, hostOrigin) {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/bootstrap":
-			if !writeRealDemoBootstrapCORS(w, r, hostOrigin) {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			platformHandler.ServeHTTP(w, r)
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/_redevplugin/assets/"):
-			platformHandler.ServeHTTP(w, r)
-		case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/csp-report":
-			platformHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+type realDemoWebSecurityGuard struct {
+	hostOrigin string
 }
 
-func writeRealDemoBootstrapCORS(w http.ResponseWriter, r *http.Request, hostOrigin string) bool {
-	w.Header().Add("Vary", "Origin")
-	if strings.TrimSpace(r.Header.Get("Origin")) != hostOrigin {
-		return false
+func (g realDemoWebSecurityGuard) Evaluate(r *http.Request) (websecurity.RequestContext, websecurity.OriginDecision, error) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" && origin != g.hostOrigin {
+		return websecurity.RequestContext{}, websecurity.OriginDeny, nil
 	}
-	w.Header().Set("Access-Control-Allow-Origin", hostOrigin)
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type")
-	w.Header().Set("Access-Control-Max-Age", "600")
-	return true
+	return websecurity.RequestContext{
+		Origin: origin,
+		Route:  r.URL.Path,
+		Method: r.Method,
+		Scope: websecurity.RequestScope{
+			OwnerSessionHash:     realDemoOwner,
+			OwnerUserHash:        realDemoUser,
+			SessionChannelIDHash: realDemoChannel,
+		},
+	}, websecurity.OriginTrustedParent, nil
+}
+
+func (realDemoWebSecurityGuard) ValidateCSRF(*http.Request, string) error {
+	return nil
 }
 
 func writeNoStoreHTML(w http.ResponseWriter, html string) {
@@ -1012,17 +1162,15 @@ func writeNoStoreHTML(w http.ResponseWriter, html string) {
 }
 
 func realDemoSDKHandler(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimPrefix(r.URL.Path, "/packages/redevplugin-ui/dist/")
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+	if rel == "" || clean != rel || strings.HasPrefix(clean, "../") || clean == ".." {
+		http.NotFound(w, r)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	http.ServeFile(w, r, filepath.Join("packages", "redevplugin-ui", "dist", "index.js"))
-}
-
-func bootstrapJSON(value any) string {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return "{}"
-	}
-	return string(raw)
+	http.ServeFile(w, r, filepath.Join("packages", "redevplugin-ui", "dist", filepath.FromSlash(clean)))
 }
 
 func shutdownDemoServers(servers ...*http.Server) {
@@ -1049,343 +1197,23 @@ func realDemoPluginHTML() string {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Real Runtime Demo Plugin</title>
     <link rel="stylesheet" href="assets/styles.css">
-    <script src="assets/app.js" defer></script>
   </head>
   <body>
-    <main id="app" data-plugin-title="Real Runtime Demo Plugin" data-plugin-id="` + realDemoPluginID + `" data-surface-id="` + realDemoSurfaceID + `">
+    <main class="surface">
       <section class="surface">
-        <p class="eyebrow">Plugin surface</p>
+        <p class="eyebrow">Opaque plugin surface</p>
         <h1>Real Runtime Demo Plugin</h1>
-        <section class="planner-panel" aria-label="Schedule planner">
-          <div>
-            <p class="eyebrow">Schedule planner</p>
-            <h2>Today at a glance</h2>
-            <p class="status" id="schedule-meta">No persisted schedule yet</p>
-          </div>
-          <div class="schedule-grid" aria-label="Schedule summary">
-            <div class="schedule-tile">
-              <span>Next focus</span>
-              <strong>Design plugin rollout</strong>
-            </div>
-            <div class="schedule-tile">
-              <span>Place</span>
-              <strong>Focus Room A</strong>
-            </div>
-          </div>
-          <button id="invoke-schedule" type="button">Plan schedule</button>
-          <ul id="schedule-list" class="schedule-list" aria-label="Persisted schedule"></ul>
-        </section>
-        <div class="toolbar">
-          <p class="status" id="status">Ready</p>
-          <button id="invoke-worker" type="button">Invoke backend</button>
-          <button id="invoke-broker" type="button">Storage + network</button>
-          <button id="invoke-network-matrix" type="button">Network matrix</button>
-          <button id="invoke-danger" type="button">Dangerous action</button>
-        </div>
-        <pre id="result" aria-label="Latest result">Waiting for bridge handshake...</pre>
+        <p class="status">Starting isolated worker...</p>
+        <img src="assets/lazy.png" alt="Delayed plugin asset">
       </section>
     </main>
+    <script type="text/redevplugin-worker" src="assets/app.js"></script>
   </body>
 </html>
 `
 }
 
-func realDemoPluginJS() string {
-	return `const status = document.getElementById('status');
-const invokeButton = document.getElementById('invoke-worker');
-const brokerButton = document.getElementById('invoke-broker');
-const scheduleButton = document.getElementById('invoke-schedule');
-const networkMatrixButton = document.getElementById('invoke-network-matrix');
-const dangerButton = document.getElementById('invoke-danger');
-const result = document.getElementById('result');
-const scheduleList = document.getElementById('schedule-list');
-const scheduleMeta = document.getElementById('schedule-meta');
-const params = new URLSearchParams(window.location.search);
-const parentOrigin = params.get('parent_origin');
-const bootstrap = {
-  pluginId: params.get('plugin_id') || document.getElementById('app')?.dataset.pluginId || '` + realDemoPluginID + `',
-  surfaceId: params.get('surface_id') || document.getElementById('app')?.dataset.surfaceId || '` + realDemoSurfaceID + `',
-  surfaceInstanceId: params.get('surface_instance_id') || 'surface_real_demo_preview',
-  activeFingerprint: params.get('active_fingerprint') || 'sha256:real-demo-preview',
-  bridgeNonce: params.get('bridge_nonce') || 'bridge_nonce_real_demo_preview',
-};
-let nextID = 1;
-const pending = new Map();
-
-if (!parentOrigin || parentOrigin === '*') {
-  setStatus('Missing exact parent_origin');
-} else {
-  window.addEventListener('message', handleMessage);
-  window.parent.postMessage({
-    type: 'redevplugin.bridge.handshake',
-    plugin_id: bootstrap.pluginId,
-    surface_id: bootstrap.surfaceId,
-    surface_instance_id: bootstrap.surfaceInstanceId,
-    active_fingerprint: bootstrap.activeFingerprint,
-    bridge_nonce: bootstrap.bridgeNonce,
-    ui_protocol_version: 'plugin-ui-v1',
-  }, parentOrigin);
-  setStatus('Handshaking with host...');
-}
-
-invokeButton?.addEventListener('click', async () => {
-  try {
-    setBusy(true);
-    setStatus('Calling worker.echo...');
-    const response = await callHost('worker.echo', { message: 'Hello from real runtime demo' });
-    setStatus('Backend responded');
-    writeResult({ method: 'worker.echo', response, token_leak_check: tokenLeakCheck(response) });
-  } catch (error) {
-    setStatus('Backend call failed');
-    writeResult({ method: 'worker.echo', error: String(error?.message || error), error_code: error?.errorCode });
-  } finally {
-    setBusy(false);
-  }
-});
-
-brokerButton?.addEventListener('click', async () => {
-  try {
-    setBusy(true);
-    setStatus('Calling worker.brokerDemo...');
-    const response = await callHost('worker.brokerDemo', { note: 'Hello from the sandboxed UI' });
-    setStatus('Brokered backend responded');
-    writeResult({ method: 'worker.brokerDemo', response, parsed_network_body: parseNetworkBody(response), token_leak_check: tokenLeakCheck(response) });
-  } catch (error) {
-    setStatus('Brokered backend failed');
-    writeResult({ method: 'worker.brokerDemo', error: String(error?.message || error), error_code: error?.errorCode });
-  } finally {
-    setBusy(false);
-  }
-});
-
-scheduleButton?.addEventListener('click', async () => {
-  try {
-    setBusy(true);
-    setStatus('Planning schedule...');
-    const response = await callHost('` + realDemoScheduleMethod + `', {
-      title: 'Design plugin rollout',
-      starts_at: '2026-07-03T09:30:00+08:00',
-      location: 'Focus Room A',
-    });
-    const rows = parseScheduleRows(response);
-    renderScheduleRows(rows);
-    setStatus('Schedule saved');
-    writeResult({ method: '` + realDemoScheduleMethod + `', response, parsed_schedule_rows: rows, token_leak_check: tokenLeakCheck(response) });
-  } catch (error) {
-    setStatus('Schedule planning failed');
-    writeResult({ method: '` + realDemoScheduleMethod + `', error: String(error?.message || error), error_code: error?.errorCode });
-  } finally {
-    setBusy(false);
-  }
-});
-
-networkMatrixButton?.addEventListener('click', async () => {
-  const methods = [
-    ['http', 'worker.networkHTTP'],
-    ['websocket', 'worker.networkWebSocket'],
-    ['tcp', 'worker.networkTCP'],
-    ['udp', 'worker.networkUDP'],
-  ];
-  try {
-    setBusy(true);
-    setStatus('Calling network matrix...');
-    const results = {};
-    for (const [transport, method] of methods) {
-      const response = await callHost(method, { note: ` + "`Network matrix ${transport}`" + ` });
-      results[transport] = {
-        method,
-        response,
-        parsed_body: parseNetworkBody(response),
-        parsed_payload: parseNetworkPayload(response),
-      };
-    }
-    setStatus('Network matrix completed');
-    writeResult({ method: 'network.matrix', results, token_leak_check: tokenLeakCheck(results) });
-  } catch (error) {
-    setStatus('Network matrix failed');
-    writeResult({ method: 'network.matrix', error: String(error?.message || error), error_code: error?.errorCode });
-  } finally {
-    setBusy(false);
-  }
-});
-
-dangerButton?.addEventListener('click', async () => {
-  try {
-    setBusy(true);
-    setStatus('Waiting for confirmation...');
-    const response = await callHost('danger.run', { target: 'demo-database' });
-    setStatus('Dangerous action confirmed');
-    writeResult({ method: 'danger.run', response, token_leak_check: tokenLeakCheck(response) });
-  } catch (error) {
-    setStatus('Dangerous action blocked');
-    writeResult({ method: 'danger.run', error: String(error?.message || error), error_code: error?.errorCode });
-  } finally {
-    setBusy(false);
-  }
-});
-
-function handleMessage(event) {
-  if (event.origin !== parentOrigin) {
-    return;
-  }
-  const data = event.data;
-  if (data?.type === 'redevplugin.bridge.lifecycle') {
-    setStatus(data.event?.type === 'ready' ? 'Ready' : ` + "`Lifecycle: ${data.event?.type || 'unknown'}`" + `);
-    return;
-  }
-  if (data?.type !== 'redevplugin.bridge.response' || typeof data.id !== 'string') {
-    return;
-  }
-  const call = pending.get(data.id);
-  if (!call) {
-    return;
-  }
-  pending.delete(data.id);
-  window.clearTimeout(call.timer);
-  if (data.ok) {
-    call.resolve(data.data);
-  } else {
-    const error = new Error(data.error || 'Plugin call failed');
-    error.errorCode = data.error_code || 'PLUGIN_CALL_FAILED';
-    call.reject(error);
-  }
-}
-
-function callHost(method, callParams) {
-  if (!parentOrigin || parentOrigin === '*') {
-    return Promise.reject(new Error('parent_origin must be an exact origin'));
-  }
-  const id = String(nextID++);
-  const promise = new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      pending.delete(id);
-      reject(new Error(` + "`Plugin bridge call ${id} timed out`" + `));
-    }, 30000);
-    pending.set(id, { resolve, reject, timer });
-  });
-  window.parent.postMessage({ type: 'redevplugin.bridge.call', request: { id, method, params: callParams } }, parentOrigin);
-  return promise;
-}
-
-function tokenLeakCheck(value) {
-  const serialized = JSON.stringify(value);
-  const storageGrantMarker = ['storage', 'handle', 'grant', 'token'].join('_');
-  const handleGrantMarker = ['handle', 'grant', 'token'].join('_');
-  return {
-    asset_ticket_visible: location.href.includes('asset_ticket') || document.cookie.includes('` + realDemoAssetCookieName + `'),
-    gateway_token_visible: serialized.includes('plugin_gateway_token') || serialized.includes('gateway_token'),
-    confirmation_token_visible: serialized.includes('confirmation_token') || serialized.includes('confirmation_secret'),
-    storage_grant_visible: serialized.includes(storageGrantMarker) || serialized.includes(handleGrantMarker),
-    network_grant_visible: serialized.includes('connection_grant_token') || serialized.includes('network_grant_token'),
-  };
-}
-
-function parseNetworkBody(value) {
-  const encoded = value?.data?.network_execute?.body_base64 || value?.network_execute?.body_base64;
-  if (!encoded) {
-    return null;
-  }
-  try {
-    return JSON.parse(atob(encoded));
-  } catch (error) {
-    return { parse_error: String(error?.message || error) };
-  }
-}
-
-function parseNetworkPayload(value) {
-  const encoded = value?.data?.network_execute?.payload_base64 || value?.network_execute?.payload_base64;
-  if (!encoded) {
-    return null;
-  }
-  try {
-    return atob(encoded);
-  } catch (error) {
-    return ` + "`parse_error: ${String(error?.message || error)}`" + `;
-  }
-}
-
-function parseScheduleRows(value) {
-  const sqlite = value?.data?.storage_sqlite || value?.storage_sqlite;
-  const rows = Array.isArray(sqlite?.rows) ? sqlite.rows : [];
-  return rows.map((row) => ({
-    title: sqliteValueText(row?.[0]),
-    starts_at: sqliteValueText(row?.[1]),
-    location: sqliteValueText(row?.[2]),
-    source: sqliteValueText(row?.[3]),
-    database: sqlite?.database || 'plugin.sqlite',
-  })).filter((item) => item.title);
-}
-
-function sqliteValueText(value) {
-  if (!value || typeof value !== 'object') {
-    return '';
-  }
-  if (typeof value.text === 'string') {
-    return value.text;
-  }
-  if (typeof value.int === 'number') {
-    return String(value.int);
-  }
-  if (typeof value.float === 'number') {
-    return String(value.float);
-  }
-  return value.null ? '' : JSON.stringify(value);
-}
-
-function renderScheduleRows(rows) {
-  if (!scheduleList || !scheduleMeta) {
-    return;
-  }
-  scheduleList.textContent = '';
-  if (!rows.length) {
-    scheduleMeta.textContent = 'No schedule rows returned';
-    return;
-  }
-  scheduleMeta.textContent = ` + "`Persisted ${rows.length} item in ${rows[0].database}`" + `;
-  for (const item of rows) {
-    const entry = document.createElement('li');
-    const title = document.createElement('strong');
-    title.textContent = item.title;
-    const detail = document.createElement('span');
-    detail.textContent = ` + "`${item.starts_at} - ${item.location} - ${item.source}`" + `;
-    entry.append(title, detail);
-    scheduleList.append(entry);
-  }
-}
-
-function setBusy(busy) {
-  if (invokeButton) {
-    invokeButton.disabled = busy;
-  }
-  if (brokerButton) {
-    brokerButton.disabled = busy;
-  }
-  if (scheduleButton) {
-    scheduleButton.disabled = busy;
-  }
-  if (networkMatrixButton) {
-    networkMatrixButton.disabled = busy;
-  }
-  if (dangerButton) {
-    dangerButton.disabled = busy;
-  }
-}
-
-function setStatus(value) {
-  if (status) {
-    status.textContent = value;
-  }
-}
-
-function writeResult(value) {
-  if (result) {
-    result.textContent = JSON.stringify(value, null, 2);
-  }
-}
-`
-}
-
-func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, brokerConfig string, runtimeGenerationID string) string {
+func realDemoHostHTML() string {
 	return `<!doctype html>
 <html lang="en">
   <head>
@@ -1393,106 +1221,114 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ReDevPlugin Real Runtime Demo</title>
     <style>
-      :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      body { margin: 0; background: #f6f7fb; color: #15202b; }
-      main { display: grid; gap: 16px; grid-template-columns: 360px minmax(480px, 1fr); min-height: 100vh; padding: 20px; }
-      section { background: #fff; border: 1px solid #d9dee8; border-radius: 8px; box-shadow: 0 18px 50px rgb(20 32 43 / 10%); padding: 16px; }
+      :root { color: #182026; background: #eef1f3; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 320px; min-height: 100vh; }
+      main { display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); min-height: 100vh; }
+      aside { display: flex; flex-direction: column; gap: 16px; min-height: 0; padding: 22px; border-right: 1px solid #c8ced2; background: #f8f9fa; }
+      section { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 100vh; background: #fff; }
+      header, .button-row, .confirmation { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
       h1, h2 { margin: 0; letter-spacing: 0; }
-      h1 { font-size: 24px; }
-      h2 { font-size: 18px; }
-      .eyebrow, .label { color: #637083; font-size: 12px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
-      .status { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid #b8dfd7; border-radius: 999px; background: #e6f4f1; color: #0f5f58; font-size: 12px; font-weight: 800; text-transform: uppercase; }
-      .metric-grid { display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); margin: 16px 0; }
-      .metric { background: #f8fafc; border: 1px solid #d9dee8; border-radius: 8px; padding: 10px; }
-      .metric strong { display: block; font-size: 22px; margin-top: 4px; }
-      button { border: 0; border-radius: 8px; background: #0f766e; color: #fff; cursor: pointer; font: inherit; font-weight: 800; min-height: 38px; padding: 0 14px; }
-      button:hover { background: #115e59; }
-      button.danger { background: #b42318; }
-      button.danger:hover { background: #8f1d14; }
-      button.secondary { background: #eef2f7; color: #223044; }
-      button.secondary:hover { background: #dfe6f0; }
-      .confirmation { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 12px; padding: 10px; }
+      h1 { font-size: 21px; }
+      h2 { font-size: 17px; }
+      .eyebrow, .label { margin: 0 0 5px; color: #59666d; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+      .status { border: 1px solid #c4912f; border-radius: 999px; padding: 5px 9px; color: #704d0b; background: #fff5d8; font-size: 12px; font-weight: 700; }
+      .status[data-state="ready"] { border-color: #46917c; color: #15594a; background: #e4f5ef; }
+      .status[data-state="error"], .status[data-state="disposed"] { border-color: #cb7770; color: #7d2722; background: #fbe9e7; }
+      .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; border: 1px solid #d7dcdf; background: #d7dcdf; }
+      .metric { min-width: 0; padding: 10px; background: #fff; }
+      .metric strong { display: block; margin-top: 3px; font-size: 18px; }
+      button { min-height: 36px; border: 1px solid #1d5e55; border-radius: 6px; padding: 0 13px; color: #fff; background: #1d5e55; font: inherit; cursor: pointer; }
+      button.secondary { border-color: #aab2b8; color: #263238; background: #fff; }
+      button.danger { border-color: #a53f38; background: #a53f38; }
+      .button-row { flex-wrap: wrap; justify-content: flex-start; }
+      .confirmation { align-items: flex-start; padding: 12px; border: 1px solid #d4b05d; background: #fff9e9; }
       .confirmation[hidden] { display: none; }
-      iframe { width: 100%; min-height: 560px; border: 1px solid #d9dee8; border-radius: 8px; background: white; }
-      pre, code { overflow-wrap: anywhere; white-space: pre-wrap; }
-      pre { background: #f8fafc; border: 1px solid #d9dee8; border-radius: 8px; min-height: 180px; padding: 10px; }
-      ul { display: flex; flex-direction: column; gap: 6px; list-style: none; margin: 12px 0 0; padding: 0; }
-      li { background: #f8fafc; border: 1px solid #d9dee8; border-radius: 8px; font-size: 12px; padding: 8px; }
+      code { overflow-wrap: anywhere; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      ul { flex: 1; min-height: 120px; max-height: 42vh; margin: 0; padding: 12px 12px 12px 28px; overflow: auto; border: 1px solid #d7dcdf; background: #fff; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      li + li { margin-top: 7px; }
+      .surface-header { min-height: 66px; padding: 14px 20px; border-bottom: 1px solid #d7dcdf; }
+      #plugin-surface-mount { min-height: 0; }
+      #plugin-surface-mount > iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+      #last-result { max-height: 160px; margin: 0; padding: 10px; overflow: auto; border-top: 1px solid #d7dcdf; background: #f6f8f9; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+      @media (max-width: 780px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid #c8ced2; } section { min-height: 720px; } }
     </style>
   </head>
   <body>
     <main>
-      <section aria-label="Real Host console">
-        <p class="eyebrow">ReDevPlugin real demo</p>
-        <h1>Host + Rust runtime</h1>
-        <p><span id="host-status" class="status">booting</span></p>
-        <div class="metric-grid" aria-label="Runtime counters">
+      <aside aria-label="Real host console">
+        <header>
+          <div><p class="eyebrow">ReDevPlugin real demo</p><h1>Host + Rust runtime</h1></div>
+          <span id="host-status" class="status" data-state="opening">opening</span>
+        </header>
+        <div class="metrics" aria-label="Runtime counters">
           <div class="metric"><span class="label">handshakes</span><strong id="handshake-count">0</strong></div>
           <div class="metric"><span class="label">rpc calls</span><strong id="rpc-count">0</strong></div>
           <div class="metric"><span class="label">runtime</span><strong id="runtime-ready">0</strong></div>
+          <div class="metric"><span class="label">opening progress</span><strong id="opening-progress">0</strong></div>
+          <div class="metric"><span class="label">credentialless</span><strong id="credentialless-mode">detecting</strong></div>
+        </div>
+        <div class="button-row">
+          <button id="send-visible" type="button">Visible</button>
+          <button id="send-hidden" type="button" class="secondary">Hidden</button>
+          <button id="dispose-surface" type="button" class="danger">Dispose</button>
         </div>
         <div id="confirmation-panel" class="confirmation" hidden>
-          <div>
-            <span class="label">pending confirmation</span>
-            <strong id="confirmation-method">-</strong>
-            <code id="confirmation-hash">-</code>
-          </div>
-          <div>
-            <button id="deny-confirmation" class="secondary" type="button">Deny</button>
-            <button id="approve-confirmation" type="button">Approve</button>
-          </div>
+          <div><p class="label">Confirmation required</p><strong id="confirmation-method">-</strong><br><code id="confirmation-hash">-</code></div>
+          <div class="button-row"><button id="deny-confirmation" class="secondary" type="button">Deny</button><button id="approve-confirmation" type="button">Approve</button></div>
         </div>
-        <p class="label">runtime generation</p>
-        <code id="runtime-generation">` + runtimeGenerationID + `</code>
-        <ul id="event-log" aria-label="Real bridge event log"></ul>
-      </section>
-      <section aria-label="Real sandboxed plugin surface">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px;">
-          <div>
-            <p class="eyebrow">sandboxed iframe</p>
-            <h2>Generated plugin</h2>
-          </div>
-          <button id="send-visible" type="button">Visible</button>
-        </div>
-        <iframe id="plugin-frame" title="Generated real runtime plugin" sandbox="allow-scripts allow-same-origin"></iframe>
-        <pre id="last-result">{}</pre>
+        <div><p class="label">Runtime generation</p><code id="runtime-generation">-</code></div>
+        <ul id="event-log" aria-label="Sanitized real bridge event log"></ul>
+      </aside>
+      <section aria-label="Real opaque plugin surface">
+        <header class="surface-header"><div><p class="eyebrow">Opaque sandbox iframe</p><h2>Real Runtime Demo Plugin</h2></div><span>MessagePort only</span></header>
+        <div id="plugin-surface-mount"></div>
+        <pre id="last-result" aria-label="Last trusted host response">{}</pre>
       </section>
     </main>
     <script type="module">
-      import { PluginSurfaceHost } from "/packages/redevplugin-ui/dist/index.js";
-      const bootstrap = ` + bootstrap + `;
-      const brokerConfig = ` + brokerConfig + `;
-      const pluginOrigin = "` + pluginOrigin + `";
-      let pluginURL = null;
-      const iframe = document.querySelector("#plugin-frame");
+      import { PluginSurfaceHost, createReDevPluginSurfaceTransport, toPluginSurfaceHostBootstrap } from "/packages/redevplugin-ui/dist/trusted-parent.js";
+      const surfaceMount = document.querySelector("#plugin-surface-mount");
+      const status = document.querySelector("#host-status");
+      const eventLog = document.querySelector("#event-log");
+      const confirmationPanel = document.querySelector("#confirmation-panel");
       let handshakes = 0;
       let rpcCalls = 0;
-      let confirmations = 0;
       let pendingConfirmation = null;
-      const log = (type, detail) => {
-        const item = document.createElement("li");
-        item.textContent = new Date().toLocaleTimeString() + " " + type + " " + JSON.stringify(detail);
-        document.querySelector("#event-log").prepend(item);
-      };
+      let disposedAt = 0;
+      let openedAt = 0;
+      let confirmationAborted = false;
+      const progressEvents = [];
+
+      let runtimeConfig;
+      try {
+        runtimeConfig = await loadRuntimeConfig();
+        document.querySelector("#runtime-generation").textContent = runtimeConfig.bootstrap.runtime_generation_id;
+      } catch (error) {
+        setStatus("error");
+        log("surface-bootstrap-failed", { message: String(error && error.message || error) });
+        throw error;
+      }
+      const bootstrap = runtimeConfig.bootstrap;
+      const brokerConfig = runtimeConfig.broker;
+
       const hostFetch = async (input, init) => {
         const url = String(input);
-        const body = init?.body ? JSON.parse(init.body) : {};
+        const body = init && init.body ? JSON.parse(init.body) : {};
         let nextInit = init;
         if (url.endsWith("/rpc") && isBrokeredRuntimeMethod(body.method)) {
-          const brokerGrants = await fetchBrokerGrants();
-          body.params = {
-            ...(body.params || {}),
-            storage_handle_grant_token: brokerGrants.storage_handle_grant_token,
-            storage_kv_handle_grant_token: brokerGrants.storage_kv_handle_grant_token,
-            storage_sqlite_handle_grant_token: brokerGrants.storage_sqlite_handle_grant_token,
-          };
-          nextInit = { ...init, body: JSON.stringify(body) };
+          const grants = await fetchBrokerGrants();
+          body.params = Object.assign({}, body.params || {}, {
+            storage_handle_grant_token: grants.storage_handle_grant_token,
+            storage_kv_handle_grant_token: grants.storage_kv_handle_grant_token,
+            storage_sqlite_handle_grant_token: grants.storage_sqlite_handle_grant_token,
+          });
+          nextInit = Object.assign({}, init, { body: JSON.stringify(body) });
         }
-        const trackResult = url.endsWith("/rpc") || url.endsWith("/confirm");
         if (url.endsWith("/bridge-token")) {
           handshakes += 1;
           document.querySelector("#handshake-count").textContent = String(handshakes);
-          log("bridge-token", { surface_instance_id: body.handshake?.surface_instance_id });
+          log("bridge-token", { issued: true });
         }
         if (url.endsWith("/rpc")) {
           rpcCalls += 1;
@@ -1500,119 +1336,156 @@ func realDemoHostHTML(hostOrigin string, pluginOrigin string, bootstrap string, 
           log("rpc", { method: body.method, confirmed: Boolean(body.confirmation_id) });
         }
         const response = await fetch(input, nextInit);
-        if (trackResult) {
-          try {
-            document.querySelector("#last-result").textContent = JSON.stringify(await response.clone().json(), null, 2);
-          } catch {
-            document.querySelector("#last-result").textContent = String(response.status);
-          }
+        if (url.endsWith("/rpc")) {
+          document.querySelector("#last-result").textContent = JSON.stringify({
+            method: body.method,
+            confirmed: Boolean(body.confirmation_id),
+            ok: response.ok,
+            status: response.status,
+          }, null, 2);
         }
         return response;
       };
-      const isBrokeredRuntimeMethod = (method) => method === "worker.brokerDemo" || method === "` + realDemoScheduleMethod + `";
-      const fetchBrokerGrants = async () => {
+
+      const surfaceHost = PluginSurfaceHost.create({
+        bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
+        hostTransport: createReDevPluginSurfaceTransport({ fetch: hostFetch }),
+        confirm: confirmDangerousAction,
+        onOpeningProgress: (progress) => {
+          progressEvents.push(progress.elapsedMs);
+          document.querySelector("#opening-progress").textContent = String(progressEvents.length);
+          log("opening-progress", { elapsed_ms: progress.elapsedMs });
+        },
+        onError: (error) => { setStatus("error"); log("surface-error", { error_code: error.errorCode, message: error.message }); },
+      });
+      const iframe = surfaceHost.element;
+      iframe.id = "plugin-frame";
+      iframe.title = "Real runtime opaque plugin surface";
+      surfaceMount.replaceChildren(iframe);
+
+      document.querySelector("#send-visible").addEventListener("click", () => sendLifecycle("visible"));
+      document.querySelector("#send-hidden").addEventListener("click", () => sendLifecycle("hidden"));
+      document.querySelector("#dispose-surface").addEventListener("click", () => void closeSurface());
+      document.querySelector("#deny-confirmation").addEventListener("click", () => resolveConfirmation(false));
+      document.querySelector("#approve-confirmation").addEventListener("click", () => resolveConfirmation(true));
+      addEventListener("beforeunload", () => surfaceHost.dispose());
+
+      window.__redevpluginRealDemo = Object.freeze({
+        close: closeSurface,
+        snapshot: () => ({
+          status: status.dataset.state,
+          handshakes,
+          rpcCalls,
+          disposedAt,
+          openedAt,
+          progressEvents: [...progressEvents],
+          confirmationAborted,
+          confirmationVisible: !confirmationPanel.hidden,
+          sandbox: iframe.getAttribute("sandbox"),
+          credentialless: "credentialless" in iframe ? iframe.credentialless === true : false,
+          iframeSrcdocEmpty: iframe.srcdoc === "",
+        }),
+      });
+
+      try {
+        await surfaceHost.open();
+        openedAt = Date.now();
+        document.querySelector("#runtime-ready").textContent = "1";
+        document.querySelector("#credentialless-mode").textContent = "credentialless" in iframe && iframe.credentialless ? "enabled" : "unsupported-safe";
+        setStatus("ready");
+        log("surface-ready", { host_origin: location.origin, sandbox: iframe.getAttribute("sandbox") });
+      } catch (error) {
+        setStatus("error");
+        log("surface-open-failed", { error_code: error && error.errorCode, message: String(error && error.message || error) });
+      }
+
+      async function loadRuntimeConfig() {
+        const response = await fetch("/demo/real/bootstrap", {
+          method: "POST",
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          body: "{}",
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("surface bootstrap failed with HTTP " + response.status);
+        const envelope = await response.json();
+        const value = envelope && envelope.data ? envelope.data : envelope;
+        if (!value || !value.bootstrap || !value.broker || !value.bootstrap.runtime_generation_id) {
+          throw new Error("surface bootstrap response is incomplete");
+        }
+        return value;
+      }
+
+      function isBrokeredRuntimeMethod(method) {
+        return method === "worker.brokerDemo" || method === "` + realDemoScheduleMethod + `";
+      }
+
+      async function fetchBrokerGrants() {
         const response = await fetch(brokerConfig.broker_grants_url, {
           method: "POST",
           headers: { "Accept": "application/json", "Content-Type": "application/json" },
           body: JSON.stringify({ surface_instance_id: bootstrap.surface_instance_id }),
           credentials: "same-origin",
         });
-        if (!response.ok) {
-          throw new Error("broker grant refresh failed with HTTP " + response.status);
-        }
+        if (!response.ok) throw new Error("broker grant refresh failed with HTTP " + response.status);
         const envelope = await response.json();
-        const grants = envelope?.data || envelope;
-        if (!grants?.storage_handle_grant_token || !grants?.storage_kv_handle_grant_token || !grants?.storage_sqlite_handle_grant_token) {
+        const grants = envelope && envelope.data ? envelope.data : envelope;
+        if (!grants || !grants.storage_handle_grant_token || !grants.storage_kv_handle_grant_token || !grants.storage_sqlite_handle_grant_token) {
           throw new Error("broker grant refresh omitted storage grants");
         }
         log("broker-grants", { refreshed: true });
         return grants;
-      };
-      const surfaceHost = new PluginSurfaceHost({
-        bootstrap: {
-          pluginId: bootstrap.plugin_id,
-          pluginInstanceId: bootstrap.plugin_instance_id,
-          surfaceId: bootstrap.surface_id,
-          surfaceInstanceId: bootstrap.surface_instance_id,
-          activeFingerprint: bootstrap.active_fingerprint,
-          bridgeNonce: bootstrap.bridge_nonce,
-          ownerSessionHash: bootstrap.owner_session_hash,
-          ownerUserHash: bootstrap.owner_user_hash,
-          sessionChannelIdHash: bootstrap.session_channel_id_hash,
-        },
-        iframeOrigin: pluginOrigin,
-        iframeWindow: iframe.contentWindow,
-        parentWindow: window,
-        fetch: hostFetch,
-        apiBaseURL: "",
-        confirm(intent) {
-          confirmations += 1;
-          document.querySelector("#confirmation-method").textContent = intent.method;
-          document.querySelector("#confirmation-hash").textContent = intent.requestHash;
-          document.querySelector("#confirmation-panel").hidden = false;
-          log("confirmation-required", { method: intent.method, confirmation_token_id: intent.confirmationTokenId, count: confirmations });
-          return new Promise((resolve) => {
-            pendingConfirmation = resolve;
-          });
-        },
-        onError(error) {
-          document.querySelector("#host-status").textContent = "error";
-          log("host-error", { error_code: error.errorCode, message: error.message });
-        },
-      });
-      document.querySelector("#send-visible").addEventListener("click", () => {
-        surfaceHost.sendLifecycle({ type: "visible" });
-        log("lifecycle", { type: "visible" });
-      });
-      document.querySelector("#deny-confirmation").addEventListener("click", () => {
-        resolvePendingConfirmation(false);
-      });
-      document.querySelector("#approve-confirmation").addEventListener("click", () => {
-        resolvePendingConfirmation(true);
-      });
-      window.addEventListener("beforeunload", () => surfaceHost.dispose());
-      function resolvePendingConfirmation(confirmed) {
-        if (!pendingConfirmation) {
-          return;
-        }
-        document.querySelector("#confirmation-panel").hidden = true;
-        pendingConfirmation({ confirmed });
-        pendingConfirmation = null;
-        log("confirmation-decision", { confirmed });
       }
-      try {
-        const assetBootstrapURL = new URL("/_redevplugin/bootstrap", pluginOrigin);
-        const assetResponse = await fetch(assetBootstrapURL.href, {
-          method: "POST",
-          headers: { "Accept": "application/json", "Content-Type": "application/json" },
-          body: JSON.stringify({
-            surface_instance_id: bootstrap.surface_instance_id,
-            asset_ticket: bootstrap.asset_ticket,
-          }),
-          credentials: "include",
+
+      function confirmDangerousAction(intent) {
+        document.querySelector("#confirmation-method").textContent = intent.method;
+        document.querySelector("#confirmation-hash").textContent = intent.requestHash;
+        confirmationPanel.hidden = false;
+        log("confirmation-requested", { method: intent.method, request_hash: intent.requestHash, plan_hash: intent.planHash });
+        return new Promise((resolve) => {
+          const pending = { resolve };
+          pendingConfirmation = pending;
+          intent.signal.addEventListener("abort", () => {
+            if (pendingConfirmation !== pending) return;
+            pendingConfirmation = null;
+            confirmationPanel.hidden = true;
+            confirmationAborted = true;
+            resolve({ confirmed: false });
+            log("confirmation-aborted", { method: intent.method });
+          }, { once: true });
         });
-        if (!assetResponse.ok) {
-          throw new Error("asset bootstrap failed with HTTP " + assetResponse.status);
-        }
-        const assetEnvelope = await assetResponse.json();
-        const assetSessionId = assetEnvelope?.data?.asset_session_id;
-        if (!assetSessionId) {
-          throw new Error("asset bootstrap response omitted asset_session_id");
-        }
-        pluginURL = new URL("/_redevplugin/assets/" + encodeURIComponent(assetSessionId) + "/ui/index.html", pluginOrigin);
-        pluginURL.searchParams.set("parent_origin", location.origin);
-        pluginURL.searchParams.set("plugin_id", bootstrap.plugin_id);
-        pluginURL.searchParams.set("surface_id", bootstrap.surface_id);
-        pluginURL.searchParams.set("surface_instance_id", bootstrap.surface_instance_id);
-        pluginURL.searchParams.set("active_fingerprint", bootstrap.active_fingerprint);
-        pluginURL.searchParams.set("bridge_nonce", bootstrap.bridge_nonce);
-        iframe.src = pluginURL.href;
-        document.querySelector("#host-status").textContent = "listening";
-        document.querySelector("#runtime-ready").textContent = "1";
-        log("host-ready", { host_origin: "` + hostOrigin + `", plugin_origin: pluginURL.origin, asset_ticket_id: bootstrap.asset_ticket_id, asset_session_id: assetSessionId });
-      } catch (error) {
-        document.querySelector("#host-status").textContent = "error";
-        log("host-error", { message: String(error?.message || error) });
+      }
+
+      function resolveConfirmation(confirmed) {
+        if (!pendingConfirmation) return;
+        const pending = pendingConfirmation;
+        pendingConfirmation = null;
+        confirmationPanel.hidden = true;
+        pending.resolve({ confirmed });
+        log("confirmation-decided", { confirmed });
+      }
+
+      function sendLifecycle(type) {
+        try { surfaceHost.sendLifecycle({ type }); log("lifecycle", { type }); }
+        catch (error) { log("lifecycle-failed", { message: String(error && error.message || error) }); }
+      }
+
+      async function closeSurface() {
+        await surfaceHost.close();
+        disposedAt = Date.now();
+        setStatus("disposed");
+        log("surface-disposed", { iframe_srcdoc_empty: iframe.srcdoc === "" });
+      }
+
+      function setStatus(value) {
+        status.textContent = value;
+        status.dataset.state = value;
+      }
+
+      function log(type, detail) {
+        const item = document.createElement("li");
+        item.textContent = type + " " + JSON.stringify(detail);
+        eventLog.prepend(item);
+        while (eventLog.children.length > 24) eventLog.lastElementChild.remove();
       }
     </script>
   </body>

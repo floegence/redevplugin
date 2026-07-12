@@ -1,0 +1,1389 @@
+openapi: 3.1.0
+info:
+  title: ReDevPlugin Plugin Platform API
+  version: plugin-platform-v2
+  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; local-import package install/update routes are explicit developer/import flows and also do not accept caller-supplied trust_state values.
+paths:
+  /_redevplugin/api/plugins/local-import/install:
+    post:
+      x-redevplugin-route-set: local_import
+      operationId: importLocalPackage
+      requestBody:
+        $ref: "#/components/requestBodies/ImportLocalPackageRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/install-release-ref:
+    post:
+      operationId: installReleaseRef
+      requestBody:
+        $ref: "#/components/requestBodies/InstallReleaseRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/enable:
+    post:
+      operationId: enablePlugin
+      requestBody:
+        $ref: "#/components/requestBodies/EnableRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/disable:
+    post:
+      operationId: disablePlugin
+      requestBody:
+        $ref: "#/components/requestBodies/DisableRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/uninstall:
+    post:
+      operationId: uninstallPlugin
+      requestBody:
+        $ref: "#/components/requestBodies/UninstallRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/local-import/update:
+    post:
+      x-redevplugin-route-set: local_import
+      operationId: updateLocalPackage
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateLocalPackageRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/update-release-ref:
+    post:
+      operationId: updateReleaseRef
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateReleaseRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/downgrade:
+    post:
+      operationId: downgradePlugin
+      requestBody:
+        $ref: "#/components/requestBodies/DowngradeRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/catalog:
+    get:
+      operationId: listPlugins
+      responses:
+        "200": { $ref: "#/components/responses/PluginCatalogEnvelope" }
+  /_redevplugin/api/plugins/platform/compatibility:
+    get:
+      operationId: getPluginPlatformCompatibility
+      description: Returns the host-consumable ReDevPlugin compatibility manifest for the mounted platform artifact set.
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/surfaces/open:
+    post:
+      operationId: openPluginSurface
+      requestBody:
+        $ref: "#/components/requestBodies/OpenSurfaceRequest"
+      responses:
+        "200": { $ref: "#/components/responses/SurfaceBootstrapEnvelope" }
+  /_redevplugin/api/plugins/surfaces/revoke-scope:
+    post:
+      operationId: revokePluginSurfaceScope
+      description: Revokes every active plugin surface and token bound to the authenticated owner session or session channel derived by the host.
+      requestBody:
+        $ref: "#/components/requestBodies/RevokeSurfaceScopeRequest"
+      responses:
+        "200": { $ref: "#/components/responses/SurfaceScopeRevokeEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare:
+    post:
+      operationId: preparePluginSurface
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/PrepareSurfaceRequest"
+      responses:
+        "200": { $ref: "#/components/responses/SurfacePreparationEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token:
+    post:
+      operationId: createSurfaceBridgeToken
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/TrustedParentBridgeTokenRequest"
+      responses:
+        "200": { $ref: "#/components/responses/BridgeTokenEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read:
+    post:
+      operationId: readPreparedSurfaceAsset
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/ReadSurfaceAssetRequest"
+      responses:
+        "200": { $ref: "#/components/responses/SurfaceAssetEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read:
+    post:
+      operationId: readPreparedSurfaceStream
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/ReadSurfaceStreamRequest"
+      responses:
+        "200": { $ref: "#/components/responses/SurfaceStreamEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose:
+    post:
+      operationId: disposePluginSurface
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/DisposeSurfaceRequest"
+      responses:
+        "200": { $ref: "#/components/responses/SurfaceDisposeEnvelope" }
+  /_redevplugin/api/plugins/rpc:
+    post:
+      operationId: callPluginMethod
+      requestBody:
+        $ref: "#/components/requestBodies/RPCRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/confirm:
+    post:
+      operationId: confirmPluginIntent
+      requestBody:
+        $ref: "#/components/requestBodies/RPCRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ConfirmEnvelope" }
+  /_redevplugin/api/plugins/intents:
+    get:
+      operationId: listPluginIntents
+      description: 'Lists enabled, runnable plugin intents available to host-mediated interop. The response data is `{ "intents": [...] }`.'
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/intents/invoke:
+    post:
+      operationId: invokePluginIntent
+      description: Invokes a host-mediated plugin intent without iframe gateway tokens while preserving local policy, permission grants, and dangerous-method fail-closed checks.
+      requestBody:
+        $ref: "#/components/requestBodies/InvokeIntentRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/operations:
+    get:
+      operationId: listPluginOperations
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/operations/{operation_id}:
+    get:
+      operationId: getPluginOperation
+      parameters:
+        - $ref: "#/components/parameters/OperationID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/operations/{operation_id}/cancel:
+    post:
+      operationId: cancelPluginOperation
+      parameters:
+        - $ref: "#/components/parameters/OperationID"
+      requestBody:
+        $ref: "#/components/requestBodies/CancelOperationRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/runtime/start:
+    post:
+      operationId: startPluginRuntime
+      requestBody:
+        $ref: "#/components/requestBodies/StartRuntimeRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/runtime/stop:
+    post:
+      operationId: stopPluginRuntime
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/runtime/refresh-enabled:
+    post:
+      operationId: refreshEnabledPluginRuntimeState
+      description: 'Replays runtime-derived state for enabled plugins after the embedding host process restarts or reattaches adapters. The response data is `{ "refreshed_plugins": [...] }`.'
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/runtime/health:
+    get:
+      operationId: getPluginRuntimeHealth
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/data/export:
+    post:
+      operationId: exportPluginData
+      requestBody:
+        $ref: "#/components/requestBodies/ExportDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/data/import:
+    post:
+      operationId: importPluginData
+      requestBody:
+        $ref: "#/components/requestBodies/ImportDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/retained-data:
+    get:
+      operationId: listPluginRetainedData
+      parameters:
+        - name: publisher_id
+          in: query
+          schema: { type: string }
+        - name: plugin_id
+          in: query
+          schema: { type: string }
+        - name: source_plugin_instance_id
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema:
+            $ref: "#/components/schemas/RetainedDataState"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataListEnvelope" }
+  /_redevplugin/api/plugins/retained-data/delete:
+    post:
+      operationId: deletePluginRetainedData
+      requestBody:
+        $ref: "#/components/requestBodies/DeleteRetainedDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+        "409": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+  /_redevplugin/api/plugins/retained-data/bind:
+    post:
+      operationId: bindPluginRetainedData
+      requestBody:
+        $ref: "#/components/requestBodies/BindRetainedDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+        "409": { $ref: "#/components/responses/RetainedDataRecordEnvelope" }
+  /_redevplugin/api/plugins/retained-data/cleanup-expired:
+    post:
+      operationId: cleanupExpiredPluginRetainedData
+      requestBody:
+        $ref: "#/components/requestBodies/CleanupExpiredRetainedDataRequest"
+      responses:
+        "200": { $ref: "#/components/responses/RetainedDataCleanupEnvelope" }
+        "409": { $ref: "#/components/responses/RetainedDataCleanupEnvelope" }
+  /_redevplugin/api/plugins/permissions:
+    get:
+      operationId: listPluginPermissionGrants
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/permissions/grant:
+    post:
+      operationId: grantPluginPermission
+      requestBody:
+        $ref: "#/components/requestBodies/GrantPermissionRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/permissions/revoke:
+    post:
+      operationId: revokePluginPermission
+      requestBody:
+        $ref: "#/components/requestBodies/RevokePermissionRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/audit:
+    get:
+      operationId: listPluginAuditEvents
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/diagnostics:
+    get:
+      operationId: listPluginDiagnosticEvents
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/secrets/bind:
+    post:
+      operationId: bindPluginSecret
+      requestBody:
+        $ref: "#/components/requestBodies/SecretRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/secrets/test:
+    post:
+      operationId: testPluginSecret
+      requestBody:
+        $ref: "#/components/requestBodies/SecretRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/secrets/delete:
+    post:
+      operationId: deletePluginSecret
+      requestBody:
+        $ref: "#/components/requestBodies/SecretRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema:
+    get:
+      operationId: getPluginSettingsSchema
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+  /_redevplugin/api/plugins/{plugin_instance_id}/settings:
+    get:
+      operationId: getPluginSettings
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+    patch:
+      operationId: patchPluginSettings
+      parameters:
+        - $ref: "#/components/parameters/PluginInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/PatchSettingsRequest"
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+components:
+  parameters:
+    OperationID:
+      name: operation_id
+      in: path
+      required: true
+      schema: { type: string }
+    PluginInstanceID:
+      name: plugin_instance_id
+      in: path
+      required: true
+      schema: { type: string }
+    SurfaceInstanceID:
+      name: surface_instance_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Envelope:
+      description: Flat host envelope used by host product HTTP integration.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+    SurfaceBootstrapEnvelope:
+      description: Trusted-parent surface bootstrap. Capability-bearing fields are never forwarded into the opaque iframe or plugin worker.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SurfaceBootstrap"
+    SurfacePreparationEnvelope:
+      description: Trusted-parent asset-session exchange and validated opaque surface document.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SurfacePreparation"
+    BridgeTokenEnvelope:
+      description: Trusted-parent plugin gateway token response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/BridgeTokenResult"
+    SurfaceAssetEnvelope:
+      description: Trusted-parent package asset response. The plugin receives only a renderer-created blob URL.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SurfaceAssetResult"
+    SurfaceStreamEnvelope:
+      description: Trusted-parent stream redemption response. Stream tickets remain outside the plugin worker.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SurfaceStreamResult"
+    SurfaceDisposeEnvelope:
+      description: Surface revocation response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [disposed]
+                    properties:
+                      disposed: { const: true }
+    SurfaceScopeRevokeEnvelope:
+      description: Authenticated owner-session surface revocation response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [revoked_surface_count]
+                    properties:
+                      revoked_surface_count: { type: integer, minimum: 0 }
+    PluginRecordEnvelope:
+      description: Plugin lifecycle response with typed registry trust assessment.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PluginRecord"
+    PluginCatalogEnvelope:
+      description: Installed plugin catalog response with typed registry records.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    required: [plugins]
+                    additionalProperties: false
+                    properties:
+                      plugins:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PluginRecord"
+    ConfirmEnvelope:
+      description: Confirmation intent response. The raw confirmation token stays server-side and is never returned to parent JavaScript or the plugin iframe.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ConfirmResult"
+    RetainedDataListEnvelope:
+      description: Retained plugin data list response.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RetainedDataList"
+    RetainedDataRecordEnvelope:
+      description: Retained plugin data record response. Error envelopes may include the failed record in data.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RetainedDataRecord"
+    RetainedDataCleanupEnvelope:
+      description: Retained plugin data cleanup response. Partial cleanup failures return ok=false with the same data shape.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RetainedDataCleanupResult"
+  requestBodies:
+    ImportLocalPackageRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportLocalPackageRequest"
+    InstallReleaseRefRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InstallReleaseRefRequest"
+    UpdateLocalPackageRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateLocalPackageRequest"
+    UpdateReleaseRefRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateReleaseRefRequest"
+    DowngradeRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DowngradeRequest"
+    EnableRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnableRequest"
+    DisableRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DisableRequest"
+    UninstallRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UninstallRequest"
+    OpenSurfaceRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OpenSurfaceRequest"
+    RevokeSurfaceScopeRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RevokeSurfaceScopeRequest"
+    PrepareSurfaceRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PrepareSurfaceRequest"
+    TrustedParentBridgeTokenRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TrustedParentBridgeTokenRequest"
+    ReadSurfaceAssetRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReadSurfaceAssetRequest"
+    ReadSurfaceStreamRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReadSurfaceStreamRequest"
+    DisposeSurfaceRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DisposeSurfaceRequest"
+    RPCRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RPCRequest"
+    InvokeIntentRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InvokeIntentRequest"
+    CancelOperationRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CancelOperationRequest"
+    StartRuntimeRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StartRuntimeRequest"
+    ExportDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExportDataRequest"
+    ImportDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ImportDataRequest"
+    DeleteRetainedDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeleteRetainedDataRequest"
+    BindRetainedDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BindRetainedDataRequest"
+    CleanupExpiredRetainedDataRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CleanupExpiredRetainedDataRequest"
+    GrantPermissionRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GrantPermissionRequest"
+    RevokePermissionRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RevokePermissionRequest"
+    SecretRefRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SecretRefRequest"
+    PatchSettingsRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PatchSettingsRequest"
+  schemas:
+    Envelope:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        data: true
+        error: { type: string }
+        error_code:
+          $ref: "#/components/schemas/ErrorCode"
+        error_details:
+          $ref: "#/components/schemas/ErrorDetails"
+    ErrorDetails:
+      type: object
+      additionalProperties: true
+      properties:
+        reason:
+          type: string
+          enum: [payload_bytes, json_depth, prototype_key, number_precision, manifest_missing, manifest_field, manifest_decode, zip_invalid, file_count, duplicate_entry, symlink_entry, directory_entry, entry_bytes, path_length, compression_ratio, total_uncompressed_bytes, entry_open_failed, entry_read_failed, entry_close_failed, entry_size_mismatch, unsupported_signature_entry, manifest_artifact, package_asset_security, package_artifact_boundary, entry_path, manifest_canonical_json, canonical_hash, package_signature, empty_path, slash_separator, non_canonical_path, path_traversal, hidden_path, external_icon_path, unsupported_icon_format, missing_icon_asset, icon_magic_mismatch, query_or_fragment]
+        path:
+          type: string
+          description: Package-local entry path related to the error, when available.
+        pointer:
+          type: string
+          description: JSON Pointer into manifest.json related to the error, when available.
+    ErrorCode:
+      type: string
+      enum:
+        - PLUGIN_INVALID_REQUEST
+        - PLUGIN_MANIFEST_INVALID
+        - PLUGIN_PACKAGE_INVALID
+        - PLUGIN_PACKAGE_TOO_LARGE
+        - PLUGIN_PACKAGE_PATH_FORBIDDEN
+        - PLUGIN_SIGNATURE_INVALID
+        - PLUGIN_TRUST_STATE_DENIED
+        - PLUGIN_TRUST_VERIFICATION_REQUIRED
+        - PLUGIN_TRUST_VERIFICATION_INVALID
+        - PLUGIN_RELEASE_REF_VERIFICATION_FAILED
+        - PLUGIN_RELEASE_REF_POLICY_DENIED
+        - PLUGIN_DISABLED
+        - PLUGIN_DISABLED_BY_POLICY
+        - PLUGIN_PERMISSION_DENIED
+        - PLUGIN_CONFIRMATION_REQUIRED
+        - PLUGIN_CONFIRMATION_INVALID
+        - PLUGIN_TOKEN_EXPIRED
+        - PLUGIN_TOKEN_REPLAY
+        - PLUGIN_GATEWAY_TOKEN_INVALID
+        - PLUGIN_GATEWAY_TOKEN_REPLAYED
+        - PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH
+        - PLUGIN_ASSET_TICKET_INVALID
+        - PLUGIN_ASSET_SESSION_INVALID
+        - PLUGIN_STREAM_TICKET_INVALID
+        - PLUGIN_STREAM_CANCELLED
+        - PLUGIN_LEASE_INVALID
+        - PLUGIN_LEASE_REPLAYED
+        - PLUGIN_GRANT_INVALID
+        - PLUGIN_STORAGE_QUOTA_EXCEEDED
+        - PLUGIN_OPERATION_BLOCKED
+        - PLUGIN_OPERATION_NOT_FOUND
+        - PLUGIN_OPERATION_NOT_CANCELABLE
+        - PLUGIN_NETWORK_TARGET_DENIED
+        - PLUGIN_NETWORK_RATE_LIMITED
+        - PLUGIN_RUNTIME_UNAVAILABLE
+        - PLUGIN_RUNTIME_VERSION_MISMATCH
+        - PLUGIN_JSON_LIMIT_EXCEEDED
+        - PLUGIN_CONTRACT_MISMATCH
+        - PLUGIN_STATE_VERSION_MISMATCH
+        - PLUGIN_CSRF_REQUIRED
+        - PLUGIN_RETAINED_DATA_CLEANUP_FAILED
+        - PLUGIN_RETAINED_DATA_BIND_FAILED
+    TrustState:
+      type: string
+      enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]
+    TrustHashSet:
+      type: object
+      required: [package_sha256, manifest_sha256, entries_sha256]
+      additionalProperties: false
+      properties:
+        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+    VerifiedSignature:
+      type: object
+      required: [algorithm, key_id]
+      additionalProperties: false
+      properties:
+        algorithm: { type: string, minLength: 1 }
+        key_id: { type: string, minLength: 1 }
+    TrustAssessment:
+      type: object
+      required: [trust_state, verified_hashes]
+      additionalProperties: false
+      properties:
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        reason_codes:
+          type: array
+          items: { type: string }
+        verified_hashes:
+          $ref: "#/components/schemas/TrustHashSet"
+        verified_signature:
+          $ref: "#/components/schemas/VerifiedSignature"
+        trust_assessment_epoch: { type: string }
+        policy_epoch: { type: string }
+        revocation_epoch: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+    PluginVersion:
+      type: object
+      required: [version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment]
+      additionalProperties: true
+      properties:
+        version: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        package_hash: { type: string, minLength: 1 }
+        manifest_hash: { type: string, minLength: 1 }
+        entries_hash: { type: string, minLength: 1 }
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        trust_assessment:
+          $ref: "#/components/schemas/TrustAssessment"
+        source_policy_snapshot_hash: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        source_policy_snapshot:
+          type: object
+          additionalProperties: true
+        local_import_provenance:
+          $ref: "#/components/schemas/LocalImportProvenance"
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+    PluginRecord:
+      type: object
+      required: [plugin_instance_id, plugin_id, version, active_fingerprint, trust_state, trust_assessment, enable_state]
+      additionalProperties: true
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        publisher_id: { type: string }
+        plugin_id: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        package_hash: { type: string }
+        manifest_hash: { type: string }
+        entries_hash: { type: string }
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        trust_assessment:
+          $ref: "#/components/schemas/TrustAssessment"
+        source_policy_snapshot_hash: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        source_policy_snapshot:
+          type: object
+          additionalProperties: true
+        local_import_provenance:
+          $ref: "#/components/schemas/LocalImportProvenance"
+        enable_state:
+          type: string
+          enum: [disabled, enabled, disabled_by_policy]
+        disabled_reason: { type: string }
+        retained_data_state:
+          type: string
+          enum: [none, retained, expired, bound, deleted, delete_failed_retryable]
+        policy_revision: { type: integer, minimum: 0 }
+        management_revision: { type: integer, minimum: 0 }
+        revoke_epoch: { type: integer, minimum: 0 }
+        manifest:
+          type: object
+          additionalProperties: true
+        package_entries:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        version_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginVersion"
+        installed_at: { type: string, format: date-time }
+        enabled_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+    LocalImportProvenance:
+      type: object
+      required: [import_id, distribution, policy_epoch, unsigned_policy, assessed_at]
+      additionalProperties: false
+      properties:
+        import_id: { type: string, minLength: 1 }
+        distribution: { enum: [local_import] }
+        policy_epoch: { type: string, minLength: 1 }
+        unsigned_policy: { enum: [dev_only, review_required, block] }
+        assessed_at: { type: string, format: date-time }
+    PackageHashSet:
+      type: object
+      required: [package_sha256, manifest_sha256, entries_sha256]
+      additionalProperties: false
+      properties:
+        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+    PluginReleaseRef:
+      type: object
+      required: [source_id, release_metadata_ref, release_metadata_sha256, publisher_id, plugin_id, version, expected_hashes]
+      additionalProperties: false
+      properties:
+        source_id: { type: string, minLength: 1 }
+        release_metadata_ref: { type: string, minLength: 1 }
+        release_metadata_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        publisher_id: { type: string, minLength: 1 }
+        plugin_id: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        expected_hashes:
+          $ref: "#/components/schemas/PackageHashSet"
+    ImportLocalPackageRequest:
+      type: object
+      required: [package_base64, plugin_state_version]
+      additionalProperties: false
+      properties:
+        package_base64: { type: string, contentEncoding: base64, minLength: 1 }
+        plugin_instance_id: { type: string, minLength: 1 }
+        plugin_state_version: { type: integer, const: 0 }
+    InstallReleaseRefRequest:
+      type: object
+      required: [release_ref, plugin_state_version]
+      additionalProperties: false
+      properties:
+        release_ref:
+          $ref: "#/components/schemas/PluginReleaseRef"
+        plugin_instance_id: { type: string, minLength: 1 }
+        plugin_state_version: { type: integer, const: 0 }
+    UpdateLocalPackageRequest:
+      type: object
+      required: [plugin_instance_id, package_base64, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        package_base64: { type: string, contentEncoding: base64, minLength: 1 }
+        plugin_state_version: { type: integer, minimum: 1 }
+    UpdateReleaseRefRequest:
+      type: object
+      required: [plugin_instance_id, release_ref, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        release_ref:
+          $ref: "#/components/schemas/PluginReleaseRef"
+        plugin_state_version: { type: integer, minimum: 1 }
+    DowngradeRequest:
+      type: object
+      required: [plugin_instance_id, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        version: { type: string }
+        package_hash: { type: string }
+        plugin_state_version: { type: integer, minimum: 1 }
+    EnableRequest:
+      type: object
+      required: [plugin_instance_id, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        plugin_state_version: { type: integer, minimum: 1 }
+    DisableRequest:
+      type: object
+      required: [plugin_instance_id, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        reason: { type: string }
+        plugin_state_version: { type: integer, minimum: 1 }
+    UninstallRequest:
+      type: object
+      required: [plugin_instance_id, delete_data, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        delete_data: { type: boolean }
+        plugin_state_version: { type: integer, minimum: 1 }
+    OpenSurfaceRequest:
+      type: object
+      required: [plugin_instance_id, surface_id, plugin_state_version]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        surface_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string }
+        plugin_state_version: { type: integer, minimum: 1 }
+    RevokeSurfaceScopeRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    SurfaceBootstrap:
+      type: object
+      additionalProperties: false
+      required:
+        - plugin_id
+        - plugin_instance_id
+        - plugin_version
+        - surface_id
+        - surface_instance_id
+        - active_fingerprint
+        - entry_path
+        - entry_sha256
+        - asset_session_nonce
+        - plugin_state_version
+        - revoke_epoch
+        - runtime_generation_id
+        - asset_ticket
+        - asset_ticket_id
+        - bridge_nonce
+        - issued_at
+        - expires_at
+      properties:
+        plugin_id: { type: string, minLength: 1 }
+        plugin_instance_id: { type: string, minLength: 1 }
+        plugin_version: { type: string, minLength: 1 }
+        surface_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        entry_path: { type: string, minLength: 1 }
+        entry_sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        asset_session_nonce: { type: string, minLength: 16 }
+        plugin_state_version: { type: integer, minimum: 1 }
+        revoke_epoch: { type: integer, minimum: 1 }
+        runtime_generation_id: { type: string, minLength: 1 }
+        asset_ticket: { type: string, minLength: 1 }
+        asset_ticket_id: { type: string, minLength: 1 }
+        bridge_nonce: { type: string, minLength: 16 }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    PrepareSurfaceRequest:
+      type: object
+      required: [asset_ticket]
+      additionalProperties: false
+      properties:
+        asset_ticket: { type: string, minLength: 1 }
+    SurfacePreparation:
+      type: object
+      additionalProperties: false
+      required:
+        - asset_session
+        - asset_session_id
+        - asset_session_nonce
+        - entry_path
+        - entry_sha256
+        - plugin_state_version
+        - revoke_epoch
+        - issued_at
+        - expires_at
+        - document
+      properties:
+        asset_session: { type: string, minLength: 1 }
+        asset_session_id: { type: string, minLength: 1 }
+        asset_session_nonce: { type: string, minLength: 16 }
+        entry_path: { type: string, minLength: 1 }
+        entry_sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        plugin_state_version: { type: integer, minimum: 1 }
+        revoke_epoch: { type: integer, minimum: 1 }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        document:
+          $ref: "../plugin/opaque-surface-document-v1.schema.json"
+    TrustedParentBridgeHandshake:
+      type: object
+      required: [type, plugin_id, surface_id, surface_instance_id, active_fingerprint, bridge_nonce, asset_session_nonce, plugin_state_version, revoke_epoch, ui_protocol_version]
+      additionalProperties: false
+      properties:
+        type: { const: redevplugin.bridge.handshake }
+        plugin_id: { type: string, minLength: 1 }
+        surface_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        bridge_nonce: { type: string, minLength: 16 }
+        asset_session_nonce: { type: string, minLength: 16 }
+        plugin_state_version: { type: integer, minimum: 1 }
+        revoke_epoch: { type: integer, minimum: 1 }
+        ui_protocol_version: { const: plugin-ui-v2 }
+    TrustedParentBridgeTokenRequest:
+      type: object
+      required: [handshake, bridge_channel_id, handshake_transcript_sha256]
+      additionalProperties: false
+      properties:
+        handshake:
+          $ref: "#/components/schemas/TrustedParentBridgeHandshake"
+        bridge_channel_id: { type: string, minLength: 1 }
+        handshake_transcript_sha256:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        previous_plugin_gateway_token:
+          type: string
+          minLength: 1
+          description: Required only when renewing the current bridge channel lease.
+    BridgeTokenResult:
+      type: object
+      additionalProperties: false
+      required: [plugin_gateway_token, plugin_gateway_token_id, asset_session, asset_session_id, issued_at, expires_at]
+      properties:
+        plugin_gateway_token: { type: string, minLength: 1 }
+        plugin_gateway_token_id: { type: string, minLength: 1 }
+        asset_session: { type: string, minLength: 1 }
+        asset_session_id: { type: string, minLength: 1 }
+        issued_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    ReadSurfaceAssetRequest:
+      type: object
+      additionalProperties: false
+      required: [asset_session, asset_session_id, binding_id]
+      properties:
+        asset_session: { type: string, minLength: 1 }
+        asset_session_id: { type: string, minLength: 1 }
+        binding_id: { type: string, pattern: '^asset_[A-Za-z0-9_-]{8,128}$' }
+    SurfaceAssetResult:
+      type: object
+      additionalProperties: false
+      required: [path, sha256, content_type, content_base64]
+      properties:
+        path: { type: string, minLength: 1 }
+        sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        content_type: { type: string, minLength: 1 }
+        content_base64: { type: string, contentEncoding: base64 }
+    ReadSurfaceStreamRequest:
+      type: object
+      additionalProperties: false
+      required: [stream_id, stream_ticket]
+      properties:
+        stream_id: { type: string, minLength: 1 }
+        stream_ticket: { type: string, minLength: 1 }
+    SurfaceStreamResult:
+      type: object
+      additionalProperties: false
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/StreamEvent"
+    StreamEvent:
+      type: object
+      additionalProperties: false
+      required: [stream_id, sequence, kind, at]
+      properties:
+        stream_id: { type: string, minLength: 1 }
+        sequence: { type: integer, minimum: 0 }
+        kind: { type: string, minLength: 1 }
+        data: { type: string, contentEncoding: base64 }
+        error: { type: string }
+        at: { type: string, format: date-time }
+    DisposeSurfaceRequest:
+      type: object
+      additionalProperties: false
+      required: [bridge_nonce]
+      properties:
+        bridge_nonce: { type: string, minLength: 16 }
+    RPCRequest:
+      type: object
+      required: [plugin_instance_id, surface_instance_id, bridge_channel_id, plugin_gateway_token, method]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        surface_instance_id: { type: string, minLength: 1 }
+        bridge_channel_id: { type: string, minLength: 1 }
+        plugin_gateway_token: { type: string, minLength: 1 }
+        confirmation_id: { type: string }
+        method: { type: string, minLength: 1 }
+        params:
+          type: object
+          additionalProperties: true
+    RiskFlag:
+      type: object
+      required: [id, severity, summary]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Stable machine-readable risk identifier.
+        severity:
+          type: string
+          enum: [info, low, medium, high, critical]
+        summary: { type: string, minLength: 1 }
+        description: { type: string }
+        requires_confirmation: { type: boolean }
+        requires_admin: { type: boolean }
+        data_loss_risk: { type: boolean }
+        destructive: { type: boolean }
+    RiskPlan:
+      type: object
+      required: [schema_version, summary, risk_flags]
+      additionalProperties: false
+      properties:
+        schema_version: { const: redevplugin.capability.risk_plan.v1 }
+        capability_id: { type: string }
+        binding_id: { type: string }
+        method: { type: string }
+        target_method: { type: string }
+        action: { type: string }
+        effect:
+          type: string
+          enum: [read, write, execute, delete, admin]
+        resource_ref: { type: string }
+        resource_display_name: { type: string }
+        summary: { type: string, minLength: 1 }
+        risk_flags:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskFlag"
+        requires_confirmation: { type: boolean }
+        requires_admin: { type: boolean }
+        data_loss_risk: { type: boolean }
+        destructive: { type: boolean }
+        deny_reason: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+    ConfirmResult:
+      type: object
+      required: [confirmation_id, confirmation_token_id, request_hash, plan_hash, expires_at]
+      additionalProperties: false
+      properties:
+        confirmation_id: { type: string, minLength: 1 }
+        confirmation_token_id:
+          type: string
+          minLength: 1
+          description: Opaque audit/display id for the server-held confirmation token. It is not a credential.
+        request_hash:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+        plan_hash:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+        plan:
+          description: Host-redacted confirmation plan payload returned by the declared preflight method, when available.
+          oneOf:
+            - $ref: "#/components/schemas/RiskPlan"
+            - type: object
+              additionalProperties: true
+        expires_at: { type: string, format: date-time }
+    InvokeIntentRequest:
+      type: object
+      required: [intent_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string }
+        intent_id: { type: string, minLength: 1 }
+        params:
+          type: object
+          additionalProperties: true
+    CancelOperationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+    StartRuntimeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        target:
+          type: object
+          additionalProperties: false
+          properties:
+            os: { type: string }
+            arch: { type: string }
+    ExportDataRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        include_secrets: { type: boolean }
+    ImportDataRequest:
+      type: object
+      required: [plugin_instance_id]
+      additionalProperties: false
+      description: At least one of archive_ref or settings_archive_ref must be supplied. Storage archive refs and settings archive refs are separated so settings secrets can remain redacted and require rebinding after import.
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        archive_ref: { type: string, minLength: 1 }
+        settings_archive_ref: { type: string, minLength: 1 }
+        delete_existing: { type: boolean }
+    RetainedDataState:
+      type: string
+      enum: [retained, expired, bound, deleted, delete_failed_retryable]
+    RetainedDataRecord:
+      type: object
+      required:
+        - retained_id
+        - source_plugin_instance_id
+        - publisher_id
+        - plugin_id
+        - version
+        - package_hash
+        - manifest_hash
+        - state
+        - storage_retained
+        - settings_retained
+        - retained_at
+        - updated_at
+      additionalProperties: false
+      properties:
+        retained_id: { type: string, minLength: 1 }
+        source_plugin_instance_id: { type: string, minLength: 1 }
+        bound_plugin_instance_id: { type: string }
+        publisher_id: { type: string, minLength: 1 }
+        plugin_id: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        package_hash: { type: string, minLength: 1 }
+        manifest_hash: { type: string, minLength: 1 }
+        state:
+          $ref: "#/components/schemas/RetainedDataState"
+        storage_retained: { type: boolean }
+        settings_retained: { type: boolean }
+        usage_bytes:
+          type: integer
+          minimum: 0
+        delete_after: { type: string, format: date-time }
+        delete_error: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+        retained_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        bound_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time }
+        last_accessed_at: { type: string, format: date-time }
+    RetainedDataList:
+      type: object
+      required: [retained_data]
+      additionalProperties: false
+      properties:
+        retained_data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetainedDataRecord"
+    RetainedDataCleanupResult:
+      type: object
+      additionalProperties: false
+      properties:
+        deleted:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetainedDataRecord"
+        failed:
+          type: array
+          items:
+            $ref: "#/components/schemas/RetainedDataRecord"
+    DeleteRetainedDataRequest:
+      type: object
+      required: [retained_id]
+      additionalProperties: false
+      properties:
+        retained_id: { type: string, minLength: 1 }
+    BindRetainedDataRequest:
+      type: object
+      required: [retained_id, target_plugin_instance_id]
+      additionalProperties: false
+      properties:
+        retained_id: { type: string, minLength: 1 }
+        target_plugin_instance_id: { type: string, minLength: 1 }
+    CleanupExpiredRetainedDataRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        retry_failed: { type: boolean }
+        max_records:
+          type: integer
+          minimum: 1
+    GrantPermissionRequest:
+      type: object
+      required: [plugin_instance_id, permission_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        permission_id: { type: string, minLength: 1 }
+        granted_by: { type: string }
+        expires_at: { type: string, format: date-time }
+    RevokePermissionRequest:
+      type: object
+      required: [plugin_instance_id, permission_id]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        permission_id: { type: string, minLength: 1 }
+        revoked_by: { type: string }
+        reason: { type: string }
+    SecretRefRequest:
+      type: object
+      required: [plugin_instance_id, secret_ref, scope]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        secret_ref: { type: string, minLength: 1 }
+        scope: { type: string, enum: [user, environment] }
+    PatchSettingsRequest:
+      type: object
+      required: [values]
+      additionalProperties: false
+      properties:
+        values:
+          type: object
+          additionalProperties: true

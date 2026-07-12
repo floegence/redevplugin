@@ -51,6 +51,8 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"source-revocations-schema",
 		"token-ticket-schema",
 		"iframe-bridge-schema",
+		"opaque-surface-document-schema",
+		"opaque-surface-transport-schema",
 		"compatibility-manifest-schema",
 		"release-manifest-schema",
 		"worker-invocation-schema",
@@ -59,6 +61,7 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"wasm-worker-schema",
 		"network-grant-schema",
 		"target-classifier-fixture",
+		"contract-registry",
 	} {
 		if !seen[id] {
 			t.Fatalf("compatibility manifest missing contract id %q", id)
@@ -111,7 +114,7 @@ func TestVerifyCompatibilityManifestFailsClosed(t *testing.T) {
 	}
 
 	driftedMatrix := CurrentCompatibilityManifest()
-	driftedMatrix.Matrix.PluginHostProtocolVersion = "plugin-host-v2"
+	driftedMatrix.Matrix.PluginHostProtocolVersion = "plugin-host-v999"
 	if err := VerifyCompatibilityManifest(driftedMatrix, root); !errors.Is(err, ErrCompatibilityMatrix) {
 		t.Fatalf("matrix drift error = %v, want %v", err, ErrCompatibilityMatrix)
 	}
@@ -192,7 +195,7 @@ func TestCurrentMatrixFallsBackToBuildInfoVersion(t *testing.T) {
 	defer restoreDetector()
 
 	matrix := CurrentMatrix()
-	if matrix.GoModuleVersion != "0.7.0" || matrix.UIPackageVersion != "0.7.0" || matrix.RuntimeVersion != "0.7.0" {
+	if matrix.GoModuleVersion != "0.7.0" || matrix.UIPackageVersion != devVersion || matrix.RuntimeVersion != devVersion {
 		t.Fatalf("matrix versions = %#v", matrix)
 	}
 }

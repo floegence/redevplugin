@@ -70,7 +70,7 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -161,7 +161,7 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -195,7 +195,7 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		networkExecute["chunk_count"] != float64(2) {
 		t.Fatalf("stream network_execute result mismatch: %#v", networkExecute)
 	}
-	streamResult, err := h.ReadStream(ctx, ReadStreamRequest{StreamID: result.StreamID, StreamTicket: result.StreamTicket})
+	streamResult, err := h.ReadStream(ctx, scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
 		t.Fatalf("ReadStream() error = %v", err)
 	}
@@ -265,7 +265,7 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -347,7 +347,7 @@ func TestCallPluginMethodWorkerNetworkHostcallThroughBuiltRustRuntime(t *testing
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkHostcallFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkHostcallFixturePackage(t), "worker.view")
 	body := []byte("hello from wasm network hostcall")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
@@ -446,7 +446,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkMemoryHostcallFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkMemoryHostcallFixturePackage(t), "worker.view")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -645,7 +645,7 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 			if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 				t.Fatalf("Start() error = %v", err)
 			}
-			installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkTransportMemoryHostcallFixturePackage(t, tc.transport), "worker.activity")
+			installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkTransportMemoryHostcallFixturePackage(t, tc.transport), "worker.view")
 
 			result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 				PluginInstanceID:     installed.PluginInstanceID,
@@ -728,7 +728,7 @@ func TestCallPluginMethodWorkerStorageHostcallThroughBuiltRustRuntime(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageFixturePackage(t), "worker.view")
 	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		StoreID:             "workspace",
@@ -837,7 +837,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageMemoryHostcallFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageMemoryHostcallFixturePackage(t), "worker.view")
 	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		StoreID:             "workspace",
@@ -943,7 +943,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageKVMemoryHostcallFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageKVMemoryHostcallFixturePackage(t), "worker.view")
 	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		StoreID:             "cache",
@@ -1050,7 +1050,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t), "worker.activity")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t), "worker.view")
 	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
 		PluginInstanceID:    installed.PluginInstanceID,
 		StoreID:             "db",
