@@ -1371,9 +1371,12 @@ export class PluginSurfaceHost {
     const startedAt = Date.now();
     const progressTimer = setTimeout(() => {
       if (!this.#ready && !this.#disposed) {
-        this.#onOpeningProgress?.({ phase: "opening", elapsedMs: Date.now() - startedAt });
+        this.#onOpeningProgress?.({
+          phase: "opening",
+          elapsedMs: Math.max(openingProgressDelayMs, Date.now() - startedAt),
+        });
       }
-    }, 300);
+    }, openingProgressDelayMs);
     const signals: OpenSignals = { portAcknowledged: deferred<void>(), firstPaint: deferred<void>(), workerReady: deferred<void>() };
     void signals.portAcknowledged.promise.catch(() => undefined);
     void signals.firstPaint.promise.catch(() => undefined);
@@ -2040,6 +2043,8 @@ const deniedPluginPermissionsPolicy = [
   "usb 'none'",
   "xr-spatial-tracking 'none'",
 ].join("; ");
+
+const openingProgressDelayMs = 300;
 
 function randomOpaqueNonce(): string {
   const cryptoLike = globalThis.crypto;

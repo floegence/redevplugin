@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createBrowserDemoServer } from "./server.mjs";
+import { isExpectedSandboxConsoleLine } from "./smoke-console-policy.mjs";
 
 test("browser demo exposes one same-origin opaque surface transport", async (t) => {
   const demo = createBrowserDemoServer({ prepareDelayMs: 1, assetDelayMs: 1 });
@@ -97,4 +98,11 @@ test("the trusted worker wrapper owns the direct dynamic-import gate", async () 
     assert.match(worker, /runWorkerSecurityProbe/);
     assert.match(worker, /\.\/worker-security-probe\.js/);
   }
+});
+
+test("browser smoke accepts only known sandbox console evidence", () => {
+  assert.equal(isExpectedSandboxConsoleLine("warning: Unrecognized feature: 'bluetooth'."), true);
+  assert.equal(isExpectedSandboxConsoleLine("warning: Unrecognized feature: 'camera'."), false);
+  assert.equal(isExpectedSandboxConsoleLine("error: violates the following Content Security Policy directive"), true);
+  assert.equal(isExpectedSandboxConsoleLine("error: unexpected plugin failure"), false);
 });

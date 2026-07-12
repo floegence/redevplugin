@@ -1051,14 +1051,18 @@ test("surface host reports opening progress after 300ms", async () => {
     onOpeningProgress: (value) => progress.push(value.elapsedMs),
   });
   const opening = host.open();
-  frame.load();
-  await new Promise((resolve) => setTimeout(resolve, 320));
-  assert.equal(progress.length, 1);
-  assert.equal(progress[0]! >= 300, true);
-  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
-  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
-  await opening;
-  host.dispose();
+  void opening.catch(() => undefined);
+  try {
+    frame.load();
+    await new Promise((resolve) => setTimeout(resolve, 320));
+    assert.equal(progress.length, 1);
+    assert.equal(progress[0]! >= 300, true);
+    channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await opening;
+  } finally {
+    host.dispose();
+  }
 });
 
 test("surface opening deadline revokes server state, tears down locally, and remains retryable", async () => {

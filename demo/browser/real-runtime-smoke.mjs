@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
+import { isExpectedSandboxConsoleLine } from "./smoke-console-policy.mjs";
 
 const repoRoot = new URL("../..", import.meta.url);
 const toolEnv = withUserToolchainPath(process.env);
@@ -314,7 +315,7 @@ async function verifyScenario(credentiallessScenario) {
     const failedResponses = await Promise.all(failedAPIResponses);
     assert.equal(failedResponses.length, 3, `${credentiallessScenario} expected one confirmation challenge per dangerous call`);
     assert.equal(failedResponses.every((entry) => entry.status === 409 && entry.body.includes("PLUGIN_CONFIRMATION_REQUIRED")), true);
-    const unexpectedConsoleLines = consoleLines.filter((entry) => !isExpectedSecurityProbeConsoleLine(entry));
+    const unexpectedConsoleLines = consoleLines.filter((entry) => !isExpectedSandboxConsoleLine(entry));
     assert.deepEqual(unexpectedConsoleLines, []);
 
     return {
@@ -423,12 +424,6 @@ function forbiddenEvidenceAbsent(serializedEvidence) {
     "owner_session_hash",
     "session_channel_id_hash",
   ].some((forbidden) => serializedEvidence.includes(forbidden));
-}
-
-function isExpectedSecurityProbeConsoleLine(entry) {
-  return entry.includes("violates the following Content Security Policy directive") ||
-    entry.includes("Refused to connect because it violates the document's Content Security Policy") ||
-    entry.includes("Failed to load resource: the server responded with a status of 409");
 }
 
 async function readDiagnostics() {
