@@ -843,7 +843,7 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	if err != nil {
 		return err
 	}
-	record, err := host.InstallPackageBytes(ctx, h, data, registry.TrustUnsignedLocal)
+	record, err := host.ImportLocalPackageBytes(ctx, h, data)
 	if err != nil {
 		return err
 	}
@@ -891,7 +891,7 @@ func installVerifiedHarness(ctx context.Context, packageFile string, publicKeyFi
 	if err != nil {
 		return err
 	}
-	record, err := host.InstallPackageBytes(ctx, h, data, registry.TrustVerified)
+	record, err := host.ImportLocalPackageBytes(ctx, h, data)
 	if err != nil {
 		return err
 	}

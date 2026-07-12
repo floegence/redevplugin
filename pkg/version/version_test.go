@@ -46,6 +46,9 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"plugin-platform-openapi",
 		"manifest-schema",
 		"package-signature-schema",
+		"release-metadata-schema",
+		"source-policy-schema",
+		"source-revocations-schema",
 		"token-ticket-schema",
 		"iframe-bridge-schema",
 		"compatibility-manifest-schema",
@@ -123,6 +126,38 @@ func TestDecodeAndVerifyCompatibilityManifestFile(t *testing.T) {
 	}
 	if err := VerifyCompatibilityManifestFile(filename, repoRoot(t)); err != nil {
 		t.Fatalf("VerifyCompatibilityManifestFile() error = %v", err)
+	}
+}
+
+func TestDecodeCompatibilityManifestRejectsUnknownFields(t *testing.T) {
+	raw := mustMarshalCompatibilityManifest(t, CurrentCompatibilityManifest())
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	decoded["unexpected"] = true
+	withUnknown, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := DecodeCompatibilityManifest(withUnknown); err == nil {
+		t.Fatal("DecodeCompatibilityManifest() accepted unknown top-level field")
+	}
+
+	decoded = map[string]any{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	contracts := decoded["contracts"].([]any)
+	firstContract := contracts[0].(map[string]any)
+	firstContract["unexpected"] = true
+	withNestedUnknown, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeCompatibilityManifest(withNestedUnknown); err == nil {
+		t.Fatal("DecodeCompatibilityManifest() accepted unknown nested field")
 	}
 }
 

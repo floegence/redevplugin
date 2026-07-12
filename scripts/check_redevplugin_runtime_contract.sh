@@ -46,6 +46,12 @@ export GOWORK=off
   grep -q 'package-signature-v1.schema.json' spec/plugin/package-signature-v1.schema.json
   grep -q '"schema_version": { "const": "redevplugin.package_signature.v1" }' spec/plugin/package-signature-v1.schema.json
   grep -q '"algorithm": { "enum": \["ed25519"\] }' spec/plugin/package-signature-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.release_metadata.v1" }' spec/plugin/release-metadata-v1.schema.json
+  grep -q '"release_metadata_signature"' spec/plugin/release-metadata-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.source_policy.v1" }' spec/plugin/source-policy-v1.schema.json
+  grep -q '"unsigned_policy": { "enum": \["dev_only", "review_required", "block"\] }' spec/plugin/source-policy-v1.schema.json
+  grep -q '"schema_version": { "const": "redevplugin.source_revocations.v1" }' spec/plugin/source-revocations-v1.schema.json
+  grep -q '"revoked_key_ids"' spec/plugin/source-revocations-v1.schema.json
   grep -q '"runtime_execution_lease"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"handle_grant"' spec/plugin/token-ticket-v1.schema.json
   grep -q '"runtime_generation_id",' spec/plugin/token-ticket-v1.schema.json
@@ -65,6 +71,9 @@ export GOWORK=off
   grep -q '"schema_version": { "const": "redevplugin.compatibility.v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"bridge_schema_version": { "const": "bridge-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"network_grant_schema_version": { "const": "network-grant-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"release_metadata_schema_version": { "const": "release-metadata-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"source_policy_schema_version": { "const": "source-policy-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
+  grep -q '"source_revocations_schema_version": { "const": "source-revocations-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"compatibility_schema_version"' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"error_codes_schema_version": { "const": "error-codes-v1" }' spec/plugin/compatibility-manifest-v1.schema.json
   grep -q '"title": "ReDevPlugin stable error codes v1"' spec/plugin/error-codes-v1.schema.json
@@ -173,6 +182,9 @@ JSON
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-manifest-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "release-metadata-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "source-policy-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "source-revocations-schema"'
   go run ./cmd/redevplugin version | grep -q '"network_grant_schema_version": "network-grant-v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "network-grant-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'

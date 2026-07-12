@@ -99,8 +99,8 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 		},
 	}
 	if _, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:             signedPkg,
-		RequestedTrustState: registry.TrustVerified,
+		Package:     signedPkg,
+		LocalImport: true,
 	}); err != nil {
 		t.Fatalf("VerifyPackageTrust() error = %v", err)
 	}
@@ -293,9 +293,9 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		}
 	})
 
-	installed, err := host.InstallPackageBytes(ctx, h, packageBytes, registry.TrustUnsignedLocal)
+	installed, err := host.ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
-		t.Fatalf("InstallPackageBytes() error = %v", err)
+		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
 	now := time.Now().UTC()
 	if _, err := h.EnablePlugin(ctx, host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
@@ -1180,6 +1180,20 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 	openapi := contracts["plugin-platform-openapi"]
 	if openapi.Version != version.PluginPlatformOpenAPIVersion || openapi.SHA256 == "" {
 		t.Fatalf("openapi contract mismatch: %#v", openapi)
+	}
+	for _, contract := range []struct {
+		id      string
+		path    string
+		version string
+	}{
+		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v1.schema.json", version: version.ReleaseMetadataSchemaVersion},
+		{id: "source-policy-schema", path: "spec/plugin/source-policy-v1.schema.json", version: version.SourcePolicySchemaVersion},
+		{id: "source-revocations-schema", path: "spec/plugin/source-revocations-v1.schema.json", version: version.SourceRevocationsSchemaVersion},
+	} {
+		got := contracts[contract.id]
+		if got.Path != contract.path || got.Version != contract.version || got.SHA256 == "" {
+			t.Fatalf("%s contract mismatch: %#v", contract.id, got)
+		}
 	}
 }
 

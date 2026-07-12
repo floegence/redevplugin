@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/source-policy-v1.schema.json",
+  "title": "ReDevPlugin plugin source policy snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "source_type",
+    "source_class",
+    "allowed_publishers",
+    "trusted_key_ids",
+    "trusted_keys",
+    "revocation_evidence",
+    "require_signature",
+    "install_policy",
+    "unsigned_policy",
+    "downgrade_policy",
+    "policy_epoch",
+    "key_rotation_epoch",
+    "revocation_epoch",
+    "assessed_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.source_policy.v1" },
+    "source_id": { "type": "string", "minLength": 1 },
+    "source_type": { "enum": ["registry", "host_artifact"] },
+    "source_class": { "enum": ["official", "curated", "community", "private"] },
+    "allowed_publishers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "trusted_key_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "trusted_keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/trusted_key" }
+    },
+    "revocation_evidence": { "$ref": "#/$defs/revocation_evidence" },
+    "require_signature": { "type": "boolean" },
+    "install_policy": { "enum": ["allow", "review_required", "block"] },
+    "unsigned_policy": { "enum": ["dev_only", "review_required", "block"] },
+    "downgrade_policy": { "enum": ["review_required", "block"] },
+    "policy_epoch": { "$ref": "#/$defs/decimal_epoch" },
+    "key_rotation_epoch": { "$ref": "#/$defs/decimal_epoch" },
+    "revocation_epoch": { "$ref": "#/$defs/decimal_epoch" },
+    "assessed_at": { "type": "string", "format": "date-time" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "trusted_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "key_id",
+        "public_key_sha256",
+        "usage",
+        "valid_until",
+        "revocation_epoch"
+      ],
+      "properties": {
+        "algorithm": { "enum": ["ed25519"] },
+        "key_id": { "type": "string", "minLength": 1 },
+        "public_key_sha256": { "$ref": "#/$defs/sha256" },
+        "usage": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["release_metadata", "package_signature", "revocation_metadata"] }
+        },
+        "valid_from": { "type": "string", "format": "date-time" },
+        "valid_until": { "type": "string", "format": "date-time" },
+        "revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }
+      }
+    },
+    "revocation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metadata_ref",
+        "metadata_sha256",
+        "signature_ref",
+        "signature_key_id",
+        "verified_at",
+        "expires_at",
+        "highest_seen_epoch"
+      ],
+      "properties": {
+        "metadata_ref": { "$ref": "#/$defs/artifact_ref" },
+        "metadata_sha256": { "$ref": "#/$defs/sha256" },
+        "signature_ref": { "$ref": "#/$defs/artifact_ref" },
+        "signature_key_id": { "type": "string", "minLength": 1 },
+        "verified_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "highest_seen_epoch": { "$ref": "#/$defs/decimal_epoch" }
+      }
+    },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._/@+-]+$",
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "[?#]" }
+        ]
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^(sha256:)?[a-f0-9]{64}$"
+    },
+    "decimal_epoch": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    }
+  }
+}

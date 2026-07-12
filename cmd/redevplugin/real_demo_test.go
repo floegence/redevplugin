@@ -63,7 +63,15 @@ func TestRealDemoSandboxHandlerOnlyExposesSandboxRoutes(t *testing.T) {
 		{
 			name:         "sandbox origin does not expose management api",
 			method:       http.MethodPost,
-			path:         "/_redevplugin/api/plugins/install",
+			path:         "/_redevplugin/api/plugins/local-import/install",
+			origin:       hostOrigin,
+			wantStatus:   http.StatusNotFound,
+			wantPlatform: false,
+		},
+		{
+			name:         "sandbox origin does not expose release ref management api",
+			method:       http.MethodPost,
+			path:         "/_redevplugin/api/plugins/install-release-ref",
 			origin:       hostOrigin,
 			wantStatus:   http.StatusNotFound,
 			wantPlatform: false,

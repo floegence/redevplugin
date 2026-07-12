@@ -49,12 +49,18 @@ try {
   await waitForHTTP(hostURL);
   const assetBeforeBootstrap = await fetch(`${sandboxOrigin}/_redevplugin/assets/asset_session_probe/ui/index.html`);
   assert.equal(assetBeforeBootstrap.status, 403);
-  const sandboxManagementProbe = await fetch(`${sandboxOrigin}/_redevplugin/api/plugins/install`, {
+  const sandboxManagementProbe = await fetch(`${sandboxOrigin}/_redevplugin/api/plugins/local-import/install`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: "{}",
   });
   assert.equal(sandboxManagementProbe.status, 404);
+  const sandboxReleaseRefManagementProbe = await fetch(`${sandboxOrigin}/_redevplugin/api/plugins/install-release-ref`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(sandboxReleaseRefManagementProbe.status, 404);
   browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const consoleErrors = [];

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -145,6 +146,73 @@ func TestStoreDeletePlugin(t *testing.T) {
 	}
 }
 
+func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
+	for _, tc := range registryStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+			initial := SourceSecurityFloor{
+				SourceID:                 "official",
+				PolicyEpoch:              "10",
+				KeyRotationEpoch:         "20",
+				RevocationEpoch:          "30",
+				SourcePolicySnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				RevocationMetadataSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			}
+			stored, err := store.PutSourceSecurityFloor(context.Background(), initial, PutOptions{Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !stored.UpdatedAt.Equal(now) {
+				t.Fatalf("stored updated_at = %s, want %s", stored.UpdatedAt, now)
+			}
+			got, err := store.GetSourceSecurityFloor(context.Background(), initial.SourceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.PolicyEpoch != "10" || got.KeyRotationEpoch != "20" || got.RevocationEpoch != "30" {
+				t.Fatalf("source floor mismatch: %#v", got)
+			}
+
+			higher := initial
+			higher.PolicyEpoch = "11"
+			higher.KeyRotationEpoch = "21"
+			higher.RevocationEpoch = "31"
+			if _, err := store.PutSourceSecurityFloor(context.Background(), higher, PutOptions{Now: now.Add(time.Second)}); err != nil {
+				t.Fatalf("PutSourceSecurityFloor(higher) error = %v", err)
+			}
+
+			for _, tc := range []struct {
+				name   string
+				mutate func(SourceSecurityFloor) SourceSecurityFloor
+			}{
+				{name: "policy", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
+					floor.PolicyEpoch = "10"
+					return floor
+				}},
+				{name: "key rotation", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
+					floor.KeyRotationEpoch = "20"
+					return floor
+				}},
+				{name: "revocation", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
+					floor.RevocationEpoch = "30"
+					return floor
+				}},
+				{name: "revocation metadata", mutate: func(floor SourceSecurityFloor) SourceSecurityFloor {
+					floor.RevocationMetadataSHA256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+					return floor
+				}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					if _, err := store.PutSourceSecurityFloor(context.Background(), tc.mutate(higher), PutOptions{Now: now.Add(2 * time.Second)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
+						t.Fatalf("PutSourceSecurityFloor rollback error = %v, want %v", err, ErrSourceSecurityFloorRollback)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.sqlite")
 	now := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
@@ -162,9 +230,30 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		ManifestHash:      "sha256:manifest",
 		EntriesHash:       "sha256:entries",
 		TrustState:        TrustVerified,
-		EnableState:       EnableEnabled,
-		Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.persist", Version: "1.0.0"}},
-		Metadata:          map[string]string{"source": "sqlite-test"},
+		TrustAssessment: TrustAssessment{
+			TrustState:  TrustVerified,
+			ReasonCodes: []string{"sqlite_round_trip"},
+			VerifiedHashes: TrustHashSet{
+				PackageSHA256:  "sha256:pkg",
+				ManifestSHA256: "sha256:manifest",
+				EntriesSHA256:  "sha256:entries",
+			},
+			VerifiedSignature:    &VerifiedSignature{Algorithm: "ed25519", KeyID: "official"},
+			TrustAssessmentEpoch: "trust_epoch_1",
+			PolicyEpoch:          "1",
+			RevocationEpoch:      "1",
+			Metadata:             map[string]string{"trust.key_id": "official"},
+		},
+		LocalImportProvenance: &LocalImportProvenance{
+			ImportID:       "local_import",
+			Distribution:   "local_import",
+			PolicyEpoch:    "local_import",
+			UnsignedPolicy: "dev_only",
+			AssessedAt:     "2026-06-29T00:00:00Z",
+		},
+		EnableState: EnableEnabled,
+		Manifest:    manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.persist", Version: "1.0.0"}},
+		Metadata:    map[string]string{"source": "sqlite-test"},
 	}
 	stored, err := store.PutPlugin(context.Background(), record, PutOptions{Now: now})
 	if err != nil {
@@ -189,8 +278,109 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		got.PackageHash != "sha256:pkg" ||
 		got.Manifest.Plugin.PluginID != record.PluginID ||
 		got.Metadata["source"] != "sqlite-test" ||
+		got.TrustAssessment.TrustState != TrustVerified ||
+		got.TrustAssessment.ReasonCodes[0] != "sqlite_round_trip" ||
+		got.TrustAssessment.VerifiedSignature == nil ||
+		got.TrustAssessment.VerifiedSignature.KeyID != "official" ||
+		got.TrustAssessment.PolicyEpoch != "1" ||
+		got.TrustAssessment.RevocationEpoch != "1" ||
+		got.TrustAssessment.Metadata["trust.key_id"] != "official" ||
+		got.LocalImportProvenance == nil ||
+		got.LocalImportProvenance.UnsignedPolicy != "dev_only" ||
 		!got.InstalledAt.Equal(now) {
 		t.Fatalf("persisted record mismatch: %#v", got)
+	}
+	listed, err := reopened.ListPlugins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].TrustAssessment.VerifiedSignature == nil || listed[0].TrustAssessment.VerifiedSignature.KeyID != "official" {
+		t.Fatalf("ListPlugins() trust assessment mismatch: %#v", listed)
+	}
+}
+
+func TestSQLiteStoreMigratesV1TrustAssessmentAndUpdatesUserVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+CREATE TABLE plugin_registry_schema_migrations (
+	version INTEGER PRIMARY KEY,
+	applied_at INTEGER NOT NULL
+);
+CREATE TABLE plugin_records (
+	plugin_instance_id TEXT PRIMARY KEY,
+	publisher_id TEXT NOT NULL,
+	plugin_id TEXT NOT NULL,
+	version TEXT NOT NULL,
+	active_fingerprint TEXT NOT NULL,
+	package_hash TEXT NOT NULL,
+	manifest_hash TEXT NOT NULL,
+	entries_hash TEXT NOT NULL,
+	trust_state TEXT NOT NULL,
+	enable_state TEXT NOT NULL,
+	disabled_reason TEXT NOT NULL,
+	retained_data_state TEXT NOT NULL,
+	policy_revision INTEGER NOT NULL,
+	management_revision INTEGER NOT NULL,
+	revoke_epoch INTEGER NOT NULL,
+	manifest_json TEXT NOT NULL,
+	package_entries_json TEXT NOT NULL,
+	version_history_json TEXT NOT NULL,
+	installed_at INTEGER NOT NULL,
+	enabled_at INTEGER,
+	updated_at INTEGER NOT NULL,
+	deleted_at INTEGER,
+	metadata_json TEXT NOT NULL
+);
+PRAGMA user_version = 1;
+INSERT INTO plugin_registry_schema_migrations(version, applied_at) VALUES(1, 1);
+`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteStore(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var userVersion int
+	if err := store.db.QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&userVersion); err != nil {
+		t.Fatal(err)
+	}
+	if userVersion != sqliteSchemaVersion {
+		t.Fatalf("user_version = %d, want %d", userVersion, sqliteSchemaVersion)
+	}
+	if _, err := store.PutPlugin(context.Background(), PluginRecord{
+		PluginInstanceID:  "plugini_migrated",
+		PublisherID:       "example",
+		PluginID:          "com.example.migrated",
+		Version:           "1.0.0",
+		ActiveFingerprint: "sha256:migrated",
+		PackageHash:       "sha256:pkg",
+		ManifestHash:      "sha256:manifest",
+		EntriesHash:       "sha256:entries",
+		TrustState:        TrustVerified,
+		EnableState:       EnableDisabled,
+		Manifest:          manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.migrated", Version: "1.0.0"}},
+	}, PutOptions{}); err != nil {
+		t.Fatalf("PutPlugin() after v1 migration error = %v", err)
+	}
+	if _, err := store.PutSourceSecurityFloor(context.Background(), SourceSecurityFloor{
+		SourceID:                 "official",
+		PolicyEpoch:              "1",
+		KeyRotationEpoch:         "1",
+		RevocationEpoch:          "1",
+		SourcePolicySnapshotHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		RevocationMetadataSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}, PutOptions{}); err != nil {
+		t.Fatalf("PutSourceSecurityFloor() after v1 migration error = %v", err)
 	}
 }
 
@@ -212,12 +402,12 @@ func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
 }
 
 func TestRunnableTrustState(t *testing.T) {
-	for _, state := range []TrustState{TrustBundled, TrustVerified, TrustUnsignedLocal} {
+	for _, state := range []TrustState{TrustVerified, TrustUnsignedLocal} {
 		if !RunnableTrustState(state) {
 			t.Fatalf("%s should be runnable", state)
 		}
 	}
-	for _, state := range []TrustState{TrustUntrusted, TrustNeedsReview, TrustBlockedSecurity} {
+	for _, state := range []TrustState{TrustUntrusted, TrustNeedsReview, TrustUnavailable, TrustBlockedSecurity} {
 		if RunnableTrustState(state) {
 			t.Fatalf("%s should not be runnable", state)
 		}

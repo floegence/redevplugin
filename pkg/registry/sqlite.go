@@ -7,13 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 5
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -111,11 +112,12 @@ func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 	defer s.mu.Unlock()
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT
-	plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
-	package_hash, manifest_hash, entries_hash, trust_state, enable_state,
-	disabled_reason, retained_data_state, policy_revision, management_revision,
-	revoke_epoch, manifest_json, package_entries_json, version_history_json,
+	SELECT
+		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, enable_state,
+		disabled_reason, retained_data_state, policy_revision, management_revision,
+		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 	installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
 WHERE deleted_at IS NULL
@@ -204,6 +206,56 @@ func (s *SQLiteStore) DeletePlugin(ctx context.Context, pluginInstanceID string)
 	return nil
 }
 
+func (s *SQLiteStore) PutSourceSecurityFloor(ctx context.Context, floor SourceSecurityFloor, opts PutOptions) (SourceSecurityFloor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	floor.UpdatedAt = now
+	if err := validateSourceSecurityFloor(floor); err != nil {
+		return SourceSecurityFloor{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SourceSecurityFloor{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+
+	existing, exists, err := getSQLiteSourceSecurityFloor(ctx, tx, floor.SourceID)
+	if err != nil {
+		return SourceSecurityFloor{}, err
+	}
+	if exists {
+		if err := ensureSourceSecurityFloorMonotonic(existing, floor); err != nil {
+			return SourceSecurityFloor{}, err
+		}
+	}
+	if err := upsertSQLiteSourceSecurityFloor(ctx, tx, floor); err != nil {
+		return SourceSecurityFloor{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return SourceSecurityFloor{}, err
+	}
+	return floor, nil
+}
+
+func (s *SQLiteStore) GetSourceSecurityFloor(ctx context.Context, sourceID string) (SourceSecurityFloor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	floor, exists, err := getSQLiteSourceSecurityFloor(ctx, s.db, sourceID)
+	if err != nil {
+		return SourceSecurityFloor{}, err
+	}
+	if !exists {
+		return SourceSecurityFloor{}, ErrNotFound
+	}
+	return floor, nil
+}
+
 func (s *SQLiteStore) updatePlugin(ctx context.Context, pluginInstanceID string, now time.Time, mutate func(PluginRecord, time.Time) PluginRecord) (PluginRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,8 +326,12 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 	package_hash TEXT NOT NULL,
 	manifest_hash TEXT NOT NULL,
 	entries_hash TEXT NOT NULL,
-	trust_state TEXT NOT NULL,
-	enable_state TEXT NOT NULL,
+		trust_state TEXT NOT NULL,
+		trust_assessment_json TEXT NOT NULL DEFAULT '{}',
+		source_policy_snapshot_hash TEXT NOT NULL DEFAULT '',
+		source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
+		local_import_provenance_json TEXT NOT NULL DEFAULT '{}',
+		enable_state TEXT NOT NULL,
 	disabled_reason TEXT NOT NULL,
 	retained_data_state TEXT NOT NULL,
 	policy_revision INTEGER NOT NULL,
@@ -298,10 +354,56 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_deleted_at ON plugin_records(deleted_at)`); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
+	source_id TEXT PRIMARY KEY,
+	policy_epoch TEXT NOT NULL,
+	key_rotation_epoch TEXT NOT NULL,
+	revocation_epoch TEXT NOT NULL,
+	source_policy_snapshot_hash TEXT NOT NULL,
+	revocation_metadata_sha256 TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+)`); err != nil {
+		return err
+	}
+	if userVersion < 2 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN trust_assessment_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
+	if userVersion < 3 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN source_policy_snapshot_hash TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 3, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
+	if userVersion < 4 {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 4, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
+	if userVersion < 5 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN local_import_provenance_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 5, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
 	if userVersion < 1 {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 1, time.Now().UTC().UnixNano()); err != nil {
 			return err
 		}
+	}
+	if userVersion < sqliteSchemaVersion {
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, sqliteSchemaVersion)); err != nil {
 			return err
 		}
@@ -312,10 +414,11 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 func getSQLitePlugin(ctx context.Context, q sqliteQuerier, pluginInstanceID string, includeDeleted bool) (PluginRecord, bool, error) {
 	query := `
 SELECT
-	plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
-	package_hash, manifest_hash, entries_hash, trust_state, enable_state,
-	disabled_reason, retained_data_state, policy_revision, management_revision,
-	revoke_epoch, manifest_json, package_entries_json, version_history_json,
+		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, enable_state,
+		disabled_reason, retained_data_state, policy_revision, management_revision,
+		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 	installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
 WHERE plugin_instance_id = ?`
@@ -334,6 +437,7 @@ WHERE plugin_instance_id = ?`
 }
 
 func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) error {
+	record = normalizeTrustAssessment(record)
 	manifestJSON, err := encodeRegistryJSON(record.Manifest)
 	if err != nil {
 		return err
@@ -350,15 +454,28 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	if err != nil {
 		return err
 	}
+	trustAssessmentJSON, err := encodeRegistryJSON(record.TrustAssessment)
+	if err != nil {
+		return err
+	}
+	sourcePolicySnapshotJSON, err := encodeRegistryJSON(record.SourcePolicySnapshot)
+	if err != nil {
+		return err
+	}
+	localImportProvenanceJSON, err := encodeRegistryJSON(record.LocalImportProvenance)
+	if err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO plugin_records (
-	plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
-	package_hash, manifest_hash, entries_hash, trust_state, enable_state,
-	disabled_reason, retained_data_state, policy_revision, management_revision,
-	revoke_epoch, manifest_json, package_entries_json, version_history_json,
-	installed_at, enabled_at, updated_at, deleted_at, metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(plugin_instance_id) DO UPDATE SET
+	INSERT INTO plugin_records (
+		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
+		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
+		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, enable_state,
+		disabled_reason, retained_data_state, policy_revision, management_revision,
+		revoke_epoch, manifest_json, package_entries_json, version_history_json,
+		installed_at, enabled_at, updated_at, deleted_at, metadata_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
 	version = excluded.version,
@@ -367,7 +484,11 @@ ON CONFLICT(plugin_instance_id) DO UPDATE SET
 	manifest_hash = excluded.manifest_hash,
 	entries_hash = excluded.entries_hash,
 	trust_state = excluded.trust_state,
-	enable_state = excluded.enable_state,
+		trust_assessment_json = excluded.trust_assessment_json,
+		source_policy_snapshot_hash = excluded.source_policy_snapshot_hash,
+		source_policy_snapshot_json = excluded.source_policy_snapshot_json,
+		local_import_provenance_json = excluded.local_import_provenance_json,
+		enable_state = excluded.enable_state,
 	disabled_reason = excluded.disabled_reason,
 	retained_data_state = excluded.retained_data_state,
 	policy_revision = excluded.policy_revision,
@@ -390,6 +511,10 @@ ON CONFLICT(plugin_instance_id) DO UPDATE SET
 		record.ManifestHash,
 		record.EntriesHash,
 		string(record.TrustState),
+		trustAssessmentJSON,
+		record.SourcePolicySnapshotHash,
+		sourcePolicySnapshotJSON,
+		localImportProvenanceJSON,
 		string(record.EnableState),
 		record.DisabledReason,
 		string(record.RetainedDataState),
@@ -419,6 +544,9 @@ type sqlitePluginScanner interface {
 func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var record PluginRecord
 	var trustState string
+	var trustAssessmentJSON string
+	var sourcePolicySnapshotJSON string
+	var localImportProvenanceJSON string
 	var enableState string
 	var retainedDataState string
 	var manifestJSON string
@@ -439,6 +567,10 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&record.ManifestHash,
 		&record.EntriesHash,
 		&trustState,
+		&trustAssessmentJSON,
+		&record.SourcePolicySnapshotHash,
+		&sourcePolicySnapshotJSON,
+		&localImportProvenanceJSON,
 		&enableState,
 		&record.DisabledReason,
 		&retainedDataState,
@@ -471,11 +603,78 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	if err := decodeRegistryJSON(metadataJSON, &record.Metadata); err != nil {
 		return PluginRecord{}, err
 	}
+	if strings.TrimSpace(trustAssessmentJSON) != "" && strings.TrimSpace(trustAssessmentJSON) != "{}" {
+		if err := decodeRegistryJSON(trustAssessmentJSON, &record.TrustAssessment); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(sourcePolicySnapshotJSON) != "" && strings.TrimSpace(sourcePolicySnapshotJSON) != "{}" {
+		if err := decodeRegistryJSON(sourcePolicySnapshotJSON, &record.SourcePolicySnapshot); err != nil {
+			return PluginRecord{}, err
+		}
+	}
+	if strings.TrimSpace(localImportProvenanceJSON) != "" && strings.TrimSpace(localImportProvenanceJSON) != "{}" && strings.TrimSpace(localImportProvenanceJSON) != "null" {
+		var provenance LocalImportProvenance
+		if err := decodeRegistryJSON(localImportProvenanceJSON, &provenance); err != nil {
+			return PluginRecord{}, err
+		}
+		record.LocalImportProvenance = &provenance
+	}
 	record.InstalledAt = unixToTime(installedAt)
 	record.UpdatedAt = unixToTime(updatedAt)
 	record.EnabledAt = nullableUnixToTimePtr(enabledAt)
 	record.DeletedAt = nullableUnixToTimePtr(deletedAt)
-	return record, nil
+	return normalizeTrustAssessment(record), nil
+}
+
+func getSQLiteSourceSecurityFloor(ctx context.Context, q sqliteQuerier, sourceID string) (SourceSecurityFloor, bool, error) {
+	row := q.QueryRowContext(ctx, `
+SELECT
+	source_id, policy_epoch, key_rotation_epoch, revocation_epoch,
+	source_policy_snapshot_hash, revocation_metadata_sha256, updated_at
+FROM plugin_source_security_floors
+WHERE source_id = ?`, sourceID)
+	var floor SourceSecurityFloor
+	var updatedAt int64
+	if err := row.Scan(
+		&floor.SourceID,
+		&floor.PolicyEpoch,
+		&floor.KeyRotationEpoch,
+		&floor.RevocationEpoch,
+		&floor.SourcePolicySnapshotHash,
+		&floor.RevocationMetadataSHA256,
+		&updatedAt,
+	); errors.Is(err, sql.ErrNoRows) {
+		return SourceSecurityFloor{}, false, nil
+	} else if err != nil {
+		return SourceSecurityFloor{}, false, err
+	}
+	floor.UpdatedAt = unixToTime(updatedAt)
+	return floor, true, nil
+}
+
+func upsertSQLiteSourceSecurityFloor(ctx context.Context, tx *sql.Tx, floor SourceSecurityFloor) error {
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO plugin_source_security_floors (
+	source_id, policy_epoch, key_rotation_epoch, revocation_epoch,
+	source_policy_snapshot_hash, revocation_metadata_sha256, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(source_id) DO UPDATE SET
+	policy_epoch = excluded.policy_epoch,
+	key_rotation_epoch = excluded.key_rotation_epoch,
+	revocation_epoch = excluded.revocation_epoch,
+	source_policy_snapshot_hash = excluded.source_policy_snapshot_hash,
+	revocation_metadata_sha256 = excluded.revocation_metadata_sha256,
+	updated_at = excluded.updated_at`,
+		floor.SourceID,
+		floor.PolicyEpoch,
+		floor.KeyRotationEpoch,
+		floor.RevocationEpoch,
+		floor.SourcePolicySnapshotHash,
+		floor.RevocationMetadataSHA256,
+		timeToNullableUnix(floor.UpdatedAt),
+	)
+	return err
 }
 
 func encodeRegistryJSON(value any) (string, error) {

@@ -13,10 +13,11 @@ capabilities.
 - Go module: `github.com/floegence/redevplugin`
 - TypeScript package: `@floegence/redevplugin-ui`
 - Rust workspace: `redevplugin-runtime` and support crates
-- Contracts: OpenAPI, manifest schema, package-signature schema, token/ticket
-  schema, iframe bridge schema, compatibility manifest schema, IPC schema,
-  WASM ABI schema, worker invocation payload schema, stable error-code schema,
-  and target classifier fixture
+- Contracts: OpenAPI, manifest schema, package-signature schema,
+  release-metadata schema, source-policy schema, source-revocations schema,
+  token/ticket schema, iframe bridge schema, compatibility manifest schema, IPC
+  schema, WASM ABI schema, worker invocation payload schema, stable error-code
+  schema, and target classifier fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
@@ -93,11 +94,12 @@ capabilities.
   `PLUGIN_PACKAGE_INVALID`, `PLUGIN_PACKAGE_TOO_LARGE`, or
   `PLUGIN_PACKAGE_PATH_FORBIDDEN`) and expose structured `error_details` such as
   `reason`, package `path`, and manifest JSON `pointer` through the HTTP adapter.
-- Install and update flows treat `trust_state` in management requests as a
-  requested outcome, not as proof. Runnable verified/bundled trust states require
-  a host-provided `PackageTrustVerifier`, while unsigned local and review states
-  can be installed for developer or review flows without becoming runnable unless
-  later policy permits it.
+- Install and update flows do not accept caller-supplied `trust_state` values.
+  Release-ref installs carry a release metadata ref plus hash, freeze source
+  policy before artifact resolution, and then run trust assessment, while
+  local-import flows carry explicit local import provenance. Runnable verified
+  state requires a host-provided `PackageTrustVerifier`; unsigned local packages
+  can be enabled only when host policy permits local generated plugins.
 - The host-neutral `pkg/trust` package provides an Ed25519 verifier and keyring
   interface for package signatures. Hosts still decide which keys, publishers,
   registries, or enterprise policies are trusted, but they can reuse the common
@@ -189,21 +191,24 @@ capabilities.
   storage file/KV, and network-grant calls use the default hostcall cap. The
   supervisor also sends default 2s heartbeat frames and invalidates the runtime
   when a heartbeat cannot be acknowledged within the 5s max-staleness window.
-- Bridge contract checks that keep sandbox iframe message names, exact-origin
-  messaging, UI protocol version, and parent-only token boundaries aligned with
-  the TypeScript SDK.
-- The TypeScript package includes both sandbox iframe bridge helpers and a
-  host-side `PluginPlatformClient` for existing platform management routes:
-  compatibility manifest read, install/update/downgrade,
-  enable/disable/uninstall, surface open,
-  runtime start/health/refresh-enabled/stop, settings schema/read/patch,
-  operation list/get/cancel, data export/import, permission grant/revoke/list,
-  secret bind/test/delete, host-mediated intent list/invoke, and
-  audit/diagnostic event list. List helpers preserve the same data wrapper fields
-  returned by the Go HTTP adapter, such as `operations`, `permissions`,
-  `audit_events`, and `diagnostic_events`, so host products can consume the SDK
-  and raw HTTP contract consistently. The browser demo uses this client from the
-  host page to exercise settings management without exposing management
+- Bridge contract checks that keep sandbox iframe message names,
+  source/port-bound MessageChannel messaging, UI protocol version, and
+  parent-only token boundaries aligned with the TypeScript SDK.
+- The TypeScript package includes sandbox iframe bridge helpers and a host-side
+  `PluginPlatformClient` for release-reference platform management routes:
+  compatibility manifest read, release-ref install/update, downgrade,
+  enable/disable/uninstall, surface open, runtime
+  start/health/refresh-enabled/stop, settings schema/read/patch, operation
+  list/get/cancel, data export/import, permission grant/revoke/list, secret
+  bind/test/delete, host-mediated intent list/invoke, and audit/diagnostic event
+  list. The raw package import/update surface is intentionally separated into
+  `PluginLocalImportClient`, exported only from
+  `@floegence/redevplugin-ui/local-import`, for explicit dev/admin local-import
+  route sets. List helpers preserve the same data wrapper fields returned by the
+  Go HTTP adapter, such as `operations`, `permissions`, `audit_events`, and
+  `diagnostic_events`, so host products can consume the SDK and raw HTTP contract
+  consistently. The browser demo uses the platform client from the host page to
+  exercise settings management without exposing management
   credentials to the sandboxed iframe. Host pages can also use
   `PluginSurfaceReloadLimiter` to cap consecutive automatic iframe reloads
   after crashes or load failures before showing a host-owned error state.
@@ -235,8 +240,9 @@ capabilities.
   safe identifiers such as token IDs and secret refs, hashes, and fingerprints.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
-  manifest, signature, token/ticket, bridge, compatibility, release-manifest,
-  IPC, WASM, network-grant, worker invocation, error-code, and
+  manifest, signature, release-metadata, source-policy, source-revocations,
+  token/ticket, bridge, compatibility, release-manifest, IPC, WASM,
+  network-grant, worker invocation, error-code, and
   target-classifier contracts. Network grant schema, release manifest schema,
   and target-classifier fixture versions are tracked independently so hosts can
   distinguish grant envelope drift, bundle manifest drift, and classifier rule
@@ -364,8 +370,8 @@ capabilities.
   Start it with `npm run demo:browser`, open the printed host URL, then exercise
   handshake, lifecycle, ordinary RPC, storage-list RPC, streaming,
   dangerous-confirmation, and richer plugin surfaces. The host and plugin page
-  are served from separate localhost origins to exercise exact-origin sandbox
-  bridge behavior. The demo picker includes a workspace tools plugin, an
+  are served from isolated sandbox documents to exercise source/port-bound
+  sandbox bridge behavior. The demo picker includes a workspace tools plugin, an
   animated canvas bouncer game with particles, trails, power-ups, score saving,
   achievements, replay file exports, stored challenge snapshots, and a
   host-backed leaderboard; a schedule planner that lists/adds/toggles/deletes

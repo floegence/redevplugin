@@ -22,7 +22,8 @@ Trusted host UI may:
 Sandboxed plugin UI may:
 
 - load packaged assets through asset-session routes;
-- talk to the trusted parent through exact-origin bridge messages;
+- talk to the trusted parent through source/port-bound MessageChannel bridge
+  messages;
 - invoke declared plugin methods through Host-mediated bridge/RPC paths;
 - render plugin-owned UI state.
 
@@ -42,9 +43,12 @@ the UI protocol version, and forbidden response fields aligned with the schema:
 - `redevplugin.bridge.lifecycle`;
 - `plugin-ui-v1`.
 
-Bridge messaging requires exact target origins. Wildcard `postMessage`
-target origins are forbidden. Parent-to-plugin and plugin-to-parent messages
-must stay scoped to the sandbox origin and active surface session.
+Bridge messaging is source/port-bound. Parent-to-plugin and plugin-to-parent
+messages must bind the window source, transferred `MessagePort`, asset session,
+surface instance, bridge nonce, active fingerprint, session hash, state version,
+and revoke epoch. Opaque sandbox origins treat `event.origin` as diagnostic
+context, not an authorization input. Wildcard `postMessage` target origins are
+forbidden.
 
 The trusted parent computes `handshake_transcript_sha256` before it asks the Go
 Host for a parent-only `plugin_gateway_token`. The transcript is the SHA-256 of
@@ -60,7 +64,9 @@ mismatched.
 routes exposed by `pkg/httpadapter`, including:
 
 - compatibility manifest read;
-- install, update, downgrade, enable, disable, uninstall, and surface open;
+- release-reference install/update for official or registry-backed product
+  flows where the host page sends `PluginReleaseRef` rather than package bytes;
+- downgrade, enable, disable, uninstall, and surface open;
 - runtime start, health, refresh-enabled, and stop;
 - settings schema/read/patch;
 - operation list/get/cancel;
@@ -82,6 +88,17 @@ List helpers preserve the same data wrapper fields returned by the Go HTTP
 adapter, such as `operations`, `permissions`, `audit_events`, and
 `diagnostic_events`, so host pages can consume the SDK and raw HTTP contract
 consistently.
+
+Trusted product UI should not transport official `.redevplugin` package bytes
+through browser state. For official or registry-backed installs, call
+`installReleaseRef` or `updateReleaseRef`; the host-side resolver and Host
+library perform artifact resolution, hash verification, trust assessment,
+staged install/update, and registry mutation server-side.
+
+Raw package import is intentionally not part of `PluginPlatformClient`. Explicit
+local or developer import flows must opt into `PluginLocalImportClient` from
+`@floegence/redevplugin-ui/local-import`, and hosts must only mount those routes
+when local import is allowed for that product surface.
 
 ## Surface Bootstrap And Assets
 
@@ -138,7 +155,7 @@ behavior.
 The browser demo under `demo/browser/` exercises the surface SDK in realistic
 browser conditions:
 
-- host page and plugin iframe use separate localhost origins;
+- host page and plugin iframe use isolated sandbox documents;
 - bridge handshake, ordinary RPC, lifecycle messages, streams, confirmation, and
   richer plugin surfaces are tested;
 - sandbox security probes check media capture policy and site-data cleanup for
@@ -159,7 +176,7 @@ Host products should:
 
 1. import the published `@floegence/redevplugin-ui` package;
 2. use the host-side client only from trusted product surfaces;
-3. isolate plugin UI in sandboxed iframes with exact-origin bridge setup;
+3. isolate plugin UI in sandboxed iframes with source/port-bound bridge setup;
 4. map ReDevPlugin state into product navigation and settings without forking
    bridge, token, package, or lifecycle protocols;
 5. keep product-specific capability UI outside ReDevPlugin core unless it is a

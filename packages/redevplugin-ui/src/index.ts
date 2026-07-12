@@ -14,6 +14,8 @@ export const pluginPlatformErrorCodes = [
   "PLUGIN_TRUST_STATE_DENIED",
   "PLUGIN_TRUST_VERIFICATION_REQUIRED",
   "PLUGIN_TRUST_VERIFICATION_INVALID",
+  "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
+  "PLUGIN_RELEASE_REF_POLICY_DENIED",
   "PLUGIN_DISABLED",
   "PLUGIN_DISABLED_BY_POLICY",
   "PLUGIN_PERMISSION_DENIED",
@@ -374,7 +376,7 @@ export class PluginBridgeClient {
   }
 
   #handleMessage(event: MessageEventLike): void {
-    if (this.#disposed || event.origin !== this.bootstrap.parentOrigin) {
+    if (this.#disposed || event.origin !== this.bootstrap.parentOrigin || event.source !== this.#target) {
       return;
     }
     const data = event.data;
@@ -590,6 +592,9 @@ export type PluginCompatibilityMatrix = {
   wasm_abi_version: string;
   manifest_schema_version: string;
   package_signature_schema_version: string;
+  release_metadata_schema_version: string;
+  source_policy_schema_version: string;
+  source_revocations_schema_version: string;
   token_ticket_schema_version: string;
   bridge_schema_version: string;
   target_classifier_version: string;
@@ -616,13 +621,58 @@ export type PluginCompatibilityManifest = {
   [key: string]: unknown;
 };
 
-export type PluginTrustState = "bundled" | "verified" | "unsigned_local" | "untrusted" | "needs_review" | "blocked_security";
+export type PluginTrustState = "verified" | "unsigned_local" | "untrusted" | "needs_review" | "trust_unavailable" | "blocked_security";
 
 export type PluginEnableState = "disabled" | "enabled" | "disabled_by_policy";
 
 export type PluginRetainedDataRecordState = "retained" | "expired" | "bound" | "deleted" | "delete_failed_retryable";
 
 export type PluginRetainedDataState = "none" | PluginRetainedDataRecordState;
+
+export type PluginTrustHashSet = {
+  package_sha256: string;
+  manifest_sha256: string;
+  entries_sha256: string;
+};
+
+export type PluginVerifiedSignature = {
+  algorithm: string;
+  key_id: string;
+};
+
+export type PluginTrustAssessment = {
+  trust_state: PluginTrustState | string;
+  reason_codes?: string[];
+  verified_hashes: PluginTrustHashSet;
+  verified_signature?: PluginVerifiedSignature;
+  trust_assessment_epoch?: string;
+  policy_epoch?: string;
+  revocation_epoch?: string;
+  metadata?: Record<string, string>;
+};
+
+export type PluginLocalImportProvenance = {
+  import_id: string;
+  distribution: "local_import" | string;
+  policy_epoch: string;
+  unsigned_policy: "dev_only" | "review_required" | "block" | string;
+  assessed_at: string;
+};
+
+export type PluginVersionRecord = {
+  version: string;
+  active_fingerprint: string;
+  package_hash: string;
+  manifest_hash: string;
+  entries_hash: string;
+  trust_state: PluginTrustState | string;
+  trust_assessment: PluginTrustAssessment;
+  source_policy_snapshot_hash?: string;
+  source_policy_snapshot?: Record<string, unknown>;
+  local_import_provenance?: PluginLocalImportProvenance;
+  metadata?: Record<string, string>;
+  [key: string]: unknown;
+};
 
 export type PluginRecord = {
   plugin_instance_id: string;
@@ -634,6 +684,10 @@ export type PluginRecord = {
   manifest_hash?: string;
   entries_hash?: string;
   trust_state: PluginTrustState | string;
+  trust_assessment: PluginTrustAssessment;
+  source_policy_snapshot_hash?: string;
+  source_policy_snapshot?: Record<string, unknown>;
+  local_import_provenance?: PluginLocalImportProvenance;
   enable_state: PluginEnableState | string;
   disabled_reason?: string;
   retained_data_state?: PluginRetainedDataState | string;
@@ -642,7 +696,7 @@ export type PluginRecord = {
   revoke_epoch?: number;
   manifest?: Record<string, unknown>;
   package_entries?: Array<Record<string, unknown>>;
-  version_history?: Array<Record<string, unknown>>;
+  version_history?: PluginVersionRecord[];
   installed_at?: string;
   enabled_at?: string;
   updated_at?: string;
@@ -651,16 +705,30 @@ export type PluginRecord = {
   [key: string]: unknown;
 };
 
-export type PluginInstallRequest = {
-  package_base64: string;
-  trust_state?: PluginTrustState | string;
+export type PluginPackageHashSet = {
+  package_sha256: string;
+  manifest_sha256: string;
+  entries_sha256: string;
+};
+
+export type PluginReleaseRef = {
+  source_id: string;
+  release_metadata_ref: string;
+  release_metadata_sha256: string;
+  publisher_id: string;
+  plugin_id: string;
+  version: string;
+  expected_hashes: PluginPackageHashSet;
+};
+
+export type PluginInstallReleaseRefRequest = {
+  release_ref: PluginReleaseRef;
   plugin_instance_id?: string;
 };
 
-export type PluginUpdateRequest = {
+export type PluginUpdateReleaseRefRequest = {
   plugin_instance_id: string;
-  package_base64: string;
-  trust_state?: PluginTrustState | string;
+  release_ref: PluginReleaseRef;
 };
 
 export type PluginDowngradeRequest = {
@@ -991,12 +1059,12 @@ export class PluginPlatformClient {
     return this.#getJSON("/_redevplugin/api/plugins/platform/compatibility");
   }
 
-  installPlugin(request: PluginInstallRequest): Promise<PluginRecord> {
-    return this.#postJSON("/_redevplugin/api/plugins/install", request);
+  installReleaseRef(request: PluginInstallReleaseRefRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/install-release-ref", request);
   }
 
-  updatePlugin(request: PluginUpdateRequest): Promise<PluginRecord> {
-    return this.#postJSON("/_redevplugin/api/plugins/update", request);
+  updateReleaseRef(request: PluginUpdateReleaseRefRequest): Promise<PluginRecord> {
+    return this.#postJSON("/_redevplugin/api/plugins/update-release-ref", request);
   }
 
   downgradePlugin(request: PluginDowngradeRequest): Promise<PluginRecord> {
@@ -1243,10 +1311,7 @@ export class PluginSurfaceHost {
   }
 
   async #handleMessage(event: MessageEventLike): Promise<void> {
-    if (this.#disposed || event.origin !== this.iframeOrigin) {
-      return;
-    }
-    if (event.source != null && event.source !== this.#iframeWindow) {
+    if (this.#disposed || event.origin !== this.iframeOrigin || event.source !== this.#iframeWindow) {
       return;
     }
     const data = event.data;

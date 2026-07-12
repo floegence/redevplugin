@@ -20,8 +20,8 @@ func TestEd25519VerifierAcceptsSignedVerifiedPackage(t *testing.T) {
 	pkg, pub, _, verifier := signedFixture(t)
 
 	result, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:             pkg,
-		RequestedTrustState: registry.TrustVerified,
+		Package:              pkg,
+		SourcePolicySnapshot: ptrSourcePolicy(sourcePolicyFixture(pkg, "test-key")),
 	})
 	if err != nil {
 		t.Fatalf("VerifyPackageTrust() error = %v", err)
@@ -42,8 +42,18 @@ func TestEd25519VerifierAllowsReviewStateWithoutSignature(t *testing.T) {
 	verifier := Ed25519Verifier{}
 
 	result, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:             pkg,
-		RequestedTrustState: registry.TrustNeedsReview,
+		Package: pkg,
+		SourcePolicySnapshot: &host.SourcePolicySnapshot{
+			SchemaVersion:    "redevplugin.source_policy.v1",
+			SourceID:         "community",
+			SourceType:       host.PackageSourceRegistry,
+			SourceClass:      host.PackageSourceClassCommunity,
+			RequireSignature: false,
+			UnsignedPolicy:   host.PackageUnsignedReviewRequired,
+			InstallPolicy:    host.PackageInstallAllow,
+			DowngradePolicy:  host.PackageDowngradeBlock,
+			PolicyEpoch:      "1",
+		},
 	})
 	if err != nil {
 		t.Fatalf("VerifyPackageTrust() error = %v", err)
@@ -58,8 +68,8 @@ func TestEd25519VerifierRejectsMissingSignatureForVerifiedPackage(t *testing.T) 
 	verifier := Ed25519Verifier{Keyring: StaticKeyring{}}
 
 	_, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:             pkg,
-		RequestedTrustState: registry.TrustVerified,
+		Package:              pkg,
+		SourcePolicySnapshot: ptrSourcePolicy(sourcePolicyFixture(pkg, "test-key")),
 	})
 	if !errors.Is(err, ErrSignatureRequired) {
 		t.Fatalf("VerifyPackageTrust() error = %v, want ErrSignatureRequired", err)
@@ -71,8 +81,8 @@ func TestEd25519VerifierRejectsTamperedSignature(t *testing.T) {
 	pkg.PackageSignature.Signature = pkg.PackageSignature.Signature[:len(pkg.PackageSignature.Signature)-2] + "AA"
 
 	_, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:             pkg,
-		RequestedTrustState: registry.TrustVerified,
+		Package:              pkg,
+		SourcePolicySnapshot: ptrSourcePolicy(sourcePolicyFixture(pkg, "test-key")),
 	})
 	if !errors.Is(err, ErrSignatureInvalid) {
 		t.Fatalf("VerifyPackageTrust() error = %v, want ErrSignatureInvalid", err)
@@ -91,11 +101,78 @@ func TestEd25519VerifierRejectsRevokedKey(t *testing.T) {
 	}
 
 	_, err := verifier.VerifyPackageTrust(context.Background(), host.PackageTrustVerificationRequest{
-		Package:             pkg,
-		RequestedTrustState: registry.TrustVerified,
+		Package:              pkg,
+		SourcePolicySnapshot: ptrSourcePolicy(sourcePolicyFixture(pkg, "test-key")),
 	})
 	if !errors.Is(err, ErrKeyRevoked) {
 		t.Fatalf("VerifyPackageTrust() error = %v, want ErrKeyRevoked", err)
+	}
+}
+
+func TestEd25519VerifierAcceptsSignedReleaseMetadata(t *testing.T) {
+	pkg, pub, priv, verifier := signedFixture(t)
+	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v1","plugin_id":"com.example.trust","version":"1.0.0"}`)
+	signature := ed25519.Sign(priv, metadata)
+	release := releaseMetadataFixture(pkg, "test-key")
+
+	result, err := verifier.VerifyReleaseMetadata(context.Background(), host.ReleaseMetadataVerificationRequest{
+		ReleaseRef:               releaseRefFixture(pkg),
+		Release:                  release,
+		SourcePolicySnapshot:     sourcePolicyFixture(pkg, "test-key"),
+		ReleaseMetadataBytes:     metadata,
+		ReleaseMetadataSignature: signature,
+	})
+	if err != nil {
+		t.Fatalf("VerifyReleaseMetadata() error = %v", err)
+	}
+	if result.Metadata["key_id"] != "test-key" || result.Metadata["verified_at"] == "" {
+		t.Fatalf("metadata mismatch: %#v", result.Metadata)
+	}
+	if len(pub) != ed25519.PublicKeySize {
+		t.Fatalf("public key size = %d", len(pub))
+	}
+}
+
+func TestEd25519VerifierRejectsTamperedReleaseMetadataSignature(t *testing.T) {
+	pkg, _, priv, verifier := signedFixture(t)
+	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v1","plugin_id":"com.example.trust","version":"1.0.0"}`)
+	signature := ed25519.Sign(priv, metadata)
+	metadata[0] = '['
+
+	_, err := verifier.VerifyReleaseMetadata(context.Background(), host.ReleaseMetadataVerificationRequest{
+		ReleaseRef:               releaseRefFixture(pkg),
+		Release:                  releaseMetadataFixture(pkg, "test-key"),
+		SourcePolicySnapshot:     sourcePolicyFixture(pkg, "test-key"),
+		ReleaseMetadataBytes:     metadata,
+		ReleaseMetadataSignature: signature,
+	})
+	if !errors.Is(err, ErrSignatureInvalid) {
+		t.Fatalf("VerifyReleaseMetadata() error = %v, want ErrSignatureInvalid", err)
+	}
+}
+
+func TestEd25519VerifierRejectsRevokedReleaseMetadataKey(t *testing.T) {
+	pkg, pub, priv, _ := signedFixture(t)
+	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v1","plugin_id":"com.example.trust","version":"1.0.0"}`)
+	signature := ed25519.Sign(priv, metadata)
+	verifier := Ed25519Verifier{
+		Keyring: StaticKeyring{Keys: []SigningKey{{
+			Algorithm: AlgorithmEd25519,
+			KeyID:     "test-key",
+			PublicKey: pub,
+			Revoked:   true,
+		}}},
+	}
+
+	_, err := verifier.VerifyReleaseMetadata(context.Background(), host.ReleaseMetadataVerificationRequest{
+		ReleaseRef:               releaseRefFixture(pkg),
+		Release:                  releaseMetadataFixture(pkg, "test-key"),
+		SourcePolicySnapshot:     sourcePolicyFixture(pkg, "test-key"),
+		ReleaseMetadataBytes:     metadata,
+		ReleaseMetadataSignature: signature,
+	})
+	if !errors.Is(err, ErrKeyRevoked) {
+		t.Fatalf("VerifyReleaseMetadata() error = %v, want ErrKeyRevoked", err)
 	}
 }
 
@@ -120,6 +197,62 @@ func TestSignatureForPackageProducesCanonicalPayload(t *testing.T) {
 	if decoded["package_hash"] != pkg.PackageHash || decoded["signed_at"] != signedAt.Format(time.RFC3339) {
 		t.Fatalf("payload mismatch: %s", payload)
 	}
+}
+
+func releaseRefFixture(pkg pluginpkg.Package) host.PluginReleaseRef {
+	return host.PluginReleaseRef{
+		SourceID:              "official",
+		ReleaseMetadataRef:    "plugins/example/com.example.trust/1.0.0/release.json",
+		ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PublisherID:           pkg.Manifest.Publisher.PublisherID,
+		PluginID:              pkg.Manifest.PluginID(),
+		Version:               pkg.Manifest.Version(),
+		ExpectedHashes: host.PackageHashSet{
+			PackageSHA256:  pkg.PackageHash,
+			ManifestSHA256: pkg.ManifestHash,
+			EntriesSHA256:  pkg.EntriesHash,
+		},
+	}
+}
+
+func releaseMetadataFixture(pkg pluginpkg.Package, keyID string) host.PluginPackageRelease {
+	return host.PluginPackageRelease{
+		SourceID:              "official",
+		PublisherID:           pkg.Manifest.Publisher.PublisherID,
+		PluginID:              pkg.Manifest.PluginID(),
+		Version:               pkg.Manifest.Version(),
+		ReleaseMetadataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ReleaseMetadataSignature: &host.ReleaseMetadataSignature{
+			Algorithm:         AlgorithmEd25519,
+			KeyID:             keyID,
+			SignatureRef:      "plugins/example/com.example.trust/1.0.0/release.json.sig",
+			SourcePolicyEpoch: "1",
+			RevocationEpoch:   "1",
+		},
+	}
+}
+
+func sourcePolicyFixture(pkg pluginpkg.Package, keyID string) host.SourcePolicySnapshot {
+	return host.SourcePolicySnapshot{
+		SchemaVersion:     "redevplugin.source_policy.v1",
+		SourceID:          "official",
+		SourceType:        host.PackageSourceRegistry,
+		SourceClass:       host.PackageSourceClassOfficial,
+		AllowedPublishers: []string{pkg.Manifest.Publisher.PublisherID},
+		TrustedKeyIDs:     []string{keyID},
+		RequireSignature:  true,
+		InstallPolicy:     host.PackageInstallAllow,
+		UnsignedPolicy:    host.PackageUnsignedBlock,
+		DowngradePolicy:   host.PackageDowngradeBlock,
+		PolicyEpoch:       "1",
+		KeyRotationEpoch:  "1",
+		RevocationEpoch:   "1",
+		AssessedAt:        "2026-07-07T00:00:00Z",
+	}
+}
+
+func ptrSourcePolicy(policy host.SourcePolicySnapshot) *host.SourcePolicySnapshot {
+	return &policy
 }
 
 func signedFixture(t *testing.T) (pluginpkg.Package, ed25519.PublicKey, ed25519.PrivateKey, Ed25519Verifier) {

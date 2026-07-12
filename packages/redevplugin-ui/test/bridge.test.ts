@@ -25,6 +25,7 @@ import {
   type StreamFetchResponseLike,
   type WindowLike,
 } from "../src/index.js";
+import { PluginLocalImportClient } from "../src/local-import.js";
 
 class FakeWindow implements WindowLike {
   readonly sent: Array<{ message: unknown; targetOrigin: string }> = [];
@@ -237,7 +238,7 @@ test("surface reload limiter rejects invalid timing options", () => {
   assert.throws(() => limiter.recordCrash(Number.NaN), /nowMs/);
 });
 
-test("handshake posts exact-origin message", () => {
+test("handshake posts source-bound message", () => {
   const target = new FakeWindow();
   const receiver = new FakeWindow();
   const client = new PluginBridgeClient(bootstrap, { target, receiver });
@@ -263,9 +264,10 @@ test("bridge handshake transcript hash is stable", async () => {
   assert.equal(got, "sha256:94393d8980a4e43e287bab18b98531cbd7025fc38c25beea5c4ad2b9170593f2");
 });
 
-test("call resolves only matching exact-origin response", async () => {
+test("call resolves only matching source-bound response", async () => {
   const target = new FakeWindow();
   const receiver = new FakeWindow();
+  const otherSource = new FakeWindow();
   const client = new PluginBridgeClient(bootstrap, { target, receiver, timeoutMs: 100 });
 
   const pending = client.call<{ ok: boolean }>("worker.echo", { message: "hello" });
@@ -276,9 +278,11 @@ test("call resolves only matching exact-origin response", async () => {
     request: { id: "1", method: "worker.echo", params: { message: "hello" } },
   });
 
-  receiver.emit("https://evil.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } });
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "other", ok: true, data: { ok: false } });
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: true } });
+  receiver.emit("https://evil.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } }, target);
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } }, otherSource);
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: false } }, null);
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "other", ok: true, data: { ok: false } }, target);
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: { ok: true } }, target);
 
   assert.deepEqual(await pending, { ok: true });
   client.dispose();
@@ -296,7 +300,7 @@ test("call rejects runtime bridge errors", async () => {
     ok: false,
     error_code: "PLUGIN_RUNTIME_UNAVAILABLE",
     error: "runtime is not ready",
-  });
+  }, target);
 
   await assert.rejects(pending, (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_RUNTIME_UNAVAILABLE");
   client.dispose();
@@ -311,19 +315,21 @@ test("call times out when no response arrives", async () => {
   client.dispose();
 });
 
-test("lifecycle subscription accepts only parent origin", () => {
+test("lifecycle subscription accepts only parent source", () => {
   const target = new FakeWindow();
   const receiver = new FakeWindow();
+  const otherSource = new FakeWindow();
   const client = new PluginBridgeClient(bootstrap, { target, receiver });
   const events: string[] = [];
 
   const unsubscribe = client.onLifecycle((event) => {
     events.push(event.type);
   });
-  receiver.emit("https://evil.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } });
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } });
+  receiver.emit("https://evil.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } }, target);
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } }, otherSource);
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "visible" } }, target);
   unsubscribe();
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "hidden" } });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.lifecycle", event: { type: "hidden" } }, target);
 
   assert.deepEqual(events, ["visible"]);
   client.dispose();
@@ -336,7 +342,7 @@ test("dispose rejects pending calls and removes listener", async () => {
   const pending = client.call("worker.echo");
 
   client.dispose();
-  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: true });
+  receiver.emit("https://host.example", { type: "redevplugin.bridge.response", id: "1", ok: true, data: true }, target);
 
   await assert.rejects(pending, (err) => err instanceof PluginBridgeError && err.errorCode === "PLUGIN_BRIDGE_DISPOSED");
   assert.throws(() => client.handshake(), PluginBridgeError);
@@ -456,6 +462,11 @@ test("surface host rejects calls before handshake and invalid params", async () 
     request: { id: "call_from_other_window", method: "echo.ping", params: {} },
   }, new FakeWindow());
   await tick();
+  parent.emit("https://plugin.example", {
+    type: "redevplugin.bridge.call",
+    request: { id: "call_without_source", method: "echo.ping", params: {} },
+  }, null);
+  await tick();
 
   assert.equal(fetch.calls.length, 0);
   assert.deepEqual(iframe.sent, [
@@ -473,12 +484,13 @@ test("surface host rejects calls before handshake and invalid params", async () 
 
   fetch.push({ ok: true, data: { plugin_gateway_token: "gateway_secret", plugin_gateway_token_id: "gateway_token_1" } });
   parent.emit("https://plugin.example", handshake, iframe);
-  await tick();
+  await waitForFetchCalls(fetch, 1);
+  await waitForMessages(iframe, 2);
   parent.emit("https://plugin.example", {
     type: "redevplugin.bridge.call",
     request: { id: "call_bad_params", method: "echo.ping", params: ["not", "object"] },
   }, iframe);
-  await tick();
+  await waitForMessages(iframe, 3);
 
   assert.equal(fetch.calls.length, 1);
   assert.deepEqual(iframe.sent[2], {
@@ -510,6 +522,7 @@ test("surface host reports mismatched handshake without minting token", async ()
   });
 
   parent.emit("https://evil.example", handshake, iframe);
+  parent.emit("https://plugin.example", handshake, null);
   parent.emit("https://plugin.example", { ...handshake, bridge_nonce: "wrong" }, iframe);
   await tick();
 
@@ -564,14 +577,14 @@ test("surface host uses server-held confirmation intent and retries confirmed rp
   const confirmations: PluginConfirmationIntent[] = [];
   const riskPlan = {
     schema_version: pluginRiskPlanSchemaVersion,
-    capability_id: "redeven.capability.container_resources",
-    method: "containers.start",
-    target_method: "containers.start",
+    capability_id: "example.capability.resources",
+    method: "resources.start",
+    target_method: "resources.start",
     effect: "execute",
-    resource_ref: "container_hash_1",
-    summary: "Start container",
+    resource_ref: "resource_hash_1",
+    summary: "Start resource",
     risk_flags: [{
-      id: "container.host_network",
+      id: "resource.host_network",
       severity: "high",
       summary: "Uses host networking",
       requires_admin: true,
@@ -858,6 +871,9 @@ test("platform client reads compatibility manifest through host API", async () =
         wasm_abi_version: "redevplugin-wasm-worker-v1",
         manifest_schema_version: "manifest-v1",
         package_signature_schema_version: "package-signature-v1",
+        release_metadata_schema_version: "release-metadata-v1",
+        source_policy_schema_version: "source-policy-v1",
+        source_revocations_schema_version: "source-revocations-v1",
         token_ticket_schema_version: "token-ticket-v1",
         bridge_schema_version: "bridge-v1",
         target_classifier_version: "target-classifier-v1",
@@ -893,6 +909,9 @@ test("platform client reads compatibility manifest through host API", async () =
 
   assert.equal(compatibility.schema_version, "redevplugin.compatibility.v1");
   assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v1");
+  assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v1");
+  assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
+  assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
   assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
   assert.equal(compatibility.contracts[0]?.sha256, "sha256-openapi");
   assert.equal(fetch.calls.length, 1);
@@ -971,9 +990,13 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   });
   fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled", retained_data_state: "deleted" } });
   const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const localImportClient = new PluginLocalImportClient({ fetch: fetch.fetch });
 
-  const installed = await client.installPlugin({ package_base64: "cGtn", trust_state: "verified", plugin_instance_id: "plugin_instance_1" });
-  const updated = await client.updatePlugin({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", trust_state: "verified" });
+  assert.equal("importLocalPackage" in client, false);
+  assert.equal("updateLocalPackage" in client, false);
+
+  const installed = await localImportClient.importLocalPackage({ package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
+  const updated = await localImportClient.updateLocalPackage({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg" });
   const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0" });
   const enabled = await client.enablePlugin("plugin_instance_1");
   const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", reason: "admin" });
@@ -995,10 +1018,10 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal(disabled.disabled_reason, "admin");
   assert.equal(surface.asset_ticket, "asset_ticket_1");
   assert.equal(uninstalled.retained_data_state, "deleted");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", trust_state: "verified", plugin_instance_id: "plugin_instance_1" });
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", trust_state: "verified" });
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-import/install");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/local-import/update");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg" });
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/downgrade");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0" });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/enable");
@@ -1017,6 +1040,34 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   });
   assert.equal(fetch.calls[6]?.input, "/_redevplugin/api/plugins/uninstall");
   assert.deepEqual(JSON.parse(fetch.calls[6]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", delete_data: true });
+});
+
+test("platform client installs and updates plugin release refs without package bytes", async () => {
+  const fetch = new FakeFetch();
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.0.0", active_fingerprint: "sha256:a", trust_state: "verified", enable_state: "disabled" } });
+  fetch.push({ ok: true, data: { plugin_instance_id: "plugin_instance_1", plugin_id: "com.example.plugin", version: "1.1.0", active_fingerprint: "sha256:b", trust_state: "verified", enable_state: "disabled" } });
+  const client = new PluginPlatformClient({ fetch: fetch.fetch });
+  const releaseRef = {
+    source_id: "official",
+    release_metadata_ref: "plugins/com.example/com.example.plugin/1.0.0/release.json",
+    release_metadata_sha256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    publisher_id: "com.example",
+    plugin_id: "com.example.plugin",
+    version: "1.0.0",
+    expected_hashes: {
+      package_sha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      manifest_sha256: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      entries_sha256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    },
+  };
+
+  await client.installReleaseRef({ release_ref: releaseRef });
+  await client.updateReleaseRef({ plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" } });
+
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/install-release-ref");
+  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { release_ref: releaseRef });
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/update-release-ref");
+  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", release_ref: { ...releaseRef, version: "1.1.0" } });
 });
 
 test("platform client manages runtime lifecycle routes", async () => {

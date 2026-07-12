@@ -46,11 +46,16 @@ type Route struct {
 	Path   string
 }
 
+type RouteSetOptions struct {
+	EnableLocalImportRoutes bool
+}
+
 type Handler struct {
-	Host                 *host.Host
-	WebSecurity          websecurity.Guard
-	SandboxAssetSecurity SandboxAssetSecurity
-	CSPReportLimiter     CSPReportLimiter
+	Host                    *host.Host
+	WebSecurity             websecurity.Guard
+	SandboxAssetSecurity    SandboxAssetSecurity
+	CSPReportLimiter        CSPReportLimiter
+	EnableLocalImportRoutes bool
 }
 
 type SandboxAssetSecurity struct {
@@ -81,16 +86,24 @@ type cspReportRateWindow struct {
 	count int
 }
 
-type installRequest struct {
-	PackageBase64    string              `json:"package_base64"`
-	TrustState       registry.TrustState `json:"trust_state,omitempty"`
-	PluginInstanceID string              `json:"plugin_instance_id,omitempty"`
+type importLocalPackageRequest struct {
+	PackageBase64    string `json:"package_base64"`
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
 }
 
-type updateRequest struct {
-	PluginInstanceID string              `json:"plugin_instance_id"`
-	PackageBase64    string              `json:"package_base64"`
-	TrustState       registry.TrustState `json:"trust_state,omitempty"`
+type installReleaseRefRequest struct {
+	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
+	PluginInstanceID string                `json:"plugin_instance_id,omitempty"`
+}
+
+type updateLocalPackageRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	PackageBase64    string `json:"package_base64"`
+}
+
+type updateReleaseRefRequest struct {
+	PluginInstanceID string                `json:"plugin_instance_id"`
+	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
 }
 
 type downgradeRequest struct {
@@ -345,16 +358,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/install":
-		h.handleInstall(w, r)
+	case h.EnableLocalImportRoutes && r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/local-import/install":
+		h.handleImportLocalPackage(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/install-release-ref":
+		h.handleInstallReleaseRef(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/enable":
 		h.handleEnable(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/disable":
 		h.handleDisable(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/uninstall":
 		h.handleUninstall(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/update":
-		h.handleUpdate(w, r)
+	case h.EnableLocalImportRoutes && r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/local-import/update":
+		h.handleUpdateLocalPackage(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/update-release-ref":
+		h.handleUpdateReleaseRef(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/downgrade":
 		h.handleDowngrade(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/_redevplugin/api/plugins/catalog":
@@ -440,10 +457,16 @@ func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) bool
 	if h.WebSecurity == nil || !isPluginHTTPPath(r.URL.Path) {
 		return true
 	}
-	if _, decision, err := h.WebSecurity.Evaluate(r); err != nil {
+	requestContext, decision, err := h.WebSecurity.Evaluate(r)
+	if err != nil {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: err.Error(), ErrorCode: string(security.ErrPermissionDenied)})
 		return false
-	} else if decision != websecurity.OriginAllow {
+	}
+	if requestContext.Role == websecurity.OriginPluginSandbox && isPluginManagementAPIPath(r.URL.Path) {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return false
+	}
+	if decision != websecurity.OriginAllow {
 		WriteJSON(w, http.StatusForbidden, Envelope{OK: false, Error: "request origin is not allowed", ErrorCode: string(security.ErrPermissionDenied)})
 		return false
 	}
@@ -462,20 +485,28 @@ func isPluginHTTPPath(requestPath string) bool {
 		strings.HasPrefix(requestPath, "/_redevplugin/")
 }
 
+func isPluginManagementAPIPath(requestPath string) bool {
+	return requestPath == "/_redevplugin/api/plugins" || strings.HasPrefix(requestPath, "/_redevplugin/api/plugins/")
+}
+
 func requiresCSRF(r *http.Request) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return false
 	}
-	return r.URL.Path == "/_redevplugin/api/plugins" || strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/")
+	return isPluginManagementAPIPath(r.URL.Path)
 }
 
 func RouteSet() []Route {
+	return RouteSetWithOptions(RouteSetOptions{})
+}
+
+func RouteSetWithOptions(options RouteSetOptions) []Route {
 	routes := []Route{
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install-release-ref"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/enable"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/disable"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/uninstall"},
-		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update-release-ref"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"},
 		{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"},
@@ -514,6 +545,12 @@ func RouteSet() []Route {
 		{Method: http.MethodGet, Path: "/_redevplugin/assets/{asset_session_id}/{asset_path...}"},
 		{Method: http.MethodGet, Path: "/_redevplugin/stream/{stream_id}"},
 		{Method: http.MethodPost, Path: "/_redevplugin/csp-report"},
+	}
+	if options.EnableLocalImportRoutes {
+		routes = append(routes,
+			Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/install"},
+			Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/update"},
+		)
 	}
 	sort.Slice(routes, func(i, j int) bool {
 		if routes[i].Path == routes[j].Path {
@@ -554,12 +591,12 @@ func writeManagementError(w http.ResponseWriter, err error) {
 	})
 }
 
-func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
+func (h Handler) handleImportLocalPackage(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
 	}
-	var req installRequest
+	var req importLocalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
@@ -569,10 +606,30 @@ func (h Handler) handleInstall(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
-	record, err := h.Host.InstallPackage(r.Context(), host.InstallRequest{
+	record, err := h.Host.ImportLocalPackage(r.Context(), host.ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
-		TrustState:       req.TrustState,
+		PluginInstanceID: req.PluginInstanceID,
+	})
+	if err != nil {
+		writeManagementError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleInstallReleaseRef(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req installReleaseRefRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	record, err := h.Host.InstallReleaseRef(r.Context(), host.InstallReleaseRefRequest{
+		ReleaseRef:       req.ReleaseRef,
 		PluginInstanceID: req.PluginInstanceID,
 	})
 	if err != nil {
@@ -636,12 +693,12 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
 }
 
-func (h Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+func (h Handler) handleUpdateLocalPackage(w http.ResponseWriter, r *http.Request) {
 	if h.Host == nil {
 		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
 		return
 	}
-	var req updateRequest
+	var req updateLocalPackageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeInvalidRequestError(w, err)
 		return
@@ -651,11 +708,31 @@ func (h Handler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusBadRequest, Envelope{OK: false, Error: "package_base64 is invalid", ErrorCode: string(security.ErrInvalidRequest)})
 		return
 	}
-	record, err := h.Host.UpdatePlugin(r.Context(), host.UpdateRequest{
+	record, err := h.Host.UpdateLocalPackage(r.Context(), host.UpdateLocalPackageRequest{
 		PluginInstanceID: req.PluginInstanceID,
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
-		TrustState:       req.TrustState,
+	})
+	if err != nil {
+		writeManagementError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	var req updateReleaseRefRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	record, err := h.Host.UpdateReleaseRef(r.Context(), host.UpdateReleaseRefRequest{
+		PluginInstanceID: req.PluginInstanceID,
+		ReleaseRef:       req.ReleaseRef,
 	})
 	if err != nil {
 		writeManagementError(w, err)
@@ -2058,6 +2135,18 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrTrustVerificationInvalid
 	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
 		return security.ErrTrustVerificationRequired
+	case errors.Is(err, host.ErrReleaseMetadataVerifierRequired):
+		return security.ErrTrustVerificationRequired
+	case errors.Is(err, host.ErrReleaseArtifactResolverRequired):
+		return security.ErrTrustVerificationRequired
+	case errors.Is(err, host.ErrSourceRevocationVerifierRequired):
+		return security.ErrTrustVerificationRequired
+	case errors.Is(err, host.ErrReleaseSourcePolicyRequired):
+		return security.ErrTrustVerificationRequired
+	case errors.Is(err, host.ErrReleaseRefVerificationFailed):
+		return security.ErrReleaseRefVerificationFailed
+	case errors.Is(err, host.ErrReleaseRefPolicyDenied):
+		return security.ErrReleaseRefPolicyDenied
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return security.ErrStorageQuotaExceeded
 	case errors.Is(err, operation.ErrDeleteBlocked):
@@ -2091,6 +2180,18 @@ func httpStatusForManagementError(err error) int {
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrPackageTrustVerifierRequired):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrReleaseMetadataVerifierRequired):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrReleaseArtifactResolverRequired):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrSourceRevocationVerifierRequired):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrReleaseSourcePolicyRequired):
+		return http.StatusForbidden
+	case errors.Is(err, host.ErrReleaseRefVerificationFailed):
+		return http.StatusBadRequest
+	case errors.Is(err, host.ErrReleaseRefPolicyDenied):
 		return http.StatusForbidden
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		return http.StatusRequestEntityTooLarge

@@ -2,17 +2,27 @@ openapi: 3.1.0
 info:
   title: ReDevPlugin Plugin Platform API
   version: plugin-platform-v1
-  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Install and update trust_state fields are requested trust outcomes; the Host library must resolve runnable verified/bundled trust through a PackageTrustVerifier before records can become runnable.
+  description: Host-agnostic plugin management, bridge, operation, data, and sandbox routes. Release-ref install and update routes resolve host-controlled package artifacts server-side and do not accept requested trust_state values; local-import package install/update routes are explicit developer/import flows and also do not accept caller-supplied trust_state values.
 paths:
-  /_redevplugin/api/plugins/install:
+  /_redevplugin/api/plugins/local-import/install:
     post:
-      operationId: installPlugin
+      x-redevplugin-route-set: local_import
+      operationId: importLocalPackage
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       requestBody:
-        $ref: "#/components/requestBodies/InstallRequest"
+        $ref: "#/components/requestBodies/ImportLocalPackageRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/install-release-ref:
+    post:
+      operationId: installReleaseRef
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/InstallReleaseRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
   /_redevplugin/api/plugins/enable:
     post:
       operationId: enablePlugin
@@ -21,7 +31,7 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/EnableRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
   /_redevplugin/api/plugins/disable:
     post:
       operationId: disablePlugin
@@ -30,7 +40,7 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/DisableRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
   /_redevplugin/api/plugins/uninstall:
     post:
       operationId: uninstallPlugin
@@ -39,16 +49,26 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/UninstallRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
-  /_redevplugin/api/plugins/update:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/local-import/update:
     post:
-      operationId: updatePlugin
+      x-redevplugin-route-set: local_import
+      operationId: updateLocalPackage
       parameters:
         - $ref: "#/components/parameters/OwnerSessionHashHeader"
       requestBody:
-        $ref: "#/components/requestBodies/UpdateRequest"
+        $ref: "#/components/requestBodies/UpdateLocalPackageRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
+  /_redevplugin/api/plugins/update-release-ref:
+    post:
+      operationId: updateReleaseRef
+      parameters:
+        - $ref: "#/components/parameters/OwnerSessionHashHeader"
+      requestBody:
+        $ref: "#/components/requestBodies/UpdateReleaseRefRequest"
+      responses:
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
   /_redevplugin/api/plugins/downgrade:
     post:
       operationId: downgradePlugin
@@ -57,12 +77,12 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/DowngradeRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/PluginRecordEnvelope" }
   /_redevplugin/api/plugins/catalog:
     get:
       operationId: listPlugins
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/PluginCatalogEnvelope" }
   /_redevplugin/api/plugins/platform/compatibility:
     get:
       operationId: getPluginPlatformCompatibility
@@ -372,9 +392,6 @@ paths:
             Cross-Origin-Resource-Policy:
               description: Always same-origin for plugin assets.
               schema: { type: string }
-            Service-Worker-Allowed:
-              description: Does not expand the default service worker scope beyond the current asset directory.
-              schema: { type: string }
   /_redevplugin/stream/{stream_id}:
     get:
       operationId: getPluginStream
@@ -446,6 +463,35 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Envelope"
+    PluginRecordEnvelope:
+      description: Plugin lifecycle response with typed registry trust assessment.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PluginRecord"
+    PluginCatalogEnvelope:
+      description: Installed plugin catalog response with typed registry records.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    required: [plugins]
+                    additionalProperties: false
+                    properties:
+                      plugins:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PluginRecord"
     ConfirmEnvelope:
       description: Confirmation intent response. The raw confirmation token stays server-side and is never returned to parent JavaScript or the plugin iframe.
       content:
@@ -491,18 +537,30 @@ components:
                   data:
                     $ref: "#/components/schemas/RetainedDataCleanupResult"
   requestBodies:
-    InstallRequest:
+    ImportLocalPackageRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/InstallRequest"
-    UpdateRequest:
+            $ref: "#/components/schemas/ImportLocalPackageRequest"
+    InstallReleaseRefRequest:
       required: true
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/UpdateRequest"
+            $ref: "#/components/schemas/InstallReleaseRefRequest"
+    UpdateLocalPackageRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateLocalPackageRequest"
+    UpdateReleaseRefRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UpdateReleaseRefRequest"
     DowngradeRequest:
       required: true
       content:
@@ -679,6 +737,8 @@ components:
         - PLUGIN_TRUST_STATE_DENIED
         - PLUGIN_TRUST_VERIFICATION_REQUIRED
         - PLUGIN_TRUST_VERIFICATION_INVALID
+        - PLUGIN_RELEASE_REF_VERIFICATION_FAILED
+        - PLUGIN_RELEASE_REF_POLICY_DENIED
         - PLUGIN_DISABLED
         - PLUGIN_DISABLED_BY_POLICY
         - PLUGIN_PERMISSION_DENIED
@@ -711,25 +771,178 @@ components:
         - PLUGIN_RETAINED_DATA_BIND_FAILED
     TrustState:
       type: string
-      enum: [bundled, verified, unsigned_local, untrusted, needs_review, blocked_security]
-    InstallRequest:
+      enum: [verified, unsigned_local, untrusted, needs_review, trust_unavailable, blocked_security]
+    TrustHashSet:
+      type: object
+      required: [package_sha256, manifest_sha256, entries_sha256]
+      additionalProperties: false
+      properties:
+        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+    VerifiedSignature:
+      type: object
+      required: [algorithm, key_id]
+      additionalProperties: false
+      properties:
+        algorithm: { type: string, minLength: 1 }
+        key_id: { type: string, minLength: 1 }
+    TrustAssessment:
+      type: object
+      required: [trust_state, verified_hashes]
+      additionalProperties: false
+      properties:
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        reason_codes:
+          type: array
+          items: { type: string }
+        verified_hashes:
+          $ref: "#/components/schemas/TrustHashSet"
+        verified_signature:
+          $ref: "#/components/schemas/VerifiedSignature"
+        trust_assessment_epoch: { type: string }
+        policy_epoch: { type: string }
+        revocation_epoch: { type: string }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+    PluginVersion:
+      type: object
+      required: [version, active_fingerprint, package_hash, manifest_hash, entries_hash, trust_state, trust_assessment]
+      additionalProperties: true
+      properties:
+        version: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        package_hash: { type: string, minLength: 1 }
+        manifest_hash: { type: string, minLength: 1 }
+        entries_hash: { type: string, minLength: 1 }
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        trust_assessment:
+          $ref: "#/components/schemas/TrustAssessment"
+        source_policy_snapshot_hash: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        source_policy_snapshot:
+          type: object
+          additionalProperties: true
+        local_import_provenance:
+          $ref: "#/components/schemas/LocalImportProvenance"
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+    PluginRecord:
+      type: object
+      required: [plugin_instance_id, plugin_id, version, active_fingerprint, trust_state, trust_assessment, enable_state]
+      additionalProperties: true
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        publisher_id: { type: string }
+        plugin_id: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        package_hash: { type: string }
+        manifest_hash: { type: string }
+        entries_hash: { type: string }
+        trust_state:
+          $ref: "#/components/schemas/TrustState"
+        trust_assessment:
+          $ref: "#/components/schemas/TrustAssessment"
+        source_policy_snapshot_hash: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        source_policy_snapshot:
+          type: object
+          additionalProperties: true
+        local_import_provenance:
+          $ref: "#/components/schemas/LocalImportProvenance"
+        enable_state:
+          type: string
+          enum: [disabled, enabled, disabled_by_policy]
+        disabled_reason: { type: string }
+        retained_data_state:
+          type: string
+          enum: [none, retained, expired, bound, deleted, delete_failed_retryable]
+        policy_revision: { type: integer, minimum: 0 }
+        management_revision: { type: integer, minimum: 0 }
+        revoke_epoch: { type: integer, minimum: 0 }
+        manifest:
+          type: object
+          additionalProperties: true
+        package_entries:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        version_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginVersion"
+        installed_at: { type: string, format: date-time }
+        enabled_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time }
+        metadata:
+          type: object
+          additionalProperties: { type: string }
+    LocalImportProvenance:
+      type: object
+      required: [import_id, distribution, policy_epoch, unsigned_policy, assessed_at]
+      additionalProperties: false
+      properties:
+        import_id: { type: string, minLength: 1 }
+        distribution: { enum: [local_import] }
+        policy_epoch: { type: string, minLength: 1 }
+        unsigned_policy: { enum: [dev_only, review_required, block] }
+        assessed_at: { type: string, format: date-time }
+    PackageHashSet:
+      type: object
+      required: [package_sha256, manifest_sha256, entries_sha256]
+      additionalProperties: false
+      properties:
+        package_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        manifest_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        entries_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+    PluginReleaseRef:
+      type: object
+      required: [source_id, release_metadata_ref, release_metadata_sha256, publisher_id, plugin_id, version, expected_hashes]
+      additionalProperties: false
+      properties:
+        source_id: { type: string, minLength: 1 }
+        release_metadata_ref: { type: string, minLength: 1 }
+        release_metadata_sha256: { type: string, pattern: "^(sha256:)?[0-9a-f]{64}$" }
+        publisher_id: { type: string, minLength: 1 }
+        plugin_id: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        expected_hashes:
+          $ref: "#/components/schemas/PackageHashSet"
+    ImportLocalPackageRequest:
       type: object
       required: [package_base64]
       additionalProperties: false
       properties:
         package_base64: { type: string, contentEncoding: base64, minLength: 1 }
-        trust_state:
-          $ref: "#/components/schemas/TrustState"
         plugin_instance_id: { type: string, minLength: 1 }
-    UpdateRequest:
+    InstallReleaseRefRequest:
+      type: object
+      required: [release_ref]
+      additionalProperties: false
+      properties:
+        release_ref:
+          $ref: "#/components/schemas/PluginReleaseRef"
+        plugin_instance_id: { type: string, minLength: 1 }
+    UpdateLocalPackageRequest:
       type: object
       required: [plugin_instance_id, package_base64]
       additionalProperties: false
       properties:
         plugin_instance_id: { type: string, minLength: 1 }
         package_base64: { type: string, contentEncoding: base64, minLength: 1 }
-        trust_state:
-          $ref: "#/components/schemas/TrustState"
+    UpdateReleaseRefRequest:
+      type: object
+      required: [plugin_instance_id, release_ref]
+      additionalProperties: false
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        release_ref:
+          $ref: "#/components/schemas/PluginReleaseRef"
     DowngradeRequest:
       type: object
       required: [plugin_instance_id]

@@ -1,11 +1,13 @@
 package version
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -26,40 +28,46 @@ var (
 )
 
 const (
-	PluginHostProtocolVersion     = "plugin-host-v1"
-	RustIPCVersion                = "rust-ipc-v1"
-	WASMABIVersion                = "redevplugin-wasm-worker-v1"
-	ManifestSchemaVersion         = "manifest-v1"
-	PackageSignatureSchemaVersion = "package-signature-v1"
-	TokenTicketSchemaVersion      = "token-ticket-v1"
-	BridgeSchemaVersion           = "bridge-v1"
-	TargetClassifierVersion       = "target-classifier-v1"
-	NetworkGrantSchemaVersion     = "network-grant-v1"
-	PluginPlatformOpenAPIVersion  = "plugin-platform-v1"
-	CompatibilityManifestVersion  = "redevplugin.compatibility.v1"
-	CompatibilitySchemaVersion    = "compatibility-manifest-v1"
-	ReleaseManifestSchemaVersion  = "release-manifest-v1"
-	WorkerInvocationSchemaVersion = "worker-invocation-v1"
-	ErrorCodesSchemaVersion       = "error-codes-v1"
+	PluginHostProtocolVersion      = "plugin-host-v1"
+	RustIPCVersion                 = "rust-ipc-v1"
+	WASMABIVersion                 = "redevplugin-wasm-worker-v1"
+	ManifestSchemaVersion          = "manifest-v1"
+	PackageSignatureSchemaVersion  = "package-signature-v1"
+	ReleaseMetadataSchemaVersion   = "release-metadata-v1"
+	SourcePolicySchemaVersion      = "source-policy-v1"
+	SourceRevocationsSchemaVersion = "source-revocations-v1"
+	TokenTicketSchemaVersion       = "token-ticket-v1"
+	BridgeSchemaVersion            = "bridge-v1"
+	TargetClassifierVersion        = "target-classifier-v1"
+	NetworkGrantSchemaVersion      = "network-grant-v1"
+	PluginPlatformOpenAPIVersion   = "plugin-platform-v1"
+	CompatibilityManifestVersion   = "redevplugin.compatibility.v1"
+	CompatibilitySchemaVersion     = "compatibility-manifest-v1"
+	ReleaseManifestSchemaVersion   = "release-manifest-v1"
+	WorkerInvocationSchemaVersion  = "worker-invocation-v1"
+	ErrorCodesSchemaVersion        = "error-codes-v1"
 )
 
 type Matrix struct {
-	GoModuleVersion               string `json:"redevplugin_go_version"`
-	UIPackageVersion              string `json:"redevplugin_ui_version"`
-	RuntimeVersion                string `json:"redevplugin_runtime_version"`
-	PluginHostProtocolVersion     string `json:"plugin_host_protocol_version"`
-	RustIPCVersion                string `json:"rust_ipc_version"`
-	WASMABIVersion                string `json:"wasm_abi_version"`
-	ManifestSchemaVersion         string `json:"manifest_schema_version"`
-	PackageSignatureSchemaVersion string `json:"package_signature_schema_version"`
-	TokenTicketSchemaVersion      string `json:"token_ticket_schema_version"`
-	BridgeSchemaVersion           string `json:"bridge_schema_version"`
-	TargetClassifierVersion       string `json:"target_classifier_version"`
-	NetworkGrantSchemaVersion     string `json:"network_grant_schema_version"`
-	PluginPlatformOpenAPIVersion  string `json:"plugin_platform_openapi_version"`
-	CompatibilitySchemaVersion    string `json:"compatibility_schema_version"`
-	WorkerInvocationSchemaVersion string `json:"worker_invocation_schema_version"`
-	ErrorCodesSchemaVersion       string `json:"error_codes_schema_version"`
+	GoModuleVersion                string `json:"redevplugin_go_version"`
+	UIPackageVersion               string `json:"redevplugin_ui_version"`
+	RuntimeVersion                 string `json:"redevplugin_runtime_version"`
+	PluginHostProtocolVersion      string `json:"plugin_host_protocol_version"`
+	RustIPCVersion                 string `json:"rust_ipc_version"`
+	WASMABIVersion                 string `json:"wasm_abi_version"`
+	ManifestSchemaVersion          string `json:"manifest_schema_version"`
+	PackageSignatureSchemaVersion  string `json:"package_signature_schema_version"`
+	ReleaseMetadataSchemaVersion   string `json:"release_metadata_schema_version"`
+	SourcePolicySchemaVersion      string `json:"source_policy_schema_version"`
+	SourceRevocationsSchemaVersion string `json:"source_revocations_schema_version"`
+	TokenTicketSchemaVersion       string `json:"token_ticket_schema_version"`
+	BridgeSchemaVersion            string `json:"bridge_schema_version"`
+	TargetClassifierVersion        string `json:"target_classifier_version"`
+	NetworkGrantSchemaVersion      string `json:"network_grant_schema_version"`
+	PluginPlatformOpenAPIVersion   string `json:"plugin_platform_openapi_version"`
+	CompatibilitySchemaVersion     string `json:"compatibility_schema_version"`
+	WorkerInvocationSchemaVersion  string `json:"worker_invocation_schema_version"`
+	ErrorCodesSchemaVersion        string `json:"error_codes_schema_version"`
 }
 
 type ContractArtifact struct {
@@ -84,22 +92,25 @@ var (
 
 func CurrentMatrix() Matrix {
 	return Matrix{
-		GoModuleVersion:               resolvedReleaseVersion(GoModuleVersion),
-		UIPackageVersion:              resolvedReleaseVersion(UIPackageVersion),
-		RuntimeVersion:                resolvedReleaseVersion(RuntimeVersion),
-		PluginHostProtocolVersion:     PluginHostProtocolVersion,
-		RustIPCVersion:                RustIPCVersion,
-		WASMABIVersion:                WASMABIVersion,
-		ManifestSchemaVersion:         ManifestSchemaVersion,
-		PackageSignatureSchemaVersion: PackageSignatureSchemaVersion,
-		TokenTicketSchemaVersion:      TokenTicketSchemaVersion,
-		BridgeSchemaVersion:           BridgeSchemaVersion,
-		TargetClassifierVersion:       TargetClassifierVersion,
-		NetworkGrantSchemaVersion:     NetworkGrantSchemaVersion,
-		PluginPlatformOpenAPIVersion:  PluginPlatformOpenAPIVersion,
-		CompatibilitySchemaVersion:    CompatibilitySchemaVersion,
-		WorkerInvocationSchemaVersion: WorkerInvocationSchemaVersion,
-		ErrorCodesSchemaVersion:       ErrorCodesSchemaVersion,
+		GoModuleVersion:                resolvedReleaseVersion(GoModuleVersion),
+		UIPackageVersion:               resolvedReleaseVersion(UIPackageVersion),
+		RuntimeVersion:                 resolvedReleaseVersion(RuntimeVersion),
+		PluginHostProtocolVersion:      PluginHostProtocolVersion,
+		RustIPCVersion:                 RustIPCVersion,
+		WASMABIVersion:                 WASMABIVersion,
+		ManifestSchemaVersion:          ManifestSchemaVersion,
+		PackageSignatureSchemaVersion:  PackageSignatureSchemaVersion,
+		ReleaseMetadataSchemaVersion:   ReleaseMetadataSchemaVersion,
+		SourcePolicySchemaVersion:      SourcePolicySchemaVersion,
+		SourceRevocationsSchemaVersion: SourceRevocationsSchemaVersion,
+		TokenTicketSchemaVersion:       TokenTicketSchemaVersion,
+		BridgeSchemaVersion:            BridgeSchemaVersion,
+		TargetClassifierVersion:        TargetClassifierVersion,
+		NetworkGrantSchemaVersion:      NetworkGrantSchemaVersion,
+		PluginPlatformOpenAPIVersion:   PluginPlatformOpenAPIVersion,
+		CompatibilitySchemaVersion:     CompatibilitySchemaVersion,
+		WorkerInvocationSchemaVersion:  WorkerInvocationSchemaVersion,
+		ErrorCodesSchemaVersion:        ErrorCodesSchemaVersion,
 	}
 }
 
@@ -153,7 +164,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "plugin-platform-openapi",
 				Path:    "spec/openapi/plugin-platform-v1.yaml",
 				Version: PluginPlatformOpenAPIVersion,
-				SHA256:  "d6be3a88fc182ba8862d7d0f388b7bfffa54f65217d52055a34bca9e0d8a5fcd",
+				SHA256:  "a0e251c07b0ce50e4129c6468f949065e24d88081cafdee1cd4382627930bcad",
 			},
 			{
 				ID:      "manifest-schema",
@@ -168,6 +179,24 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				SHA256:  "13951c0f6831ba28647774368c76a817868aeb7984628e2cf3dc4ad1b54f8284",
 			},
 			{
+				ID:      "release-metadata-schema",
+				Path:    "spec/plugin/release-metadata-v1.schema.json",
+				Version: ReleaseMetadataSchemaVersion,
+				SHA256:  "c0e5bb660cec514bddf4039adbab7b870340fe671a208117a766691bf71f0048",
+			},
+			{
+				ID:      "source-policy-schema",
+				Path:    "spec/plugin/source-policy-v1.schema.json",
+				Version: SourcePolicySchemaVersion,
+				SHA256:  "b5f3094402bdbfdda1671b46e5f64a69ad7dc2ba9501030439fafa87acd2923e",
+			},
+			{
+				ID:      "source-revocations-schema",
+				Path:    "spec/plugin/source-revocations-v1.schema.json",
+				Version: SourceRevocationsSchemaVersion,
+				SHA256:  "4c4132879a51b31e99775c979ca3ab43c2ee4c5c885f3ff1e7b43cd5ce8bc83d",
+			},
+			{
 				ID:      "token-ticket-schema",
 				Path:    "spec/plugin/token-ticket-v1.schema.json",
 				Version: TokenTicketSchemaVersion,
@@ -177,13 +206,13 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "iframe-bridge-schema",
 				Path:    "spec/plugin/bridge-v1.schema.json",
 				Version: BridgeSchemaVersion,
-				SHA256:  "b524192ce4cdcb956159d8226452bcfdb90c0ce4218328d6440dcf255ac67c0d",
+				SHA256:  "23cfda963ca04cbc149dc41a4311a34fb6a9775bf1fa08a9cbd3d9559689044e",
 			},
 			{
 				ID:      "compatibility-manifest-schema",
 				Path:    "spec/plugin/compatibility-manifest-v1.schema.json",
 				Version: CompatibilitySchemaVersion,
-				SHA256:  "db9907e927238cc0710054e7fafb6c9f816d90723c266472510a70e5b3e94e76",
+				SHA256:  "49fa1bbafb1ac46804ce35ffa9b3cf896644e17a596b03cfba503b80691c5d96",
 			},
 			{
 				ID:      "release-manifest-schema",
@@ -201,7 +230,7 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 				ID:      "error-codes-schema",
 				Path:    "spec/plugin/error-codes-v1.schema.json",
 				Version: ErrorCodesSchemaVersion,
-				SHA256:  "5141acf2d500992f6c64ee30cb8ef6b68afc0c2d13f6520e44923cde2d5b13b6",
+				SHA256:  "8dddba605e5bb0c01f05a5265815314843ef154a3d1e4c5350d301effefbd572",
 			},
 			{
 				ID:      "rust-ipc-schema",
@@ -233,7 +262,14 @@ func CurrentCompatibilityManifest() CompatibilityManifest {
 
 func DecodeCompatibilityManifest(raw []byte) (CompatibilityManifest, error) {
 	var manifest CompatibilityManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return CompatibilityManifest{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err == nil {
+		return CompatibilityManifest{}, errors.New("compatibility manifest must contain exactly one JSON document")
+	} else if !errors.Is(err, io.EOF) {
 		return CompatibilityManifest{}, err
 	}
 	return manifest, nil

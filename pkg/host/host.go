@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"path"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +40,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 type AuditSink = observability.AuditSink
@@ -74,9 +78,9 @@ type PolicyAdapter interface {
 	LocalGeneratedPluginsEnabled(ctx context.Context, session sessionctx.Context) (bool, error)
 }
 
-// PackageTrustVerifier is the install/update trust decision boundary. The Host
-// library treats requested trust_state values as requests only; runnable
-// verified/bundled states must come from this verifier or installation fails.
+// PackageTrustVerifier is the install/update trust decision boundary. Runnable
+// trust states must come from this verifier or the release/local import
+// provenance handled by Host core.
 type PackageTrustVerifier interface {
 	VerifyPackageTrust(ctx context.Context, req PackageTrustVerificationRequest) (PackageTrustVerificationResult, error)
 }
@@ -91,17 +95,47 @@ const (
 const installStageTTL = 30 * time.Minute
 
 type PackageTrustVerificationRequest struct {
-	Action              PackageTrustAction     `json:"action"`
-	Package             pluginpkg.Package      `json:"package"`
-	RequestedTrustState registry.TrustState    `json:"requested_trust_state"`
-	CurrentRecord       *registry.PluginRecord `json:"current_record,omitempty"`
-	PluginInstanceID    string                 `json:"plugin_instance_id,omitempty"`
-	Now                 time.Time              `json:"now,omitempty"`
+	Action               PackageTrustAction     `json:"action"`
+	Package              pluginpkg.Package      `json:"package"`
+	LocalImport          bool                   `json:"local_import,omitempty"`
+	ReleaseRef           *PluginReleaseRef      `json:"release_ref,omitempty"`
+	Release              *PluginPackageRelease  `json:"release,omitempty"`
+	SourcePolicySnapshot *SourcePolicySnapshot  `json:"source_policy_snapshot,omitempty"`
+	CurrentRecord        *registry.PluginRecord `json:"current_record,omitempty"`
+	PluginInstanceID     string                 `json:"plugin_instance_id,omitempty"`
+	Now                  time.Time              `json:"now,omitempty"`
 }
 
-type PackageTrustVerificationResult struct {
-	TrustState registry.TrustState `json:"trust_state"`
-	Metadata   map[string]string   `json:"metadata,omitempty"`
+type PackageTrustVerificationResult = registry.TrustAssessment
+
+type ReleaseMetadataVerificationRequest struct {
+	Action                   PackageTrustAction     `json:"action"`
+	ReleaseRef               PluginReleaseRef       `json:"release_ref"`
+	Release                  PluginPackageRelease   `json:"release"`
+	SourcePolicySnapshot     SourcePolicySnapshot   `json:"source_policy_snapshot"`
+	ReleaseMetadataBytes     []byte                 `json:"-"`
+	ReleaseMetadataSignature []byte                 `json:"-"`
+	CurrentRecord            *registry.PluginRecord `json:"current_record,omitempty"`
+	PluginInstanceID         string                 `json:"plugin_instance_id,omitempty"`
+	Now                      time.Time              `json:"now,omitempty"`
+}
+
+type ReleaseMetadataVerificationResult struct {
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type SourceRevocationEvidenceVerificationRequest struct {
+	ReleaseRef                  PluginReleaseRef               `json:"release_ref"`
+	SourcePolicySnapshot        SourcePolicySnapshot           `json:"source_policy_snapshot"`
+	RevocationEvidence          SourcePolicyRevocationEvidence `json:"revocation_evidence"`
+	RevocationMetadata          SourceRevocationMetadata       `json:"revocation_metadata"`
+	RevocationMetadataBytes     []byte                         `json:"-"`
+	RevocationMetadataSignature []byte                         `json:"-"`
+	Now                         time.Time                      `json:"now,omitempty"`
+}
+
+type SourceRevocationEvidenceVerificationResult struct {
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 type PolicyDecision string
@@ -119,6 +153,254 @@ type SecretTestRequest = secrets.TestRequest
 
 type RuntimeArtifactResolver interface {
 	RuntimePath(ctx context.Context, target RuntimeTarget) (string, error)
+}
+
+type ReleaseMetadataVerifier interface {
+	VerifyReleaseMetadata(ctx context.Context, req ReleaseMetadataVerificationRequest) (ReleaseMetadataVerificationResult, error)
+}
+
+type SourceRevocationEvidenceVerifier interface {
+	VerifySourceRevocationEvidence(ctx context.Context, req SourceRevocationEvidenceVerificationRequest) (SourceRevocationEvidenceVerificationResult, error)
+}
+
+type ReleaseSourcePolicyResolver interface {
+	ResolveReleaseSourcePolicy(ctx context.Context, req ReleaseSourcePolicyRequest) (SourcePolicySnapshot, error)
+}
+
+type ReleaseArtifactResolver interface {
+	ResolveReleaseArtifact(ctx context.Context, req ReleaseArtifactResolveRequest) (ResolvedPackageArtifact, error)
+}
+
+type PackageDistribution string
+
+const (
+	PackageDistributionRegistryRef     PackageDistribution = "registry_ref"
+	PackageDistributionHostArtifactRef PackageDistribution = "host_artifact_ref"
+	PackageDistributionLocalImport     PackageDistribution = "local_import"
+)
+
+type PackageSourceType string
+
+const (
+	PackageSourceRegistry     PackageSourceType = "registry"
+	PackageSourceHostArtifact PackageSourceType = "host_artifact"
+)
+
+type PackageSourceClass string
+
+const (
+	PackageSourceClassOfficial  PackageSourceClass = "official"
+	PackageSourceClassCurated   PackageSourceClass = "curated"
+	PackageSourceClassCommunity PackageSourceClass = "community"
+	PackageSourceClassPrivate   PackageSourceClass = "private"
+)
+
+type PackageInstallPolicy string
+
+const (
+	PackageInstallAllow          PackageInstallPolicy = "allow"
+	PackageInstallReviewRequired PackageInstallPolicy = "review_required"
+	PackageInstallBlock          PackageInstallPolicy = "block"
+)
+
+type PackageUnsignedPolicy string
+
+const (
+	PackageUnsignedDevOnly        PackageUnsignedPolicy = "dev_only"
+	PackageUnsignedReviewRequired PackageUnsignedPolicy = "review_required"
+	PackageUnsignedBlock          PackageUnsignedPolicy = "block"
+)
+
+type PackageDowngradePolicy string
+
+const (
+	PackageDowngradeBlock          PackageDowngradePolicy = "block"
+	PackageDowngradeReviewRequired PackageDowngradePolicy = "review_required"
+)
+
+type PackageHashSet struct {
+	PackageSHA256  string `json:"package_sha256"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+	EntriesSHA256  string `json:"entries_sha256"`
+}
+
+type PluginReleaseRef struct {
+	SourceID              string         `json:"source_id"`
+	ReleaseMetadataRef    string         `json:"release_metadata_ref"`
+	ReleaseMetadataSHA256 string         `json:"release_metadata_sha256"`
+	PublisherID           string         `json:"publisher_id"`
+	PluginID              string         `json:"plugin_id"`
+	Version               string         `json:"version"`
+	ExpectedHashes        PackageHashSet `json:"expected_hashes"`
+}
+
+type PackageDistributionRef struct {
+	Distribution PackageDistribution `json:"distribution"`
+	ArtifactRef  string              `json:"artifact_ref,omitempty"`
+	ImportID     string              `json:"import_id,omitempty"`
+}
+
+type SourcePolicySnapshot struct {
+	SchemaVersion      string                          `json:"schema_version"`
+	SourceID           string                          `json:"source_id"`
+	SourceType         PackageSourceType               `json:"source_type"`
+	SourceClass        PackageSourceClass              `json:"source_class,omitempty"`
+	AllowedPublishers  []string                        `json:"allowed_publishers,omitempty"`
+	TrustedKeyIDs      []string                        `json:"trusted_key_ids,omitempty"`
+	TrustedKeys        []SourcePolicyTrustedKey        `json:"trusted_keys,omitempty"`
+	RevocationEvidence *SourcePolicyRevocationEvidence `json:"revocation_evidence,omitempty"`
+	RequireSignature   bool                            `json:"require_signature,omitempty"`
+	InstallPolicy      PackageInstallPolicy            `json:"install_policy,omitempty"`
+	UnsignedPolicy     PackageUnsignedPolicy           `json:"unsigned_policy,omitempty"`
+	DowngradePolicy    PackageDowngradePolicy          `json:"downgrade_policy,omitempty"`
+	PolicyEpoch        string                          `json:"policy_epoch,omitempty"`
+	KeyRotationEpoch   string                          `json:"key_rotation_epoch,omitempty"`
+	RevocationEpoch    string                          `json:"revocation_epoch,omitempty"`
+	AssessedAt         string                          `json:"assessed_at,omitempty"`
+	Metadata           map[string]string               `json:"metadata,omitempty"`
+}
+
+type SourcePolicyTrustedKey struct {
+	Algorithm       string   `json:"algorithm"`
+	KeyID           string   `json:"key_id"`
+	PublicKeySHA256 string   `json:"public_key_sha256"`
+	Usage           []string `json:"usage"`
+	ValidFrom       string   `json:"valid_from,omitempty"`
+	ValidUntil      string   `json:"valid_until,omitempty"`
+	RevocationEpoch string   `json:"revocation_epoch,omitempty"`
+}
+
+type SourcePolicyRevocationEvidence struct {
+	MetadataRef      string `json:"metadata_ref"`
+	MetadataSHA256   string `json:"metadata_sha256"`
+	SignatureRef     string `json:"signature_ref"`
+	SignatureKeyID   string `json:"signature_key_id"`
+	VerifiedAt       string `json:"verified_at"`
+	ExpiresAt        string `json:"expires_at"`
+	HighestSeenEpoch string `json:"highest_seen_epoch"`
+	MetadataBytes    []byte `json:"-"`
+	SignatureBytes   []byte `json:"-"`
+}
+
+type SourceRevocationMetadata struct {
+	SchemaVersion    string   `json:"schema_version"`
+	SourceID         string   `json:"source_id"`
+	HighestSeenEpoch string   `json:"highest_seen_epoch"`
+	GeneratedAt      string   `json:"generated_at"`
+	ExpiresAt        string   `json:"expires_at"`
+	RevokedKeyIDs    []string `json:"revoked_key_ids,omitempty"`
+}
+
+type PackageReleaseSignature struct {
+	Algorithm          string `json:"algorithm"`
+	KeyID              string `json:"key_id"`
+	SignatureBundleRef string `json:"signature_bundle_ref"`
+	SourcePolicyEpoch  string `json:"source_policy_epoch"`
+	RevocationEpoch    string `json:"revocation_epoch"`
+}
+
+type ReleaseMetadataSignature struct {
+	Algorithm         string `json:"algorithm"`
+	KeyID             string `json:"key_id"`
+	SignatureRef      string `json:"signature_ref"`
+	SourcePolicyEpoch string `json:"source_policy_epoch"`
+	RevocationEpoch   string `json:"revocation_epoch"`
+}
+
+type PluginPackageRelease struct {
+	SourceID                 string                    `json:"source_id"`
+	PublisherID              string                    `json:"publisher_id"`
+	PluginID                 string                    `json:"plugin_id"`
+	Version                  string                    `json:"version"`
+	DistributionRef          PackageDistributionRef    `json:"distribution_ref"`
+	ReleaseMetadataSHA256    string                    `json:"release_metadata_sha256"`
+	ReleaseMetadataSignature *ReleaseMetadataSignature `json:"release_metadata_signature,omitempty"`
+	Hashes                   PackageHashSet            `json:"hashes"`
+	PackageSignature         *PackageReleaseSignature  `json:"package_signature,omitempty"`
+	Compatibility            *ReleaseCompatibility     `json:"compatibility,omitempty"`
+	HostRequirements         []HostRequirement         `json:"host_requirements,omitempty"`
+	ReleaseEvidence          *ReleaseEvidence          `json:"release_evidence,omitempty"`
+	Metadata                 map[string]string         `json:"metadata,omitempty"`
+}
+
+type ReleaseCompatibility struct {
+	MinReDevPluginVersion string   `json:"min_redevplugin_version,omitempty"`
+	MinRuntimeVersion     string   `json:"min_runtime_version,omitempty"`
+	UIProtocolVersion     string   `json:"ui_protocol_version,omitempty"`
+	SupportedTargets      []string `json:"supported_targets,omitempty"`
+}
+
+type HostRequirement struct {
+	HostID                      string                      `json:"host_id"`
+	MinHostVersion              string                      `json:"min_host_version,omitempty"`
+	RequiredCapabilityContracts []HostCapabilityRequirement `json:"required_capability_contracts,omitempty"`
+}
+
+type HostCapabilityRequirement struct {
+	CapabilityID      string                    `json:"capability_id"`
+	CapabilityVersion string                    `json:"capability_version"`
+	Contract          HostCapabilityContractRef `json:"contract"`
+}
+
+type HostCapabilityContractRef struct {
+	ContractID            string `json:"contract_id"`
+	ContractVersion       string `json:"contract_version"`
+	ArtifactRef           string `json:"artifact_ref"`
+	ArtifactSHA256        string `json:"artifact_sha256"`
+	ManifestSHA256        string `json:"manifest_sha256"`
+	SignatureRef          string `json:"signature_ref"`
+	SignatureSHA256       string `json:"signature_sha256"`
+	SignatureKeyID        string `json:"signature_key_id"`
+	CompatibilitySHA256   string `json:"compatibility_sha256"`
+	GeneratedClientSHA256 string `json:"generated_client_sha256"`
+	NoticesSHA256         string `json:"notices_sha256"`
+}
+
+type ReleaseEvidence struct {
+	NoticesSHA256    string `json:"notices_sha256,omitempty"`
+	ProvenanceSHA256 string `json:"provenance_sha256,omitempty"`
+	GeneratedAt      string `json:"generated_at,omitempty"`
+}
+
+type signedReleaseMetadata struct {
+	SchemaVersion            string                    `json:"schema_version"`
+	SourceID                 string                    `json:"source_id"`
+	ReleaseMetadataRef       string                    `json:"release_metadata_ref"`
+	PublisherID              string                    `json:"publisher_id"`
+	PluginID                 string                    `json:"plugin_id"`
+	Version                  string                    `json:"version"`
+	DistributionRef          PackageDistributionRef    `json:"distribution_ref"`
+	Hashes                   PackageHashSet            `json:"hashes"`
+	ReleaseMetadataSignature *ReleaseMetadataSignature `json:"release_metadata_signature,omitempty"`
+	PackageSignature         *PackageReleaseSignature  `json:"package_signature,omitempty"`
+	Compatibility            *ReleaseCompatibility     `json:"compatibility,omitempty"`
+	HostRequirements         []HostRequirement         `json:"host_requirements,omitempty"`
+	ReleaseEvidence          *ReleaseEvidence          `json:"release_evidence,omitempty"`
+	Metadata                 map[string]string         `json:"metadata,omitempty"`
+}
+
+type ReleaseSourcePolicyRequest struct {
+	Action           PackageTrustAction     `json:"action"`
+	ReleaseRef       PluginReleaseRef       `json:"release_ref"`
+	CurrentRecord    *registry.PluginRecord `json:"current_record,omitempty"`
+	PluginInstanceID string                 `json:"plugin_instance_id,omitempty"`
+	Now              time.Time              `json:"now,omitempty"`
+}
+
+type ReleaseArtifactResolveRequest struct {
+	Action               PackageTrustAction     `json:"action"`
+	ReleaseRef           PluginReleaseRef       `json:"release_ref"`
+	SourcePolicySnapshot SourcePolicySnapshot   `json:"source_policy_snapshot"`
+	CurrentRecord        *registry.PluginRecord `json:"current_record,omitempty"`
+	PluginInstanceID     string                 `json:"plugin_instance_id,omitempty"`
+	Now                  time.Time              `json:"now,omitempty"`
+}
+
+type ResolvedPackageArtifact struct {
+	ReleaseMetadataBytes     []byte      `json:"-"`
+	ReleaseMetadataSignature []byte      `json:"-"`
+	Reader                   io.ReaderAt `json:"-"`
+	Size                     int64       `json:"size"`
 }
 
 type CoreActionAdapter interface {
@@ -173,6 +455,10 @@ type Adapters struct {
 	SessionResolver         sessionctx.Resolver
 	Policy                  PolicyAdapter
 	PackageTrustVerifier    PackageTrustVerifier
+	ReleaseMetadataVerifier ReleaseMetadataVerifier
+	RevocationVerifier      SourceRevocationEvidenceVerifier
+	ReleaseSourcePolicy     ReleaseSourcePolicyResolver
+	ReleaseArtifactResolver ReleaseArtifactResolver
 	Registry                registry.Store
 	Audit                   AuditSink
 	Diagnostics             DiagnosticsSink
@@ -206,20 +492,37 @@ type Host struct {
 	runtimeMu     sync.Mutex
 }
 
-type InstallRequest struct {
+type ImportLocalPackageRequest struct {
 	PackageReader    io.ReaderAt
 	PackageSize      int64
-	TrustState       registry.TrustState
 	PluginInstanceID string
 	Now              time.Time
 }
 
-type UpdateRequest struct {
+type UpdateLocalPackageRequest struct {
 	PluginInstanceID string
 	PackageReader    io.ReaderAt
 	PackageSize      int64
-	TrustState       registry.TrustState
 	Now              time.Time
+}
+
+type InstallReleaseRefRequest struct {
+	ReleaseRef       PluginReleaseRef
+	PluginInstanceID string
+	Now              time.Time
+}
+
+type UpdateReleaseRefRequest struct {
+	PluginInstanceID string
+	ReleaseRef       PluginReleaseRef
+	Now              time.Time
+}
+
+type packageTrustInput struct {
+	LocalImport          bool
+	ReleaseRef           *PluginReleaseRef
+	Release              *PluginPackageRelease
+	SourcePolicySnapshot *SourcePolicySnapshot
 }
 
 type DowngradeRequest struct {
@@ -499,10 +802,16 @@ type ConfirmMethodResult struct {
 }
 
 var (
-	ErrSecretStoreRequired             = errors.New("secret store adapter is required")
-	ErrInvalidSecretRef                = secrets.ErrInvalidSecretRef
-	ErrPackageTrustVerifierRequired    = errors.New("package trust verifier is required for requested trust state")
-	ErrPackageTrustVerificationInvalid = errors.New("package trust verifier returned invalid trust state")
+	ErrSecretStoreRequired              = errors.New("secret store adapter is required")
+	ErrInvalidSecretRef                 = secrets.ErrInvalidSecretRef
+	ErrPackageTrustVerifierRequired     = errors.New("package trust verifier is required for requested trust state")
+	ErrPackageTrustVerificationInvalid  = errors.New("package trust verifier returned invalid trust state")
+	ErrReleaseMetadataVerifierRequired  = errors.New("release metadata verifier is required")
+	ErrSourceRevocationVerifierRequired = errors.New("source revocation evidence verifier is required")
+	ErrReleaseSourcePolicyRequired      = errors.New("release source policy resolver is required")
+	ErrReleaseArtifactResolverRequired  = errors.New("release artifact resolver is required")
+	ErrReleaseRefVerificationFailed     = errors.New("release ref verification failed")
+	ErrReleaseRefPolicyDenied           = errors.New("release ref source policy denied")
 )
 
 type ListOperationsRequest struct {
@@ -780,6 +1089,28 @@ func (h *Host) ReadSurfaceAsset(ctx context.Context, req ReadSurfaceAssetRequest
 }
 
 func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) (bridge.GatewayTokenResult, error) {
+	validation, err := h.surfaceTokens.ValidateBridgeHandshake(bridge.MintGatewayTokenRequest{
+		Handshake:                 req.Handshake,
+		BridgeChannelID:           req.BridgeChannelID,
+		HandshakeTranscriptSHA256: req.HandshakeTranscriptSHA256,
+		Now:                       req.Now,
+	})
+	if err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
+	record, err := h.adapters.Registry.GetPlugin(ctx, validation.Session.PluginInstanceID)
+	if err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
+	if record.PluginID != validation.Session.PluginID || record.ActiveFingerprint != validation.Session.ActiveFingerprint {
+		return bridge.GatewayTokenResult{}, bridge.ErrHandshakeMismatch
+	}
+	if record.EnableState != registry.EnableEnabled {
+		return bridge.GatewayTokenResult{}, errors.New("plugin is not enabled")
+	}
+	if err := h.canRun(ctx, record); err != nil {
+		return bridge.GatewayTokenResult{}, err
+	}
 	result, err := h.surfaceTokens.MintGatewayToken(bridge.MintGatewayTokenRequest{
 		Handshake:                 req.Handshake,
 		BridgeChannelID:           req.BridgeChannelID,
@@ -1214,7 +1545,7 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 	return resolved, nil
 }
 
-func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry.PluginRecord, error) {
+func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageRequest) (registry.PluginRecord, error) {
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
@@ -1222,39 +1553,72 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	pluginInstanceID := req.PluginInstanceID
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
+}
+
+func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefRequest) (registry.PluginRecord, error) {
+	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, req.Now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	releaseRef := req.ReleaseRef
+	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{
+		ReleaseRef:           &releaseRef,
+		Release:              &release,
+		SourcePolicySnapshot: &sourcePolicy,
+	}, req.Now, metadata)
+}
+
+func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package, pluginInstanceID string, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
 	if strings.TrimSpace(pluginInstanceID) == "" {
 		pluginInstanceID = defaultPluginInstanceID(pkg)
 	}
-	stage, err := h.createInstallStage(ctx, installstage.ActionInstall, pkg, pluginInstanceID, string(req.TrustState), req.Now)
+	stage, err := h.createInstallStage(ctx, installstage.ActionInstall, pkg, pluginInstanceID, trustInput.stageRequestedTrust(), now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, req.TrustState, nil, pluginInstanceID, req.Now)
+	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionInstall, pkg, trustInput, nil, pluginInstanceID, now)
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, req.Now)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, now)
 	}
+	metadata := cloneStringMap(trustAssessment.Metadata)
+	metadata = mergeStringMap(baseMetadata, metadata)
 	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
 		StageID:       stage.StageID,
-		ResolvedTrust: string(trust),
+		ResolvedTrust: string(trustAssessment.TrustState),
 		ValidationSummary: map[string]string{
 			"trust": "resolved",
 		},
-		Now: req.Now,
+		Now: now,
 	}); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	record := packageRecord(pkg, trust, pluginInstanceID, metadata)
+	record := packageRecord(pkg, trustAssessment, pluginInstanceID, metadata)
+	if trustInput.LocalImport {
+		record.LocalImportProvenance = localImportProvenance(now)
+	}
+	if trustInput.SourcePolicySnapshot != nil {
+		if err := attachSourcePolicySnapshot(&record, *trustInput.SourcePolicySnapshot); err != nil {
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "source_policy_snapshot_failed", err, now)
+		}
+	}
 	record.EnableState = registry.EnableDisabled
 	record.RetainedDataState = registry.RetainedDataNone
 	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, req.Now)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
 	}
-	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: req.Now})
+	previous, hadPrevious, err := h.getExistingInstallRecord(ctx, record.PluginInstanceID)
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, req.Now)
+		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_lookup_failed", err, now)
 	}
-	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: req.Now}); err != nil {
+	stored, err := h.adapters.Registry.PutPlugin(ctx, record, registry.PutOptions{Now: now})
+	if err != nil {
+		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, now)
+	}
+	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
+		_ = h.rollbackInstallRecord(ctx, previous, hadPrevious, stored.PluginInstanceID, pkg.PackageHash, now)
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
 		return registry.PluginRecord{}, err
 	}
@@ -1262,7 +1626,7 @@ func (h *Host) InstallPackage(ctx context.Context, req InstallRequest) (registry
 	return stored, nil
 }
 
-func (h *Host) UpdatePlugin(ctx context.Context, req UpdateRequest) (registry.PluginRecord, error) {
+func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageRequest) (registry.PluginRecord, error) {
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -1274,62 +1638,1220 @@ func (h *Host) UpdatePlugin(ctx context.Context, req UpdateRequest) (registry.Pl
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	requestedTrust := req.TrustState
-	if requestedTrust == "" {
-		requestedTrust = current.TrustState
-	}
-	stage, err := h.createInstallStage(ctx, installstage.ActionUpdate, pkg, current.PluginInstanceID, string(requestedTrust), req.Now)
+	return h.updateResolvedPackage(ctx, current, pkg, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
+}
+
+func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest) (registry.PluginRecord, error) {
+	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	trust, metadata, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, requestedTrust, &current, current.PluginInstanceID, req.Now)
+	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionUpdate, req.ReleaseRef, &current, current.PluginInstanceID, req.Now)
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, req.Now)
+		return registry.PluginRecord{}, err
 	}
-	next := packageRecord(pkg, trust, current.PluginInstanceID, metadata)
+	releaseRef := req.ReleaseRef
+	return h.updateResolvedPackage(ctx, current, pkg, packageTrustInput{
+		ReleaseRef:           &releaseRef,
+		Release:              &release,
+		SourcePolicySnapshot: &sourcePolicy,
+	}, req.Now, metadata)
+}
+
+func (h *Host) updateResolvedPackage(ctx context.Context, current registry.PluginRecord, pkg pluginpkg.Package, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
+	stage, err := h.createInstallStage(ctx, installstage.ActionUpdate, pkg, current.PluginInstanceID, trustInput.stageRequestedTrust(), now)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	trustAssessment, err := h.resolvePackageTrust(ctx, PackageTrustActionUpdate, pkg, trustInput, &current, current.PluginInstanceID, now)
+	if err != nil {
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "trust_failed", err, now)
+	}
+	metadata := cloneStringMap(trustAssessment.Metadata)
+	metadata = mergeStringMap(baseMetadata, metadata)
+	next := packageRecord(pkg, trustAssessment, current.PluginInstanceID, metadata)
+	if trustInput.LocalImport {
+		next.LocalImportProvenance = localImportProvenance(now)
+	}
+	if trustInput.SourcePolicySnapshot != nil {
+		if err := attachSourcePolicySnapshot(&next, *trustInput.SourcePolicySnapshot); err != nil {
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "source_policy_snapshot_failed", err, now)
+		}
+	}
 	if err := validateSamePluginIdentity(current, next); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, req.Now)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "identity_mismatch", err, now)
 	}
 	if err := validateUpdateMigrationPreflight(current, next); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "migration_preflight_failed", err, req.Now)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "migration_preflight_failed", err, now)
 	}
 	if _, err := h.adapters.InstallStages.MarkPrepared(ctx, installstage.MarkPreparedRequest{
 		StageID:       stage.StageID,
-		ResolvedTrust: string(trust),
+		ResolvedTrust: string(trustAssessment.TrustState),
 		ValidationSummary: map[string]string{
 			"trust":   "resolved",
 			"version": "switch_prepared",
 		},
-		Now: req.Now,
+		Now: now,
 	}); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	next.VersionHistory = current.VersionHistory
-	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, req.Now), req.Now)
+	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, now), now)
 	if next.EnableState == registry.EnableEnabled {
 		if err := h.validateEnabledRuntimeState(ctx, next); err != nil {
-			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_validation_failed", err, req.Now)
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_validation_failed", err, now)
+		}
+		if err := h.prepareEnabledRuntimeState(ctx, next); err != nil {
+			return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_prepare_failed", err, now)
 		}
 	}
 	if err := h.adapters.Assets.PutPackage(ctx, pkg); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, req.Now)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "asset_store_failed", err, now)
 	}
-	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: req.Now})
+	stored, err := h.adapters.Registry.PutPlugin(ctx, next, registry.PutOptions{Now: now})
 	if err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, req.Now)
+		_ = h.adapters.Assets.DeletePackage(ctx, pkg.PackageHash)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "registry_failed", err, now)
 	}
-	if err := h.revokePluginRuntimeCapabilities(ctx, stored, req.Now); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, req.Now)
+	if err := h.publishEnabledSurfaces(ctx, stored); err != nil {
+		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_refresh_failed", err, now)
 	}
-	if err := h.refreshEnabledRuntimeState(ctx, stored); err != nil {
-		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_refresh_failed", err, req.Now)
+	if err := h.revokePluginRuntimeCapabilitiesStrict(ctx, stored, now); err != nil {
+		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
+		h.reportLifecycleDiagnostic(ctx, stored, "plugin.runtime_capabilities.revoke_failed", err, map[string]any{"stage_id": stage.StageID})
+		return registry.PluginRecord{}, h.markInstallStageFailed(ctx, stage.StageID, "runtime_revoke_failed", err, now)
 	}
-	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: req.Now}); err != nil {
+	if _, err := h.adapters.InstallStages.MarkCommitted(ctx, installstage.MarkCommittedRequest{StageID: stage.StageID, Now: now}); err != nil {
+		_ = h.rollbackVersionSwitch(ctx, current, pkg.PackageHash, now)
 		h.reportLifecycleDiagnostic(ctx, stored, "plugin.install_stage.commit_failed", err, map[string]any{"stage_id": stage.StageID})
 		return registry.PluginRecord{}, err
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.updated", PluginID: stored.PluginID, PluginInstanceID: stored.PluginInstanceID})
 	return stored, nil
+}
+
+func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAction, ref PluginReleaseRef, current *registry.PluginRecord, pluginInstanceID string, now time.Time) (pluginpkg.Package, PluginPackageRelease, SourcePolicySnapshot, map[string]string, error) {
+	if h.adapters.ReleaseSourcePolicy == nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, ErrReleaseSourcePolicyRequired
+	}
+	if h.adapters.ReleaseArtifactResolver == nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, ErrReleaseArtifactResolverRequired
+	}
+	if err := validateReleaseRef(ref); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	sourcePolicy, err := h.adapters.ReleaseSourcePolicy.ResolveReleaseSourcePolicy(ctx, ReleaseSourcePolicyRequest{
+		Action:           action,
+		ReleaseRef:       ref,
+		CurrentRecord:    current,
+		PluginInstanceID: pluginInstanceID,
+		Now:              now,
+	})
+	if err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	revocationVerification, err := h.validateSourcePolicySnapshot(ctx, ref, sourcePolicy, now)
+	if err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := h.recordSourceSecurityFloor(ctx, sourcePolicy, now); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := enforceReleaseSourcePolicy(action, current, ref, sourcePolicy); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	resolved, err := h.adapters.ReleaseArtifactResolver.ResolveReleaseArtifact(ctx, ReleaseArtifactResolveRequest{
+		Action:               action,
+		ReleaseRef:           ref,
+		SourcePolicySnapshot: sourcePolicy,
+		CurrentRecord:        current,
+		PluginInstanceID:     pluginInstanceID,
+		Now:                  now,
+	})
+	if err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	release, err := parseSignedReleaseMetadata(ref, resolved.ReleaseMetadataBytes)
+	if err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := validateResolvedRelease(ref, release); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	releaseMetadataVerification, err := h.verifyReleaseMetadata(ctx, action, ref, release, sourcePolicy, resolved.ReleaseMetadataBytes, resolved.ReleaseMetadataSignature, current, pluginInstanceID, now)
+	if err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if resolved.Reader == nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: artifact reader is required", ErrReleaseRefVerificationFailed)
+	}
+	pkg, err := pluginpkg.Read(ctx, resolved.Reader, resolved.Size, pluginpkg.DefaultReadOptions())
+	if err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := validateReleasePackage(ref, pkg); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := validateReleaseCompatibility(pkg, release); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := validateReleaseSignature(pkg, release, sourcePolicy, now); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	distribution := release.DistributionRef.Distribution
+	metadata := map[string]string{
+		"source_id":               ref.SourceID,
+		"source.type":             string(sourceTypeOrDefault(sourcePolicy.SourceType, distribution)),
+		"source.distribution":     string(distribution),
+		"release.artifact_ref":    release.DistributionRef.ArtifactRef,
+		"release.metadata_sha256": ref.ReleaseMetadataSHA256,
+	}
+	if sourcePolicy.SourceClass != "" {
+		metadata["source.class"] = string(sourcePolicy.SourceClass)
+	}
+	if sourcePolicy.RequireSignature {
+		metadata["source.require_signature"] = "true"
+	}
+	if sourcePolicy.InstallPolicy != "" {
+		metadata["source.install_policy"] = string(sourcePolicy.InstallPolicy)
+	}
+	if sourcePolicy.UnsignedPolicy != "" {
+		metadata["source.unsigned_policy"] = string(sourcePolicy.UnsignedPolicy)
+	}
+	if sourcePolicy.DowngradePolicy != "" {
+		metadata["source.downgrade_policy"] = string(sourcePolicy.DowngradePolicy)
+	}
+	if sourcePolicy.PolicyEpoch != "" {
+		metadata["source.policy_epoch"] = sourcePolicy.PolicyEpoch
+	}
+	if sourcePolicy.KeyRotationEpoch != "" {
+		metadata["source.key_rotation_epoch"] = sourcePolicy.KeyRotationEpoch
+	}
+	if sourcePolicy.RevocationEpoch != "" {
+		metadata["source.revocation_epoch"] = sourcePolicy.RevocationEpoch
+	}
+	if sourcePolicy.AssessedAt != "" {
+		metadata["source.assessed_at"] = sourcePolicy.AssessedAt
+	}
+	if release.ReleaseMetadataSignature != nil {
+		metadata["release.metadata_signature_algorithm"] = release.ReleaseMetadataSignature.Algorithm
+		metadata["release.metadata_signature_key_id"] = release.ReleaseMetadataSignature.KeyID
+		metadata["release.metadata_signature_ref"] = release.ReleaseMetadataSignature.SignatureRef
+	}
+	if release.PackageSignature != nil {
+		metadata["release.package_signature_algorithm"] = release.PackageSignature.Algorithm
+		metadata["release.package_signature_key_id"] = release.PackageSignature.KeyID
+		metadata["release.package_signature_bundle_ref"] = release.PackageSignature.SignatureBundleRef
+	}
+	metadata["release.metadata_ref"] = ref.ReleaseMetadataRef
+	if err := mergePrefixedMetadata(metadata, "release.", release.Metadata); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := mergePrefixedMetadata(metadata, "source.", sourcePolicy.Metadata); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := mergePrefixedMetadata(metadata, "source.revocation_verifier.", revocationVerification); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	if err := mergePrefixedMetadata(metadata, "release.metadata_verifier.", releaseMetadataVerification); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
+	}
+	return pkg, release, sourcePolicy, metadata, nil
+}
+
+func parseSignedReleaseMetadata(ref PluginReleaseRef, metadataBytes []byte) (PluginPackageRelease, error) {
+	if len(metadataBytes) == 0 {
+		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	var envelope signedReleaseMetadata
+	decoder := json.NewDecoder(bytes.NewReader(metadataBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata is invalid: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata must contain exactly one JSON document", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v1" {
+		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata schema_version is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if envelope.ReleaseMetadataRef != ref.ReleaseMetadataRef {
+		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata ref does not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	return PluginPackageRelease{
+		SourceID:                 envelope.SourceID,
+		PublisherID:              envelope.PublisherID,
+		PluginID:                 envelope.PluginID,
+		Version:                  envelope.Version,
+		DistributionRef:          envelope.DistributionRef,
+		ReleaseMetadataSHA256:    ref.ReleaseMetadataSHA256,
+		ReleaseMetadataSignature: envelope.ReleaseMetadataSignature,
+		Hashes:                   envelope.Hashes,
+		PackageSignature:         envelope.PackageSignature,
+		Compatibility:            envelope.Compatibility,
+		HostRequirements:         append([]HostRequirement(nil), envelope.HostRequirements...),
+		ReleaseEvidence:          envelope.ReleaseEvidence,
+		Metadata:                 cloneStringMap(envelope.Metadata),
+	}, nil
+}
+
+func (h *Host) verifyReleaseMetadata(ctx context.Context, action PackageTrustAction, ref PluginReleaseRef, release PluginPackageRelease, snapshot SourcePolicySnapshot, metadataBytes []byte, signature []byte, current *registry.PluginRecord, pluginInstanceID string, now time.Time) (map[string]string, error) {
+	if release.ReleaseMetadataSignature == nil {
+		return nil, fmt.Errorf("%w: release metadata signature is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(release.ReleaseMetadataSignature.Algorithm) == "" {
+		return nil, fmt.Errorf("%w: release metadata signature algorithm is required", ErrReleaseRefVerificationFailed)
+	}
+	if release.ReleaseMetadataSignature.Algorithm != pluginpkg.PackageSignatureAlgorithmEd25519 {
+		return nil, fmt.Errorf("%w: release metadata signature algorithm is unsupported", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(release.ReleaseMetadataSignature.KeyID) == "" {
+		return nil, fmt.Errorf("%w: release metadata signature key_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := requireTrustedSourceKey(snapshot, release.ReleaseMetadataSignature.KeyID, "release_metadata", now); err != nil {
+		return nil, fmt.Errorf("%w: release metadata signature key_id is not trusted by source policy: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if err := validateRegistryRelativeArtifactRef(release.ReleaseMetadataSignature.SignatureRef, "release.release_metadata_signature.signature_ref", true); err != nil {
+		return nil, err
+	}
+	if err := validateReleaseSignatureEpochBinding("release metadata signature", release.ReleaseMetadataSignature.SourcePolicyEpoch, release.ReleaseMetadataSignature.RevocationEpoch, snapshot); err != nil {
+		return nil, err
+	}
+	if h.adapters.ReleaseMetadataVerifier == nil {
+		return nil, ErrReleaseMetadataVerifierRequired
+	}
+	if len(metadataBytes) == 0 {
+		return nil, fmt.Errorf("%w: release metadata bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	if len(signature) == 0 {
+		return nil, fmt.Errorf("%w: release metadata signature bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	sum := sha256.Sum256(metadataBytes)
+	if !hashEqual(hex.EncodeToString(sum[:]), ref.ReleaseMetadataSHA256) {
+		return nil, fmt.Errorf("%w: release metadata bytes do not match release ref hash", ErrReleaseRefVerificationFailed)
+	}
+	result, err := h.adapters.ReleaseMetadataVerifier.VerifyReleaseMetadata(ctx, ReleaseMetadataVerificationRequest{
+		Action:                   action,
+		ReleaseRef:               ref,
+		Release:                  release,
+		SourcePolicySnapshot:     snapshot,
+		ReleaseMetadataBytes:     append([]byte(nil), metadataBytes...),
+		ReleaseMetadataSignature: append([]byte(nil), signature...),
+		CurrentRecord:            current,
+		PluginInstanceID:         pluginInstanceID,
+		Now:                      now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cloneStringMap(result.Metadata), nil
+}
+
+func validateReleaseRef(ref PluginReleaseRef) error {
+	if strings.TrimSpace(ref.SourceID) == "" {
+		return fmt.Errorf("%w: source_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if err := validateRegistryRelativeArtifactRef(ref.ReleaseMetadataRef, "release_ref.release_metadata_ref", true); err != nil {
+		return err
+	}
+	if err := validateSHA256Hex(ref.ReleaseMetadataSHA256); err != nil {
+		return fmt.Errorf("%w: release_ref.release_metadata_sha256 %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if strings.TrimSpace(ref.PublisherID) == "" {
+		return fmt.Errorf("%w: publisher_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(ref.PluginID) == "" {
+		return fmt.Errorf("%w: plugin_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(ref.Version) == "" {
+		return fmt.Errorf("%w: version is required", ErrReleaseRefVerificationFailed)
+	}
+	return validateHashSet("release_ref.expected_hashes", ref.ExpectedHashes)
+}
+
+func validateResolvedRelease(ref PluginReleaseRef, release PluginPackageRelease) error {
+	if release.SourceID != ref.SourceID || release.PublisherID != ref.PublisherID || release.PluginID != ref.PluginID || release.Version != ref.Version {
+		return fmt.Errorf("%w: resolved release identity does not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	if !hashEqual(release.ReleaseMetadataSHA256, ref.ReleaseMetadataSHA256) {
+		return fmt.Errorf("%w: resolved release metadata hash does not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	if err := validateHashSet("release.hashes", release.Hashes); err != nil {
+		return err
+	}
+	if !hashSetsEqual(release.Hashes, ref.ExpectedHashes) {
+		return fmt.Errorf("%w: resolved release hashes do not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	if err := validateReleaseDistributionRef(release.DistributionRef); err != nil {
+		return err
+	}
+	return validateReleaseHostRequirements(release.HostRequirements)
+}
+
+func (h *Host) validateSourcePolicySnapshot(ctx context.Context, ref PluginReleaseRef, snapshot SourcePolicySnapshot, now time.Time) (map[string]string, error) {
+	if err := validateSourcePolicySnapshotStructure(ref, snapshot, now); err != nil {
+		return nil, err
+	}
+	return h.verifySourceRevocationEvidence(ctx, ref, snapshot, now)
+}
+
+func validateSourcePolicySnapshotStructure(ref PluginReleaseRef, snapshot SourcePolicySnapshot, now time.Time) error {
+	if snapshot.SchemaVersion != "redevplugin.source_policy.v1" {
+		return fmt.Errorf("%w: source policy schema_version is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(snapshot.SourceID) == "" {
+		return fmt.Errorf("%w: source policy source_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if snapshot.SourceID != ref.SourceID {
+		return fmt.Errorf("%w: source policy source_id does not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	switch snapshot.SourceType {
+	case PackageSourceRegistry, PackageSourceHostArtifact:
+	default:
+		return fmt.Errorf("%w: source policy source_type is invalid", ErrReleaseRefVerificationFailed)
+	}
+	switch snapshot.SourceClass {
+	case PackageSourceClassOfficial, PackageSourceClassCurated, PackageSourceClassCommunity, PackageSourceClassPrivate:
+	default:
+		return fmt.Errorf("%w: source policy source_class is invalid", ErrReleaseRefVerificationFailed)
+	}
+	switch snapshot.InstallPolicy {
+	case PackageInstallAllow, PackageInstallReviewRequired, PackageInstallBlock:
+	default:
+		return fmt.Errorf("%w: source policy install_policy is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if !snapshot.RequireSignature {
+		return fmt.Errorf("%w: release-ref source policy require_signature must be true", ErrReleaseRefVerificationFailed)
+	}
+	if snapshot.UnsignedPolicy != PackageUnsignedBlock {
+		return fmt.Errorf("%w: source policy unsigned_policy is invalid", ErrReleaseRefVerificationFailed)
+	}
+	switch snapshot.DowngradePolicy {
+	case PackageDowngradeBlock, PackageDowngradeReviewRequired:
+	default:
+		return fmt.Errorf("%w: source policy downgrade_policy is invalid", ErrReleaseRefVerificationFailed)
+	}
+	for _, publisher := range snapshot.AllowedPublishers {
+		if strings.TrimSpace(publisher) == "" {
+			return fmt.Errorf("%w: source policy allowed_publishers contains an empty publisher", ErrReleaseRefVerificationFailed)
+		}
+	}
+	if len(snapshot.TrustedKeyIDs) == 0 {
+		return fmt.Errorf("%w: source policy trusted_key_ids are required", ErrReleaseRefVerificationFailed)
+	}
+	for _, keyID := range snapshot.TrustedKeyIDs {
+		if strings.TrimSpace(keyID) == "" {
+			return fmt.Errorf("%w: source policy trusted_key_ids contains an empty key id", ErrReleaseRefVerificationFailed)
+		}
+	}
+	if len(snapshot.AllowedPublishers) == 0 {
+		return fmt.Errorf("%w: source policy allowed_publishers are required", ErrReleaseRefVerificationFailed)
+	}
+	if !stringSliceContains(snapshot.AllowedPublishers, ref.PublisherID) {
+		return fmt.Errorf("%w: source policy does not allow publisher", ErrReleaseRefVerificationFailed)
+	}
+	if len(snapshot.TrustedKeys) == 0 {
+		return fmt.Errorf("%w: source policy trusted_keys are required", ErrReleaseRefVerificationFailed)
+	}
+	if err := validateTrustedSourceKeys(snapshot, now); err != nil {
+		return err
+	}
+	if err := validateRevocationEvidence(snapshot, now); err != nil {
+		return err
+	}
+	for _, value := range []struct {
+		name  string
+		value string
+	}{
+		{name: "policy_epoch", value: snapshot.PolicyEpoch},
+		{name: "key_rotation_epoch", value: snapshot.KeyRotationEpoch},
+		{name: "revocation_epoch", value: snapshot.RevocationEpoch},
+	} {
+		if strings.TrimSpace(value.value) == "" {
+			return fmt.Errorf("%w: source policy %s is required", ErrReleaseRefVerificationFailed, value.name)
+		}
+		if _, err := parseSourcePolicyEpoch(value.value); err != nil {
+			return fmt.Errorf("%w: source policy %s must be a decimal monotonic epoch", ErrReleaseRefVerificationFailed, value.name)
+		}
+	}
+	if strings.TrimSpace(snapshot.AssessedAt) == "" {
+		return fmt.Errorf("%w: source policy assessed_at is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := time.Parse(time.RFC3339, snapshot.AssessedAt); err != nil {
+		return fmt.Errorf("%w: source policy assessed_at is invalid", ErrReleaseRefVerificationFailed)
+	}
+	return nil
+}
+
+func (h *Host) verifySourceRevocationEvidence(ctx context.Context, ref PluginReleaseRef, snapshot SourcePolicySnapshot, now time.Time) (map[string]string, error) {
+	if snapshot.RevocationEvidence == nil {
+		return nil, fmt.Errorf("%w: source policy revocation_evidence is required", ErrReleaseRefVerificationFailed)
+	}
+	evidence := *snapshot.RevocationEvidence
+	metadata, err := parseSourceRevocationMetadata(ref, evidence.MetadataBytes)
+	if err != nil {
+		return nil, err
+	}
+	if metadata.SourceID != snapshot.SourceID {
+		return nil, fmt.Errorf("%w: source revocation metadata source_id does not match source policy", ErrReleaseRefVerificationFailed)
+	}
+	if metadata.HighestSeenEpoch != snapshot.RevocationEpoch || metadata.HighestSeenEpoch != evidence.HighestSeenEpoch {
+		return nil, fmt.Errorf("%w: source revocation metadata highest_seen_epoch does not match source policy", ErrReleaseRefVerificationFailed)
+	}
+	if stringSliceContains(metadata.RevokedKeyIDs, evidence.SignatureKeyID) {
+		return nil, fmt.Errorf("%w: source revocation evidence signature key is revoked", ErrReleaseRefVerificationFailed)
+	}
+	if metadata.ExpiresAt != evidence.ExpiresAt {
+		return nil, fmt.Errorf("%w: source revocation metadata expires_at does not match source policy evidence", ErrReleaseRefVerificationFailed)
+	}
+	if len(evidence.SignatureBytes) == 0 {
+		return nil, fmt.Errorf("%w: source revocation evidence signature bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	verifier := h.adapters.RevocationVerifier
+	if verifier == nil {
+		if combined, ok := h.adapters.ReleaseMetadataVerifier.(SourceRevocationEvidenceVerifier); ok {
+			verifier = combined
+		}
+	}
+	if verifier == nil {
+		return nil, ErrSourceRevocationVerifierRequired
+	}
+	result, err := verifier.VerifySourceRevocationEvidence(ctx, SourceRevocationEvidenceVerificationRequest{
+		ReleaseRef:                  ref,
+		SourcePolicySnapshot:        snapshot,
+		RevocationEvidence:          evidence,
+		RevocationMetadata:          metadata,
+		RevocationMetadataBytes:     append([]byte(nil), evidence.MetadataBytes...),
+		RevocationMetadataSignature: append([]byte(nil), evidence.SignatureBytes...),
+		Now:                         now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cloneStringMap(result.Metadata), nil
+}
+
+func parseSourceRevocationMetadata(ref PluginReleaseRef, metadataBytes []byte) (SourceRevocationMetadata, error) {
+	if len(metadataBytes) == 0 {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	var metadata SourceRevocationMetadata
+	decoder := json.NewDecoder(bytes.NewReader(metadataBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&metadata); err != nil {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata is invalid: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata must contain exactly one JSON document", ErrReleaseRefVerificationFailed)
+	}
+	if metadata.SchemaVersion != "redevplugin.source_revocations.v1" {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata schema_version is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if metadata.SourceID != ref.SourceID {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata source_id does not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(metadata.HighestSeenEpoch) == "" {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata highest_seen_epoch is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := parseSourcePolicyEpoch(metadata.HighestSeenEpoch); err != nil {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata highest_seen_epoch must be a decimal monotonic epoch", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(metadata.GeneratedAt) == "" {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata generated_at is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := time.Parse(time.RFC3339, metadata.GeneratedAt); err != nil {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata generated_at is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(metadata.ExpiresAt) == "" {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata expires_at is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := time.Parse(time.RFC3339, metadata.ExpiresAt); err != nil {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata expires_at is invalid", ErrReleaseRefVerificationFailed)
+	}
+	for _, keyID := range metadata.RevokedKeyIDs {
+		if strings.TrimSpace(keyID) == "" {
+			return SourceRevocationMetadata{}, fmt.Errorf("%w: source revocation metadata revoked_key_ids contains an empty key id", ErrReleaseRefVerificationFailed)
+		}
+	}
+	return metadata, nil
+}
+
+func stringSliceContains(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func sourcePolicyRevocationMetadata(snapshot SourcePolicySnapshot) (SourceRevocationMetadata, error) {
+	if snapshot.RevocationEvidence == nil {
+		return SourceRevocationMetadata{}, fmt.Errorf("%w: source policy revocation_evidence is required", ErrReleaseRefVerificationFailed)
+	}
+	return parseSourceRevocationMetadata(PluginReleaseRef{SourceID: snapshot.SourceID}, snapshot.RevocationEvidence.MetadataBytes)
+}
+
+func validateTrustedSourceKeys(snapshot SourcePolicySnapshot, now time.Time) error {
+	seen := map[string]bool{}
+	trustedIDSet := map[string]bool{}
+	for _, keyID := range snapshot.TrustedKeyIDs {
+		trustedIDSet[keyID] = true
+	}
+	for _, key := range snapshot.TrustedKeys {
+		if strings.TrimSpace(key.KeyID) == "" {
+			return fmt.Errorf("%w: source policy trusted_keys contains an empty key_id", ErrReleaseRefVerificationFailed)
+		}
+		if seen[key.KeyID] {
+			return fmt.Errorf("%w: source policy trusted_keys contains duplicate key_id", ErrReleaseRefVerificationFailed)
+		}
+		seen[key.KeyID] = true
+		if len(trustedIDSet) > 0 && !trustedIDSet[key.KeyID] {
+			return fmt.Errorf("%w: source policy trusted_key_ids does not include trusted_keys entry", ErrReleaseRefVerificationFailed)
+		}
+		if strings.TrimSpace(key.Algorithm) == "" {
+			return fmt.Errorf("%w: source policy trusted key algorithm is required", ErrReleaseRefVerificationFailed)
+		}
+		if key.Algorithm != pluginpkg.PackageSignatureAlgorithmEd25519 {
+			return fmt.Errorf("%w: source policy trusted key algorithm is unsupported", ErrReleaseRefVerificationFailed)
+		}
+		if err := validateSHA256Hex(key.PublicKeySHA256); err != nil {
+			return fmt.Errorf("%w: source policy trusted key public_key_sha256 %v", ErrReleaseRefVerificationFailed, err)
+		}
+		if len(key.Usage) == 0 {
+			return fmt.Errorf("%w: source policy trusted key usage is required", ErrReleaseRefVerificationFailed)
+		}
+		for _, usage := range key.Usage {
+			switch usage {
+			case "release_metadata", "package_signature", "revocation_metadata":
+			default:
+				return fmt.Errorf("%w: source policy trusted key usage %q is invalid", ErrReleaseRefVerificationFailed, usage)
+			}
+		}
+		if strings.TrimSpace(key.RevocationEpoch) == "" {
+			return fmt.Errorf("%w: source policy trusted key revocation_epoch is required", ErrReleaseRefVerificationFailed)
+		}
+		if key.RevocationEpoch != snapshot.RevocationEpoch {
+			return fmt.Errorf("%w: source policy trusted key revocation_epoch does not match source policy", ErrReleaseRefVerificationFailed)
+		}
+		if err := validateSourceKeyValidity(key, now); err != nil {
+			return err
+		}
+	}
+	for _, keyID := range snapshot.TrustedKeyIDs {
+		if !seen[keyID] {
+			return fmt.Errorf("%w: source policy trusted_key_ids contains key absent from trusted_keys", ErrReleaseRefVerificationFailed)
+		}
+	}
+	return nil
+}
+
+func validateSourceKeyValidity(key SourcePolicyTrustedKey, now time.Time) error {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if strings.TrimSpace(key.ValidFrom) != "" {
+		validFrom, err := time.Parse(time.RFC3339, key.ValidFrom)
+		if err != nil {
+			return fmt.Errorf("%w: source policy trusted key valid_from is invalid", ErrReleaseRefVerificationFailed)
+		}
+		if now.Before(validFrom) {
+			return fmt.Errorf("%w: source policy trusted key is not valid yet", ErrReleaseRefVerificationFailed)
+		}
+	}
+	if strings.TrimSpace(key.ValidUntil) == "" {
+		return fmt.Errorf("%w: source policy trusted key valid_until is required", ErrReleaseRefVerificationFailed)
+	}
+	validUntil, err := time.Parse(time.RFC3339, key.ValidUntil)
+	if err != nil {
+		return fmt.Errorf("%w: source policy trusted key valid_until is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if !now.Before(validUntil) {
+		return fmt.Errorf("%w: source policy trusted key is expired", ErrReleaseRefVerificationFailed)
+	}
+	return nil
+}
+
+func validateRevocationEvidence(snapshot SourcePolicySnapshot, now time.Time) error {
+	evidence := snapshot.RevocationEvidence
+	if evidence == nil {
+		return fmt.Errorf("%w: source policy revocation_evidence is required", ErrReleaseRefVerificationFailed)
+	}
+	if err := validateRegistryRelativeArtifactRef(evidence.MetadataRef, "source_policy.revocation_evidence.metadata_ref", true); err != nil {
+		return err
+	}
+	if err := validateSHA256Hex(evidence.MetadataSHA256); err != nil {
+		return fmt.Errorf("%w: source policy revocation_evidence.metadata_sha256 %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if len(evidence.MetadataBytes) == 0 {
+		return fmt.Errorf("%w: source policy revocation_evidence metadata bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	metadataSum := sha256.Sum256(evidence.MetadataBytes)
+	if !hashEqual(hex.EncodeToString(metadataSum[:]), evidence.MetadataSHA256) {
+		return fmt.Errorf("%w: source policy revocation_evidence metadata bytes do not match metadata_sha256", ErrReleaseRefVerificationFailed)
+	}
+	if err := validateRegistryRelativeArtifactRef(evidence.SignatureRef, "source_policy.revocation_evidence.signature_ref", true); err != nil {
+		return err
+	}
+	if len(evidence.SignatureBytes) == 0 {
+		return fmt.Errorf("%w: source policy revocation_evidence signature bytes are required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(evidence.SignatureKeyID) == "" {
+		return fmt.Errorf("%w: source policy revocation_evidence.signature_key_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := requireTrustedSourceKey(snapshot, evidence.SignatureKeyID, "revocation_metadata", now); err != nil {
+		return fmt.Errorf("%w: source policy revocation evidence signature key is invalid: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if strings.TrimSpace(evidence.HighestSeenEpoch) == "" {
+		return fmt.Errorf("%w: source policy revocation_evidence.highest_seen_epoch is required", ErrReleaseRefVerificationFailed)
+	}
+	if evidence.HighestSeenEpoch != snapshot.RevocationEpoch {
+		return fmt.Errorf("%w: source policy revocation evidence highest_seen_epoch does not match revocation_epoch", ErrReleaseRefVerificationFailed)
+	}
+	for _, value := range []struct {
+		name  string
+		value string
+	}{
+		{name: "verified_at", value: evidence.VerifiedAt},
+		{name: "expires_at", value: evidence.ExpiresAt},
+	} {
+		if strings.TrimSpace(value.value) == "" {
+			return fmt.Errorf("%w: source policy revocation_evidence.%s is required", ErrReleaseRefVerificationFailed, value.name)
+		}
+		if _, err := time.Parse(time.RFC3339, value.value); err != nil {
+			return fmt.Errorf("%w: source policy revocation_evidence.%s is invalid", ErrReleaseRefVerificationFailed, value.name)
+		}
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	expiresAt, _ := time.Parse(time.RFC3339, evidence.ExpiresAt)
+	if !now.Before(expiresAt) {
+		return fmt.Errorf("%w: source policy revocation_evidence is expired", ErrReleaseRefVerificationFailed)
+	}
+	return nil
+}
+
+func requireTrustedSourceKey(snapshot SourcePolicySnapshot, keyID string, usage string, now time.Time) (SourcePolicyTrustedKey, error) {
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return SourcePolicyTrustedKey{}, errors.New("key_id is required")
+	}
+	for _, key := range snapshot.TrustedKeys {
+		if key.KeyID != keyID {
+			continue
+		}
+		if err := validateSourceKeyValidity(key, now); err != nil {
+			return SourcePolicyTrustedKey{}, err
+		}
+		if !stringSliceContains(key.Usage, usage) {
+			return SourcePolicyTrustedKey{}, fmt.Errorf("key %q is not allowed for %s", keyID, usage)
+		}
+		metadata, err := sourcePolicyRevocationMetadata(snapshot)
+		if err != nil {
+			return SourcePolicyTrustedKey{}, err
+		}
+		if stringSliceContains(metadata.RevokedKeyIDs, keyID) {
+			return SourcePolicyTrustedKey{}, fmt.Errorf("key %q is revoked by source revocation metadata", keyID)
+		}
+		return key, nil
+	}
+	return SourcePolicyTrustedKey{}, fmt.Errorf("key %q is not trusted", keyID)
+}
+
+func validateReleaseDistributionRef(distributionRef PackageDistributionRef) error {
+	distribution := distributionRef.Distribution
+	if strings.TrimSpace(string(distribution)) == "" {
+		return fmt.Errorf("%w: distribution_ref.distribution is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(distributionRef.ImportID) != "" {
+		return fmt.Errorf("%w: distribution_ref.import_id is not allowed in release metadata", ErrReleaseRefVerificationFailed)
+	}
+	switch distribution {
+	case PackageDistributionRegistryRef:
+		if err := validateRegistryRelativeArtifactRef(distributionRef.ArtifactRef, "distribution_ref.artifact_ref", true); err != nil {
+			return err
+		}
+		return nil
+	case PackageDistributionHostArtifactRef:
+		if err := validateRegistryRelativeArtifactRef(distributionRef.ArtifactRef, "distribution_ref.artifact_ref", true); err != nil {
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: distribution_ref.distribution is invalid", ErrReleaseRefVerificationFailed)
+	}
+}
+
+func validateReleaseHostRequirements(requirements []HostRequirement) error {
+	seenHosts := make(map[string]struct{}, len(requirements))
+	for hostIndex, requirement := range requirements {
+		prefix := fmt.Sprintf("host_requirements[%d]", hostIndex)
+		hostID := strings.TrimSpace(requirement.HostID)
+		if hostID == "" {
+			return fmt.Errorf("%w: %s.host_id is required", ErrReleaseRefVerificationFailed, prefix)
+		}
+		if _, exists := seenHosts[hostID]; exists {
+			return fmt.Errorf("%w: %s.host_id is duplicated", ErrReleaseRefVerificationFailed, prefix)
+		}
+		seenHosts[hostID] = struct{}{}
+		if strings.TrimSpace(requirement.MinHostVersion) != requirement.MinHostVersion {
+			return fmt.Errorf("%w: %s.min_host_version must not contain surrounding whitespace", ErrReleaseRefVerificationFailed, prefix)
+		}
+		seenContracts := make(map[string]struct{}, len(requirement.RequiredCapabilityContracts))
+		for contractIndex, contract := range requirement.RequiredCapabilityContracts {
+			contractPrefix := fmt.Sprintf("%s.required_capability_contracts[%d]", prefix, contractIndex)
+			if strings.TrimSpace(contract.CapabilityID) == "" {
+				return fmt.Errorf("%w: %s.capability_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			}
+			if strings.TrimSpace(contract.CapabilityVersion) == "" {
+				return fmt.Errorf("%w: %s.capability_version is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			}
+			contractRef := contract.Contract
+			if strings.TrimSpace(contractRef.ContractID) == "" {
+				return fmt.Errorf("%w: %s.contract_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			}
+			if strings.TrimSpace(contractRef.ContractVersion) == "" {
+				return fmt.Errorf("%w: %s.contract_version is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			}
+			contractKey := contract.CapabilityID + "\x00" + contract.CapabilityVersion + "\x00" + contractRef.ContractID + "\x00" + contractRef.ContractVersion
+			if _, exists := seenContracts[contractKey]; exists {
+				return fmt.Errorf("%w: %s contains a duplicate capability contract", ErrReleaseRefVerificationFailed, contractPrefix)
+			}
+			seenContracts[contractKey] = struct{}{}
+			if err := validateRegistryRelativeArtifactRef(contractRef.ArtifactRef, contractPrefix+".contract.artifact_ref", true); err != nil {
+				return err
+			}
+			if err := validateRegistryRelativeArtifactRef(contractRef.SignatureRef, contractPrefix+".contract.signature_ref", true); err != nil {
+				return err
+			}
+			if strings.TrimSpace(contractRef.SignatureKeyID) == "" {
+				return fmt.Errorf("%w: %s.contract.signature_key_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			}
+			for _, field := range []struct {
+				name  string
+				value string
+			}{
+				{name: "artifact_sha256", value: contractRef.ArtifactSHA256},
+				{name: "manifest_sha256", value: contractRef.ManifestSHA256},
+				{name: "signature_sha256", value: contractRef.SignatureSHA256},
+				{name: "compatibility_sha256", value: contractRef.CompatibilitySHA256},
+				{name: "generated_client_sha256", value: contractRef.GeneratedClientSHA256},
+				{name: "notices_sha256", value: contractRef.NoticesSHA256},
+			} {
+				if err := validateSHA256Hex(field.value); err != nil {
+					return fmt.Errorf("%w: %s.contract.%s %v", ErrReleaseRefVerificationFailed, contractPrefix, field.name, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateReleasePackage(ref PluginReleaseRef, pkg pluginpkg.Package) error {
+	if pkg.Manifest.Publisher.PublisherID != ref.PublisherID || pkg.Manifest.PluginID() != ref.PluginID || pkg.Manifest.Version() != ref.Version {
+		return fmt.Errorf("%w: package identity does not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	if !hashEqual(pkg.PackageHash, ref.ExpectedHashes.PackageSHA256) || !hashEqual(pkg.ManifestHash, ref.ExpectedHashes.ManifestSHA256) || !hashEqual(pkg.EntriesHash, ref.ExpectedHashes.EntriesSHA256) {
+		return fmt.Errorf("%w: package hashes do not match release ref", ErrReleaseRefVerificationFailed)
+	}
+	return nil
+}
+
+func validateReleaseCompatibility(pkg pluginpkg.Package, release PluginPackageRelease) error {
+	if release.Compatibility == nil {
+		return fmt.Errorf("%w: release compatibility is required", ErrReleaseRefVerificationFailed)
+	}
+	compatibility := release.Compatibility
+	if strings.TrimSpace(compatibility.MinReDevPluginVersion) == "" {
+		return fmt.Errorf("%w: release compatibility min_redevplugin_version is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(compatibility.MinRuntimeVersion) == "" {
+		return fmt.Errorf("%w: release compatibility min_runtime_version is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(compatibility.UIProtocolVersion) == "" {
+		return fmt.Errorf("%w: release compatibility ui_protocol_version is required", ErrReleaseRefVerificationFailed)
+	}
+	if compatibility.MinRuntimeVersion != pkg.Manifest.Plugin.MinRuntimeVersion {
+		return fmt.Errorf("%w: release compatibility min_runtime_version does not match package manifest", ErrReleaseRefVerificationFailed)
+	}
+	if compatibility.UIProtocolVersion != pkg.Manifest.Plugin.UIProtocolVersion {
+		return fmt.Errorf("%w: release compatibility ui_protocol_version does not match package manifest", ErrReleaseRefVerificationFailed)
+	}
+	matrix := version.CurrentMatrix()
+	if isConcreteReleaseVersion(matrix.GoModuleVersion) && comparePluginVersion(normalizeVersionForCompare(compatibility.MinReDevPluginVersion), normalizeVersionForCompare(matrix.GoModuleVersion)) > 0 {
+		return fmt.Errorf("%w: release requires newer redevplugin go version", ErrReleaseRefVerificationFailed)
+	}
+	if isConcreteReleaseVersion(matrix.RuntimeVersion) && comparePluginVersion(normalizeVersionForCompare(compatibility.MinRuntimeVersion), normalizeVersionForCompare(matrix.RuntimeVersion)) > 0 {
+		return fmt.Errorf("%w: release requires newer redevplugin runtime version", ErrReleaseRefVerificationFailed)
+	}
+	for _, target := range compatibility.SupportedTargets {
+		if strings.TrimSpace(target) == "" {
+			return fmt.Errorf("%w: release compatibility supported_targets contains an empty target", ErrReleaseRefVerificationFailed)
+		}
+	}
+	return nil
+}
+
+func isConcreteReleaseVersion(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && value != "0.0.0-dev" && value != "(devel)"
+}
+
+func normalizeVersionForCompare(value string) string {
+	return strings.TrimPrefix(strings.TrimSpace(value), "v")
+}
+
+func enforceReleaseSourcePolicy(action PackageTrustAction, current *registry.PluginRecord, ref PluginReleaseRef, snapshot SourcePolicySnapshot) error {
+	if snapshot.InstallPolicy == PackageInstallBlock || snapshot.InstallPolicy == PackageInstallReviewRequired {
+		return fmt.Errorf("%w: source policy install_policy is %s", ErrReleaseRefPolicyDenied, snapshot.InstallPolicy)
+	}
+	if action == PackageTrustActionUpdate && current != nil && comparePluginVersion(ref.Version, current.Version) < 0 {
+		if snapshot.DowngradePolicy == PackageDowngradeBlock || snapshot.DowngradePolicy == PackageDowngradeReviewRequired {
+			return fmt.Errorf("%w: source policy downgrade_policy is %s", ErrReleaseRefPolicyDenied, snapshot.DowngradePolicy)
+		}
+	}
+	return nil
+}
+
+func validateReleaseSignature(pkg pluginpkg.Package, release PluginPackageRelease, snapshot SourcePolicySnapshot, now time.Time) error {
+	if release.ReleaseMetadataSignature == nil {
+		return fmt.Errorf("%w: release metadata signature is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(release.ReleaseMetadataSignature.Algorithm) == "" {
+		return fmt.Errorf("%w: release metadata signature algorithm is required", ErrReleaseRefVerificationFailed)
+	}
+	if release.ReleaseMetadataSignature.Algorithm != pluginpkg.PackageSignatureAlgorithmEd25519 {
+		return fmt.Errorf("%w: release metadata signature algorithm is unsupported", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(release.ReleaseMetadataSignature.KeyID) == "" {
+		return fmt.Errorf("%w: release metadata signature key_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := requireTrustedSourceKey(snapshot, release.ReleaseMetadataSignature.KeyID, "release_metadata", now); err != nil {
+		return fmt.Errorf("%w: release metadata signature key_id is not trusted by source policy: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if err := validateRegistryRelativeArtifactRef(release.ReleaseMetadataSignature.SignatureRef, "release.release_metadata_signature.signature_ref", true); err != nil {
+		return err
+	}
+	if err := validateReleaseSignatureEpochBinding("release metadata signature", release.ReleaseMetadataSignature.SourcePolicyEpoch, release.ReleaseMetadataSignature.RevocationEpoch, snapshot); err != nil {
+		return err
+	}
+	if release.PackageSignature == nil {
+		return fmt.Errorf("%w: package signature metadata is required", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(release.PackageSignature.Algorithm) == "" {
+		return fmt.Errorf("%w: package signature algorithm is required", ErrReleaseRefVerificationFailed)
+	}
+	if release.PackageSignature.Algorithm != pluginpkg.PackageSignatureAlgorithmEd25519 {
+		return fmt.Errorf("%w: package signature algorithm is unsupported", ErrReleaseRefVerificationFailed)
+	}
+	if strings.TrimSpace(release.PackageSignature.KeyID) == "" {
+		return fmt.Errorf("%w: package signature key_id is required", ErrReleaseRefVerificationFailed)
+	}
+	if _, err := requireTrustedSourceKey(snapshot, release.PackageSignature.KeyID, "package_signature", now); err != nil {
+		return fmt.Errorf("%w: package signature key_id is not trusted by source policy: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if err := validateRegistryRelativeArtifactRef(release.PackageSignature.SignatureBundleRef, "release.package_signature.signature_bundle_ref", true); err != nil {
+		return err
+	}
+	if err := validateReleaseSignatureEpochBinding("package signature", release.PackageSignature.SourcePolicyEpoch, release.PackageSignature.RevocationEpoch, snapshot); err != nil {
+		return err
+	}
+	if pkg.PackageSignature == nil {
+		return fmt.Errorf("%w: package signature is required", ErrReleaseRefVerificationFailed)
+	}
+	if pkg.PackageSignature.Algorithm != release.PackageSignature.Algorithm || pkg.PackageSignature.KeyID != release.PackageSignature.KeyID {
+		return fmt.Errorf("%w: package signature does not match release package signature metadata", ErrReleaseRefVerificationFailed)
+	}
+	return nil
+}
+
+func validateReleaseSignatureEpochBinding(label string, sourcePolicyEpoch string, revocationEpoch string, snapshot SourcePolicySnapshot) error {
+	if strings.TrimSpace(sourcePolicyEpoch) == "" {
+		return fmt.Errorf("%w: %s source_policy_epoch is required", ErrReleaseRefVerificationFailed, label)
+	}
+	if _, err := parseSourcePolicyEpoch(sourcePolicyEpoch); err != nil {
+		return fmt.Errorf("%w: %s source_policy_epoch must be a decimal monotonic epoch", ErrReleaseRefVerificationFailed, label)
+	}
+	if sourcePolicyEpoch != snapshot.PolicyEpoch {
+		return fmt.Errorf("%w: %s source_policy_epoch does not match source policy", ErrReleaseRefVerificationFailed, label)
+	}
+	if strings.TrimSpace(revocationEpoch) == "" {
+		return fmt.Errorf("%w: %s revocation_epoch is required", ErrReleaseRefVerificationFailed, label)
+	}
+	if _, err := parseSourcePolicyEpoch(revocationEpoch); err != nil {
+		return fmt.Errorf("%w: %s revocation_epoch must be a decimal monotonic epoch", ErrReleaseRefVerificationFailed, label)
+	}
+	if revocationEpoch != snapshot.RevocationEpoch {
+		return fmt.Errorf("%w: %s revocation_epoch does not match source policy", ErrReleaseRefVerificationFailed, label)
+	}
+	return nil
+}
+
+func validateHashSet(label string, hashes PackageHashSet) error {
+	for name, value := range map[string]string{
+		"package_sha256":  hashes.PackageSHA256,
+		"manifest_sha256": hashes.ManifestSHA256,
+		"entries_sha256":  hashes.EntriesSHA256,
+	} {
+		if err := validateSHA256Hex(value); err != nil {
+			return fmt.Errorf("%w: %s.%s %v", ErrReleaseRefVerificationFailed, label, name, err)
+		}
+	}
+	return nil
+}
+
+func validateSHA256Hex(value string) error {
+	if strings.TrimSpace(value) != value {
+		return errors.New("must not contain surrounding whitespace")
+	}
+	value = strings.TrimPrefix(value, "sha256:")
+	if len(value) != 64 {
+		return errors.New("must be a sha256 hex digest")
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || len(decoded) != sha256.Size {
+		return errors.New("must be a valid sha256 hex digest")
+	}
+	return nil
+}
+
+func hashSetsEqual(left PackageHashSet, right PackageHashSet) bool {
+	return hashEqual(left.PackageSHA256, right.PackageSHA256) &&
+		hashEqual(left.ManifestSHA256, right.ManifestSHA256) &&
+		hashEqual(left.EntriesSHA256, right.EntriesSHA256)
+}
+
+func hashEqual(left string, right string) bool {
+	return normalizeSHA256(left) == normalizeSHA256(right)
+}
+
+func normalizeSHA256(value string) string {
+	value = strings.TrimPrefix(value, "sha256:")
+	if value == "" {
+		return ""
+	}
+	return "sha256:" + value
+}
+
+func comparePluginVersion(left string, right string) int {
+	leftParts, leftOK := parseNumericVersion(left)
+	rightParts, rightOK := parseNumericVersion(right)
+	if !leftOK || !rightOK {
+		return strings.Compare(left, right)
+	}
+	maxLen := len(leftParts)
+	if len(rightParts) > maxLen {
+		maxLen = len(rightParts)
+	}
+	for i := 0; i < maxLen; i++ {
+		leftPart := 0
+		if i < len(leftParts) {
+			leftPart = leftParts[i]
+		}
+		rightPart := 0
+		if i < len(rightParts) {
+			rightPart = rightParts[i]
+		}
+		if leftPart < rightPart {
+			return -1
+		}
+		if leftPart > rightPart {
+			return 1
+		}
+	}
+	return 0
+}
+
+func parseNumericVersion(value string) ([]int, bool) {
+	if value == "" {
+		return nil, false
+	}
+	parts := strings.Split(value, ".")
+	out := make([]int, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			return nil, false
+		}
+		number, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, number)
+	}
+	return out, true
+}
+
+func mergePrefixedMetadata(base map[string]string, prefix string, values map[string]string) error {
+	for key, value := range values {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%w: metadata key is required", ErrReleaseRefVerificationFailed)
+		}
+		metadataKey := prefix + key
+		if _, exists := base[metadataKey]; exists {
+			return fmt.Errorf("%w: metadata key %q is reserved", ErrReleaseRefVerificationFailed, metadataKey)
+		}
+		base[metadataKey] = value
+	}
+	return nil
+}
+
+func validateRegistryRelativeArtifactRef(value string, field string, required bool) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		if required {
+			return fmt.Errorf("%w: %s is required", ErrReleaseRefVerificationFailed, field)
+		}
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "" || parsed.Host != "" {
+		return fmt.Errorf("%w: %s must be a registry-relative artifact ref", ErrReleaseRefVerificationFailed, field)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(value, "?") || strings.Contains(value, "#") {
+		return fmt.Errorf("%w: %s must not contain query or fragment", ErrReleaseRefVerificationFailed, field)
+	}
+	if strings.Contains(value, "\\") || strings.Contains(value, "%") || strings.HasPrefix(value, "/") {
+		return fmt.Errorf("%w: %s must be a normalized relative path", ErrReleaseRefVerificationFailed, field)
+	}
+	clean := path.Clean(value)
+	if clean == "." || clean != value || strings.HasPrefix(clean, "../") || clean == ".." {
+		return fmt.Errorf("%w: %s must not contain path traversal", ErrReleaseRefVerificationFailed, field)
+	}
+	for _, segment := range strings.Split(clean, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("%w: %s must not contain empty or relative path segments", ErrReleaseRefVerificationFailed, field)
+		}
+	}
+	return nil
+}
+
+func sourceTypeOrDefault(sourceType PackageSourceType, distribution PackageDistribution) PackageSourceType {
+	if sourceType != "" {
+		return sourceType
+	}
+	switch distribution {
+	case PackageDistributionHostArtifactRef:
+		return PackageSourceHostArtifact
+	default:
+		return PackageSourceRegistry
+	}
+}
+
+func localImportMetadata(now time.Time) map[string]string {
+	assessedAt := lifecycleNow(now).Format(time.RFC3339)
+	return map[string]string{
+		"source_id":                    "local_import",
+		"local_import.import_id":       "local_import",
+		"local_import.distribution":    string(PackageDistributionLocalImport),
+		"local_import.policy_epoch":    "local_import",
+		"local_import.unsigned_policy": string(PackageUnsignedDevOnly),
+		"local_import.assessed_at":     assessedAt,
+	}
+}
+
+func localImportProvenance(now time.Time) *registry.LocalImportProvenance {
+	return &registry.LocalImportProvenance{
+		ImportID:       "local_import",
+		Distribution:   string(PackageDistributionLocalImport),
+		PolicyEpoch:    "local_import",
+		UnsignedPolicy: string(PackageUnsignedDevOnly),
+		AssessedAt:     lifecycleNow(now).Format(time.RFC3339),
+	}
+}
+
+func attachSourcePolicySnapshot(record *registry.PluginRecord, snapshot SourcePolicySnapshot) error {
+	hash, projected, err := sourcePolicySnapshotProjection(snapshot)
+	if err != nil {
+		return err
+	}
+	record.SourcePolicySnapshotHash = hash
+	record.SourcePolicySnapshot = projected
+	if record.Metadata == nil {
+		record.Metadata = map[string]string{}
+	}
+	record.Metadata["source_policy_snapshot_sha256"] = hash
+	return nil
+}
+
+func sourcePolicySnapshotProjection(snapshot SourcePolicySnapshot) (string, map[string]any, error) {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", nil, err
+	}
+	sum := sha256.Sum256(raw)
+	projected := map[string]any{}
+	if err := json.Unmarshal(raw, &projected); err != nil {
+		return "", nil, err
+	}
+	return hex.EncodeToString(sum[:]), projected, nil
+}
+
+func parseSourcePolicyEpoch(value string) (uint64, error) {
+	if value == "" {
+		return 0, errors.New("epoch is required")
+	}
+	if strings.TrimSpace(value) != value {
+		return 0, errors.New("epoch must be canonical decimal")
+	}
+	if len(value) > 1 && value[0] == '0' {
+		return 0, errors.New("epoch must be canonical decimal")
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, errors.New("epoch must be canonical decimal")
+		}
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
+}
+
+func compareSourcePolicyEpoch(left string, right string) (int, error) {
+	leftValue, err := parseSourcePolicyEpoch(left)
+	if err != nil {
+		return 0, err
+	}
+	rightValue, err := parseSourcePolicyEpoch(right)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case leftValue < rightValue:
+		return -1, nil
+	case leftValue > rightValue:
+		return 1, nil
+	default:
+		return 0, nil
+	}
+}
+
+func (h *Host) recordSourceSecurityFloor(ctx context.Context, snapshot SourcePolicySnapshot, now time.Time) error {
+	hash, _, err := sourcePolicySnapshotProjection(snapshot)
+	if err != nil {
+		return err
+	}
+	if snapshot.RevocationEvidence == nil {
+		return fmt.Errorf("%w: source policy revocation_evidence is required", ErrReleaseRefVerificationFailed)
+	}
+	floor := registry.SourceSecurityFloor{
+		SourceID:                 snapshot.SourceID,
+		PolicyEpoch:              snapshot.PolicyEpoch,
+		KeyRotationEpoch:         snapshot.KeyRotationEpoch,
+		RevocationEpoch:          snapshot.RevocationEpoch,
+		SourcePolicySnapshotHash: hash,
+		RevocationMetadataSHA256: snapshot.RevocationEvidence.MetadataSHA256,
+	}
+	if _, err := h.adapters.Registry.PutSourceSecurityFloor(ctx, floor, registry.PutOptions{Now: now}); err != nil {
+		if errors.Is(err, registry.ErrSourceSecurityFloorRollback) {
+			return fmt.Errorf("%w: %v", ErrReleaseRefPolicyDenied, err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (h *Host) createInstallStage(ctx context.Context, action installstage.Action, pkg pluginpkg.Package, pluginInstanceID string, requestedTrust string, now time.Time) (installstage.Record, error) {
@@ -1531,74 +3053,147 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 	return stored, nil
 }
 
-func (h *Host) resolvePackageTrust(ctx context.Context, action PackageTrustAction, pkg pluginpkg.Package, requested registry.TrustState, current *registry.PluginRecord, instanceID string, now time.Time) (registry.TrustState, map[string]string, error) {
-	if requested == "" {
-		requested = registry.TrustUntrusted
-	}
-	if !knownTrustState(requested) {
-		return "", nil, fmt.Errorf("%w: %q", ErrPackageTrustVerificationInvalid, requested)
-	}
+func (input packageTrustInput) stageRequestedTrust() string {
+	return ""
+}
+
+func (h *Host) resolvePackageTrust(ctx context.Context, action PackageTrustAction, pkg pluginpkg.Package, input packageTrustInput, current *registry.PluginRecord, instanceID string, now time.Time) (registry.TrustAssessment, error) {
 	if h.adapters.PackageTrustVerifier == nil {
-		if trustStateRequiresVerifier(requested) {
-			return "", nil, ErrPackageTrustVerifierRequired
+		if input.LocalImport {
+			return defaultTrustAssessment(pkg, registry.TrustUnsignedLocal, input), nil
 		}
-		return requested, nil, nil
+		if input.SourcePolicySnapshot != nil {
+			return registry.TrustAssessment{}, ErrPackageTrustVerifierRequired
+		}
+		return defaultTrustAssessment(pkg, registry.TrustUntrusted, input), nil
 	}
 	result, err := h.adapters.PackageTrustVerifier.VerifyPackageTrust(ctx, PackageTrustVerificationRequest{
-		Action:              action,
-		Package:             pkg,
-		RequestedTrustState: requested,
-		CurrentRecord:       current,
-		PluginInstanceID:    instanceID,
-		Now:                 now,
+		Action:               action,
+		Package:              pkg,
+		LocalImport:          input.LocalImport,
+		ReleaseRef:           input.ReleaseRef,
+		Release:              input.Release,
+		SourcePolicySnapshot: input.SourcePolicySnapshot,
+		CurrentRecord:        current,
+		PluginInstanceID:     instanceID,
+		Now:                  now,
 	})
 	if err != nil {
-		return "", nil, err
+		return registry.TrustAssessment{}, err
 	}
 	if !knownTrustState(result.TrustState) {
-		return "", nil, fmt.Errorf("%w: %q", ErrPackageTrustVerificationInvalid, result.TrustState)
+		return registry.TrustAssessment{}, fmt.Errorf("%w: %q", ErrPackageTrustVerificationInvalid, result.TrustState)
 	}
-	return result.TrustState, cloneStringMap(result.Metadata), nil
+	if input.SourcePolicySnapshot != nil && result.TrustState != registry.TrustVerified {
+		return registry.TrustAssessment{}, fmt.Errorf("%w: release-ref trust_state must be verified, got %q", ErrPackageTrustVerificationInvalid, result.TrustState)
+	}
+	return normalizeTrustAssessmentForPackage(pkg, result, input), nil
 }
 
 func knownTrustState(state registry.TrustState) bool {
 	switch state {
-	case registry.TrustBundled, registry.TrustVerified, registry.TrustUnsignedLocal, registry.TrustUntrusted, registry.TrustNeedsReview, registry.TrustBlockedSecurity:
+	case registry.TrustVerified, registry.TrustUnsignedLocal, registry.TrustUntrusted, registry.TrustNeedsReview, registry.TrustUnavailable, registry.TrustBlockedSecurity:
 		return true
 	default:
 		return false
 	}
 }
 
-func trustStateRequiresVerifier(state registry.TrustState) bool {
-	switch state {
-	case registry.TrustBundled, registry.TrustVerified:
-		return true
-	default:
-		return false
-	}
+func defaultTrustAssessment(pkg pluginpkg.Package, trust registry.TrustState, input packageTrustInput) registry.TrustAssessment {
+	return normalizeTrustAssessmentForPackage(pkg, registry.TrustAssessment{
+		TrustState:  trust,
+		ReasonCodes: []string{"host_default"},
+	}, input)
 }
 
-func packageRecord(pkg pluginpkg.Package, trust registry.TrustState, instanceID string, metadata map[string]string) registry.PluginRecord {
+func normalizeTrustAssessmentForPackage(pkg pluginpkg.Package, assessment registry.TrustAssessment, input packageTrustInput) registry.TrustAssessment {
+	if assessment.VerifiedHashes.PackageSHA256 == "" {
+		assessment.VerifiedHashes.PackageSHA256 = pkg.PackageHash
+	}
+	if assessment.VerifiedHashes.ManifestSHA256 == "" {
+		assessment.VerifiedHashes.ManifestSHA256 = pkg.ManifestHash
+	}
+	if assessment.VerifiedHashes.EntriesSHA256 == "" {
+		assessment.VerifiedHashes.EntriesSHA256 = pkg.EntriesHash
+	}
+	if input.SourcePolicySnapshot != nil {
+		if assessment.PolicyEpoch == "" {
+			assessment.PolicyEpoch = input.SourcePolicySnapshot.PolicyEpoch
+		}
+		if assessment.RevocationEpoch == "" {
+			assessment.RevocationEpoch = input.SourcePolicySnapshot.RevocationEpoch
+		}
+	}
+	if assessment.TrustAssessmentEpoch == "" {
+		parts := []string{
+			string(assessment.TrustState),
+			assessment.PolicyEpoch,
+			assessment.RevocationEpoch,
+			assessment.VerifiedHashes.PackageSHA256,
+			assessment.VerifiedHashes.ManifestSHA256,
+			assessment.VerifiedHashes.EntriesSHA256,
+		}
+		sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+		assessment.TrustAssessmentEpoch = hex.EncodeToString(sum[:])
+	}
+	assessment.Metadata = cloneStringMap(assessment.Metadata)
+	return assessment
+}
+
+func packageRecord(pkg pluginpkg.Package, trust registry.TrustAssessment, instanceID string, metadata map[string]string) registry.PluginRecord {
 	if instanceID == "" {
 		instanceID = defaultPluginInstanceID(pkg)
 	}
+	trust = normalizeTrustAssessmentForPackage(pkg, trust, packageTrustInput{})
+	metadata = cloneStringMap(metadata)
+	metadata = mergeStringMap(trust.Metadata, metadata)
 	return registry.PluginRecord{
 		PluginInstanceID:  instanceID,
 		PublisherID:       pkg.Manifest.Publisher.PublisherID,
 		PluginID:          pkg.Manifest.PluginID(),
 		Version:           pkg.Manifest.Version(),
-		ActiveFingerprint: pkg.PackageHash,
+		ActiveFingerprint: activeFingerprintForPackage(pkg, instanceID, trust),
 		PackageHash:       pkg.PackageHash,
 		ManifestHash:      pkg.ManifestHash,
 		EntriesHash:       pkg.EntriesHash,
-		TrustState:        trust,
+		TrustState:        trust.TrustState,
+		TrustAssessment:   trust,
 		EnableState:       registry.EnableDisabled,
 		Manifest:          pkg.Manifest,
 		PackageEntries:    pkg.Entries,
 		RetainedDataState: registry.RetainedDataNone,
 		Metadata:          cloneStringMap(metadata),
 	}
+}
+
+func activeFingerprintForPackage(pkg pluginpkg.Package, instanceID string, trust registry.TrustAssessment) string {
+	declaredCapabilityHash := declaredCapabilityContractHash(pkg.Manifest)
+	parts := []string{
+		"redevplugin.active_fingerprint.v1",
+		instanceID,
+		pkg.Manifest.Publisher.PublisherID,
+		pkg.Manifest.PluginID(),
+		pkg.Manifest.Version(),
+		pkg.PackageHash,
+		pkg.ManifestHash,
+		pkg.EntriesHash,
+		declaredCapabilityHash,
+		trust.TrustAssessmentEpoch,
+		trust.PolicyEpoch,
+		trust.RevocationEpoch,
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func declaredCapabilityContractHash(m manifest.Manifest) string {
+	values := make([]string, 0, len(m.CapabilityBindings))
+	for _, capabilitySpec := range m.CapabilityBindings {
+		values = append(values, capabilitySpec.BindingID+"\x00"+capabilitySpec.CapabilityID+"\x00"+capabilitySpec.MinCapabilityVersion)
+	}
+	sort.Strings(values)
+	sum := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 func validateSamePluginIdentity(current registry.PluginRecord, next registry.PluginRecord) error {
@@ -1635,16 +3230,20 @@ func versionSnapshot(record registry.PluginRecord, now time.Time) registry.Plugi
 		now = time.Now().UTC()
 	}
 	return registry.PluginVersion{
-		Version:           record.Version,
-		ActiveFingerprint: record.ActiveFingerprint,
-		PackageHash:       record.PackageHash,
-		ManifestHash:      record.ManifestHash,
-		EntriesHash:       record.EntriesHash,
-		TrustState:        record.TrustState,
-		Manifest:          record.Manifest,
-		PackageEntries:    cloneEntries(record.PackageEntries),
-		ActivatedAt:       now,
-		Metadata:          cloneStringMap(record.Metadata),
+		Version:                  record.Version,
+		ActiveFingerprint:        record.ActiveFingerprint,
+		PackageHash:              record.PackageHash,
+		ManifestHash:             record.ManifestHash,
+		EntriesHash:              record.EntriesHash,
+		TrustState:               record.TrustState,
+		TrustAssessment:          record.TrustAssessment,
+		SourcePolicySnapshotHash: record.SourcePolicySnapshotHash,
+		SourcePolicySnapshot:     cloneAnyMap(record.SourcePolicySnapshot),
+		LocalImportProvenance:    cloneLocalImportProvenance(record.LocalImportProvenance),
+		Manifest:                 record.Manifest,
+		PackageEntries:           cloneEntries(record.PackageEntries),
+		ActivatedAt:              now,
+		Metadata:                 cloneStringMap(record.Metadata),
 	}
 }
 
@@ -1656,10 +3255,22 @@ func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.
 	next.ManifestHash = snapshot.ManifestHash
 	next.EntriesHash = snapshot.EntriesHash
 	next.TrustState = snapshot.TrustState
+	next.TrustAssessment = snapshot.TrustAssessment
+	next.SourcePolicySnapshotHash = snapshot.SourcePolicySnapshotHash
+	next.SourcePolicySnapshot = cloneAnyMap(snapshot.SourcePolicySnapshot)
+	next.LocalImportProvenance = cloneLocalImportProvenance(snapshot.LocalImportProvenance)
 	next.Manifest = snapshot.Manifest
 	next.PackageEntries = cloneEntries(snapshot.PackageEntries)
 	next.Metadata = cloneStringMap(snapshot.Metadata)
 	return next
+}
+
+func cloneLocalImportProvenance(provenance *registry.LocalImportProvenance) *registry.LocalImportProvenance {
+	if provenance == nil {
+		return nil
+	}
+	clone := *provenance
+	return &clone
 }
 
 func selectVersionSnapshot(history []registry.PluginVersion, version string, packageHash string) (registry.PluginVersion, []registry.PluginVersion, error) {
@@ -1711,6 +3322,13 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 	if record.EnableState != registry.EnableEnabled {
 		return nil
 	}
+	if err := h.prepareEnabledRuntimeState(ctx, record); err != nil {
+		return err
+	}
+	return h.publishEnabledSurfaces(ctx, record)
+}
+
+func (h *Host) prepareEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
 	if err := h.ensureStorageNamespaces(ctx, record); err != nil {
 		return err
 	}
@@ -1722,11 +3340,17 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 		return err
 	}
 	if err := h.installConnectivityPolicy(ctx, record, connectivityPolicy, hasConnectivityPolicy); err != nil {
-		_, _ = h.adapters.Registry.SetEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, "connectivity policy installation failed", time.Now().UTC())
 		if h.adapters.Connectivity != nil {
 			_ = h.adapters.Connectivity.RemovePolicy(ctx, record.PluginInstanceID)
 		}
 		return err
+	}
+	return nil
+}
+
+func (h *Host) publishEnabledSurfaces(ctx context.Context, record registry.PluginRecord) error {
+	if record.EnableState != registry.EnableEnabled {
+		return nil
 	}
 	if h.adapters.SurfaceCatalog != nil {
 		if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
@@ -1736,6 +3360,41 @@ func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.P
 		}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (h *Host) rollbackVersionSwitch(ctx context.Context, current registry.PluginRecord, packageHash string, now time.Time) error {
+	if _, err := h.adapters.Registry.PutPlugin(ctx, current, registry.PutOptions{Now: now}); err != nil {
+		return err
+	}
+	if packageHash != "" && packageHash != current.PackageHash {
+		_ = h.adapters.Assets.DeletePackage(ctx, packageHash)
+	}
+	return h.publishEnabledSurfaces(ctx, current)
+}
+
+func (h *Host) getExistingInstallRecord(ctx context.Context, pluginInstanceID string) (registry.PluginRecord, bool, error) {
+	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
+	if errors.Is(err, registry.ErrNotFound) {
+		return registry.PluginRecord{}, false, nil
+	}
+	if err != nil {
+		return registry.PluginRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (h *Host) rollbackInstallRecord(ctx context.Context, previous registry.PluginRecord, hadPrevious bool, pluginInstanceID string, packageHash string, now time.Time) error {
+	if hadPrevious {
+		if _, err := h.adapters.Registry.PutPlugin(ctx, previous, registry.PutOptions{Now: now}); err != nil {
+			return err
+		}
+	} else if err := h.adapters.Registry.DeletePlugin(ctx, pluginInstanceID); err != nil && !errors.Is(err, registry.ErrNotFound) {
+		return err
+	}
+	if packageHash != "" && (!hadPrevious || packageHash != previous.PackageHash) {
+		_ = h.adapters.Assets.DeletePackage(ctx, packageHash)
 	}
 	return nil
 }
@@ -1755,6 +3414,21 @@ func cloneStringMap(values map[string]string) map[string]string {
 	cloned := make(map[string]string, len(values))
 	for key, value := range values {
 		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneAnyMap(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return nil
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return nil
 	}
 	return cloned
 }
@@ -1807,6 +3481,18 @@ func (h *Host) GrantPermission(ctx context.Context, req GrantPermissionRequest) 
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return permissions.Record{}, err
+	}
+	if record.SourcePolicySnapshotHash != "" {
+		now := req.Now
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		if err := h.verifyCurrentSourcePolicy(ctx, record, now); err != nil {
+			if cleanupErr := h.disablePluginForSourcePolicyFailure(ctx, record, now); cleanupErr != nil {
+				return permissions.Record{}, errors.Join(err, cleanupErr)
+			}
+			return permissions.Record{}, err
+		}
 	}
 	grant, err := h.adapters.Permissions.Grant(ctx, permissions.GrantRequest{
 		PluginInstanceID: record.PluginInstanceID,
@@ -3725,6 +5411,14 @@ func (h *Host) consumeConfirmationIntent(ctx context.Context, confirmationID str
 }
 
 func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record registry.PluginRecord, now time.Time) error {
+	return h.revokePluginRuntimeCapabilitiesWithMode(ctx, record, now, false)
+}
+
+func (h *Host) revokePluginRuntimeCapabilitiesStrict(ctx context.Context, record registry.PluginRecord, now time.Time) error {
+	return h.revokePluginRuntimeCapabilitiesWithMode(ctx, record, now, true)
+}
+
+func (h *Host) revokePluginRuntimeCapabilitiesWithMode(ctx context.Context, record registry.PluginRecord, now time.Time, failOnRuntimeError bool) error {
 	revokedTokens := 0
 	if h.surfaceTokens != nil {
 		revokedTokens = h.surfaceTokens.RevokePlugin(record.PluginInstanceID, 0, now)
@@ -3735,6 +5429,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	}
 	runtimeRevoked := false
 	var runtimeRevokeResult runtimeclient.RevokeResult
+	var runtimeErr error
 	if h.adapters.RuntimeSupervisor != nil {
 		revokeCtx := ctx
 		cancel := func() {}
@@ -3759,6 +5454,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			runtimeRevokeResult = result
 			runtimeRevoked = true
 		}
+		runtimeErr = err
 	}
 	if runtimeRevoked || revokedTokens > 0 || revokedConfirmations > 0 {
 		details := map[string]any{
@@ -3780,6 +5476,9 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 			Details:          details,
 		})
 	}
+	if failOnRuntimeError && runtimeErr != nil {
+		return runtimeErr
+	}
 	return nil
 }
 
@@ -3793,6 +5492,15 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 	if !registry.RunnableTrustState(record.TrustState) {
 		return fmt.Errorf("plugin trust_state %q is not runnable", record.TrustState)
 	}
+	if record.SourcePolicySnapshotHash != "" {
+		now := time.Now().UTC()
+		if err := h.verifyCurrentSourcePolicy(ctx, record, now); err != nil {
+			if cleanupErr := h.disablePluginForSourcePolicyFailure(ctx, record, now); cleanupErr != nil {
+				return errors.Join(err, cleanupErr)
+			}
+			return err
+		}
+	}
 	if record.TrustState == registry.TrustUnsignedLocal {
 		developerMode, err := h.adapters.Policy.DeveloperModeEnabled(ctx, sessionctx.Context{})
 		if err != nil {
@@ -3803,11 +5511,122 @@ func (h *Host) canRun(ctx context.Context, record registry.PluginRecord) error {
 			return err
 		}
 		if !developerMode || !localGenerated {
-			_, _ = h.adapters.Registry.SetEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, "developer mode or local generated plugins disabled", time.Now().UTC())
-			return errors.New("unsigned local plugins require developer mode and local generated plugins")
+			now := time.Now().UTC()
+			policyErr := errors.New("unsigned local plugins require developer mode and local generated plugins")
+			if cleanupErr := h.disablePluginForPolicyFailure(ctx, record, "developer mode or local generated plugins disabled", now); cleanupErr != nil {
+				return errors.Join(policyErr, cleanupErr)
+			}
+			return policyErr
 		}
 	}
 	return nil
+}
+
+func (h *Host) disablePluginForSourcePolicyFailure(ctx context.Context, record registry.PluginRecord, now time.Time) error {
+	return h.disablePluginForPolicyFailure(ctx, record, "source policy verification failed", now)
+}
+
+func (h *Host) disablePluginForPolicyFailure(ctx context.Context, record registry.PluginRecord, reason string, now time.Time) error {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	disabled, err := h.adapters.Registry.SetEnableState(ctx, record.PluginInstanceID, registry.EnableDisabledByPolicy, reason, now)
+	if err != nil {
+		return err
+	}
+	return h.revokePluginRuntimeCapabilities(ctx, disabled, now)
+}
+
+func (h *Host) verifyCurrentSourcePolicy(ctx context.Context, record registry.PluginRecord, now time.Time) error {
+	if record.SourcePolicySnapshotHash == "" {
+		return nil
+	}
+	ref, err := releaseRefFromRecord(record)
+	if err != nil {
+		return err
+	}
+	if h.adapters.ReleaseSourcePolicy == nil {
+		return ErrReleaseSourcePolicyRequired
+	}
+	snapshot, err := h.adapters.ReleaseSourcePolicy.ResolveReleaseSourcePolicy(ctx, ReleaseSourcePolicyRequest{
+		Action:           PackageTrustActionUpdate,
+		ReleaseRef:       ref,
+		CurrentRecord:    &record,
+		PluginInstanceID: record.PluginInstanceID,
+		Now:              now,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := h.validateSourcePolicySnapshot(ctx, ref, snapshot, now); err != nil {
+		return err
+	}
+	if err := h.recordSourceSecurityFloor(ctx, snapshot, now); err != nil {
+		return err
+	}
+	if err := verifyInstalledRecordAgainstCurrentSourcePolicy(record, snapshot, now); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyInstalledRecordAgainstCurrentSourcePolicy(record registry.PluginRecord, snapshot SourcePolicySnapshot, now time.Time) error {
+	for _, item := range []struct {
+		name      string
+		current   string
+		installed string
+	}{
+		{name: "policy_epoch", current: snapshot.PolicyEpoch, installed: record.TrustAssessment.PolicyEpoch},
+		{name: "revocation_epoch", current: snapshot.RevocationEpoch, installed: record.TrustAssessment.RevocationEpoch},
+		{name: "key_rotation_epoch", current: snapshot.KeyRotationEpoch, installed: record.Metadata["source.key_rotation_epoch"]},
+	} {
+		if strings.TrimSpace(item.installed) == "" {
+			return fmt.Errorf("%w: installed source %s is missing", ErrReleaseRefVerificationFailed, item.name)
+		}
+		cmp, err := compareSourcePolicyEpoch(item.current, item.installed)
+		if err != nil {
+			return fmt.Errorf("%w: installed source %s is invalid: %v", ErrReleaseRefVerificationFailed, item.name, err)
+		}
+		if cmp < 0 {
+			return fmt.Errorf("%w: current source policy %s rolled back from %s to %s", ErrReleaseRefPolicyDenied, item.name, item.installed, item.current)
+		}
+		if cmp > 0 {
+			return fmt.Errorf("%w: current source policy %s advanced from %s to %s and requires trust reassessment", ErrReleaseRefPolicyDenied, item.name, item.installed, item.current)
+		}
+	}
+	if keyID := strings.TrimSpace(record.Metadata["release.metadata_signature_key_id"]); keyID != "" {
+		if _, err := requireTrustedSourceKey(snapshot, keyID, "release_metadata", now); err != nil {
+			return fmt.Errorf("%w: installed release metadata key is no longer trusted: %v", ErrReleaseRefPolicyDenied, err)
+		}
+	}
+	if keyID := strings.TrimSpace(record.Metadata["release.package_signature_key_id"]); keyID != "" {
+		if _, err := requireTrustedSourceKey(snapshot, keyID, "package_signature", now); err != nil {
+			return fmt.Errorf("%w: installed package signature key is no longer trusted: %v", ErrReleaseRefPolicyDenied, err)
+		}
+	}
+	return nil
+}
+
+func releaseRefFromRecord(record registry.PluginRecord) (PluginReleaseRef, error) {
+	sourceID := strings.TrimSpace(record.Metadata["source_id"])
+	metadataRef := strings.TrimSpace(record.Metadata["release.metadata_ref"])
+	metadataSHA := strings.TrimSpace(record.Metadata["release.metadata_sha256"])
+	if sourceID == "" || metadataRef == "" || metadataSHA == "" {
+		return PluginReleaseRef{}, fmt.Errorf("%w: installed release source metadata is incomplete", ErrReleaseRefVerificationFailed)
+	}
+	return PluginReleaseRef{
+		SourceID:              sourceID,
+		ReleaseMetadataRef:    metadataRef,
+		ReleaseMetadataSHA256: metadataSHA,
+		PublisherID:           record.PublisherID,
+		PluginID:              record.PluginID,
+		Version:               record.Version,
+		ExpectedHashes: PackageHashSet{
+			PackageSHA256:  record.PackageHash,
+			ManifestSHA256: record.ManifestHash,
+			EntriesSHA256:  record.EntriesHash,
+		},
+	}, nil
 }
 
 func (h *Host) ensureStorageNamespaces(ctx context.Context, record registry.PluginRecord) error {
@@ -4236,8 +6055,8 @@ func validateRetainedDataBindTarget(record retaineddata.Record, target registry.
 
 func retainedTrustClassCompatible(source registry.TrustState, target registry.TrustState) bool {
 	switch source {
-	case registry.TrustBundled, registry.TrustVerified:
-		return target == registry.TrustBundled || target == registry.TrustVerified
+	case registry.TrustVerified:
+		return target == registry.TrustVerified
 	case registry.TrustUnsignedLocal:
 		return target == registry.TrustUnsignedLocal
 	default:
@@ -4471,10 +6290,9 @@ func manifestHasSurface(m manifest.Manifest, surfaceID string) bool {
 	return false
 }
 
-func InstallPackageBytes(ctx context.Context, h *Host, data []byte, trust registry.TrustState) (registry.PluginRecord, error) {
-	return h.InstallPackage(ctx, InstallRequest{
+func ImportLocalPackageBytes(ctx context.Context, h *Host, data []byte) (registry.PluginRecord, error) {
+	return h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader: bytes.NewReader(data),
 		PackageSize:   int64(len(data)),
-		TrustState:    trust,
 	})
 }

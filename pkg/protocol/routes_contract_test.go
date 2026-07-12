@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,11 @@ import (
 type routeFixture struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
+}
+
+type openAPIRouteFixture struct {
+	routeFixture
+	RouteSet string
 }
 
 type typeScriptSDKRouteBinding struct {
@@ -110,19 +116,95 @@ func TestHTTPRoutesClassifyTypeScriptSDKCoverage(t *testing.T) {
 
 func TestHTTPRouteSetMatchesOpenAPI(t *testing.T) {
 	root := repoRoot(t)
-	openAPIRoutes, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v1.yaml"))
+	defaultOpenAPIRoutes, localImportOpenAPIRoutes, err := readOpenAPIRoutesBySet(filepath.Join(root, "spec", "openapi", "plugin-platform-v1.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	got := make([]routeFixture, 0, len(httpadapter.RouteSet()))
+	defaultRoutes := make([]routeFixture, 0, len(httpadapter.RouteSet()))
+	defaultRouteKeys := map[string]bool{}
 	for _, route := range httpadapter.RouteSet() {
-		got = append(got, routeFixture{Method: route.Method, Path: route.Path})
+		fixture := routeFixture{Method: route.Method, Path: route.Path}
+		defaultRoutes = append(defaultRoutes, fixture)
+		defaultRouteKeys[routeKey(fixture)] = true
 	}
-	sortRoutes(openAPIRoutes)
-	sortRoutes(got)
-	if !reflect.DeepEqual(got, openAPIRoutes) {
-		t.Fatalf("OpenAPI route set mismatch\n got: %#v\nwant: %#v", got, openAPIRoutes)
+	sortRoutes(defaultOpenAPIRoutes)
+	sortRoutes(defaultRoutes)
+	if !reflect.DeepEqual(defaultRoutes, defaultOpenAPIRoutes) {
+		t.Fatalf("default OpenAPI route set mismatch\n got: %#v\nwant: %#v", defaultRoutes, defaultOpenAPIRoutes)
+	}
+
+	localImportRoutes := []routeFixture{}
+	for _, route := range httpadapter.RouteSetWithOptions(httpadapter.RouteSetOptions{EnableLocalImportRoutes: true}) {
+		fixture := routeFixture{Method: route.Method, Path: route.Path}
+		if !defaultRouteKeys[routeKey(fixture)] {
+			localImportRoutes = append(localImportRoutes, fixture)
+		}
+	}
+	sortRoutes(localImportOpenAPIRoutes)
+	sortRoutes(localImportRoutes)
+	if !reflect.DeepEqual(localImportRoutes, localImportOpenAPIRoutes) {
+		t.Fatalf("local-import OpenAPI route set mismatch\n got: %#v\nwant: %#v", localImportRoutes, localImportOpenAPIRoutes)
+	}
+}
+
+func TestLocalImportRoutesAreExplicitDevAdminRoutes(t *testing.T) {
+	defaultRoutes := map[string]bool{}
+	for _, route := range httpadapter.RouteSet() {
+		defaultRoutes[routeKey(routeFixture{Method: route.Method, Path: route.Path})] = true
+	}
+	explicitRoutes := map[string]bool{}
+	for _, route := range httpadapter.RouteSetWithOptions(httpadapter.RouteSetOptions{EnableLocalImportRoutes: true}) {
+		explicitRoutes[routeKey(routeFixture{Method: route.Method, Path: route.Path})] = true
+	}
+	for _, route := range []routeFixture{
+		{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/install"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/update"},
+	} {
+		key := routeKey(route)
+		if defaultRoutes[key] {
+			t.Fatalf("default route set must not include explicit local-import route %s", key)
+		}
+		if !explicitRoutes[key] {
+			t.Fatalf("explicit route set missing local-import route %s", key)
+		}
+	}
+}
+
+func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
+	root := repoRoot(t)
+	defaultSDKRaw, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "index.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSDK := string(defaultSDKRaw)
+	for _, forbidden := range []string{
+		"importLocalPackage(request: PluginImportLocalPackageRequest)",
+		"updateLocalPackage(request: PluginUpdateLocalPackageRequest)",
+		"export type PluginImportLocalPackageRequest",
+		"export type PluginUpdateLocalPackageRequest",
+	} {
+		if strings.Contains(defaultSDK, forbidden) {
+			t.Fatalf("default TypeScript entrypoint must not expose local-import symbol %q", forbidden)
+		}
+	}
+	localImportRaw, err := os.ReadFile(filepath.Join(root, "packages", "redevplugin-ui", "src", "local-import.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	localImportSDK := string(localImportRaw)
+	for _, snippet := range []string{
+		"export class PluginLocalImportClient",
+		"export type PluginImportLocalPackageRequest",
+		"export type PluginUpdateLocalPackageRequest",
+		"importLocalPackage(request: PluginImportLocalPackageRequest)",
+		`#postJSON("/_redevplugin/api/plugins/local-import/install"`,
+		"updateLocalPackage(request: PluginUpdateLocalPackageRequest)",
+		`#postJSON("/_redevplugin/api/plugins/local-import/update"`,
+	} {
+		if !strings.Contains(localImportSDK, snippet) {
+			t.Fatalf("local-import TypeScript entrypoint missing snippet %q", snippet)
+		}
 	}
 }
 
@@ -175,10 +257,74 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"per sandbox_origin plus active_fingerprint plus source IP rate limiting",
 		"Content-Security-Policy:",
 		"Permissions-Policy:",
-		"Service-Worker-Allowed:",
+		"InstallReleaseRefRequest:",
+		"UpdateReleaseRefRequest:",
+		"ImportLocalPackageRequest:",
+		"UpdateLocalPackageRequest:",
+		"PluginReleaseRef:",
+		"PackageHashSet:",
+		"release_metadata_sha256:",
+		"trust_unavailable",
+		"expected_hashes:",
+		"package_sha256: { type: string, pattern: \"^(sha256:)?[0-9a-f]{64}$\" }",
 	} {
 		if !strings.Contains(text, snippet) {
 			t.Fatalf("OpenAPI schema missing snippet %q", snippet)
+		}
+	}
+	if strings.Contains(text, "enum: [bundled,") {
+		t.Fatalf("OpenAPI TrustState must not expose bundled as a public target trust state")
+	}
+}
+
+func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
+	root := repoRoot(t)
+	schemas := []struct {
+		path     string
+		snippets []string
+	}{
+		{
+			path: "release-metadata-v1.schema.json",
+			snippets: []string{
+				`"additionalProperties": false`,
+				`"schema_version": { "const": "redevplugin.release_metadata.v1" }`,
+				`"release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" }`,
+				`"package_signature": { "$ref": "#/$defs/package_release_signature" }`,
+				`"signature_sha256": { "$ref": "#/$defs/sha256" }`,
+				`"source_policy_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
+				`"revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
+			},
+		},
+		{
+			path: "source-policy-v1.schema.json",
+			snippets: []string{
+				`"additionalProperties": false`,
+				`"schema_version": { "const": "redevplugin.source_policy.v1" }`,
+				`"unsigned_policy": { "enum": ["dev_only", "review_required", "block"] }`,
+				`"revocation_evidence": { "$ref": "#/$defs/revocation_evidence" }`,
+				`"revocation_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
+			},
+		},
+		{
+			path: "source-revocations-v1.schema.json",
+			snippets: []string{
+				`"additionalProperties": false`,
+				`"schema_version": { "const": "redevplugin.source_revocations.v1" }`,
+				`"highest_seen_epoch": { "$ref": "#/$defs/decimal_epoch" }`,
+				`"revoked_key_ids":`,
+			},
+		},
+	}
+	for _, schema := range schemas {
+		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", schema.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, snippet := range schema.snippets {
+			if !strings.Contains(text, snippet) {
+				t.Fatalf("%s missing snippet %q", schema.path, snippet)
+			}
 		}
 	}
 }
@@ -195,15 +341,16 @@ func readRouteFixtures(path string) ([]routeFixture, error) {
 	return fixtures, nil
 }
 
-func readOpenAPIRoutes(path string) ([]routeFixture, error) {
+func readOpenAPIRoutesBySet(path string) ([]routeFixture, []routeFixture, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer file.Close()
 
-	var routes []routeFixture
+	var routes []openAPIRouteFixture
 	var currentPath string
+	currentRouteIndex := -1
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -223,14 +370,36 @@ func readOpenAPIRoutes(path string) ([]routeFixture, error) {
 		}
 		switch line {
 		case "    get:":
-			routes = append(routes, routeFixture{Method: "GET", Path: currentPath})
+			routes = append(routes, openAPIRouteFixture{routeFixture: routeFixture{Method: "GET", Path: currentPath}, RouteSet: "default"})
+			currentRouteIndex = len(routes) - 1
 		case "    patch:":
-			routes = append(routes, routeFixture{Method: "PATCH", Path: currentPath})
+			routes = append(routes, openAPIRouteFixture{routeFixture: routeFixture{Method: "PATCH", Path: currentPath}, RouteSet: "default"})
+			currentRouteIndex = len(routes) - 1
 		case "    post:":
-			routes = append(routes, routeFixture{Method: "POST", Path: currentPath})
+			routes = append(routes, openAPIRouteFixture{routeFixture: routeFixture{Method: "POST", Path: currentPath}, RouteSet: "default"})
+			currentRouteIndex = len(routes) - 1
+		case "      x-redevplugin-route-set: local_import":
+			if currentRouteIndex >= 0 {
+				routes[currentRouteIndex].RouteSet = "local_import"
+			}
 		}
 	}
-	return routes, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+	defaultRoutes := []routeFixture{}
+	localImportRoutes := []routeFixture{}
+	for _, route := range routes {
+		switch route.RouteSet {
+		case "default":
+			defaultRoutes = append(defaultRoutes, route.routeFixture)
+		case "local_import":
+			localImportRoutes = append(localImportRoutes, route.routeFixture)
+		default:
+			return nil, nil, fmt.Errorf("unknown OpenAPI route set %q for %s %s", route.RouteSet, route.Method, route.Path)
+		}
+	}
+	return defaultRoutes, localImportRoutes, nil
 }
 
 func readOpenAPIRequestBodyRoutes(path string) ([]openAPIRequestBodyFixture, error) {
@@ -276,9 +445,9 @@ func readOpenAPIRequestBodyRoutes(path string) ([]openAPIRequestBodyFixture, err
 func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 	return []typeScriptSDKRouteBinding{
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/install"},
-			Owner:        "PluginPlatformClient.installPlugin",
-			Snippets:     []string{"installPlugin(request: PluginInstallRequest)", `#postJSON("/_redevplugin/api/plugins/install"`},
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
+			Owner:        "PluginPlatformClient.installReleaseRef",
+			Snippets:     []string{"installReleaseRef(request: PluginInstallReleaseRefRequest)", `#postJSON("/_redevplugin/api/plugins/install-release-ref"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
@@ -296,9 +465,9 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"uninstallPlugin(request: PluginUninstallRequest)", `#postJSON("/_redevplugin/api/plugins/uninstall"`},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/update"},
-			Owner:        "PluginPlatformClient.updatePlugin",
-			Snippets:     []string{"updatePlugin(request: PluginUpdateRequest)", `#postJSON("/_redevplugin/api/plugins/update"`},
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
+			Owner:        "PluginPlatformClient.updateReleaseRef",
+			Snippets:     []string{"updateReleaseRef(request: PluginUpdateReleaseRefRequest)", `#postJSON("/_redevplugin/api/plugins/update-release-ref"`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
@@ -496,11 +665,13 @@ func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
 	return []routeFixture{
-		{Method: "POST", Path: "/_redevplugin/api/plugins/install"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/install"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/disable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/uninstall"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/update"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/update"},
+		{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap"},

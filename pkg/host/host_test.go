@@ -3,6 +3,8 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,15 +39,20 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	host, surfaces, audits := newTestHost(t, true, true)
 	packageBytes := buildFixturePackage(t)
 
-	installed, err := InstallPackageBytes(context.Background(), host, packageBytes, registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), host, packageBytes)
 	if err != nil {
-		t.Fatalf("InstallPackageBytes() error = %v", err)
+		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
 	if installed.EnableState != registry.EnableDisabled {
 		t.Fatalf("install EnableState = %s", installed.EnableState)
 	}
 	if installed.PolicyRevision == 0 || installed.ManagementRevision == 0 {
 		t.Fatalf("revision fields not initialized: %#v", installed)
+	}
+	if installed.LocalImportProvenance == nil ||
+		installed.LocalImportProvenance.Distribution != string(PackageDistributionLocalImport) ||
+		installed.LocalImportProvenance.UnsignedPolicy != string(PackageUnsignedDevOnly) {
+		t.Fatalf("local import provenance mismatch: %#v", installed.LocalImportProvenance)
 	}
 
 	enabled, err := host.EnablePlugin(context.Background(), EnableRequest{PluginInstanceID: installed.PluginInstanceID})
@@ -99,9 +106,9 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 	v2 := buildVersionedRPCPackage(t, "2.0.0", "RPC v2")
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 
-	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, v1)
 	if err != nil {
-		t.Fatalf("InstallPackageBytes() error = %v", err)
+		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
 	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
@@ -143,17 +150,20 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		t.Fatalf("MintBridgeToken() error = %v", err)
 	}
 
-	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
 		Now:              now.Add(4 * time.Second),
 	})
 	if err != nil {
-		t.Fatalf("UpdatePlugin() error = %v", err)
+		t.Fatalf("UpdateLocalPackage() error = %v", err)
 	}
 	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
 		t.Fatalf("updated record mismatch: %#v", updated)
+	}
+	if updated.LocalImportProvenance == nil || updated.VersionHistory[0].LocalImportProvenance == nil {
+		t.Fatalf("local import provenance missing from update/version history: updated=%#v history=%#v", updated.LocalImportProvenance, updated.VersionHistory[0].LocalImportProvenance)
 	}
 	if updated.ManagementRevision <= installed.ManagementRevision || updated.RevokeEpoch <= installed.RevokeEpoch {
 		t.Fatalf("update did not bump revision/revoke epoch: before=%#v after=%#v", installed, updated)
@@ -196,17 +206,17 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 func TestUpdateRejectsDifferentPluginIdentity(t *testing.T) {
 	ctx := context.Background()
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := InstallPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := buildStorageFixturePackage(t)
-	if _, err := h.UpdatePlugin(ctx, UpdateRequest{
+	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(other),
 		PackageSize:      int64(len(other)),
 	}); err == nil {
-		t.Fatal("UpdatePlugin() expected identity mismatch error")
+		t.Fatal("UpdateLocalPackage() expected identity mismatch error")
 	}
 }
 
@@ -236,17 +246,17 @@ func TestUpdateAndDowngradeValidateMigrationPreflight(t *testing.T) {
 		StorageReversible:  true,
 	})
 
-	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, v1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
 	})
 	if err != nil {
-		t.Fatalf("UpdatePlugin() migration preflight error = %v", err)
+		t.Fatalf("UpdateLocalPackage() migration preflight error = %v", err)
 	}
 	if updated.Manifest.Settings.SchemaVersion != 2 || updated.Manifest.Storage.Stores[0].SchemaVersion != 2 {
 		t.Fatalf("updated schemas mismatch: settings=%#v storage=%#v", updated.Manifest.Settings, updated.Manifest.Storage)
@@ -289,16 +299,16 @@ func TestUpdateRejectsMismatchedMigrationPreflight(t *testing.T) {
 		StorageReversible:  true,
 	})
 
-	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, v1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.UpdatePlugin(ctx, UpdateRequest{
+	if _, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(badV2),
 		PackageSize:      int64(len(badV2)),
 	}); !errors.Is(err, ErrPluginMigrationPreflight) {
-		t.Fatalf("UpdatePlugin() error = %v, want ErrPluginMigrationPreflight", err)
+		t.Fatalf("UpdateLocalPackage() error = %v, want ErrPluginMigrationPreflight", err)
 	}
 }
 
@@ -328,17 +338,17 @@ func TestDowngradeRejectsIrreversibleMigrationPreflight(t *testing.T) {
 		StorageReversible:  true,
 	})
 
-	installed, err := InstallPackageBytes(ctx, h, v1, registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, v1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(irreversibleV2),
 		PackageSize:      int64(len(irreversibleV2)),
 	})
 	if err != nil {
-		t.Fatalf("UpdatePlugin() irreversible forward migration error = %v", err)
+		t.Fatalf("UpdateLocalPackage() irreversible forward migration error = %v", err)
 	}
 	if _, err := h.DowngradePlugin(ctx, DowngradeRequest{
 		PluginInstanceID: updated.PluginInstanceID,
@@ -350,7 +360,8 @@ func TestDowngradeRejectsIrreversibleMigrationPreflight(t *testing.T) {
 
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
-	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustUntrusted)
+	pkg := readTestPackage(t, buildFixturePackage(t))
+	installed, err := host.adapters.Registry.PutPlugin(context.Background(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, "", nil), registry.PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,8 +371,14 @@ func TestEnableRejectsUntrusted(t *testing.T) {
 }
 
 func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
-	host, _, _ := newTestHost(t, false, true)
-	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustUnsignedLocal)
+	host, err := New(Adapters{
+		SessionResolver: fakeSessionResolver{},
+		Policy:          policyAdapter{developerMode: false, localGenerated: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := ImportLocalPackageBytes(context.Background(), host, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,16 +394,47 @@ func TestEnableUnsignedLocalRequiresPolicy(t *testing.T) {
 	}
 }
 
-func TestInstallVerifiedRequiresPackageTrustVerifier(t *testing.T) {
+func TestInstallReleaseRefRequiresPackageTrustVerifier(t *testing.T) {
+	packageBytes := buildSignedReleasePackageBytes(t, buildFixturePackage(t), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
 	h, err := New(Adapters{
-		SessionResolver: fakeSessionResolver{},
-		Policy:          policyAdapter{developerMode: true, localGenerated: true},
+		SessionResolver:         fakeSessionResolver{},
+		Policy:                  policyAdapter{developerMode: true, localGenerated: true},
+		ReleaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		ReleaseArtifactResolver: resolver,
+		ReleaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified); !errors.Is(err, ErrPackageTrustVerifierRequired) {
-		t.Fatalf("InstallPackageBytes() error = %v, want ErrPackageTrustVerifierRequired", err)
+	if _, err := h.InstallReleaseRef(context.Background(), InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrPackageTrustVerifierRequired) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrPackageTrustVerifierRequired", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsNonVerifiedTrustAssessment(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildFixturePackage(t), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		trustVerifier:           &recordingPackageTrustVerifier{trustState: registry.TrustUnsignedLocal},
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrPackageTrustVerificationInvalid) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrPackageTrustVerificationInvalid", err)
 	}
 }
 
@@ -401,7 +449,7 @@ func TestInstallUsesVerifierTrustDecisionAndMetadata(t *testing.T) {
 		trustVerifier:  verifier,
 	})
 
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,8 +459,1191 @@ func TestInstallUsesVerifierTrustDecisionAndMetadata(t *testing.T) {
 	if installed.Metadata["trust.source"] != "test-review" {
 		t.Fatalf("Metadata = %#v", installed.Metadata)
 	}
-	if verifier.last.Action != PackageTrustActionInstall || verifier.last.RequestedTrustState != registry.TrustVerified || verifier.last.Package.PackageHash == "" {
+	if verifier.last.Action != PackageTrustActionInstall || !verifier.last.LocalImport || verifier.last.Package.PackageHash == "" {
 		t.Fatalf("verifier request mismatch: %#v", verifier.last)
+	}
+}
+
+func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	metadataVerifier := &recordingReleaseMetadataVerifier{}
+	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		trustVerifier:           verifier,
+		releaseMetadataVerifier: metadataVerifier,
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		ReleaseRef:       ref,
+		PluginInstanceID: "plugini_release_ref",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.PluginInstanceID != "plugini_release_ref" || installed.PackageHash != pkg.PackageHash || installed.ManifestHash != pkg.ManifestHash || installed.EntriesHash != pkg.EntriesHash {
+		t.Fatalf("installed record mismatch: %#v", installed)
+	}
+	if installed.TrustState != registry.TrustVerified {
+		t.Fatalf("TrustState = %s, want verified", installed.TrustState)
+	}
+	wantMetadataSignatureRef := "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/release.json.sig"
+	wantPackageSignatureBundleRef := "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.sigbundle"
+	if installed.Metadata["source_id"] != "official" ||
+		installed.Metadata["source.type"] != string(PackageSourceRegistry) ||
+		installed.Metadata["source.class"] != string(PackageSourceClassOfficial) ||
+		installed.Metadata["source.distribution"] != string(PackageDistributionRegistryRef) ||
+		installed.Metadata["source.install_policy"] != string(PackageInstallAllow) ||
+		installed.Metadata["source.unsigned_policy"] != string(PackageUnsignedBlock) ||
+		installed.Metadata["source.downgrade_policy"] != string(PackageDowngradeBlock) ||
+		installed.Metadata["source.policy_epoch"] != "1" ||
+		installed.Metadata["source.key_rotation_epoch"] != "1" ||
+		installed.Metadata["source.revocation_epoch"] != "1" ||
+		installed.Metadata["source.assessed_at"] != "2026-07-07T00:00:00Z" ||
+		installed.Metadata["release.metadata_signature_algorithm"] != "ed25519" ||
+		installed.Metadata["release.metadata_signature_key_id"] != "official" ||
+		installed.Metadata["release.metadata_signature_ref"] != wantMetadataSignatureRef ||
+		installed.Metadata["release.package_signature_algorithm"] != "ed25519" ||
+		installed.Metadata["release.package_signature_key_id"] != "official" ||
+		installed.Metadata["release.package_signature_bundle_ref"] != wantPackageSignatureBundleRef ||
+		installed.Metadata["trust.key_id"] != "official" {
+		t.Fatalf("metadata = %#v", installed.Metadata)
+	}
+	if resolver.last.Action != PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() {
+		t.Fatalf("resolver request mismatch: %#v", resolver.last)
+	}
+	if resolver.last.SourcePolicySnapshot.SourceClass != PackageSourceClassOfficial || !resolver.last.SourcePolicySnapshot.RequireSignature {
+		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicySnapshot)
+	}
+	if verifier.last.Action != PackageTrustActionInstall || verifier.last.LocalImport || verifier.last.Package.PackageHash != pkg.PackageHash {
+		t.Fatalf("verifier request mismatch: %#v", verifier.last)
+	}
+	if verifier.last.SourcePolicySnapshot == nil || verifier.last.SourcePolicySnapshot.SourceClass != PackageSourceClassOfficial || !verifier.last.SourcePolicySnapshot.RequireSignature {
+		t.Fatalf("verifier source policy mismatch: %#v", verifier.last.SourcePolicySnapshot)
+	}
+	if verifier.last.ReleaseRef == nil || verifier.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() {
+		t.Fatalf("verifier release ref mismatch: %#v", verifier.last.ReleaseRef)
+	}
+	if metadataVerifier.calls != 1 || metadataVerifier.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() || len(metadataVerifier.last.ReleaseMetadataBytes) == 0 || len(metadataVerifier.last.ReleaseMetadataSignature) == 0 {
+		t.Fatalf("metadata verifier request mismatch: calls=%d request=%#v", metadataVerifier.calls, metadataVerifier.last)
+	}
+	floor, err := h.adapters.Registry.GetSourceSecurityFloor(ctx, ref.SourceID)
+	if err != nil {
+		t.Fatalf("GetSourceSecurityFloor() error = %v", err)
+	}
+	if floor.PolicyEpoch != "1" || floor.KeyRotationEpoch != "1" || floor.RevocationEpoch != "1" || floor.SourcePolicySnapshotHash != installed.SourcePolicySnapshotHash {
+		t.Fatalf("source security floor mismatch: %#v installed snapshot=%s", floor, installed.SourcePolicySnapshotHash)
+	}
+}
+
+func TestInstallReleaseRefRejectsSourceSecurityFloorRollbackBeforeArtifactResolution(t *testing.T) {
+	ctx := context.Background()
+	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Pkg := readTestPackage(t, v1Bytes)
+	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
+	v1Policy := sourcePolicyForRelease(v1Ref)
+	setSourcePolicyEpochs(&v1Policy, "2")
+	v1Release := releaseForPackage(v1Ref, v1Pkg)
+	setReleaseSignatureEpochs(&v1Release, "2")
+	setReleaseRefMetadataHash(t, &v1Ref, v1Release)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: v1Policy},
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, v1Ref, v1Release, v1Bytes)},
+	})
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v1Ref, PluginInstanceID: "plugini_floor_v1"}); err != nil {
+		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
+	}
+
+	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Pkg := readTestPackage(t, v2Bytes)
+	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
+	artifactResolver := &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
+	h.adapters.ReleaseArtifactResolver = artifactResolver
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v2Ref, PluginInstanceID: "plugini_floor_v2"}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("InstallReleaseRef(rollback) error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	if artifactResolver.calls != 0 {
+		t.Fatalf("artifact resolver calls = %d, want 0 before rollback rejection", artifactResolver.calls)
+	}
+}
+
+func TestInstallReleaseRefRejectsSourceRevocationMetadataSubstitutionBeforeArtifactResolution(t *testing.T) {
+	ctx := context.Background()
+	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Pkg := readTestPackage(t, v1Bytes)
+	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
+	v1Policy := sourcePolicyForRelease(v1Ref)
+	setSourcePolicyRevokedKeys(&v1Policy, []string{"previously-revoked"})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: v1Policy},
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v1Ref, v1Pkg, v1Bytes)},
+	})
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v1Ref, PluginInstanceID: "plugini_floor_revoke_v1"}); err != nil {
+		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
+	}
+
+	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Pkg := readTestPackage(t, v2Bytes)
+	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
+	artifactResolver := &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
+	h.adapters.ReleaseArtifactResolver = artifactResolver
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v2Ref, PluginInstanceID: "plugini_floor_revoke_v2"}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("InstallReleaseRef(substituted revocation metadata) error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	if artifactResolver.calls != 0 {
+		t.Fatalf("artifact resolver calls = %d, want 0 before substitution rejection", artifactResolver.calls)
+	}
+}
+
+func TestOpenSurfaceRejectsCurrentSourceSecurityFloorRollback(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	setSourcePolicyEpochs(&sourcePolicy, "2")
+	release := releaseForPackage(ref, pkg)
+	setReleaseSignatureEpochs(&release, "2")
+	setReleaseRefMetadataHash(t, &ref, release)
+	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     sourceResolver,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
+	})
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref, PluginInstanceID: "plugini_floor_open"})
+	if err != nil {
+		t.Fatalf("InstallReleaseRef() error = %v", err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+
+	sourceResolver.snapshot = sourcePolicyForRelease(ref)
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.activity",
+		SurfaceInstanceID: "surface_floor_rollback",
+	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("OpenSurface() error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.EnableState != registry.EnableDisabledByPolicy {
+		t.Fatalf("EnableState after source rollback = %s, want disabled_by_policy", current.EnableState)
+	}
+}
+
+func TestInstallReleaseRefRejectsRevokedReleaseSignatureKey(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.TrustedKeyIDs = []string{"official", "revoker"}
+	sourcePolicy.TrustedKeys = append(sourcePolicy.TrustedKeys, SourcePolicyTrustedKey{
+		Algorithm:       pluginpkg.PackageSignatureAlgorithmEd25519,
+		KeyID:           "revoker",
+		PublicKeySHA256: strings.Repeat("b", 64),
+		Usage:           []string{"revocation_metadata"},
+		ValidFrom:       "2026-01-01T00:00:00Z",
+		ValidUntil:      "2027-01-01T00:00:00Z",
+		RevocationEpoch: "1",
+	})
+	setSourcePolicyRevokedKeys(&sourcePolicy, []string{"official"})
+	sourcePolicy.RevocationEvidence.SignatureKeyID = "revoker"
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes)},
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsDigestMismatchWithoutRegistryMutation(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	ref.ExpectedHashes.PackageSHA256 = strings.Repeat("0", 64)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+	records, err := h.ListPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records after failed install = %#v", records)
+	}
+}
+
+func TestInstallReleaseRefRejectsReleaseMetadataHashMismatchWithoutRegistryMutation(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	ref.ReleaseMetadataSHA256 = strings.Repeat("b", 64)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+	records, err := h.ListPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records after failed install = %#v", records)
+	}
+}
+
+func TestInstallReleaseRefRejectsPackageChangedAfterMetadataResolvedWithoutRegistryMutation(t *testing.T) {
+	ctx := context.Background()
+	metadataBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	metadataPkg := readTestPackage(t, metadataBytes)
+	ref := releaseRefForPackage(t, "official", metadataPkg)
+	assetBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.1.0", "Lifecycle replaced"), "official")
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, metadataPkg, assetBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+	records, err := h.ListPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records after failed install = %#v", records)
+	}
+}
+
+func TestInstallReleaseRefRejectsUnavailableSourcePolicyBeforeArtifactResolution(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourceResolver := &recordingReleaseSourcePolicyResolver{err: errors.New("revocation metadata unavailable")}
+	artifactResolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseSourcePolicy:     sourceResolver,
+		releaseArtifactResolver: artifactResolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); err == nil || !strings.Contains(err.Error(), "revocation metadata unavailable") {
+		t.Fatalf("InstallReleaseRef() error = %v, want source policy error", err)
+	}
+	if sourceResolver.calls != 1 {
+		t.Fatalf("source resolver calls = %d, want 1", sourceResolver.calls)
+	}
+	if artifactResolver.calls != 0 {
+		t.Fatalf("artifact resolver calls = %d, want 0", artifactResolver.calls)
+	}
+	records, err := h.ListPlugins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records after failed install = %#v", records)
+	}
+}
+
+func TestInstallReleaseRefRejectsUnsafeArtifactPath(t *testing.T) {
+	for _, artifactRef := range []string{
+		"https://127.0.0.1/plugin.redevplugin",
+		"%2e%2e/plugin.redevplugin",
+		"plugins/%2e%2e/plugin.redevplugin",
+	} {
+		t.Run(artifactRef, func(t *testing.T) {
+			ctx := context.Background()
+			packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+			pkg := readTestPackage(t, packageBytes)
+			ref := releaseRefForPackage(t, "official", pkg)
+			release := releaseForPackage(ref, pkg)
+			release.DistributionRef.ArtifactRef = artifactRef
+			setReleaseRefMetadataHash(t, &ref, release)
+			resolver := &recordingReleaseArtifactResolver{
+				artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+			}
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode:           true,
+				localGenerated:          true,
+				releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+				releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+				releaseArtifactResolver: resolver,
+			})
+
+			if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+				t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+			}
+		})
+	}
+}
+
+func TestInstallReleaseRefRejectsOfficialSourceWithoutSignatureRequirement(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.RequireSignature = false
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsInvalidSourcePolicyTrustEvidence(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SourcePolicySnapshot)
+	}{
+		{name: "non canonical policy epoch", mutate: func(snapshot *SourcePolicySnapshot) {
+			snapshot.PolicyEpoch = "01"
+		}},
+		{name: "missing trusted key ids", mutate: func(snapshot *SourcePolicySnapshot) {
+			snapshot.TrustedKeyIDs = nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sourcePolicy := sourcePolicyForRelease(ref)
+			tc.mutate(&sourcePolicy)
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode:           true,
+				localGenerated:          true,
+				releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+				releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+				releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes)},
+			})
+
+			if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+				t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+			}
+		})
+	}
+}
+
+func TestInstallReleaseRefRejectsCommunitySourceWithoutSignatureRequirement(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "community", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.SourceClass = PackageSourceClassCommunity
+	sourcePolicy.RequireSignature = false
+	sourcePolicy.UnsignedPolicy = PackageUnsignedReviewRequired
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsPublisherOutsideSourcePolicy(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.AllowedPublishers = []string{"com.example.other"}
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRequiresSourcePolicyResolver(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseSourcePolicyRequired) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseSourcePolicyRequired", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsLocalImportDistribution(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.DistributionRef = PackageDistributionRef{Distribution: PackageDistributionLocalImport, ImportID: "local_import_1"}
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsMissingReleaseDistribution(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.DistributionRef.Distribution = ""
+	setReleaseRefMetadataHash(t, &ref, release)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsReleaseDistributionImportID(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.DistributionRef.ImportID = "local_import_1"
+	setReleaseRefMetadataHash(t, &ref, release)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	baseRef := releaseRefForPackage(t, "official", pkg)
+
+	t.Run("accepts complete host capability contract pins", func(t *testing.T) {
+		ref := baseRef
+		release := releaseForPackage(ref, pkg)
+		release.HostRequirements = []HostRequirement{{
+			HostID:         "example-host",
+			MinHostVersion: "1.2.3",
+			RequiredCapabilityContracts: []HostCapabilityRequirement{{
+				CapabilityID:      "example.capability.resources",
+				CapabilityVersion: "1.0.0",
+				Contract: HostCapabilityContractRef{
+					ContractID:            "example.resources.v1",
+					ContractVersion:       "1.0.0",
+					ArtifactRef:           "capabilities/example/resources/v1/contract.json",
+					ArtifactSHA256:        strings.Repeat("1", 64),
+					ManifestSHA256:        strings.Repeat("2", 64),
+					SignatureRef:          "capabilities/example/resources/v1/contract.json.sig",
+					SignatureSHA256:       strings.Repeat("6", 64),
+					SignatureKeyID:        "official",
+					CompatibilitySHA256:   strings.Repeat("3", 64),
+					GeneratedClientSHA256: strings.Repeat("4", 64),
+					NoticesSHA256:         strings.Repeat("5", 64),
+				},
+			}},
+		}}
+		setReleaseRefMetadataHash(t, &ref, release)
+		metadataVerifier := &recordingReleaseMetadataVerifier{}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			developerMode:           true,
+			localGenerated:          true,
+			releaseMetadataVerifier: metadataVerifier,
+			releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
+		})
+
+		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); err != nil {
+			t.Fatalf("InstallReleaseRef() error = %v", err)
+		}
+		got := metadataVerifier.last.Release.HostRequirements[0].RequiredCapabilityContracts[0].Contract
+		if got.GeneratedClientSHA256 != strings.Repeat("4", 64) ||
+			got.SignatureKeyID != "official" ||
+			got.SignatureSHA256 != strings.Repeat("6", 64) {
+			t.Fatalf("host capability contract pins were not preserved: %#v", got)
+		}
+	})
+
+	t.Run("rejects incomplete host capability contract pins", func(t *testing.T) {
+		ref := baseRef
+		release := releaseForPackage(ref, pkg)
+		release.HostRequirements = []HostRequirement{{
+			HostID: "example-host",
+			RequiredCapabilityContracts: []HostCapabilityRequirement{{
+				CapabilityID:      "example.capability.resources",
+				CapabilityVersion: "1.0.0",
+				Contract: HostCapabilityContractRef{
+					ContractID:      "example.resources.v1",
+					ContractVersion: "1.0.0",
+					ArtifactRef:     "capabilities/example/resources/v1/contract.json",
+					ArtifactSHA256:  strings.Repeat("1", 64),
+					ManifestSHA256:  strings.Repeat("2", 64),
+					SignatureRef:    "capabilities/example/resources/v1/contract.json.sig",
+					SignatureSHA256: strings.Repeat("6", 64),
+					SignatureKeyID:  "official",
+					// GeneratedClientSHA256 is intentionally omitted.
+					CompatibilitySHA256: strings.Repeat("3", 64),
+					NoticesSHA256:       strings.Repeat("5", 64),
+				},
+			}},
+		}}
+		setReleaseRefMetadataHash(t, &ref, release)
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			developerMode:           true,
+			localGenerated:          true,
+			releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+			releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
+		})
+
+		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+			t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+		}
+	})
+
+	t.Run("rejects missing host capability contract signature hash", func(t *testing.T) {
+		ref := baseRef
+		release := releaseForPackage(ref, pkg)
+		release.HostRequirements = []HostRequirement{{
+			HostID: "example-host",
+			RequiredCapabilityContracts: []HostCapabilityRequirement{{
+				CapabilityID:      "example.capability.resources",
+				CapabilityVersion: "1.0.0",
+				Contract: HostCapabilityContractRef{
+					ContractID:            "example.resources.v1",
+					ContractVersion:       "1.0.0",
+					ArtifactRef:           "capabilities/example/resources/v1/contract.json",
+					ArtifactSHA256:        strings.Repeat("1", 64),
+					ManifestSHA256:        strings.Repeat("2", 64),
+					SignatureRef:          "capabilities/example/resources/v1/contract.json.sig",
+					SignatureKeyID:        "official",
+					CompatibilitySHA256:   strings.Repeat("3", 64),
+					GeneratedClientSHA256: strings.Repeat("4", 64),
+					NoticesSHA256:         strings.Repeat("5", 64),
+				},
+			}},
+		}}
+		setReleaseRefMetadataHash(t, &ref, release)
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			developerMode:           true,
+			localGenerated:          true,
+			releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+			releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
+		})
+
+		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+			t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+		}
+	})
+}
+
+func TestInstallReleaseRefRejectsMissingPackageSignature(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsMissingReleaseMetadataSignature(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.ReleaseMetadataSignature = nil
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsMissingReleaseMetadataSourcePolicyEpoch(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.ReleaseMetadataSignature.SourcePolicyEpoch = ""
+	setReleaseRefMetadataHash(t, &ref, release)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsMissingPackageSignatureMetadata(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.PackageSignature = nil
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsPackageSignatureRevocationEpochMismatch(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.PackageSignature.RevocationEpoch = "2"
+	setReleaseRefMetadataHash(t, &ref, release)
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsUntrustedReleaseMetadataSignatureKey(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.ReleaseMetadataSignature.KeyID = "other"
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsUntrustedReleasePackageSignatureKey(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.PackageSignature.KeyID = "other"
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsSourcePolicyInstallReviewRequired(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.InstallPolicy = PackageInstallReviewRequired
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsCanonicalMetadataOverride(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.Metadata = map[string]string{"metadata_signature_key_id": "spoofed"}
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsTrailingReleaseMetadataJSON(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	artifact := resolvedArtifactForPackage(t, ref, pkg, packageBytes)
+	artifact.ReleaseMetadataBytes = append(append([]byte(nil), artifact.ReleaseMetadataBytes...), []byte("\n{}")...)
+	resolver := &recordingReleaseArtifactResolver{artifact: artifact}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsMissingReleaseCompatibility(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	release := releaseForPackage(ref, pkg)
+	release.Compatibility = nil
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForRelease(t, ref, release, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestInstallReleaseRefRejectsExpiredRevocationEvidence(t *testing.T) {
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.RevocationEvidence.ExpiresAt = "2026-07-06T00:00:00Z"
+	resolver := &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: resolver,
+	})
+
+	if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		ReleaseRef:       ref,
+		PluginInstanceID: "plugini_expired_revocation",
+		Now:              time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC),
+	}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestUpdateReleaseRefRejectsDowngradeWhenSourcePolicyBlocks(t *testing.T) {
+	ctx := context.Background()
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+	})
+	current, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "0.9.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourcePolicy := sourcePolicyForRelease(ref)
+	sourcePolicy.DowngradePolicy = PackageDowngradeBlock
+	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy}
+
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: current.PluginInstanceID, ReleaseRef: ref}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("UpdateReleaseRef() error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+}
+
+func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testing.T) {
+	ctx := context.Background()
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+	}
+	metadataVerifier := &recordingReleaseMetadataVerifier{}
+	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official-v1"}}
+	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		trustVerifier:           verifier,
+		releaseMetadataVerifier: metadataVerifier,
+		runtimeSupervisor:       runtime,
+	})
+	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Pkg := readTestPackage(t, v1Bytes)
+	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v1Ref)}
+	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v1Ref, v1Pkg, v1Bytes)}
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v1Ref, PluginInstanceID: "plugini_release_update"})
+	if err != nil {
+		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
+	}
+	installedPackageHash := installed.PackageHash
+	now := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	bootstrap, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "lifecycle.activity")
+
+	verifier.metadata = map[string]string{"trust.key_id": "official-v2"}
+	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Pkg := readTestPackage(t, v2Bytes)
+	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
+	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
+	artifactResolver := &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
+	h.adapters.ReleaseSourcePolicy = sourceResolver
+	h.adapters.ReleaseArtifactResolver = artifactResolver
+
+	updated, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: installed.PluginInstanceID, ReleaseRef: v2Ref})
+	if err != nil {
+		t.Fatalf("UpdateReleaseRef() error = %v", err)
+	}
+	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
+		t.Fatalf("updated record mismatch: %#v", updated)
+	}
+	if verifier.last.Action != PackageTrustActionUpdate || verifier.last.CurrentRecord == nil || verifier.last.CurrentRecord.PackageHash != installedPackageHash {
+		t.Fatalf("package verifier update request mismatch: %#v", verifier.last)
+	}
+	if len(sourceResolver.requests) == 0 || sourceResolver.requests[0].Action != PackageTrustActionUpdate || sourceResolver.requests[0].CurrentRecord == nil || sourceResolver.requests[0].CurrentRecord.PackageHash != installedPackageHash {
+		t.Fatalf("source policy update request mismatch: %#v", sourceResolver.requests)
+	}
+	if artifactResolver.last.Action != PackageTrustActionUpdate || artifactResolver.last.CurrentRecord == nil || artifactResolver.last.CurrentRecord.PackageHash != installedPackageHash {
+		t.Fatalf("artifact resolver update request mismatch: %#v", artifactResolver.last)
+	}
+	if metadataVerifier.last.Action != PackageTrustActionUpdate || metadataVerifier.last.CurrentRecord == nil || metadataVerifier.last.CurrentRecord.PackageHash != installedPackageHash {
+		t.Fatalf("metadata verifier update request mismatch: %#v", metadataVerifier.last)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != installed.PluginInstanceID || runtime.lastRevokeEpoch != updated.RevokeEpoch {
+		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d updated=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, updated)
+	}
+	if len(surfaces.snapshots) == 0 || surfaces.snapshots[len(surfaces.snapshots)-1].ActiveFingerprint != updated.ActiveFingerprint {
+		t.Fatalf("surface catalog not refreshed to updated fingerprint: %#v", surfaces.snapshots)
+	}
+	if _, err := h.surfaceTokens.ValidateGatewayToken(gateway.GatewayToken, bridge.Audience{
+		PluginInstanceID:     updated.PluginInstanceID,
+		ActiveFingerprint:    bootstrap.ActiveFingerprint,
+		SurfaceInstanceID:    "surface_rpc",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		BridgeChannelID:      "bridge_rpc",
+	}, bridge.RevisionBinding{
+		PolicyRevision:     updated.PolicyRevision,
+		ManagementRevision: updated.ManagementRevision,
+		RevokeEpoch:        updated.RevokeEpoch,
+	}, now.Add(time.Minute)); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateGatewayToken(old token) error = %v, want ErrTokenRevoked", err)
+	}
+}
+
+func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
+	ctx := context.Background()
+	surfaces := &failingSurfaceSink{err: errors.New("surface catalog unavailable")}
+	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official-v1"}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+		trustVerifier:  verifier,
+	})
+	h.adapters.SurfaceCatalog = surfaces
+	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Pkg := readTestPackage(t, v1Bytes)
+	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
+	h.adapters.ReleaseMetadataVerifier = &recordingReleaseMetadataVerifier{}
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v1Ref)}
+	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v1Ref, v1Pkg, v1Bytes)}
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v1Ref, PluginInstanceID: "plugini_release_update_fail"})
+	if err != nil {
+		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
+	}
+	surfaces.err = nil
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+
+	verifier.metadata = map[string]string{"trust.key_id": "official-v2"}
+	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Pkg := readTestPackage(t, v2Bytes)
+	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
+	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
+	surfaces.err = errors.New("surface catalog unavailable")
+
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref}); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
+		t.Fatalf("UpdateReleaseRef() error = %v, want surface catalog failure", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Version != enabled.Version || current.PackageHash != enabled.PackageHash || current.ActiveFingerprint != enabled.ActiveFingerprint || len(current.VersionHistory) != len(enabled.VersionHistory) {
+		t.Fatalf("registry record was not restored after failed update: current=%#v enabled=%#v", current, enabled)
+	}
+	if current.Metadata["trust.key_id"] != "official-v1" {
+		t.Fatalf("restored metadata mismatch: %#v", current.Metadata)
+	}
+}
+
+func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T) {
+	ctx := context.Background()
+	runtime := &recordingRuntimeSupervisor{
+		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		revokeErr: errors.New("runtime revoke unavailable"),
+	}
+	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official-v1"}}
+	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		trustVerifier:      verifier,
+		runtimeSupervisor:  runtime,
+		connectivityBroker: connectivity.NewMemoryBroker(),
+		storageBroker:      storage.NewMemoryBroker(),
+	})
+	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Pkg := readTestPackage(t, v1Bytes)
+	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
+	h.adapters.ReleaseMetadataVerifier = &recordingReleaseMetadataVerifier{}
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v1Ref)}
+	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v1Ref, v1Pkg, v1Bytes)}
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: v1Ref, PluginInstanceID: "plugini_release_update_revoke_fail"})
+	if err != nil {
+		t.Fatalf("InstallReleaseRef(v1) error = %v", err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+
+	verifier.metadata = map[string]string{"trust.key_id": "official-v2"}
+	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Pkg := readTestPackage(t, v2Bytes)
+	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
+	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
+	h.adapters.ReleaseArtifactResolver = &recordingReleaseArtifactResolver{artifact: resolvedArtifactForPackage(t, v2Ref, v2Pkg, v2Bytes)}
+
+	if _, err := h.UpdateReleaseRef(ctx, UpdateReleaseRefRequest{PluginInstanceID: enabled.PluginInstanceID, ReleaseRef: v2Ref}); err == nil || !strings.Contains(err.Error(), "runtime revoke unavailable") {
+		t.Fatalf("UpdateReleaseRef() error = %v, want runtime revoke failure", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Version != enabled.Version || current.PackageHash != enabled.PackageHash || current.ActiveFingerprint != enabled.ActiveFingerprint || current.Metadata["trust.key_id"] != "official-v1" {
+		t.Fatalf("registry record was not restored after runtime revoke failure: current=%#v enabled=%#v", current, enabled)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokeEpoch <= enabled.RevokeEpoch {
+		t.Fatalf("runtime revoke call mismatch: calls=%d epoch=%d enabled=%#v", runtime.revokeCalls, runtime.lastRevokeEpoch, enabled)
+	}
+	if len(surfaces.snapshots) == 0 || surfaces.snapshots[len(surfaces.snapshots)-1].ActiveFingerprint != enabled.ActiveFingerprint {
+		t.Fatalf("surface catalog was not restored after runtime revoke failure: %#v", surfaces.snapshots)
 	}
 }
 
@@ -424,7 +1655,7 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 		localGenerated: true,
 		trustVerifier:  verifier,
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +1663,7 @@ func TestUpdateUsesVerifierCurrentRecordAndMetadata(t *testing.T) {
 	verifier.metadata = map[string]string{"trust.key_id": "new"}
 	nextBytes := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")
 
-	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(nextBytes),
 		PackageSize:      int64(len(nextBytes)),
@@ -463,14 +1694,13 @@ func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
 	v2 := buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2")
 	now := time.Date(2026, 7, 2, 20, 0, 0, 0, time.UTC)
 
-	installed, err := h.InstallPackage(ctx, InstallRequest{
+	installed, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader: bytes.NewReader(v1),
 		PackageSize:   int64(len(v1)),
-		TrustState:    registry.TrustVerified,
 		Now:           now,
 	})
 	if err != nil {
-		t.Fatalf("InstallPackage() error = %v", err)
+		t.Fatalf("ImportLocalPackage() error = %v", err)
 	}
 	stageRecords, err := stages.List(ctx, installstage.ListRequest{PluginInstanceID: installed.PluginInstanceID})
 	if err != nil {
@@ -479,19 +1709,19 @@ func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
 	if len(stageRecords) != 1 ||
 		stageRecords[0].Action != installstage.ActionInstall ||
 		stageRecords[0].Status != installstage.StatusCommitted ||
-		stageRecords[0].ResolvedTrust != string(registry.TrustVerified) ||
+		stageRecords[0].ResolvedTrust != string(registry.TrustUnsignedLocal) ||
 		stageRecords[0].PackageHash != installed.PackageHash {
 		t.Fatalf("install stage mismatch: %#v", stageRecords)
 	}
 
-	updated, err := h.UpdatePlugin(ctx, UpdateRequest{
+	updated, err := h.UpdateLocalPackage(ctx, UpdateLocalPackageRequest{
 		PluginInstanceID: installed.PluginInstanceID,
 		PackageReader:    bytes.NewReader(v2),
 		PackageSize:      int64(len(v2)),
 		Now:              now.Add(time.Minute),
 	})
 	if err != nil {
-		t.Fatalf("UpdatePlugin() error = %v", err)
+		t.Fatalf("UpdateLocalPackage() error = %v", err)
 	}
 	stageRecords, err = stages.List(ctx, installstage.ListRequest{PluginInstanceID: installed.PluginInstanceID})
 	if err != nil {
@@ -500,9 +1730,358 @@ func TestInstallAndUpdateRecordLifecycleStages(t *testing.T) {
 	if len(stageRecords) != 2 ||
 		stageRecords[1].Action != installstage.ActionUpdate ||
 		stageRecords[1].Status != installstage.StatusCommitted ||
-		stageRecords[1].ResolvedTrust != string(registry.TrustVerified) ||
+		stageRecords[1].ResolvedTrust != string(registry.TrustUnsignedLocal) ||
 		stageRecords[1].PackageHash != updated.PackageHash {
 		t.Fatalf("update stage mismatch: %#v", stageRecords)
+	}
+}
+
+func TestActiveFingerprintIncludesPackageCapabilitiesAndTrustEpochs(t *testing.T) {
+	pkg := readTestPackage(t, buildVersionedRPCPackage(t, "1.0.0", "RPC"))
+	trust := registry.TrustAssessment{
+		TrustState:           registry.TrustVerified,
+		TrustAssessmentEpoch: "trust_epoch_1",
+		PolicyEpoch:          "1",
+		RevocationEpoch:      "1",
+	}
+	first := activeFingerprintForPackage(pkg, "plugini_fingerprint", trust)
+	if first == "" || first != activeFingerprintForPackage(pkg, "plugini_fingerprint", trust) {
+		t.Fatalf("active fingerprint should be stable, got %q", first)
+	}
+	metadataChanged := trust
+	metadataChanged.Metadata = map[string]string{"ignored": "metadata"}
+	if got := activeFingerprintForPackage(pkg, "plugini_fingerprint", metadataChanged); got != first {
+		t.Fatalf("metadata-only trust change affected active fingerprint: got %q want %q", got, first)
+	}
+	for name, mutate := range map[string]func(pluginpkg.Package, registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment){
+		"package_hash": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
+			pkg.PackageHash = strings.Repeat("a", 64)
+			return pkg, trust
+		},
+		"capability_contract": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
+			pkg.Manifest.CapabilityBindings = append(pkg.Manifest.CapabilityBindings, manifest.CapabilityBinding{BindingID: "extra", CapabilityID: "example.capability.extra", MinCapabilityVersion: "1.0.0"})
+			return pkg, trust
+		},
+		"trust_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
+			trust.TrustAssessmentEpoch = "trust_epoch_2"
+			return pkg, trust
+		},
+		"policy_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
+			trust.PolicyEpoch = "2"
+			return pkg, trust
+		},
+		"revocation_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
+			trust.RevocationEpoch = "2"
+			return pkg, trust
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changedPkg, changedTrust := mutate(pkg, trust)
+			if got := activeFingerprintForPackage(changedPkg, "plugini_fingerprint", changedTrust); got == first {
+				t.Fatalf("active fingerprint did not change for %s", name)
+			}
+		})
+	}
+}
+
+func TestOpenSurfaceRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
+	ctx := context.Background()
+	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
+	now := stableRecentTestNow()
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	nextPolicy := sourcePolicyForRelease(ref)
+	setSourcePolicyEpochs(&nextPolicy, "2")
+	sourceResolver.snapshot = nextPolicy
+
+	if _, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:  installed.PluginInstanceID,
+		SurfaceID:         "lifecycle.activity",
+		SurfaceInstanceID: "surface_source_policy_advance",
+		OwnerSessionHash:  "session_hash",
+		OwnerUserHash:     "user_hash",
+		Now:               now.Add(time.Second),
+	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("OpenSurface() error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.EnableState != registry.EnableDisabledByPolicy {
+		t.Fatalf("EnableState = %s, want disabled_by_policy", current.EnableState)
+	}
+}
+
+func TestGrantPermissionRejectsCurrentSourcePolicyEpochAdvanceWithoutGrant(t *testing.T) {
+	ctx := context.Background()
+	permissionStore := permissions.NewMemoryStore()
+	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{permissions: permissionStore})
+	nextPolicy := sourcePolicyForRelease(ref)
+	setSourcePolicyEpochs(&nextPolicy, "2")
+	sourceResolver.snapshot = nextPolicy
+
+	if _, err := h.GrantPermission(ctx, GrantPermissionRequest{
+		PluginInstanceID: installed.PluginInstanceID,
+		PermissionID:     "read",
+		GrantedBy:        "tester",
+		Now:              stableRecentTestNow(),
+	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("GrantPermission() error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	grants, err := permissionStore.List(ctx, permissions.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 0 {
+		t.Fatalf("permission grants after failed source policy replay = %#v, want none", grants)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.PolicyRevision != installed.PolicyRevision {
+		t.Fatalf("PolicyRevision = %d, want %d", current.PolicyRevision, installed.PolicyRevision)
+	}
+	if current.EnableState != registry.EnableDisabledByPolicy {
+		t.Fatalf("EnableState = %s, want disabled_by_policy", current.EnableState)
+	}
+}
+
+func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
+	ctx := context.Background()
+	h, sourceResolver, installed, ref := installReleaseRefLifecyclePlugin(t, testHostOptions{})
+	now := stableRecentTestNow()
+	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now}); err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	bootstrap, err := h.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceID:            "lifecycle.activity",
+		SurfaceInstanceID:    "surface_source_policy_bridge",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		SessionChannelIDHash: "channel_hash",
+		Now:                  now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("OpenSurface() error = %v", err)
+	}
+	if _, err := h.ExchangeAssetTicket(ctx, ExchangeAssetTicketRequest{
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		AssetTicket:       bootstrap.AssetTicket,
+		Now:               now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("ExchangeAssetTicket() error = %v", err)
+	}
+	nextPolicy := sourcePolicyForRelease(ref)
+	setSourcePolicyEpochs(&nextPolicy, "2")
+	sourceResolver.snapshot = nextPolicy
+	handshake := bridge.Handshake{
+		PluginID:          bootstrap.PluginID,
+		SurfaceID:         bootstrap.SurfaceID,
+		SurfaceInstanceID: bootstrap.SurfaceInstanceID,
+		ActiveFingerprint: bootstrap.ActiveFingerprint,
+		BridgeNonce:       bootstrap.BridgeNonce,
+		UIProtocolVersion: "plugin-ui-v1",
+	}
+
+	if _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
+		Handshake:                 handshake,
+		BridgeChannelID:           "bridge_source_policy",
+		HandshakeTranscriptSHA256: bridge.HandshakeTranscriptSHA256(handshake, "bridge_source_policy"),
+		Now:                       now.Add(3 * time.Second),
+	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("MintBridgeToken() error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.EnableState != registry.EnableDisabledByPolicy {
+		t.Fatalf("EnableState = %s, want disabled_by_policy", current.EnableState)
+	}
+}
+
+func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
+	ctx := context.Background()
+	storageBroker := storage.NewMemoryBroker()
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		revokeResult: runtimeclient.RevokeResult{
+			ClosedStorageHandleCount: 1,
+		},
+	}
+	packageBytes := buildSignedReleasePackageBytes(t, buildStorageFixturePackage(t), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:           true,
+		localGenerated:          true,
+		releaseMetadataVerifier: &recordingReleaseMetadataVerifier{},
+		releaseSourcePolicy:     sourceResolver,
+		releaseArtifactResolver: &recordingReleaseArtifactResolver{
+			artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+		},
+		storageBroker:     storageBroker,
+		runtimeSupervisor: runtime,
+	})
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		ReleaseRef:       ref,
+		PluginInstanceID: "plugini_release_ref_policy_storage",
+		Now:              stableRecentTestNow(),
+	})
+	if err != nil {
+		t.Fatalf("InstallReleaseRef() error = %v", err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow()})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	now := stableRecentTestNow().Add(time.Minute)
+	handle, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+		PluginInstanceID:    enabled.PluginInstanceID,
+		StoreID:             "db",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		Now:                 now,
+		TTL:                 time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant() error = %v", err)
+	}
+	nextPolicy := sourcePolicyForRelease(ref)
+	setSourcePolicyEpochs(&nextPolicy, "2")
+	sourceResolver.snapshot = nextPolicy
+
+	if _, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+		PluginInstanceID:    enabled.PluginInstanceID,
+		StoreID:             "db",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_2",
+		RuntimeShardID:      "runtime_shard_a",
+		Now:                 now.Add(time.Second),
+	}); !errors.Is(err, ErrReleaseRefPolicyDenied) {
+		t.Fatalf("MintStorageHandleGrant() after source policy advance error = %v, want ErrReleaseRefPolicyDenied", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.EnableState != registry.EnableDisabledByPolicy {
+		t.Fatalf("EnableState = %s, want disabled_by_policy", current.EnableState)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != enabled.PluginInstanceID || runtime.lastRevokeEpoch != current.RevokeEpoch {
+		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d current=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, current)
+	}
+	if _, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
+		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
+		Audience: bridge.Audience{
+			PluginInstanceID:    enabled.PluginInstanceID,
+			ActiveFingerprint:   enabled.ActiveFingerprint,
+			RuntimeInstanceID:   "runtime_1",
+			RuntimeGenerationID: "runtime_gen_1",
+			RuntimeShardID:      "runtime_shard_a",
+			HandleID:            "storage:db",
+			Method:              "storage.sqlite",
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     enabled.PolicyRevision,
+			ManagementRevision: enabled.ManagementRevision,
+			RevokeEpoch:        enabled.RevokeEpoch,
+		},
+		Now: now.Add(2 * time.Second),
+	}); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateHandleGrant() after source policy failure error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
+	}
+}
+
+func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
+	ctx := context.Background()
+	storageBroker := storage.NewMemoryBroker()
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		revokeResult: runtimeclient.RevokeResult{
+			ClosedStorageHandleCount: 1,
+		},
+	}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		storageBroker:     storageBroker,
+		runtimeSupervisor: runtime,
+	})
+	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
+	if err != nil {
+		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: stableRecentTestNow()})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	now := stableRecentTestNow().Add(time.Minute)
+	handle, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+		PluginInstanceID:    enabled.PluginInstanceID,
+		StoreID:             "db",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_1",
+		RuntimeShardID:      "runtime_shard_a",
+		Now:                 now,
+		TTL:                 time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("MintStorageHandleGrant() error = %v", err)
+	}
+	h.adapters.Policy = policyAdapter{developerMode: false, localGenerated: false}
+
+	if _, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+		PluginInstanceID:    enabled.PluginInstanceID,
+		StoreID:             "db",
+		RuntimeInstanceID:   "runtime_1",
+		RuntimeGenerationID: "runtime_gen_2",
+		RuntimeShardID:      "runtime_shard_a",
+		Now:                 now.Add(time.Second),
+	}); err == nil || !strings.Contains(err.Error(), "unsigned local plugins require developer mode") {
+		t.Fatalf("MintStorageHandleGrant() after unsigned local policy failure error = %v, want policy failure", err)
+	}
+	current, err := h.adapters.Registry.GetPlugin(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.EnableState != registry.EnableDisabledByPolicy {
+		t.Fatalf("EnableState = %s, want disabled_by_policy", current.EnableState)
+	}
+	if runtime.revokeCalls != 1 || runtime.lastRevokedPlugin != enabled.PluginInstanceID || runtime.lastRevokeEpoch != current.RevokeEpoch {
+		t.Fatalf("runtime revoke mismatch: calls=%d plugin=%q epoch=%d current=%#v", runtime.revokeCalls, runtime.lastRevokedPlugin, runtime.lastRevokeEpoch, current)
+	}
+	if _, err := h.surfaceTokens.ValidateHandleGrant(bridge.ValidateHandleGrantRequest{
+		HandleGrantToken: handle.HandleGrant.HandleGrantToken,
+		Audience: bridge.Audience{
+			PluginInstanceID:    enabled.PluginInstanceID,
+			ActiveFingerprint:   enabled.ActiveFingerprint,
+			RuntimeInstanceID:   "runtime_1",
+			RuntimeGenerationID: "runtime_gen_1",
+			RuntimeShardID:      "runtime_shard_a",
+			HandleID:            "storage:db",
+			Method:              "storage.sqlite",
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     enabled.PolicyRevision,
+			ManagementRevision: enabled.ManagementRevision,
+			RevokeEpoch:        enabled.RevokeEpoch,
+		},
+		Now: now.Add(2 * time.Second),
+	}); !errors.Is(err, bridge.ErrTokenRevoked) {
+		t.Fatalf("ValidateHandleGrant() after unsigned local policy failure error = %v, want %v", err, bridge.ErrTokenRevoked)
+	}
+	if !audits.hasEvent("plugin.runtime_capabilities.revoked") {
+		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
 	}
 }
 
@@ -516,12 +2095,11 @@ func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
 		trustVerifier:  &recordingPackageTrustVerifier{err: errors.New("signature revoked")},
 	})
 	packageBytes := buildFixturePackage(t)
-	if _, err := h.InstallPackage(ctx, InstallRequest{
+	if _, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader: bytes.NewReader(packageBytes),
 		PackageSize:   int64(len(packageBytes)),
-		TrustState:    registry.TrustVerified,
 	}); err == nil {
-		t.Fatal("InstallPackage() expected trust failure")
+		t.Fatal("ImportLocalPackage() expected trust failure")
 	}
 	stageRecords, err := stages.List(ctx, installstage.ListRequest{Status: installstage.StatusFailed})
 	if err != nil {
@@ -538,7 +2116,7 @@ func TestInstallTrustFailureMarksLifecycleStageFailed(t *testing.T) {
 func TestSurfaceBridgeLifecycle(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), host, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +2178,7 @@ func TestOpenSurfaceRegistersBrowserOrigin(t *testing.T) {
 		browserSite:    browserSite,
 	})
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +2225,7 @@ func TestOpenSurfaceRegistersBrowserOrigin(t *testing.T) {
 func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -705,7 +2283,7 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 
 func TestOpenSurfaceRequiresEnabledPlugin(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
-	installed, err := InstallPackageBytes(context.Background(), host, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), host, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1996,7 +3574,7 @@ func TestDisableContinuesCleanupWhenRuntimeRevokeFails(t *testing.T) {
 		storageBroker:      storage.NewMemoryBroker(),
 		diagnostics:        diagnostics,
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2052,7 +3630,7 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2095,7 +3673,7 @@ func TestInvokeIntentRequiresPermissions(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2122,15 +3700,14 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	first, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false), registry.TrustVerified)
+	first, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondBytes := buildIntentFixturePackage(t, false)
-	second, err := h.InstallPackage(context.Background(), InstallRequest{
+	second, err := h.ImportLocalPackage(context.Background(), ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(secondBytes),
 		PackageSize:      int64(len(secondBytes)),
-		TrustState:       registry.TrustVerified,
 		PluginInstanceID: "plugini_second_intent",
 	})
 	if err != nil {
@@ -2158,7 +3735,7 @@ func TestInvokeIntentFailsClosedForDangerousMethod(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildIntentFixturePackage(t, true), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildIntentFixturePackage(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2294,7 +3871,7 @@ func TestConfirmationIntentBindsFullParamsBeyondManifestHashFieldHints(t *testin
 func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	storageBroker := storage.NewMemoryBroker()
 	host, _, _ := newTestHostWithStorage(t, true, true, storageBroker)
-	installed, err := InstallPackageBytes(context.Background(), host, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), host, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2340,7 +3917,7 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 	storageBroker := storage.NewMemoryBroker()
 	host, _, audits := newTestHostWithStorage(t, true, true, storageBroker)
-	installed, err := InstallPackageBytes(context.Background(), host, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), host, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2416,7 +3993,7 @@ func TestEnableInstallsConnectivityPolicyAndMintsGrant(t *testing.T) {
 		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: connectivityBroker,
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2595,7 +4172,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2683,7 +4260,7 @@ func TestEnableRejectsBlockedNetworkTargetBeforeStorageSideEffects(t *testing.T)
 		storageBroker:      storageBroker,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildBlockedNetworkFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildBlockedNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2711,7 +4288,7 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 		cleanup:        retainCleanup,
 		retainedData:   retainedRegistry,
 	})
-	retainedPlugin, err := InstallPackageBytes(ctx, retainHost, buildStorageFixturePackage(t), registry.TrustVerified)
+	retainedPlugin, err := ImportLocalPackageBytes(ctx, retainHost, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2799,7 +4376,7 @@ func TestUninstallRetainsOrDeletesStorageNamespaces(t *testing.T) {
 		storageBroker:  deleteBroker,
 		cleanup:        deleteCleanup,
 	})
-	deletedPlugin, err := InstallPackageBytes(ctx, deleteHost, buildStorageFixturePackage(t), registry.TrustVerified)
+	deletedPlugin, err := ImportLocalPackageBytes(ctx, deleteHost, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2858,7 +4435,7 @@ func TestDeleteRetainedDataRemovesRetainedStoragePayload(t *testing.T) {
 		storageBroker:  broker,
 		retainedData:   retainedRegistry,
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2921,7 +4498,7 @@ func TestBindRetainedDataRestoresStoragePayload(t *testing.T) {
 		retainedData:   retainedRegistry,
 	})
 	packageBytes := buildStorageFixturePackage(t)
-	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2943,10 +4520,9 @@ func TestBindRetainedDataRestoresStoragePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := h.InstallPackage(ctx, InstallRequest{
+	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
-		TrustState:       registry.TrustVerified,
 		PluginInstanceID: "plugini_storage_rebind_target",
 	})
 	if err != nil {
@@ -2995,7 +4571,7 @@ func TestBindRetainedDataRestoresStoragePayloadInPlace(t *testing.T) {
 		retainedData:   retainedRegistry,
 	})
 	packageBytes := buildStorageFixturePackage(t)
-	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3017,7 +4593,7 @@ func TestBindRetainedDataRestoresStoragePayloadInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	target, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3059,7 +4635,7 @@ func TestBindRetainedDataRestoresSettingsWithoutSecretState(t *testing.T) {
 		secrets:        &recordingSecretStore{},
 	})
 	packageBytes := buildSettingsFixturePackage(t)
-	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3086,10 +4662,9 @@ func TestBindRetainedDataRestoresSettingsWithoutSecretState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := h.InstallPackage(ctx, InstallRequest{
+	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
-		TrustState:       registry.TrustVerified,
 		PluginInstanceID: "plugini_settings_rebind_target",
 	})
 	if err != nil {
@@ -3126,9 +4701,10 @@ func TestBindRetainedDataRejectsUnsafeTrustClass(t *testing.T) {
 		localGenerated: true,
 		storageBroker:  storage.NewMemoryBroker(),
 		retainedData:   retainedRegistry,
+		trustVerifier:  &recordingPackageTrustVerifier{trustState: registry.TrustVerified},
 	})
 	packageBytes := buildStorageFixturePackage(t)
-	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3142,10 +4718,10 @@ func TestBindRetainedDataRejectsUnsafeTrustClass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := h.InstallPackage(ctx, InstallRequest{
+	h.adapters.PackageTrustVerifier = nil
+	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
-		TrustState:       registry.TrustUnsignedLocal,
 		PluginInstanceID: "plugini_storage_unsigned_target",
 	})
 	if err != nil {
@@ -3178,7 +4754,7 @@ func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
 		retainedData:   retainedRegistry,
 	})
 	packageBytes := buildStorageFixturePackage(t)
-	source, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3192,10 +4768,9 @@ func TestBindRetainedDataRejectsTargetActiveStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := h.InstallPackage(ctx, InstallRequest{
+	target, err := h.ImportLocalPackage(ctx, ImportLocalPackageRequest{
 		PackageReader:    bytes.NewReader(packageBytes),
 		PackageSize:      int64(len(packageBytes)),
-		TrustState:       registry.TrustVerified,
 		PluginInstanceID: "plugini_storage_active_target",
 	})
 	if err != nil {
@@ -3530,7 +5105,7 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 		connectivityBroker: connectivityBroker,
 		storageBroker:      storage.NewMemoryBroker(),
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildNetworkFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3607,7 +5182,7 @@ func TestUninstallRetainsOrDeletesBrowserSiteData(t *testing.T) {
 		localGenerated: true,
 		browserSite:    retainBrowserSite,
 	})
-	retainedPlugin, err := InstallPackageBytes(ctx, retainHost, buildFixturePackage(t), registry.TrustVerified)
+	retainedPlugin, err := ImportLocalPackageBytes(ctx, retainHost, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3644,7 +5219,7 @@ func TestUninstallRetainsOrDeletesBrowserSiteData(t *testing.T) {
 		localGenerated: true,
 		browserSite:    deleteBrowserSite,
 	})
-	deletedPlugin, err := InstallPackageBytes(ctx, deleteHost, buildFixturePackage(t), registry.TrustVerified)
+	deletedPlugin, err := ImportLocalPackageBytes(ctx, deleteHost, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3689,7 +5264,7 @@ func TestUninstallDeleteDataFailsWhenBrowserSiteCleanupFails(t *testing.T) {
 		browserSite:    browserSite,
 		diagnostics:    diagnostics,
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3731,7 +5306,7 @@ func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 		t.Fatalf("NewFileBroker() error = %v", err)
 	}
 	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3763,7 +5338,7 @@ func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 
 func TestDisableTransitionsOperations(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3804,7 +5379,7 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 		storageBroker:  broker,
 		cleanup:        cleanupOrchestrator,
 	})
-	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3847,7 +5422,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
 	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3889,7 +5464,7 @@ func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
 	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	installed, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3923,7 +5498,7 @@ func TestExportImportPluginData(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
 	h, _, audits := newTestHostWithStorage(t, true, true, broker)
-	source, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3968,7 +5543,7 @@ func TestExportImportPluginSettingsData(t *testing.T) {
 		storageBroker:  storage.NewMemoryBroker(),
 		secrets:        &recordingSecretStore{},
 	})
-	source, err := InstallPackageBytes(ctx, h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4042,7 +5617,7 @@ func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
 	h, _, _ := newTestHostWithStorage(t, true, true, broker)
-	source, err := InstallPackageBytes(ctx, h, buildStorageFixturePackage(t), registry.TrustVerified)
+	source, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4054,7 +5629,7 @@ func TestImportPluginDataRequiresStorageDeclaration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	target, err := InstallPackageBytes(ctx, h, buildFixturePackage(t), registry.TrustVerified)
+	target, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4074,7 +5649,7 @@ func TestSecretLifecycleUsesAdapter(t *testing.T) {
 		localGenerated: true,
 		secrets:        secrets,
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4111,7 +5686,7 @@ func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
 		secrets:        secrets,
 	})
 	ctx := context.Background()
-	installed, err := InstallPackageBytes(ctx, h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4186,7 +5761,7 @@ func TestSettingsLifecycleDefaultsPatchSecretsAndDelete(t *testing.T) {
 
 func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	h, _, _ := newTestHost(t, true, true)
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4210,7 +5785,7 @@ func TestSecretLifecycleValidatesRequestAndAdapter(t *testing.T) {
 	}); !errors.Is(err, ErrSecretStoreRequired) {
 		t.Fatalf("BindSecretRef() error = %v, want ErrSecretStoreRequired", err)
 	}
-	withSecretsInstalled, err := InstallPackageBytes(context.Background(), withSecrets, buildFixturePackage(t), registry.TrustVerified)
+	withSecretsInstalled, err := ImportLocalPackageBytes(context.Background(), withSecrets, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4229,7 +5804,7 @@ func TestUninstallDeleteDataRequiresSecretPluginCleanup(t *testing.T) {
 		localGenerated: true,
 		secrets:        &secretStoreWithoutPluginCleanup{},
 	})
-	installed, err := InstallPackageBytes(context.Background(), h, buildSettingsFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4286,7 +5861,7 @@ func TestDefaultObservabilityStoreListsAuditAndDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := InstallPackageBytes(context.Background(), h, buildFixturePackage(t), registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4339,6 +5914,9 @@ type testHostOptions struct {
 	localGenerated          bool
 	policyDecision          PolicyDecision
 	trustVerifier           PackageTrustVerifier
+	releaseMetadataVerifier ReleaseMetadataVerifier
+	releaseSourcePolicy     ReleaseSourcePolicyResolver
+	releaseArtifactResolver ReleaseArtifactResolver
 	storageBroker           storage.Broker
 	connectivityBroker      connectivity.Broker
 	networkExecutor         connectivity.NetworkExecutor
@@ -4383,6 +5961,9 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			decision:       decision,
 		},
 		PackageTrustVerifier:    trustVerifier,
+		ReleaseMetadataVerifier: opts.releaseMetadataVerifier,
+		ReleaseSourcePolicy:     opts.releaseSourcePolicy,
+		ReleaseArtifactResolver: opts.releaseArtifactResolver,
 		SurfaceCatalog:          surfaces,
 		Audit:                   audits,
 		Diagnostics:             opts.diagnostics,
@@ -5662,7 +7243,7 @@ func installEnableAndMintGatewayWithoutPermissions(t *testing.T, h *Host, packag
 	t.Helper()
 	ctx := context.Background()
 	now := stableRecentTestNow()
-	installed, err := InstallPackageBytes(ctx, h, packageBytes, registry.TrustVerified)
+	installed, err := ImportLocalPackageBytes(ctx, h, packageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5784,12 +7365,348 @@ func (v *recordingPackageTrustVerifier) VerifyPackageTrust(_ context.Context, re
 	}
 	trustState := v.trustState
 	if trustState == "" {
-		trustState = req.RequestedTrustState
+		if req.LocalImport {
+			if req.Package.PackageSignature != nil {
+				trustState = registry.TrustVerified
+			} else {
+				trustState = registry.TrustUnsignedLocal
+			}
+		} else if req.SourcePolicySnapshot != nil {
+			trustState = registry.TrustVerified
+		} else {
+			trustState = registry.TrustUntrusted
+		}
 	}
 	return PackageTrustVerificationResult{
-		TrustState: trustState,
-		Metadata:   cloneStringMap(v.metadata),
+		TrustState:  trustState,
+		ReasonCodes: []string{"test_verifier"},
+		Metadata:    cloneStringMap(v.metadata),
 	}, nil
+}
+
+type recordingReleaseArtifactResolver struct {
+	artifact ResolvedPackageArtifact
+	err      error
+	last     ReleaseArtifactResolveRequest
+	calls    int
+}
+
+type recordingReleaseMetadataVerifier struct {
+	err   error
+	last  ReleaseMetadataVerificationRequest
+	calls int
+}
+
+func (v *recordingReleaseMetadataVerifier) VerifyReleaseMetadata(_ context.Context, req ReleaseMetadataVerificationRequest) (ReleaseMetadataVerificationResult, error) {
+	v.calls++
+	v.last = req
+	if v.err != nil {
+		return ReleaseMetadataVerificationResult{}, v.err
+	}
+	return ReleaseMetadataVerificationResult{Metadata: map[string]string{"key_id": req.Release.ReleaseMetadataSignature.KeyID}}, nil
+}
+
+func (v *recordingReleaseMetadataVerifier) VerifySourceRevocationEvidence(_ context.Context, req SourceRevocationEvidenceVerificationRequest) (SourceRevocationEvidenceVerificationResult, error) {
+	if v.err != nil {
+		return SourceRevocationEvidenceVerificationResult{}, v.err
+	}
+	return SourceRevocationEvidenceVerificationResult{Metadata: map[string]string{"key_id": req.RevocationEvidence.SignatureKeyID}}, nil
+}
+
+type recordingReleaseSourcePolicyResolver struct {
+	snapshot SourcePolicySnapshot
+	err      error
+	last     ReleaseSourcePolicyRequest
+	requests []ReleaseSourcePolicyRequest
+	calls    int
+}
+
+func (r *recordingReleaseSourcePolicyResolver) ResolveReleaseSourcePolicy(_ context.Context, req ReleaseSourcePolicyRequest) (SourcePolicySnapshot, error) {
+	r.calls++
+	r.last = req
+	r.requests = append(r.requests, req)
+	if r.err != nil {
+		return SourcePolicySnapshot{}, r.err
+	}
+	return r.snapshot, nil
+}
+
+func (r *recordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.Context, req ReleaseArtifactResolveRequest) (ResolvedPackageArtifact, error) {
+	r.calls++
+	r.last = req
+	if r.err != nil {
+		return ResolvedPackageArtifact{}, r.err
+	}
+	return r.artifact, nil
+}
+
+func resolvedArtifactForPackage(t *testing.T, ref PluginReleaseRef, pkg pluginpkg.Package, packageBytes []byte) ResolvedPackageArtifact {
+	t.Helper()
+	return ResolvedPackageArtifact{
+		ReleaseMetadataBytes:     releaseMetadataBytesForPackage(t, ref, pkg),
+		ReleaseMetadataSignature: []byte("release-metadata-signature"),
+		Reader:                   bytes.NewReader(packageBytes),
+		Size:                     int64(len(packageBytes)),
+	}
+}
+
+func readTestPackage(t *testing.T, data []byte) pluginpkg.Package {
+	t.Helper()
+	pkg, err := pluginpkg.Read(context.Background(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkg
+}
+
+func buildSignedReleasePackageBytes(t *testing.T, data []byte, keyID string) []byte {
+	t.Helper()
+	pkg := readTestPackage(t, data)
+	pkg.PackageSignature = &pluginpkg.PackageSignature{
+		SchemaVersion: pluginpkg.PackageSignatureSchemaVersion,
+		Algorithm:     pluginpkg.PackageSignatureAlgorithmEd25519,
+		KeyID:         keyID,
+		PublisherID:   pkg.Manifest.Publisher.PublisherID,
+		PluginID:      pkg.Manifest.PluginID(),
+		PackageHash:   pkg.PackageHash,
+		ManifestHash:  pkg.ManifestHash,
+		EntriesHash:   pkg.EntriesHash,
+		Signature:     "test-signature",
+		SignedAt:      "2026-07-07T00:00:00Z",
+	}
+	var buf bytes.Buffer
+	if err := pluginpkg.WritePackage(context.Background(), &buf, pkg); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	return buf.Bytes()
+}
+
+func releaseRefForPackage(t *testing.T, sourceID string, pkg pluginpkg.Package) PluginReleaseRef {
+	t.Helper()
+	releaseMetadataRef := "plugins/" + pkg.Manifest.Publisher.PublisherID + "/" + pkg.Manifest.PluginID() + "/" + pkg.Manifest.Version() + "/release.json"
+	metadataBytes := releaseMetadataBytesForPackage(t, PluginReleaseRef{
+		SourceID:           sourceID,
+		ReleaseMetadataRef: releaseMetadataRef,
+		PublisherID:        pkg.Manifest.Publisher.PublisherID,
+		PluginID:           pkg.Manifest.PluginID(),
+		Version:            pkg.Manifest.Version(),
+	}, pkg)
+	metadataHash := sha256.Sum256(metadataBytes)
+	return PluginReleaseRef{
+		SourceID:              sourceID,
+		ReleaseMetadataRef:    releaseMetadataRef,
+		ReleaseMetadataSHA256: hex.EncodeToString(metadataHash[:]),
+		PublisherID:           pkg.Manifest.Publisher.PublisherID,
+		PluginID:              pkg.Manifest.PluginID(),
+		Version:               pkg.Manifest.Version(),
+		ExpectedHashes: PackageHashSet{
+			PackageSHA256:  pkg.PackageHash,
+			ManifestSHA256: pkg.ManifestHash,
+			EntriesSHA256:  pkg.EntriesHash,
+		},
+	}
+}
+
+func releaseMetadataBytesForPackage(t *testing.T, ref PluginReleaseRef, pkg pluginpkg.Package) []byte {
+	t.Helper()
+	release := releaseForPackage(ref, pkg)
+	return releaseMetadataBytesForRelease(t, ref, release)
+}
+
+func releaseMetadataBytesForRelease(t *testing.T, ref PluginReleaseRef, release PluginPackageRelease) []byte {
+	t.Helper()
+	raw, err := json.Marshal(signedReleaseMetadata{
+		SchemaVersion:            "redevplugin.release_metadata.v1",
+		SourceID:                 release.SourceID,
+		ReleaseMetadataRef:       ref.ReleaseMetadataRef,
+		PublisherID:              release.PublisherID,
+		PluginID:                 release.PluginID,
+		Version:                  release.Version,
+		DistributionRef:          release.DistributionRef,
+		Hashes:                   release.Hashes,
+		ReleaseMetadataSignature: release.ReleaseMetadataSignature,
+		PackageSignature:         release.PackageSignature,
+		Compatibility:            release.Compatibility,
+		HostRequirements:         release.HostRequirements,
+		ReleaseEvidence:          release.ReleaseEvidence,
+		Metadata:                 release.Metadata,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func resolvedArtifactForRelease(t *testing.T, ref PluginReleaseRef, release PluginPackageRelease, packageBytes []byte) ResolvedPackageArtifact {
+	t.Helper()
+	return ResolvedPackageArtifact{
+		ReleaseMetadataBytes:     releaseMetadataBytesForRelease(t, ref, release),
+		ReleaseMetadataSignature: []byte("release-metadata-signature"),
+		Reader:                   bytes.NewReader(packageBytes),
+		Size:                     int64(len(packageBytes)),
+	}
+}
+
+func installReleaseRefLifecyclePlugin(t *testing.T, opts testHostOptions) (*Host, *recordingReleaseSourcePolicyResolver, registry.PluginRecord, PluginReleaseRef) {
+	t.Helper()
+	ctx := context.Background()
+	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	pkg := readTestPackage(t, packageBytes)
+	ref := releaseRefForPackage(t, "official", pkg)
+	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)}
+	if opts.releaseMetadataVerifier == nil {
+		opts.releaseMetadataVerifier = &recordingReleaseMetadataVerifier{}
+	}
+	opts.developerMode = true
+	opts.localGenerated = true
+	opts.releaseSourcePolicy = sourceResolver
+	opts.releaseArtifactResolver = &recordingReleaseArtifactResolver{
+		artifact: resolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h, _, _ := newTestHostWithOptions(t, opts)
+	installed, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{
+		ReleaseRef:       ref,
+		PluginInstanceID: "plugini_release_ref_policy_replay",
+		Now:              stableRecentTestNow(),
+	})
+	if err != nil {
+		t.Fatalf("InstallReleaseRef() error = %v", err)
+	}
+	return h, sourceResolver, installed, ref
+}
+
+func releaseForPackage(ref PluginReleaseRef, pkg pluginpkg.Package) PluginPackageRelease {
+	return PluginPackageRelease{
+		SourceID:    ref.SourceID,
+		PublisherID: ref.PublisherID,
+		PluginID:    ref.PluginID,
+		Version:     ref.Version,
+		DistributionRef: PackageDistributionRef{
+			Distribution: PackageDistributionRegistryRef,
+			ArtifactRef:  "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.redevplugin",
+		},
+		ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256,
+		ReleaseMetadataSignature: &ReleaseMetadataSignature{
+			Algorithm:         "ed25519",
+			KeyID:             "official",
+			SignatureRef:      "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/release.json.sig",
+			SourcePolicyEpoch: "1",
+			RevocationEpoch:   "1",
+		},
+		Hashes: PackageHashSet{
+			PackageSHA256:  pkg.PackageHash,
+			ManifestSHA256: pkg.ManifestHash,
+			EntriesSHA256:  pkg.EntriesHash,
+		},
+		PackageSignature: &PackageReleaseSignature{
+			Algorithm:          "ed25519",
+			KeyID:              "official",
+			SignatureBundleRef: "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.sigbundle",
+			SourcePolicyEpoch:  "1",
+			RevocationEpoch:    "1",
+		},
+		Compatibility: &ReleaseCompatibility{
+			MinReDevPluginVersion: "0.1.0",
+			MinRuntimeVersion:     "0.1.0",
+			UIProtocolVersion:     "plugin-ui-v1",
+		},
+	}
+}
+
+func sourcePolicyForRelease(ref PluginReleaseRef) SourcePolicySnapshot {
+	revocationMetadata := revocationMetadataBytesForSource(ref.SourceID, "1")
+	revocationHash := sha256.Sum256(revocationMetadata)
+	return SourcePolicySnapshot{
+		SchemaVersion:     "redevplugin.source_policy.v1",
+		SourceID:          ref.SourceID,
+		SourceType:        PackageSourceRegistry,
+		SourceClass:       PackageSourceClassOfficial,
+		AllowedPublishers: []string{ref.PublisherID},
+		TrustedKeyIDs:     []string{"official"},
+		TrustedKeys: []SourcePolicyTrustedKey{{
+			Algorithm:       pluginpkg.PackageSignatureAlgorithmEd25519,
+			KeyID:           "official",
+			PublicKeySHA256: strings.Repeat("a", 64),
+			Usage:           []string{"release_metadata", "package_signature", "revocation_metadata"},
+			ValidFrom:       "2026-01-01T00:00:00Z",
+			ValidUntil:      "2027-01-01T00:00:00Z",
+			RevocationEpoch: "1",
+		}},
+		RevocationEvidence: &SourcePolicyRevocationEvidence{
+			MetadataRef:      "sources/" + ref.SourceID + "/revocations.json",
+			MetadataSHA256:   hex.EncodeToString(revocationHash[:]),
+			SignatureRef:     "sources/" + ref.SourceID + "/revocations.json.sig",
+			SignatureKeyID:   "official",
+			VerifiedAt:       "2026-07-07T00:00:00Z",
+			ExpiresAt:        "2027-01-01T00:00:00Z",
+			HighestSeenEpoch: "1",
+			MetadataBytes:    revocationMetadata,
+			SignatureBytes:   []byte("source-revocation-signature"),
+		},
+		RequireSignature: true,
+		InstallPolicy:    PackageInstallAllow,
+		UnsignedPolicy:   PackageUnsignedBlock,
+		DowngradePolicy:  PackageDowngradeBlock,
+		PolicyEpoch:      "1",
+		KeyRotationEpoch: "1",
+		RevocationEpoch:  "1",
+		AssessedAt:       "2026-07-07T00:00:00Z",
+	}
+}
+
+func revocationMetadataBytesForSource(sourceID string, epoch string) []byte {
+	return revocationMetadataBytesForSourceWithRevoked(sourceID, epoch, nil)
+}
+
+func revocationMetadataBytesForSourceWithRevoked(sourceID string, epoch string, revokedKeyIDs []string) []byte {
+	raw, err := json.Marshal(SourceRevocationMetadata{
+		SchemaVersion:    "redevplugin.source_revocations.v1",
+		SourceID:         sourceID,
+		HighestSeenEpoch: epoch,
+		GeneratedAt:      "2026-07-07T00:00:00Z",
+		ExpiresAt:        "2027-01-01T00:00:00Z",
+		RevokedKeyIDs:    revokedKeyIDs,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func setSourcePolicyEpochs(snapshot *SourcePolicySnapshot, epoch string) {
+	snapshot.PolicyEpoch = epoch
+	snapshot.KeyRotationEpoch = epoch
+	snapshot.RevocationEpoch = epoch
+	for index := range snapshot.TrustedKeys {
+		snapshot.TrustedKeys[index].RevocationEpoch = epoch
+	}
+	setSourcePolicyRevokedKeys(snapshot, nil)
+}
+
+func setSourcePolicyRevokedKeys(snapshot *SourcePolicySnapshot, revokedKeyIDs []string) {
+	revocationMetadata := revocationMetadataBytesForSourceWithRevoked(snapshot.SourceID, snapshot.RevocationEpoch, revokedKeyIDs)
+	revocationHash := sha256.Sum256(revocationMetadata)
+	snapshot.RevocationEvidence.MetadataSHA256 = hex.EncodeToString(revocationHash[:])
+	snapshot.RevocationEvidence.HighestSeenEpoch = snapshot.RevocationEpoch
+	snapshot.RevocationEvidence.MetadataBytes = revocationMetadata
+}
+
+func setReleaseSignatureEpochs(release *PluginPackageRelease, epoch string) {
+	if release.ReleaseMetadataSignature != nil {
+		release.ReleaseMetadataSignature.SourcePolicyEpoch = epoch
+		release.ReleaseMetadataSignature.RevocationEpoch = epoch
+	}
+	if release.PackageSignature != nil {
+		release.PackageSignature.SourcePolicyEpoch = epoch
+		release.PackageSignature.RevocationEpoch = epoch
+	}
+}
+
+func setReleaseRefMetadataHash(t *testing.T, ref *PluginReleaseRef, release PluginPackageRelease) {
+	t.Helper()
+	metadataBytes := releaseMetadataBytesForRelease(t, *ref, release)
+	metadataHash := sha256.Sum256(metadataBytes)
+	ref.ReleaseMetadataSHA256 = hex.EncodeToString(metadataHash[:])
 }
 
 type surfaceSink struct {
@@ -5797,6 +7714,19 @@ type surfaceSink struct {
 }
 
 func (s *surfaceSink) PublishSurfaces(_ context.Context, snapshot SurfaceSnapshot) error {
+	s.snapshots = append(s.snapshots, snapshot)
+	return nil
+}
+
+type failingSurfaceSink struct {
+	err       error
+	snapshots []SurfaceSnapshot
+}
+
+func (s *failingSurfaceSink) PublishSurfaces(_ context.Context, snapshot SurfaceSnapshot) error {
+	if s.err != nil {
+		return s.err
+	}
 	s.snapshots = append(s.snapshots, snapshot)
 	return nil
 }

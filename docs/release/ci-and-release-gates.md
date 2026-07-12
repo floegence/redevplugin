@@ -39,7 +39,9 @@ the same command shape.
 
 `scripts/check_redevplugin_runtime_contract.sh --ci` validates:
 
-- OpenAPI/HTTP route/TypeScript SDK binding coverage;
+- OpenAPI/HTTP route/TypeScript SDK binding coverage, including release-reference
+  install/update routes that keep official package bytes out of trusted browser
+  requests;
 - compatibility manifest schema and emitted compatibility manifest shape;
 - manifest, package signature, token/ticket, bridge, error-code, release
   manifest, IPC, WASM ABI, worker invocation, network grant, and target
@@ -125,9 +127,14 @@ file lists and checksums. Release manifests exclude themselves and
 nullable runtime targets, and ISO date-time generation metadata.
 
 The compatibility manifest includes contract artifact IDs, versions, paths, and
-hashes for released OpenAPI, plugin schemas, IPC/WASM contracts, release
-manifest schema, error codes, network grants, worker invocation payloads, and
-target classifier fixtures.
+hashes for released OpenAPI, plugin schemas, release metadata, source policy,
+source revocations, IPC/WASM contracts, release manifest schema, error codes,
+network grants, worker invocation payloads, and target classifier fixtures.
+
+Any change to the release-reference install/update request schema, route set,
+trust-state enum, token/ticket schema, or bridge contract must update the
+machine-readable contract, route fixtures, SDK bindings, compatibility hash, and
+focused contract tests in the same feature change.
 
 Host products should run:
 

@@ -130,10 +130,9 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string) error
 	if err != nil {
 		return err
 	}
-	record, err := h.InstallPackage(ctx, host.InstallRequest{
+	record, err := h.ImportLocalPackage(ctx, host.ImportLocalPackageRequest{
 		PackageReader: bytes.NewReader(data),
 		PackageSize:   int64(len(data)),
-		TrustState:    registry.TrustUnsignedLocal,
 	})
 	if err != nil {
 		return err
@@ -717,8 +716,9 @@ func validateDevOrigin(origin string) error {
 }
 
 type devRegistryStore struct {
-	mu      sync.Mutex
-	records map[string]registry.PluginRecord
+	mu           sync.Mutex
+	records      map[string]registry.PluginRecord
+	sourceFloors *registry.MemoryStore
 }
 
 func newDevRegistryStore(record registry.PluginRecord) *devRegistryStore {
@@ -726,7 +726,7 @@ func newDevRegistryStore(record registry.PluginRecord) *devRegistryStore {
 	if record.PluginInstanceID != "" {
 		records[record.PluginInstanceID] = record
 	}
-	return &devRegistryStore{records: records}
+	return &devRegistryStore{records: records, sourceFloors: registry.NewMemoryStore()}
 }
 
 func (s *devRegistryStore) PutPlugin(_ context.Context, record registry.PluginRecord, opts registry.PutOptions) (registry.PluginRecord, error) {
@@ -863,6 +863,14 @@ func (s *devRegistryStore) DeletePlugin(_ context.Context, pluginInstanceID stri
 	}
 	delete(s.records, pluginInstanceID)
 	return nil
+}
+
+func (s *devRegistryStore) PutSourceSecurityFloor(ctx context.Context, floor registry.SourceSecurityFloor, opts registry.PutOptions) (registry.SourceSecurityFloor, error) {
+	return s.sourceFloors.PutSourceSecurityFloor(ctx, floor, opts)
+}
+
+func (s *devRegistryStore) GetSourceSecurityFloor(ctx context.Context, sourceID string) (registry.SourceSecurityFloor, error) {
+	return s.sourceFloors.GetSourceSecurityFloor(ctx, sourceID)
 }
 
 func (s *devRegistryStore) record() registry.PluginRecord {

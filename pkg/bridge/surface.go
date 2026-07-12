@@ -97,6 +97,10 @@ type AssetSessionValidation struct {
 	TokenID string         `json:"token_id"`
 }
 
+type BridgeHandshakeValidation struct {
+	Session SurfaceSession `json:"session"`
+}
+
 type MintGatewayTokenRequest struct {
 	Handshake                 Handshake `json:"handshake"`
 	BridgeChannelID           string    `json:"bridge_channel_id"`
@@ -463,34 +467,9 @@ func (s *SurfaceTokenService) ValidateAssetSession(req ValidateAssetSessionReque
 }
 
 func (s *SurfaceTokenService) MintGatewayToken(req MintGatewayTokenRequest) (GatewayTokenResult, error) {
-	if s == nil {
-		return GatewayTokenResult{}, errors.New("surface token service is nil")
-	}
-	if strings.TrimSpace(req.BridgeChannelID) == "" {
-		return GatewayTokenResult{}, ErrMissingTokenAudience
-	}
-	if strings.TrimSpace(req.HandshakeTranscriptSHA256) == "" {
-		return GatewayTokenResult{}, ErrMissingTokenAudience
-	}
-	if req.HandshakeTranscriptSHA256 != HandshakeTranscriptSHA256(req.Handshake, req.BridgeChannelID) {
-		return GatewayTokenResult{}, ErrTokenAudience
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	state, err := s.getState(req.Handshake.SurfaceInstanceID, now)
+	state, now, err := s.validateBridgeHandshake(req)
 	if err != nil {
 		return GatewayTokenResult{}, err
-	}
-	if !state.assetSessionIssued {
-		return GatewayTokenResult{}, ErrAssetSessionRequired
-	}
-	if err := state.session.validateHandshake(req.Handshake); err != nil {
-		return GatewayTokenResult{}, err
-	}
-	if state.liveBridgeChannelID != "" && state.liveBridgeChannelID != req.BridgeChannelID {
-		return GatewayTokenResult{}, ErrTokenAlreadyBound
 	}
 	audience := state.session.audience(req.BridgeChannelID)
 	minted, err := s.tokens.Mint(MintRequest{
@@ -515,6 +494,47 @@ func (s *SurfaceTokenService) MintGatewayToken(req MintGatewayTokenRequest) (Gat
 		IssuedAt:       minted.IssuedAt,
 		ExpiresAt:      minted.ExpiresAt,
 	}, nil
+}
+
+func (s *SurfaceTokenService) ValidateBridgeHandshake(req MintGatewayTokenRequest) (BridgeHandshakeValidation, error) {
+	state, _, err := s.validateBridgeHandshake(req)
+	if err != nil {
+		return BridgeHandshakeValidation{}, err
+	}
+	return BridgeHandshakeValidation{Session: state.session}, nil
+}
+
+func (s *SurfaceTokenService) validateBridgeHandshake(req MintGatewayTokenRequest) (surfaceState, time.Time, error) {
+	if s == nil {
+		return surfaceState{}, time.Time{}, errors.New("surface token service is nil")
+	}
+	if strings.TrimSpace(req.BridgeChannelID) == "" {
+		return surfaceState{}, time.Time{}, ErrMissingTokenAudience
+	}
+	if strings.TrimSpace(req.HandshakeTranscriptSHA256) == "" {
+		return surfaceState{}, time.Time{}, ErrMissingTokenAudience
+	}
+	if req.HandshakeTranscriptSHA256 != HandshakeTranscriptSHA256(req.Handshake, req.BridgeChannelID) {
+		return surfaceState{}, time.Time{}, ErrTokenAudience
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	state, err := s.getState(req.Handshake.SurfaceInstanceID, now)
+	if err != nil {
+		return surfaceState{}, time.Time{}, err
+	}
+	if !state.assetSessionIssued {
+		return surfaceState{}, time.Time{}, ErrAssetSessionRequired
+	}
+	if err := state.session.validateHandshake(req.Handshake); err != nil {
+		return surfaceState{}, time.Time{}, err
+	}
+	if state.liveBridgeChannelID != "" && state.liveBridgeChannelID != req.BridgeChannelID {
+		return surfaceState{}, time.Time{}, ErrTokenAlreadyBound
+	}
+	return state, now, nil
 }
 
 func HandshakeTranscriptSHA256(handshake Handshake, bridgeChannelID string) string {

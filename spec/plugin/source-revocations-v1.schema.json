@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/source-revocations-v1.schema.json",
+  "title": "ReDevPlugin plugin source revocation metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "highest_seen_epoch",
+    "generated_at",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.source_revocations.v1" },
+    "source_id": { "type": "string", "minLength": 1 },
+    "highest_seen_epoch": { "$ref": "#/$defs/decimal_epoch" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "revoked_key_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "decimal_epoch": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    }
+  }
+}

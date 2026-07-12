@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -36,7 +38,7 @@ import (
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	routes := RouteSet()
 	want := map[string]bool{
-		"POST /_redevplugin/api/plugins/install":                                     false,
+		"POST /_redevplugin/api/plugins/install-release-ref":                         false,
 		"POST /_redevplugin/api/plugins/enable":                                      false,
 		"POST /_redevplugin/api/plugins/surfaces/open":                               false,
 		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bootstrap":    false,
@@ -49,6 +51,7 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 		"GET /_redevplugin/api/plugins/intents":                                      false,
 		"POST /_redevplugin/api/plugins/intents/invoke":                              false,
 		"GET /_redevplugin/api/plugins/platform/compatibility":                       false,
+		"POST /_redevplugin/api/plugins/update-release-ref":                          false,
 		"GET /_redevplugin/api/plugins/permissions":                                  false,
 		"POST /_redevplugin/api/plugins/permissions/grant":                           false,
 		"POST /_redevplugin/api/plugins/permissions/revoke":                          false,
@@ -78,6 +81,33 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	}
 }
 
+func TestRouteSetExcludesLocalImportRoutesByDefault(t *testing.T) {
+	for _, route := range RouteSet() {
+		if strings.Contains(route.Path, "/local-import/") {
+			t.Fatalf("default RouteSet() must not expose local-import route: %#v", route)
+		}
+	}
+}
+
+func TestRouteSetWithLocalImportRoutesRequiresExplicitOption(t *testing.T) {
+	routes := RouteSetWithOptions(RouteSetOptions{EnableLocalImportRoutes: true})
+	want := map[string]bool{
+		"POST /_redevplugin/api/plugins/local-import/install": false,
+		"POST /_redevplugin/api/plugins/local-import/update":  false,
+	}
+	for _, route := range routes {
+		key := route.Method + " " + route.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("RouteSetWithOptions(local import) missing %s", key)
+		}
+	}
+}
+
 func TestRouteSetRoutesAreHandled(t *testing.T) {
 	handler := Handler{Host: newHTTPTestHost(t)}
 	for _, route := range RouteSet() {
@@ -92,6 +122,57 @@ func TestRouteSetRoutesAreHandled(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code == http.StatusNotFound {
 				t.Fatalf("declared route fell through to 404: %s %s body = %s", route.Method, route.Path, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerLocalImportRoutesAreDisabledByDefault(t *testing.T) {
+	for _, path := range []string{
+		"/_redevplugin/api/plugins/local-import/install",
+		"/_redevplugin/api/plugins/local-import/update",
+	} {
+		t.Run(path, func(t *testing.T) {
+			handler := Handler{Host: newHTTPTestHost(t)}
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404 body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerLocalImportRoutesRequireExplicitEnable(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "install",
+			path: "/_redevplugin/api/plugins/local-import/install",
+			body: `{"package_base64":"not-base64"}`,
+		},
+		{
+			name: "update",
+			path: "/_redevplugin/api/plugins/local-import/update",
+			body: `{"plugin_instance_id":"plugini_test","package_base64":"not-base64"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := Handler{Host: newHTTPTestHost(t), EnableLocalImportRoutes: true}
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewBufferString(tt.body))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusNotFound {
+				t.Fatalf("local-import route fell through to 404 when explicitly enabled: body = %s", rec.Body.String())
 			}
 		})
 	}
@@ -230,6 +311,31 @@ func TestHandlerWebSecurityRejectsDeniedOrigin(t *testing.T) {
 	}
 	if guard.csrfCount != 0 {
 		t.Fatalf("CSRF count = %d, want 0 for safe method", guard.csrfCount)
+	}
+}
+
+func TestHandlerWebSecurityHidesManagementRoutesFromSandboxRole(t *testing.T) {
+	guard := &httpTestWebSecurityGuard{decision: websecurity.OriginAllow, role: websecurity.OriginPluginSandbox}
+	handler := Handler{Host: newHTTPTestHost(t), WebSecurity: guard, EnableLocalImportRoutes: true}
+	for _, path := range []string{
+		"/_redevplugin/api/plugins/install-release-ref",
+		"/_redevplugin/api/plugins/local-import/install",
+		"/_redevplugin/api/plugins/enable",
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+			req.Header.Set("Origin", "https://plugin.sandbox.example")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("sandbox management route status = %d, want 404 body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if guard.csrfCount != 0 {
+		t.Fatalf("CSRF count = %d, want 0 for hidden sandbox management routes", guard.csrfCount)
 	}
 }
 
@@ -373,23 +479,31 @@ func TestHandlerWebSecurityIgnoresNonPluginPaths(t *testing.T) {
 	}
 }
 
-func TestHandlerInstallVerifiedRequiresHostTrustVerifier(t *testing.T) {
+func TestHandlerInstallReleaseRefRequiresHostTrustVerifier(t *testing.T) {
+	packageBytes := buildHTTPSignedReleasePackageBytes(t, buildHTTPFixturePackage(t), "official")
+	pkg := readHTTPTestPackage(t, packageBytes)
+	ref := httpReleaseRefForPackage(t, "official", pkg)
+	resolver := &httpRecordingReleaseArtifactResolver{
+		artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
 	h, err := host.New(host.Adapters{
-		SessionResolver: httpTestSessionResolver{},
-		Policy:          httpTestPolicy{},
+		SessionResolver:         httpTestSessionResolver{},
+		Policy:                  httpTestPolicy{},
+		ReleaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: httpSourcePolicyForRelease(ref)},
+		ReleaseArtifactResolver: resolver,
+		ReleaseMetadataVerifier: httpTestReleaseMetadataVerifier{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler := Handler{Host: h}
 	raw, err := json.Marshal(map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"trust_state":    "verified",
+		"release_ref": ref,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install", bytes.NewReader(raw))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install-release-ref", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -401,19 +515,18 @@ func TestHandlerInstallVerifiedRequiresHostTrustVerifier(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.OK || envelope.Error == "" {
+	if envelope.OK || envelope.ErrorCode != string(security.ErrTrustVerificationRequired) {
 		t.Fatalf("install envelope = %#v", envelope)
 	}
 }
 
 func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h}
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
 	packageBytes := buildHTTPFixturePackage(t)
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(packageBytes),
-		"trust_state":    "verified",
 	})
 	if installed.PluginInstanceID == "" || installed.EnableState != registry.EnableDisabled {
 		t.Fatalf("install response mismatch: %#v", installed)
@@ -457,15 +570,83 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerInstallReleaseRefUsesResolverWithoutPackageBase64(t *testing.T) {
+	packageBytes := buildHTTPSignedReleasePackageBytes(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), "official")
+	pkg := readHTTPTestPackage(t, packageBytes)
+	ref := httpReleaseRefForPackage(t, "official", pkg)
+	resolver := &httpRecordingReleaseArtifactResolver{
+		artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes),
+	}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		releaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: httpSourcePolicyForRelease(ref)},
+		releaseArtifactResolver: resolver,
+	})
+	handler := Handler{Host: h}
+
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install-release-ref", map[string]any{
+		"release_ref": ref,
+	})
+
+	if installed.PackageHash != pkg.PackageHash || installed.TrustState != registry.TrustVerified {
+		t.Fatalf("install release ref response mismatch: %#v", installed)
+	}
+	wantMetadataSignatureRef := "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/release.json.sig"
+	wantPackageSignatureBundleRef := "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.sigbundle"
+	if installed.Metadata["source_id"] != "official" ||
+		installed.Metadata["source.type"] != string(host.PackageSourceRegistry) ||
+		installed.Metadata["source.class"] != string(host.PackageSourceClassOfficial) ||
+		installed.Metadata["source.distribution"] != string(host.PackageDistributionRegistryRef) ||
+		installed.Metadata["source.install_policy"] != string(host.PackageInstallAllow) ||
+		installed.Metadata["source.unsigned_policy"] != string(host.PackageUnsignedBlock) ||
+		installed.Metadata["source.downgrade_policy"] != string(host.PackageDowngradeBlock) ||
+		installed.Metadata["source.policy_epoch"] != "1" ||
+		installed.Metadata["source.key_rotation_epoch"] != "1" ||
+		installed.Metadata["source.revocation_epoch"] != "1" ||
+		installed.Metadata["source.assessed_at"] != "2026-07-07T00:00:00Z" ||
+		installed.Metadata["release.metadata_signature_algorithm"] != "ed25519" ||
+		installed.Metadata["release.metadata_signature_key_id"] != "official" ||
+		installed.Metadata["release.metadata_signature_ref"] != wantMetadataSignatureRef ||
+		installed.Metadata["release.package_signature_algorithm"] != "ed25519" ||
+		installed.Metadata["release.package_signature_key_id"] != "official" ||
+		installed.Metadata["release.package_signature_bundle_ref"] != wantPackageSignatureBundleRef {
+		t.Fatalf("metadata = %#v", installed.Metadata)
+	}
+	if resolver.last.Action != host.PackageTrustActionInstall || resolver.last.ReleaseRef.PluginID != pkg.Manifest.PluginID() {
+		t.Fatalf("resolver request mismatch: %#v", resolver.last)
+	}
+	if resolver.last.SourcePolicySnapshot.SourceClass != host.PackageSourceClassOfficial || !resolver.last.SourcePolicySnapshot.RequireSignature {
+		t.Fatalf("resolver source policy mismatch: %#v", resolver.last.SourcePolicySnapshot)
+	}
+}
+
+func TestHandlerInstallReleaseRefPolicyDeniedUsesReleaseRefErrorCode(t *testing.T) {
+	packageBytes := buildHTTPSignedReleasePackageBytes(t, buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP"), "official")
+	pkg := readHTTPTestPackage(t, packageBytes)
+	ref := httpReleaseRefForPackage(t, "official", pkg)
+	sourcePolicy := httpSourcePolicyForRelease(ref)
+	sourcePolicy.InstallPolicy = host.PackageInstallBlock
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		releaseSourcePolicy:     &httpRecordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
+		releaseArtifactResolver: &httpRecordingReleaseArtifactResolver{artifact: httpResolvedArtifactForPackage(t, ref, pkg, packageBytes)},
+	})
+	handler := Handler{Host: h}
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/install-release-ref", map[string]any{
+		"release_ref": ref,
+	}, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrReleaseRefPolicyDenied) {
+		t.Fatalf("error_code = %q, want %q body = %#v", envelope.ErrorCode, security.ErrReleaseRefPolicyDenied, envelope)
+	}
+}
+
 func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h}
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
 	v1 := buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP")
 	v2 := buildHTTPVersionedFixturePackage(t, "2.0.0", "HTTP v2")
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(v1),
-		"trust_state":    "verified",
 	})
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -474,7 +655,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 		t.Fatalf("enable response mismatch: %#v", enabled)
 	}
 
-	updated := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/update", map[string]any{
+	updated := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/update", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
 		"package_base64":     base64.StdEncoding.EncodeToString(v2),
 	})
@@ -491,34 +672,33 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	}
 }
 
-func TestHandlerManagementRejectsInvalidInstallAndUntrustedEnable(t *testing.T) {
+func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h}
-	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid install status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	raw, err := json.Marshal(map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"trust_state":    "untrusted",
+		"trust_state":    "verified",
 	})
-	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/enable", bytes.NewReader(raw))
+	req = httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("untrusted enable status = %d body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("trust_state input status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
-	handler := Handler{Host: newHTTPTestHost(t)}
+	handler := Handler{Host: newHTTPTestHost(t), EnableLocalImportRoutes: true}
 	tests := []struct {
 		name        string
 		entries     map[string][]byte
@@ -555,12 +735,11 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
 				"package_base64": base64.StdEncoding.EncodeToString(buildHTTPRawPackage(t, tt.entries)),
-				"trust_state":    "verified",
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/install", bytes.NewReader(raw))
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -592,10 +771,9 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 
 func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{storageBroker: storage.NewMemoryBroker()})
-	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPBlockedNetworkFixturePackage(t)),
-		"trust_state":    "verified",
 	})
 	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID})
 	if err != nil {
@@ -619,7 +797,7 @@ func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 	browserSite := browsersite.NewMemoryStore()
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{browserSite: browserSite})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +839,7 @@ func TestHandlerSurfaceBridgeFlow(t *testing.T) {
 
 func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +895,7 @@ func TestHandlerBridgeTokenRejectsInvalidHandshakeType(t *testing.T) {
 
 func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +926,7 @@ func TestHandlerBridgeTokenRejectsTranscriptMismatch(t *testing.T) {
 
 func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,9 +1056,6 @@ func TestHandlerSandboxBootstrapAndAssetFlow(t *testing.T) {
 	if got := rec.Header().Get("Cross-Origin-Resource-Policy"); got != "same-origin" {
 		t.Fatalf("cross-origin resource policy = %q", got)
 	}
-	if got := rec.Header().Get("Service-Worker-Allowed"); got != "/_redevplugin/assets/"+bootstrapEnvelope.Data.AssetSessionID+"/ui/" {
-		t.Fatalf("service-worker-allowed = %q", got)
-	}
 
 	req = httptest.NewRequest(http.MethodGet, assetURL, nil)
 	rec = httptest.NewRecorder()
@@ -927,7 +1102,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,7 +1169,7 @@ func TestHandlerRPCFlowRedactsCapabilityResponseData(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1038,7 +1213,7 @@ func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1077,7 +1252,7 @@ func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 func TestHandlerBridgeTokenDuplicateChannelUsesGatewayMismatchCode(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := Handler{Host: h}
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1115,7 +1290,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1229,7 +1404,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPDangerousRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPDangerousRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1300,7 +1475,7 @@ func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1336,7 +1511,7 @@ func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1377,7 +1552,7 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, true), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPIntentFixturePackage(t, true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1422,7 +1597,7 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		capabilityAdapter: adapter,
 		operationCanceler: operationCanceler,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1483,7 +1658,7 @@ func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
 		capabilityAdapter: adapter,
 		operationCanceler: operationCanceler,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1532,7 +1707,7 @@ func TestHandlerPluginStreamFlow(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSubscriptionRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSubscriptionRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1809,7 +1984,7 @@ func assertStreamSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
 func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	coreAdapter := &httpRecordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{coreActions: coreAdapter})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPCoreActionFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPCoreActionFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1844,7 +2019,7 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 		err:    runtimeclient.ErrRuntimeRequestFailed,
 	}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: runtime})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPWorkerFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1886,7 +2061,7 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 func TestHandlerSettingsFlow(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: &httpRecordingSecretStore{}})
 	handler := Handler{Host: h}
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1932,7 +2107,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
 	})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1988,7 +2163,7 @@ func TestHandlerRejectsTrailingJSON(t *testing.T) {
 func TestHandlerDataExportImportFlow(t *testing.T) {
 	storageBroker := storage.NewMemoryBroker()
 	h := newHTTPTestHostWithStorage(t, storageBroker)
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPStorageFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPStorageFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2018,10 +2193,9 @@ func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
 	ctx := context.Background()
 	storageBroker := storage.NewMemoryBroker()
 	h := newHTTPTestHostWithStorage(t, storageBroker)
-	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
-		"trust_state":    "verified",
 	})
 	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -2057,11 +2231,10 @@ func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 	ctx := context.Background()
 	storageBroker := storage.NewMemoryBroker()
 	h := newHTTPTestHostWithStorage(t, storageBroker)
-	handler := Handler{Host: h}
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
 	packageBase64 := base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t))
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": packageBase64,
-		"trust_state":    "verified",
 	})
 	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -2076,9 +2249,8 @@ func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 	listed := getJSON[struct {
 		RetainedData []retaineddata.Record `json:"retained_data"`
 	}](t, handler, "/_redevplugin/api/plugins/retained-data?source_plugin_instance_id="+installed.PluginInstanceID)
-	target := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	target := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64":     packageBase64,
-		"trust_state":        "verified",
 		"plugin_instance_id": "plugini_http_storage_rebind_target",
 	})
 
@@ -2102,10 +2274,9 @@ func TestHandlerRetainedDataDeleteFailureReturnsCleanupCodeAndRecord(t *testing.
 	ctx := context.Background()
 	storageBroker := storage.NewMemoryBroker()
 	h := newHTTPTestHostWithStorage(t, storageBroker)
-	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
-		"trust_state":    "verified",
 	})
 	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -2174,7 +2345,7 @@ func TestHandlerCleanupExpiredRetainedDataRejectsInvalidMaxRecords(t *testing.T)
 
 func TestHandlerDataExportImportSettingsArchive(t *testing.T) {
 	h := newHTTPTestHost(t)
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2206,7 +2377,7 @@ func TestHandlerDataExportImportSettingsArchive(t *testing.T) {
 func TestHandlerSecretLifecycleFlow(t *testing.T) {
 	secrets := &httpRecordingSecretStore{}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: secrets})
-	installed, err := host.InstallPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t), registry.TrustVerified)
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPSettingsFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2235,7 +2406,7 @@ func TestHandlerSecretLifecycleFlow(t *testing.T) {
 
 func TestHandlerCSPReportFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h}
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
 
 	postJSON[map[string]bool](t, handler, "/_redevplugin/csp-report", map[string]any{
 		"plugin_id":           "com.example.http",
@@ -2350,10 +2521,9 @@ func TestHandlerCSPReportRateLimitsBySandboxFingerprintAndSourceIP(t *testing.T)
 
 func TestHandlerListsAuditEvents(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"trust_state":    registry.TrustVerified,
 	})
 	postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -2396,10 +2566,9 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 
 func TestHandlerRefreshEnabledRuntimeState(t *testing.T) {
 	h := newHTTPTestHost(t)
-	handler := Handler{Host: h}
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/install", map[string]any{
+	handler := Handler{Host: h, EnableLocalImportRoutes: true}
+	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
 		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"trust_state":    registry.TrustVerified,
 	})
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id": installed.PluginInstanceID,
@@ -2608,16 +2777,19 @@ func newHTTPTestHostWithStorage(t *testing.T, storageBroker storage.Broker) *hos
 }
 
 type httpTestHostOptions struct {
-	storageBroker     storage.Broker
-	browserSite       browsersite.Store
-	secrets           host.SecretStoreAdapter
-	diagnostics       host.DiagnosticsSink
-	permissions       permissions.Store
-	runtimeSupervisor runtimeclient.Supervisor
-	capabilityID      string
-	capabilityAdapter capability.Adapter
-	coreActions       host.CoreActionAdapter
-	operationCanceler host.OperationCanceler
+	storageBroker           storage.Broker
+	browserSite             browsersite.Store
+	secrets                 host.SecretStoreAdapter
+	diagnostics             host.DiagnosticsSink
+	permissions             permissions.Store
+	runtimeSupervisor       runtimeclient.Supervisor
+	releaseSourcePolicy     host.ReleaseSourcePolicyResolver
+	releaseArtifactResolver host.ReleaseArtifactResolver
+	releaseMetadataVerifier host.ReleaseMetadataVerifier
+	capabilityID            string
+	capabilityAdapter       capability.Adapter
+	coreActions             host.CoreActionAdapter
+	operationCanceler       host.OperationCanceler
 }
 
 func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
@@ -2627,18 +2799,21 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		capabilities.Register(opts.capabilityID, opts.capabilityAdapter)
 	}
 	h, err := host.New(host.Adapters{
-		SessionResolver:      httpTestSessionResolver{},
-		Policy:               httpTestPolicy{},
-		PackageTrustVerifier: httpTestPackageTrustVerifier{},
-		Storage:              opts.storageBroker,
-		BrowserSite:          opts.browserSite,
-		Secrets:              opts.secrets,
-		Diagnostics:          opts.diagnostics,
-		Permissions:          opts.permissions,
-		RuntimeSupervisor:    opts.runtimeSupervisor,
-		Capabilities:         capabilities,
-		CoreActions:          opts.coreActions,
-		OperationCanceler:    opts.operationCanceler,
+		SessionResolver:         httpTestSessionResolver{},
+		Policy:                  httpTestPolicy{},
+		PackageTrustVerifier:    httpTestPackageTrustVerifier{},
+		ReleaseSourcePolicy:     opts.releaseSourcePolicy,
+		ReleaseArtifactResolver: opts.releaseArtifactResolver,
+		ReleaseMetadataVerifier: firstNonNilReleaseMetadataVerifier(opts.releaseMetadataVerifier, httpTestReleaseMetadataVerifier{}),
+		Storage:                 opts.storageBroker,
+		BrowserSite:             opts.browserSite,
+		Secrets:                 opts.secrets,
+		Diagnostics:             opts.diagnostics,
+		Permissions:             opts.permissions,
+		RuntimeSupervisor:       opts.runtimeSupervisor,
+		Capabilities:            capabilities,
+		CoreActions:             opts.coreActions,
+		OperationCanceler:       opts.operationCanceler,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3264,7 +3439,251 @@ func (httpTestPolicy) LocalGeneratedPluginsEnabled(context.Context, sessionctx.C
 type httpTestPackageTrustVerifier struct{}
 
 func (httpTestPackageTrustVerifier) VerifyPackageTrust(_ context.Context, req host.PackageTrustVerificationRequest) (host.PackageTrustVerificationResult, error) {
-	return host.PackageTrustVerificationResult{TrustState: req.RequestedTrustState}, nil
+	if req.LocalImport {
+		if req.Package.PackageSignature != nil {
+			return host.PackageTrustVerificationResult{TrustState: registry.TrustVerified}, nil
+		}
+		return host.PackageTrustVerificationResult{TrustState: registry.TrustUnsignedLocal}, nil
+	}
+	if req.SourcePolicySnapshot != nil {
+		return host.PackageTrustVerificationResult{TrustState: registry.TrustVerified}, nil
+	}
+	return host.PackageTrustVerificationResult{TrustState: registry.TrustUntrusted}, nil
+}
+
+type httpRecordingReleaseArtifactResolver struct {
+	artifact host.ResolvedPackageArtifact
+	err      error
+	last     host.ReleaseArtifactResolveRequest
+}
+
+type httpRecordingReleaseSourcePolicyResolver struct {
+	snapshot host.SourcePolicySnapshot
+	err      error
+	last     host.ReleaseSourcePolicyRequest
+}
+
+type httpTestReleaseMetadataVerifier struct{}
+
+func firstNonNilReleaseMetadataVerifier(primary host.ReleaseMetadataVerifier, fallback host.ReleaseMetadataVerifier) host.ReleaseMetadataVerifier {
+	if primary != nil {
+		return primary
+	}
+	return fallback
+}
+
+func (r *httpRecordingReleaseSourcePolicyResolver) ResolveReleaseSourcePolicy(_ context.Context, req host.ReleaseSourcePolicyRequest) (host.SourcePolicySnapshot, error) {
+	r.last = req
+	if r.err != nil {
+		return host.SourcePolicySnapshot{}, r.err
+	}
+	return r.snapshot, nil
+}
+
+func (r *httpRecordingReleaseArtifactResolver) ResolveReleaseArtifact(_ context.Context, req host.ReleaseArtifactResolveRequest) (host.ResolvedPackageArtifact, error) {
+	r.last = req
+	if r.err != nil {
+		return host.ResolvedPackageArtifact{}, r.err
+	}
+	return r.artifact, nil
+}
+
+func (httpTestReleaseMetadataVerifier) VerifyReleaseMetadata(_ context.Context, req host.ReleaseMetadataVerificationRequest) (host.ReleaseMetadataVerificationResult, error) {
+	if req.Release.ReleaseMetadataSignature == nil {
+		return host.ReleaseMetadataVerificationResult{}, errors.New("release metadata signature is required")
+	}
+	return host.ReleaseMetadataVerificationResult{Metadata: map[string]string{"key_id": req.Release.ReleaseMetadataSignature.KeyID}}, nil
+}
+
+func (httpTestReleaseMetadataVerifier) VerifySourceRevocationEvidence(_ context.Context, req host.SourceRevocationEvidenceVerificationRequest) (host.SourceRevocationEvidenceVerificationResult, error) {
+	return host.SourceRevocationEvidenceVerificationResult{
+		Metadata: map[string]string{"key_id": req.RevocationEvidence.SignatureKeyID},
+	}, nil
+}
+
+func httpResolvedArtifactForPackage(t *testing.T, ref host.PluginReleaseRef, pkg pluginpkg.Package, packageBytes []byte) host.ResolvedPackageArtifact {
+	t.Helper()
+	return host.ResolvedPackageArtifact{
+		ReleaseMetadataBytes:     httpReleaseMetadataBytesForPackage(t, ref, pkg),
+		ReleaseMetadataSignature: []byte("release-metadata-signature"),
+		Reader:                   bytes.NewReader(packageBytes),
+		Size:                     int64(len(packageBytes)),
+	}
+}
+
+func readHTTPTestPackage(t *testing.T, data []byte) pluginpkg.Package {
+	t.Helper()
+	pkg, err := pluginpkg.Read(context.Background(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkg
+}
+
+func buildHTTPSignedReleasePackageBytes(t *testing.T, data []byte, keyID string) []byte {
+	t.Helper()
+	pkg := readHTTPTestPackage(t, data)
+	pkg.PackageSignature = &pluginpkg.PackageSignature{
+		SchemaVersion: pluginpkg.PackageSignatureSchemaVersion,
+		Algorithm:     pluginpkg.PackageSignatureAlgorithmEd25519,
+		KeyID:         keyID,
+		PublisherID:   pkg.Manifest.Publisher.PublisherID,
+		PluginID:      pkg.Manifest.PluginID(),
+		PackageHash:   pkg.PackageHash,
+		ManifestHash:  pkg.ManifestHash,
+		EntriesHash:   pkg.EntriesHash,
+		Signature:     "test-signature",
+		SignedAt:      "2026-07-07T00:00:00Z",
+	}
+	var buf bytes.Buffer
+	if err := pluginpkg.WritePackage(context.Background(), &buf, pkg); err != nil {
+		t.Fatalf("WritePackage() error = %v", err)
+	}
+	return buf.Bytes()
+}
+
+func httpReleaseRefForPackage(t *testing.T, sourceID string, pkg pluginpkg.Package) host.PluginReleaseRef {
+	t.Helper()
+	releaseMetadataRef := "plugins/" + pkg.Manifest.Publisher.PublisherID + "/" + pkg.Manifest.PluginID() + "/" + pkg.Manifest.Version() + "/release.json"
+	metadataBytes := httpReleaseMetadataBytesForPackage(t, host.PluginReleaseRef{
+		SourceID:           sourceID,
+		ReleaseMetadataRef: releaseMetadataRef,
+		PublisherID:        pkg.Manifest.Publisher.PublisherID,
+		PluginID:           pkg.Manifest.PluginID(),
+		Version:            pkg.Manifest.Version(),
+	}, pkg)
+	metadataHash := sha256.Sum256(metadataBytes)
+	return host.PluginReleaseRef{
+		SourceID:              sourceID,
+		ReleaseMetadataRef:    releaseMetadataRef,
+		ReleaseMetadataSHA256: hex.EncodeToString(metadataHash[:]),
+		PublisherID:           pkg.Manifest.Publisher.PublisherID,
+		PluginID:              pkg.Manifest.PluginID(),
+		Version:               pkg.Manifest.Version(),
+		ExpectedHashes: host.PackageHashSet{
+			PackageSHA256:  pkg.PackageHash,
+			ManifestSHA256: pkg.ManifestHash,
+			EntriesSHA256:  pkg.EntriesHash,
+		},
+	}
+}
+
+func httpReleaseMetadataBytesForPackage(t *testing.T, ref host.PluginReleaseRef, pkg pluginpkg.Package) []byte {
+	t.Helper()
+	release := httpReleaseForPackage(ref, pkg)
+	raw, err := json.Marshal(map[string]any{
+		"schema_version":             "redevplugin.release_metadata.v1",
+		"source_id":                  release.SourceID,
+		"release_metadata_ref":       ref.ReleaseMetadataRef,
+		"publisher_id":               release.PublisherID,
+		"plugin_id":                  release.PluginID,
+		"version":                    release.Version,
+		"distribution_ref":           release.DistributionRef,
+		"hashes":                     release.Hashes,
+		"release_metadata_signature": release.ReleaseMetadataSignature,
+		"package_signature":          release.PackageSignature,
+		"compatibility":              release.Compatibility,
+		"host_requirements":          release.HostRequirements,
+		"release_evidence":           release.ReleaseEvidence,
+		"metadata":                   release.Metadata,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func httpReleaseForPackage(ref host.PluginReleaseRef, pkg pluginpkg.Package) host.PluginPackageRelease {
+	return host.PluginPackageRelease{
+		SourceID:    ref.SourceID,
+		PublisherID: ref.PublisherID,
+		PluginID:    ref.PluginID,
+		Version:     ref.Version,
+		DistributionRef: host.PackageDistributionRef{
+			Distribution: host.PackageDistributionRegistryRef,
+			ArtifactRef:  "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.redevplugin",
+		},
+		ReleaseMetadataSHA256: ref.ReleaseMetadataSHA256,
+		ReleaseMetadataSignature: &host.ReleaseMetadataSignature{
+			Algorithm:         "ed25519",
+			KeyID:             "official",
+			SignatureRef:      "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/release.json.sig",
+			SourcePolicyEpoch: "1",
+			RevocationEpoch:   "1",
+		},
+		Hashes: host.PackageHashSet{
+			PackageSHA256:  pkg.PackageHash,
+			ManifestSHA256: pkg.ManifestHash,
+			EntriesSHA256:  pkg.EntriesHash,
+		},
+		PackageSignature: &host.PackageReleaseSignature{
+			Algorithm:          "ed25519",
+			KeyID:              "official",
+			SignatureBundleRef: "plugins/" + ref.PublisherID + "/" + ref.PluginID + "/" + ref.Version + "/plugin.sigbundle",
+			SourcePolicyEpoch:  "1",
+			RevocationEpoch:    "1",
+		},
+		Compatibility: &host.ReleaseCompatibility{
+			MinReDevPluginVersion: "0.1.0",
+			MinRuntimeVersion:     pkg.Manifest.Plugin.MinRuntimeVersion,
+			UIProtocolVersion:     string(pkg.Manifest.Plugin.UIProtocolVersion),
+		},
+	}
+}
+
+func httpRevocationMetadataBytesForSource(sourceID string, epoch string) []byte {
+	raw, err := json.Marshal(host.SourceRevocationMetadata{
+		SchemaVersion:    "redevplugin.source_revocations.v1",
+		SourceID:         sourceID,
+		HighestSeenEpoch: epoch,
+		GeneratedAt:      "2026-07-07T00:00:00Z",
+		ExpiresAt:        "2027-01-01T00:00:00Z",
+	})
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func httpSourcePolicyForRelease(ref host.PluginReleaseRef) host.SourcePolicySnapshot {
+	revocationMetadata := httpRevocationMetadataBytesForSource(ref.SourceID, "1")
+	revocationHash := sha256.Sum256(revocationMetadata)
+	return host.SourcePolicySnapshot{
+		SchemaVersion:     "redevplugin.source_policy.v1",
+		SourceID:          ref.SourceID,
+		SourceType:        host.PackageSourceRegistry,
+		SourceClass:       host.PackageSourceClassOfficial,
+		AllowedPublishers: []string{ref.PublisherID},
+		TrustedKeyIDs:     []string{"official"},
+		TrustedKeys: []host.SourcePolicyTrustedKey{{
+			Algorithm:       pluginpkg.PackageSignatureAlgorithmEd25519,
+			KeyID:           "official",
+			PublicKeySHA256: strings.Repeat("a", 64),
+			Usage:           []string{"release_metadata", "package_signature", "revocation_metadata"},
+			ValidFrom:       "2026-01-01T00:00:00Z",
+			ValidUntil:      "2027-01-01T00:00:00Z",
+			RevocationEpoch: "1",
+		}},
+		RevocationEvidence: &host.SourcePolicyRevocationEvidence{
+			MetadataRef:      "sources/" + ref.SourceID + "/revocations.json",
+			MetadataSHA256:   hex.EncodeToString(revocationHash[:]),
+			SignatureRef:     "sources/" + ref.SourceID + "/revocations.json.sig",
+			SignatureKeyID:   "official",
+			VerifiedAt:       "2026-07-07T00:00:00Z",
+			ExpiresAt:        "2027-01-01T00:00:00Z",
+			HighestSeenEpoch: "1",
+			MetadataBytes:    revocationMetadata,
+			SignatureBytes:   []byte("source-revocation-signature"),
+		},
+		RequireSignature: true,
+		InstallPolicy:    host.PackageInstallAllow,
+		UnsignedPolicy:   host.PackageUnsignedBlock,
+		DowngradePolicy:  host.PackageDowngradeBlock,
+		PolicyEpoch:      "1",
+		KeyRotationEpoch: "1",
+		RevocationEpoch:  "1",
+		AssessedAt:       "2026-07-07T00:00:00Z",
+	}
 }
 
 type httpRecordingCapabilityAdapter struct {
@@ -3298,6 +3717,7 @@ type httpRecordingRuntimeSupervisor struct {
 
 type httpTestWebSecurityGuard struct {
 	decision        websecurity.OriginDecision
+	role            websecurity.OriginRole
 	evaluateErr     error
 	csrfErr         error
 	evaluateCount   int
@@ -3313,6 +3733,7 @@ func (g *httpTestWebSecurityGuard) Evaluate(r *http.Request) (websecurity.Reques
 	}
 	return websecurity.RequestContext{
 		Origin: r.Header.Get("Origin"),
+		Role:   g.role,
 		Route:  r.URL.Path,
 		Method: r.Method,
 	}, decision, g.evaluateErr

@@ -9,6 +9,16 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./local-import": {
+      "types": "./dist/local-import.d.ts",
+      "default": "./dist/local-import.js"
+    }
+  },
   "files": ["dist"],
   "publishConfig": {
     "access": "public"

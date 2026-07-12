@@ -57,10 +57,24 @@ and canonical package hashes, avoiding self-referential signatures. The
 `signatures/package.sig` is rejected during package build/read.
 
 `pkg/trust` provides an Ed25519 verifier and keyring interface. Hosts decide
-which publishers, keys, registries, local developer flows, bundled packages, or
-enterprise policies are trusted. A management request's `trust_state` is a
-requested outcome, not proof; runnable verified or bundled states require a
-host-provided trust verifier.
+which publishers, keys, registries, local developer flows, host-artifact package
+references, or enterprise policies are trusted. Management install and update
+requests do not accept caller-supplied `trust_state` values; runnable verified
+state is emitted only by a host-provided trust verifier.
+
+Release-reference install and update routes are the preferred path for official
+or registry-backed package distribution. The trusted host UI sends only a
+`PluginReleaseRef` containing source, release metadata ref/hash, publisher,
+plugin, version, and expected package/manifest/entries hashes. The host
+`ReleaseSourcePolicyResolver` freezes the source policy snapshot before
+`ReleaseArtifactResolver` runs. The artifact resolver receives that snapshot and
+returns only an untrusted artifact handle plus release metadata with separate
+release metadata signature and package signature metadata; ReDevPlugin validates
+the resolver-scoped distribution reference, reads the package, compares all
+hashes, passes the package through the host trust verifier, stages the
+install/update, and only then mutates the registry. A resolver may not turn
+arbitrary URLs, filesystem paths, localhost/LAN redirects, or path traversal
+into installable artifacts.
 
 ## Sandbox UI Boundary
 
@@ -80,8 +94,12 @@ are tested to avoid exposing these token classes.
 
 ## Bridge And Tokens
 
-Bridge messages use exact target origins. Wildcard `postMessage` target origins
-are forbidden in the TypeScript SDK checks.
+Bridge messages are bound to the expected window source, transferred
+`MessagePort`, asset session, surface instance, bridge nonce, active
+fingerprint, session hash, state version, and revoke epoch. Opaque sandbox
+origins treat `event.origin` as diagnostic context rather than an authorization
+input, and wildcard `postMessage` target origins remain forbidden in the
+TypeScript SDK checks.
 
 Token and ticket kinds are described in `token-ticket-v1.schema.json`. Schema
 tests bind every token kind to its required `use`, audience fields, and

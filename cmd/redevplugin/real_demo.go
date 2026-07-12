@@ -270,7 +270,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		defer cancel()
 		_ = pluginHost.StopRuntime(stopCtx)
 	}()
-	record, err := host.InstallPackageBytes(ctx, pluginHost, packageBytes, registry.TrustUnsignedLocal)
+	record, err := host.ImportLocalPackageBytes(ctx, pluginHost, packageBytes)
 	if err != nil {
 		return err
 	}

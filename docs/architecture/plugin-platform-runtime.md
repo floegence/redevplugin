@@ -50,7 +50,11 @@ library and platform contracts.
   storage.
 - `pkg/host` coordinates lifecycle, permissions, policy, settings, storage,
   network grants, runtime execution, retained data, cleanup, audit, and
-  diagnostics through host-provided adapters.
+  diagnostics through host-provided adapters. Official or registry-backed
+  installs should use release references resolved by host-registered
+  `ReleaseSourcePolicyResolver` and `ReleaseArtifactResolver` adapters; the Host
+  still owns package reading, hash comparison, trust verification, staged
+  install, registry mutation, audit, and diagnostics.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, sandbox bootstrap/assets, streams, CSP reports, compatibility, and
   diagnostics.
@@ -158,8 +162,8 @@ npm artifact, not copied into host products through local paths.
 
 The bridge package keeps parent-only credentials out of plugin UI responses. The
 management client is for trusted host pages, while sandboxed plugin UI talks to
-the parent through exact-origin bridge messages and short-lived token/session
-routes issued by the Host.
+the parent through source/port-bound MessageChannel bridge messages and
+short-lived token/session routes issued by the Host.
 
 ## Contracts
 
@@ -168,6 +172,9 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/openapi/plugin-platform-v1.yaml`;
 - `spec/plugin/manifest-v1.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
+- `spec/plugin/release-metadata-v1.schema.json`;
+- `spec/plugin/source-policy-v1.schema.json`;
+- `spec/plugin/source-revocations-v1.schema.json`;
 - `spec/plugin/token-ticket-v1.schema.json`;
 - `spec/plugin/bridge-v1.schema.json`;
 - `spec/plugin/compatibility-manifest-v1.schema.json`;
@@ -183,6 +190,20 @@ Machine-readable contracts are first-class platform artifacts:
 set. `redevplugin verify-compatibility <compatibility.json> <artifact-root>`
 checks the version matrix and contract hashes before a host product consumes a
 published dependency set.
+
+The plugin-platform OpenAPI contract defines release-reference management routes
+and opt-in local-import package routes. Local-import install/update requests are
+for explicitly named local, developer, or import flows and still run through the
+same manifest validator, trust verifier, staged install, lifecycle, audit, and
+diagnostic path, but they are not part of the default route set. Official or
+registry-backed product installs should call
+`install-release-ref` / `update-release-ref` with a `PluginReleaseRef`; the host
+source policy resolver freezes the source policy snapshot before the artifact
+resolver runs. The artifact resolver receives that snapshot and returns only an
+untrusted artifact handle plus release metadata that separates release metadata
+signature from package signature metadata; ReDevPlugin verifies release metadata
+hash, package, manifest, entries, signature/trust result, and identity before
+mutating the registry.
 
 Manifest storage and settings migration metadata is part of that contract. A
 bootstrap migration may use `from_version: 0`, but the manifest validator and
