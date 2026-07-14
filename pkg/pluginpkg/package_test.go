@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -1159,7 +1160,13 @@ func packageZipBytes(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for entryPath, content := range entries {
+	entryPaths := make([]string, 0, len(entries))
+	for entryPath := range entries {
+		entryPaths = append(entryPaths, entryPath)
+	}
+	sort.Strings(entryPaths)
+	for _, entryPath := range entryPaths {
+		content := entries[entryPath]
 		writer, err := zw.Create(entryPath)
 		if err != nil {
 			t.Fatal(err)
