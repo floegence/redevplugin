@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +50,9 @@ type Lease struct {
 	Method                 string      `json:"method,omitempty"`
 	Effect                 string      `json:"effect,omitempty"`
 	Execution              string      `json:"execution,omitempty"`
+	OperationID            string      `json:"operation_id,omitempty"`
+	StreamID               string      `json:"stream_id,omitempty"`
+	AuditCorrelationID     string      `json:"audit_correlation_id,omitempty"`
 	TargetDescriptorHashes []string    `json:"target_descriptor_hashes,omitempty"`
 	Limits                 LeaseLimits `json:"limits,omitempty"`
 	PolicyRevision         uint64      `json:"policy_revision"`
@@ -158,26 +163,30 @@ var (
 )
 
 type ProcessSupervisorOptions struct {
-	RuntimePath            string
-	Args                   []string
-	Env                    []string
-	Dir                    string
-	Diagnostics            observability.DiagnosticsSink
-	Artifacts              ArtifactProvider
-	HandleGrants           HandleGrantValidator
-	RuntimeLeaseReplays    RuntimeLeaseReplayStore
-	RuntimeLeaseVerifier   RuntimeLeaseVerifier
-	RuntimeLeasePublicKeys []RuntimeLeasePublicKey
-	StorageFiles           storage.FilesBroker
-	StorageKV              storage.KVBroker
-	StorageSQLite          storage.SQLiteBroker
-	Connectivity           connectivity.Broker
-	NetworkExecutor        connectivity.NetworkExecutor
-	Streams                stream.Store
-	Now                    func() time.Time
-	HandshakeTimeout       time.Duration
-	HeartbeatInterval      time.Duration
-	MaxHeartbeatStaleness  time.Duration
+	RuntimePath           string
+	Args                  []string
+	Env                   []string
+	Dir                   string
+	Diagnostics           observability.DiagnosticsSink
+	Artifacts             ArtifactProvider
+	HandleGrants          HandleGrantValidator
+	RuntimeLeaseReplays   RuntimeLeaseReplayStore
+	StorageFiles          storage.FilesBroker
+	StorageKV             storage.KVBroker
+	StorageSQLite         storage.SQLiteBroker
+	Connectivity          connectivity.Broker
+	NetworkExecutor       connectivity.NetworkExecutor
+	StreamSink            RuntimeStreamSink
+	Now                   func() time.Time
+	HandshakeTimeout      time.Duration
+	HeartbeatInterval     time.Duration
+	MaxHeartbeatStaleness time.Duration
+}
+
+type RuntimeStreamSink interface {
+	AppendRuntimeStream(ctx context.Context, streamID, kind string, data []byte) error
+	CloseRuntimeStream(ctx context.Context, streamID string) error
+	FailRuntimeStream(ctx context.Context, streamID, reason string) error
 }
 
 type ProcessSupervisor struct {
@@ -193,13 +202,15 @@ type ProcessSupervisor struct {
 	handleGrants           HandleGrantValidator
 	runtimeLeaseReplays    RuntimeLeaseReplayStore
 	runtimeLeaseVerifier   RuntimeLeaseVerifier
+	runtimeLeaseSigningKey string
+	runtimeLeasePrivateKey ed25519.PrivateKey
 	runtimeLeasePublicKeys []RuntimeLeasePublicKey
 	storageFiles           storage.FilesBroker
 	storageKV              storage.KVBroker
 	storageSQLite          storage.SQLiteBroker
 	connectivity           connectivity.Broker
 	networkExecutor        connectivity.NetworkExecutor
-	streams                stream.Store
+	streamSink             RuntimeStreamSink
 	now                    func() time.Time
 	handshakeTimeout       time.Duration
 	heartbeatInterval      time.Duration
@@ -240,10 +251,17 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	if maxHeartbeatStaleness < heartbeatInterval {
 		maxHeartbeatStaleness = heartbeatInterval
 	}
-	runtimeLeasePublicKeys, err := NormalizeRuntimeLeasePublicKeys(options.RuntimeLeasePublicKeys)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
+	keyHash := sha256.Sum256(publicKey)
+	keyID := "host_ephemeral_" + hex.EncodeToString(keyHash[:8])
+	runtimeLeasePublicKey, err := RuntimeLeasePublicKeyFromEd25519(keyID, publicKey)
+	if err != nil {
+		return nil, err
+	}
+	keyring := StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{KeyID: keyID, PublicKey: publicKey}}}
 	return &ProcessSupervisor{
 		path:                   path,
 		args:                   append([]string(nil), options.Args...),
@@ -253,14 +271,16 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		artifacts:              options.Artifacts,
 		handleGrants:           options.HandleGrants,
 		runtimeLeaseReplays:    options.RuntimeLeaseReplays,
-		runtimeLeaseVerifier:   options.RuntimeLeaseVerifier,
-		runtimeLeasePublicKeys: runtimeLeasePublicKeys,
+		runtimeLeaseVerifier:   Ed25519RuntimeLeaseVerifier{Keyring: keyring, Now: now},
+		runtimeLeaseSigningKey: keyID,
+		runtimeLeasePrivateKey: append(ed25519.PrivateKey(nil), privateKey...),
+		runtimeLeasePublicKeys: []RuntimeLeasePublicKey{runtimeLeasePublicKey},
 		storageFiles:           options.StorageFiles,
 		storageKV:              options.StorageKV,
 		storageSQLite:          options.StorageSQLite,
 		connectivity:           options.Connectivity,
 		networkExecutor:        options.NetworkExecutor,
-		streams:                options.Streams,
+		streamSink:             options.StreamSink,
 		now:                    now,
 		handshakeTimeout:       handshakeTimeout,
 		heartbeatInterval:      heartbeatInterval,
@@ -496,6 +516,15 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 		return nil, ErrRuntimeNotReady
 	}
 	lease = normalizeRuntimeLeaseForIPC(lease)
+	health := s.healthSnapshot()
+	lease, err := bindRuntimeLeaseAudience(lease, health)
+	if err != nil {
+		return nil, err
+	}
+	lease, err = SignRuntimeLease(lease, method, s.runtimeLeaseSigningKey, s.runtimeLeasePrivateKey)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.verifyRuntimeLease(ctx, lease, method); err != nil {
 		return nil, err
 	}
@@ -533,6 +562,30 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 		return []byte("{}"), nil
 	}
 	return append([]byte(nil), response.Result...), nil
+}
+
+func bindRuntimeLeaseAudience(lease Lease, health Health) (Lease, error) {
+	if !health.Ready {
+		return Lease{}, ErrRuntimeNotReady
+	}
+	bindings := []struct {
+		current *string
+		value   string
+	}{
+		{current: &lease.RuntimeInstanceID, value: health.RuntimeInstanceID},
+		{current: &lease.RuntimeGenerationID, value: health.RuntimeGenerationID},
+		{current: &lease.IPCChannelID, value: health.IPCChannelID},
+		{current: &lease.ConnectionNonce, value: health.ConnectionNonce},
+	}
+	for _, binding := range bindings {
+		if strings.TrimSpace(*binding.current) != "" && strings.TrimSpace(*binding.current) != binding.value {
+			return Lease{}, ErrRuntimeLeaseInvalid
+		}
+		*binding.current = binding.value
+	}
+	lease.KeyID = ""
+	lease.Signature = ""
+	return lease, nil
 }
 
 func normalizeRuntimeLeaseForIPC(lease Lease) Lease {
@@ -606,7 +659,7 @@ func (s *ProcessSupervisor) consumeRuntimeLease(ctx context.Context, lease Lease
 
 func (s *ProcessSupervisor) verifyRuntimeLease(ctx context.Context, lease Lease, method string) error {
 	if s == nil || s.runtimeLeaseVerifier == nil {
-		return nil
+		return ErrRuntimeLeaseSignatureKeyringRequired
 	}
 	if err := validateRuntimeLeaseAudience(lease, s.healthSnapshot()); err != nil {
 		s.emit("plugin.runtime.lease.signature_rejected", "error", "runtime execution lease audience was rejected", map[string]any{
@@ -866,7 +919,7 @@ type helloRequestPayload struct {
 	HostWASMABI            string                  `json:"host_wasm_abi"`
 	StartedUnixNano        int64                   `json:"started_unix_nano"`
 	ChannelNonce           string                  `json:"channel_nonce"`
-	RuntimeLeasePublicKeys []RuntimeLeasePublicKey `json:"runtime_lease_public_keys,omitempty"`
+	RuntimeLeasePublicKeys []RuntimeLeasePublicKey `json:"runtime_lease_public_keys"`
 }
 
 type helloAckPayload struct {
@@ -1206,14 +1259,6 @@ func randomIPCChannelNonce() (string, error) {
 		return "", fmt.Errorf("generate ipc channel nonce: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(nonce[:]), nil
-}
-
-func randomNetworkStreamID() (string, error) {
-	var raw [18]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate network stream id: %w", err)
-	}
-	return "stream_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedArtifact *ArtifactRequest) (ipcFrame, error) {
@@ -2361,7 +2406,7 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			Message: err.Error(),
 		})
 	}
-	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, s.streams, grant, req, s.now())
+	payload := dispatchNetworkExecute(hostcallCtx, s.networkExecutor, s.streamSink, grant, req, s.now())
 	if payload.OK {
 		payload.GrantID = grant.GrantID
 		payload.ConnectorID = grant.ConnectorID
@@ -2509,7 +2554,7 @@ func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGene
 	return nil
 }
 
-func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkExecutor, streams stream.Store, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, now time.Time) networkExecuteResponsePayload {
+func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkExecutor, streamSink RuntimeStreamSink, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, now time.Time) networkExecuteResponsePayload {
 	timeout := time.Duration(req.TimeoutMillis) * time.Millisecond
 	switch req.Transport {
 	case connectivity.TransportHTTP:
@@ -2518,10 +2563,10 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
 		}
 		if strings.TrimSpace(req.Operation) == "http_stream" {
-			if streams == nil {
-				return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_STORE_UNAVAILABLE", Message: "runtime stream store is unavailable"}
+			if streamSink == nil {
+				return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_SINK_UNAVAILABLE", Message: "runtime stream sink is unavailable"}
 			}
-			return dispatchHTTPStreamExecute(ctx, executor, streams, grant, req, body, timeout, now)
+			return dispatchHTTPStreamExecute(ctx, executor, streamSink, grant, req, body, timeout, now)
 		}
 		result, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
 			Grant:            grant,
@@ -2596,38 +2641,10 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 	}
 }
 
-func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.NetworkExecutor, streams stream.Store, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, body []byte, timeout time.Duration, now time.Time) networkExecuteResponsePayload {
+func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.NetworkExecutor, streamSink RuntimeStreamSink, grant connectivity.ConnectionGrant, req networkExecuteRequestPayload, body []byte, timeout time.Duration, now time.Time) networkExecuteResponsePayload {
 	streamID := strings.TrimSpace(req.StreamID)
 	if streamID == "" {
-		var err error
-		streamID, err = randomNetworkStreamID()
-		if err != nil {
-			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_FAILED", Message: err.Error()}
-		}
-	}
-	expected := stream.RegisterRequest{
-		StreamID:             streamID,
-		PluginID:             strings.TrimSpace(req.PluginID),
-		PluginInstanceID:     strings.TrimSpace(req.PluginInstanceID),
-		Method:               strings.TrimSpace(req.StreamMethod),
-		Effect:               strings.TrimSpace(req.StreamEffect),
-		Execution:            strings.TrimSpace(req.StreamExecution),
-		SurfaceInstanceID:    strings.TrimSpace(req.SurfaceInstanceID),
-		OwnerSessionHash:     strings.TrimSpace(req.OwnerSessionHash),
-		OwnerUserHash:        strings.TrimSpace(req.OwnerUserHash),
-		SessionChannelIDHash: strings.TrimSpace(req.SessionChannelIDHash),
-		BridgeChannelID:      strings.TrimSpace(req.BridgeChannelID),
-		Direction:            stream.DirectionRead,
-		ContentType:          strings.TrimSpace(req.ContentType),
-		MaxBufferedBytes:     req.MaxBufferedBytes,
-		Now:                  now,
-	}
-	record, err := streams.Register(ctx, expected)
-	if err != nil {
-		return networkExecuteErrorResponse(fmt.Errorf("%w: %v", stream.ErrInvalidStream, err))
-	}
-	if !streamRecordMatchesRequest(record, expected) {
-		return networkExecuteErrorResponse(fmt.Errorf("%w: stream id already belongs to a different audience", stream.ErrInvalidStream))
+		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_STREAM_FAILED", Message: "host-owned stream_id is required"}
 	}
 	result, err := executor.StreamHTTP(ctx, connectivity.HTTPRequest{
 		Grant:            grant,
@@ -2641,21 +2658,14 @@ func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.Networ
 		Timeout:          timeout,
 		Now:              now,
 	}, func(chunk connectivity.HTTPResponseChunk) error {
-		_, appendErr := streams.Append(ctx, stream.AppendRequest{
-			StreamID: streamID,
-			Kind:     "data",
-			Data:     chunk.Data,
-			Now:      now,
-		})
-		return appendErr
+		return streamSink.AppendRuntimeStream(ctx, streamID, "data", chunk.Data)
 	})
 	if err != nil {
-		_, _ = streams.Append(ctx, stream.AppendRequest{StreamID: streamID, Kind: "error", Error: err.Error(), Now: now})
-		_, _ = streams.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusCanceled, Reason: err.Error(), Now: now})
+		_ = streamSink.FailRuntimeStream(ctx, streamID, err.Error())
 		return networkExecuteErrorResponse(err)
 	}
-	if _, err := streams.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusClosed, Now: now}); err != nil {
-		return networkExecuteErrorResponse(fmt.Errorf("%w: %v", stream.ErrInvalidStream, err))
+	if err := streamSink.CloseRuntimeStream(ctx, streamID); err != nil {
+		return networkExecuteErrorResponse(err)
 	}
 	return networkExecuteResponsePayload{
 		OK:         true,
@@ -2665,21 +2675,6 @@ func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.Networ
 		BytesRead:  result.BytesRead,
 		ChunkCount: result.ChunkCount,
 	}
-}
-
-func streamRecordMatchesRequest(record stream.Record, req stream.RegisterRequest) bool {
-	return strings.TrimSpace(record.StreamID) == strings.TrimSpace(req.StreamID) &&
-		strings.TrimSpace(record.PluginID) == strings.TrimSpace(req.PluginID) &&
-		strings.TrimSpace(record.PluginInstanceID) == strings.TrimSpace(req.PluginInstanceID) &&
-		strings.TrimSpace(record.Method) == strings.TrimSpace(req.Method) &&
-		strings.TrimSpace(record.Effect) == strings.TrimSpace(req.Effect) &&
-		strings.TrimSpace(record.Execution) == strings.TrimSpace(req.Execution) &&
-		strings.TrimSpace(record.SurfaceInstanceID) == strings.TrimSpace(req.SurfaceInstanceID) &&
-		strings.TrimSpace(record.OwnerSessionHash) == strings.TrimSpace(req.OwnerSessionHash) &&
-		strings.TrimSpace(record.OwnerUserHash) == strings.TrimSpace(req.OwnerUserHash) &&
-		strings.TrimSpace(record.SessionChannelIDHash) == strings.TrimSpace(req.SessionChannelIDHash) &&
-		strings.TrimSpace(record.BridgeChannelID) == strings.TrimSpace(req.BridgeChannelID) &&
-		record.Direction == req.Direction
 }
 
 func runtimeHostcallContext(parent context.Context, requested time.Duration) (context.Context, context.CancelFunc) {

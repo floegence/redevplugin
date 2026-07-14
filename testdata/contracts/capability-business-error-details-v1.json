@@ -1,0 +1,9 @@
+{
+  "capability_id": "example.capability.documents",
+  "capability_version": "1.0.0",
+  "detail_schema_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "business_error_code": "DOCUMENT_NOT_FOUND",
+  "business_error_details": {
+    "document_id": "doc-1"
+  }
+}

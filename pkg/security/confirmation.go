@@ -12,44 +12,73 @@ import (
 const DefaultMaxPendingConfirmationIntentsPerPlugin = 64
 
 var (
-	ErrInvalidConfirmationIntent  = errors.New("plugin confirmation intent is invalid")
-	ErrConfirmationIntentNotFound = errors.New("plugin confirmation intent not found")
-	ErrConfirmationIntentExpired  = errors.New("plugin confirmation intent expired")
+	ErrInvalidConfirmationIntent       = errors.New("plugin confirmation intent is invalid")
+	ErrConfirmationIntentNotFound      = errors.New("plugin confirmation intent not found")
+	ErrConfirmationIntentExpired       = errors.New("plugin confirmation intent expired")
+	ErrConfirmationIntentScopeMismatch = errors.New("plugin confirmation intent scope mismatch")
 )
 
 type ConfirmationIntentRecord struct {
-	ConfirmationID      string    `json:"confirmation_id"`
-	ConfirmationTokenID string    `json:"confirmation_token_id"`
-	PluginID            string    `json:"plugin_id"`
-	PluginInstanceID    string    `json:"plugin_instance_id"`
-	SurfaceInstanceID   string    `json:"surface_instance_id"`
-	BridgeChannelID     string    `json:"bridge_channel_id"`
-	Method              string    `json:"method"`
-	RequestHash         string    `json:"request_hash"`
-	PlanHash            string    `json:"plan_hash"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
+	ConfirmationID      string            `json:"confirmation_id"`
+	ConfirmationTokenID string            `json:"confirmation_token_id"`
+	PluginID            string            `json:"plugin_id"`
+	PluginInstanceID    string            `json:"plugin_instance_id"`
+	SurfaceInstanceID   string            `json:"surface_instance_id"`
+	BridgeChannelID     string            `json:"bridge_channel_id"`
+	Method              string            `json:"method"`
+	RequestHash         string            `json:"request_hash"`
+	PlanHash            string            `json:"plan_hash"`
+	Scope               ConfirmationScope `json:"scope"`
+	IssuedAt            time.Time         `json:"issued_at"`
+	ExpiresAt           time.Time         `json:"expires_at"`
 }
 
 type PutConfirmationIntentRequest struct {
-	ConfirmationID      string    `json:"confirmation_id"`
-	ConfirmationTokenID string    `json:"confirmation_token_id"`
-	PluginID            string    `json:"plugin_id"`
-	PluginInstanceID    string    `json:"plugin_instance_id"`
-	SurfaceInstanceID   string    `json:"surface_instance_id"`
-	BridgeChannelID     string    `json:"bridge_channel_id"`
-	Method              string    `json:"method"`
-	RequestHash         string    `json:"request_hash"`
-	PlanHash            string    `json:"plan_hash"`
-	IssuedAt            time.Time `json:"issued_at,omitempty"`
-	ExpiresAt           time.Time `json:"expires_at"`
-	Now                 time.Time `json:"now,omitempty"`
-	MaxPendingPerPlugin int       `json:"max_pending_per_plugin,omitempty"`
+	ConfirmationID      string            `json:"confirmation_id"`
+	ConfirmationTokenID string            `json:"confirmation_token_id"`
+	PluginID            string            `json:"plugin_id"`
+	PluginInstanceID    string            `json:"plugin_instance_id"`
+	SurfaceInstanceID   string            `json:"surface_instance_id"`
+	BridgeChannelID     string            `json:"bridge_channel_id"`
+	Method              string            `json:"method"`
+	RequestHash         string            `json:"request_hash"`
+	PlanHash            string            `json:"plan_hash"`
+	Scope               ConfirmationScope `json:"scope"`
+	IssuedAt            time.Time         `json:"issued_at,omitempty"`
+	ExpiresAt           time.Time         `json:"expires_at"`
+	Now                 time.Time         `json:"now,omitempty"`
+	MaxPendingPerPlugin int               `json:"max_pending_per_plugin,omitempty"`
+}
+
+type ConfirmationScope struct {
+	ActiveFingerprint      string `json:"active_fingerprint"`
+	OwnerSessionHash       string `json:"owner_session_hash"`
+	OwnerUserHash          string `json:"owner_user_hash"`
+	SessionChannelIDHash   string `json:"session_channel_id_hash"`
+	PolicyRevision         uint64 `json:"policy_revision"`
+	ManagementRevision     uint64 `json:"management_revision"`
+	RevokeEpoch            uint64 `json:"revoke_epoch"`
+	TargetDescriptorSHA256 string `json:"target_descriptor_sha256"`
 }
 
 type ConsumeConfirmationIntentRequest struct {
 	ConfirmationID string    `json:"confirmation_id"`
 	Now            time.Time `json:"now,omitempty"`
+}
+
+type RejectConfirmationIntentRequest struct {
+	ConfirmationID       string    `json:"confirmation_id"`
+	PluginInstanceID     string    `json:"plugin_instance_id"`
+	SurfaceInstanceID    string    `json:"surface_instance_id"`
+	BridgeChannelID      string    `json:"bridge_channel_id"`
+	ActiveFingerprint    string    `json:"active_fingerprint"`
+	OwnerSessionHash     string    `json:"owner_session_hash"`
+	OwnerUserHash        string    `json:"owner_user_hash"`
+	SessionChannelIDHash string    `json:"session_channel_id_hash"`
+	PolicyRevision       uint64    `json:"policy_revision"`
+	ManagementRevision   uint64    `json:"management_revision"`
+	RevokeEpoch          uint64    `json:"revoke_epoch"`
+	Now                  time.Time `json:"now,omitempty"`
 }
 
 type ListConfirmationIntentsRequest struct {
@@ -64,6 +93,7 @@ type RevokePluginConfirmationIntentsRequest struct {
 type ConfirmationIntentStore interface {
 	PutConfirmationIntent(ctx context.Context, req PutConfirmationIntentRequest) (ConfirmationIntentRecord, error)
 	ConsumeConfirmationIntent(ctx context.Context, req ConsumeConfirmationIntentRequest) (ConfirmationIntentRecord, error)
+	RejectConfirmationIntent(ctx context.Context, req RejectConfirmationIntentRequest) (ConfirmationIntentRecord, error)
 	ListConfirmationIntents(ctx context.Context, req ListConfirmationIntentsRequest) ([]ConfirmationIntentRecord, error)
 	RevokePluginConfirmationIntents(ctx context.Context, req RevokePluginConfirmationIntentsRequest) (int, error)
 }
@@ -137,6 +167,35 @@ func (s *MemoryConfirmationIntentStore) ConsumeConfirmationIntent(_ context.Cont
 	return cloneConfirmationIntentRecord(record), nil
 }
 
+func (s *MemoryConfirmationIntentStore) RejectConfirmationIntent(_ context.Context, req RejectConfirmationIntentRequest) (ConfirmationIntentRecord, error) {
+	if s == nil {
+		return ConfirmationIntentRecord{}, errors.New("confirmation intent store is nil")
+	}
+	normalized, err := normalizeRejectConfirmationIntentRequest(req)
+	if err != nil {
+		return ConfirmationIntentRecord{}, err
+	}
+	if normalized.Now.IsZero() {
+		normalized.Now = s.now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[normalized.ConfirmationID]
+	if !ok {
+		return ConfirmationIntentRecord{}, ErrConfirmationIntentNotFound
+	}
+	if !record.ExpiresAt.After(normalized.Now) {
+		delete(s.records, normalized.ConfirmationID)
+		return ConfirmationIntentRecord{}, ErrConfirmationIntentExpired
+	}
+	if !confirmationIntentMatchesRejection(record, normalized) {
+		return ConfirmationIntentRecord{}, ErrConfirmationIntentScopeMismatch
+	}
+	delete(s.records, normalized.ConfirmationID)
+	return cloneConfirmationIntentRecord(record), nil
+}
+
 func (s *MemoryConfirmationIntentStore) ListConfirmationIntents(_ context.Context, req ListConfirmationIntentsRequest) ([]ConfirmationIntentRecord, error) {
 	if s == nil {
 		return nil, errors.New("confirmation intent store is nil")
@@ -197,6 +256,7 @@ func confirmationIntentFromPut(req PutConfirmationIntentRequest, now time.Time) 
 		Method:              strings.TrimSpace(req.Method),
 		RequestHash:         strings.TrimSpace(req.RequestHash),
 		PlanHash:            strings.TrimSpace(req.PlanHash),
+		Scope:               req.Scope,
 		IssuedAt:            req.IssuedAt,
 		ExpiresAt:           req.ExpiresAt,
 	}
@@ -212,11 +272,47 @@ func confirmationIntentFromPut(req PutConfirmationIntentRequest, now time.Time) 
 		record.Method == "" ||
 		record.RequestHash == "" ||
 		record.PlanHash == "" ||
+		strings.TrimSpace(record.Scope.ActiveFingerprint) == "" ||
+		strings.TrimSpace(record.Scope.OwnerSessionHash) == "" ||
+		strings.TrimSpace(record.Scope.OwnerUserHash) == "" ||
+		strings.TrimSpace(record.Scope.SessionChannelIDHash) == "" ||
+		record.Scope.PolicyRevision == 0 || record.Scope.ManagementRevision == 0 ||
+		strings.TrimSpace(record.Scope.TargetDescriptorSHA256) == "" ||
 		record.ExpiresAt.IsZero() ||
 		!record.ExpiresAt.After(now) {
 		return ConfirmationIntentRecord{}, ErrInvalidConfirmationIntent
 	}
 	return record, nil
+}
+
+func normalizeRejectConfirmationIntentRequest(req RejectConfirmationIntentRequest) (RejectConfirmationIntentRequest, error) {
+	req.ConfirmationID = strings.TrimSpace(req.ConfirmationID)
+	req.PluginInstanceID = strings.TrimSpace(req.PluginInstanceID)
+	req.SurfaceInstanceID = strings.TrimSpace(req.SurfaceInstanceID)
+	req.BridgeChannelID = strings.TrimSpace(req.BridgeChannelID)
+	req.ActiveFingerprint = strings.TrimSpace(req.ActiveFingerprint)
+	req.OwnerSessionHash = strings.TrimSpace(req.OwnerSessionHash)
+	req.OwnerUserHash = strings.TrimSpace(req.OwnerUserHash)
+	req.SessionChannelIDHash = strings.TrimSpace(req.SessionChannelIDHash)
+	if req.ConfirmationID == "" || req.PluginInstanceID == "" || req.SurfaceInstanceID == "" ||
+		req.BridgeChannelID == "" || req.ActiveFingerprint == "" || req.OwnerSessionHash == "" ||
+		req.OwnerUserHash == "" || req.SessionChannelIDHash == "" || req.PolicyRevision == 0 || req.ManagementRevision == 0 {
+		return RejectConfirmationIntentRequest{}, ErrInvalidConfirmationIntent
+	}
+	return req, nil
+}
+
+func confirmationIntentMatchesRejection(record ConfirmationIntentRecord, req RejectConfirmationIntentRequest) bool {
+	return record.PluginInstanceID == req.PluginInstanceID &&
+		record.SurfaceInstanceID == req.SurfaceInstanceID &&
+		record.BridgeChannelID == req.BridgeChannelID &&
+		record.Scope.ActiveFingerprint == req.ActiveFingerprint &&
+		record.Scope.OwnerSessionHash == req.OwnerSessionHash &&
+		record.Scope.OwnerUserHash == req.OwnerUserHash &&
+		record.Scope.SessionChannelIDHash == req.SessionChannelIDHash &&
+		record.Scope.PolicyRevision == req.PolicyRevision &&
+		record.Scope.ManagementRevision == req.ManagementRevision &&
+		record.Scope.RevokeEpoch == req.RevokeEpoch
 }
 
 func normalizeMaxPendingConfirmationIntents(maxPending int) int {

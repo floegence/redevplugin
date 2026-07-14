@@ -226,6 +226,9 @@ type runtimeLeaseSignaturePayload struct {
 	Method                 string       `json:"method"`
 	Effect                 string       `json:"effect,omitempty"`
 	Execution              string       `json:"execution,omitempty"`
+	OperationID            string       `json:"operation_id,omitempty"`
+	StreamID               string       `json:"stream_id,omitempty"`
+	AuditCorrelationID     string       `json:"audit_correlation_id"`
 	SurfaceInstanceID      string       `json:"surface_instance_id,omitempty"`
 	OwnerSessionHash       string       `json:"owner_session_hash,omitempty"`
 	OwnerUserHash          string       `json:"owner_user_hash,omitempty"`
@@ -264,6 +267,9 @@ func CanonicalRuntimeLeaseSignaturePayload(lease Lease, method string) ([]byte, 
 		Method:                 resolvedMethod,
 		Effect:                 strings.TrimSpace(lease.Effect),
 		Execution:              strings.TrimSpace(lease.Execution),
+		OperationID:            strings.TrimSpace(lease.OperationID),
+		StreamID:               strings.TrimSpace(lease.StreamID),
+		AuditCorrelationID:     strings.TrimSpace(lease.AuditCorrelationID),
 		SurfaceInstanceID:      strings.TrimSpace(lease.SurfaceInstanceID),
 		OwnerSessionHash:       strings.TrimSpace(lease.OwnerSessionHash),
 		OwnerUserHash:          strings.TrimSpace(lease.OwnerUserHash),
@@ -296,7 +302,24 @@ func validateRuntimeLeaseSignatureInput(lease Lease, method string, now time.Tim
 		strings.TrimSpace(lease.LeaseNonce) == "" ||
 		strings.TrimSpace(lease.PluginInstanceID) == "" ||
 		strings.TrimSpace(lease.RuntimeGenerationID) == "" ||
+		strings.TrimSpace(lease.AuditCorrelationID) == "" ||
 		resolvedMethod == "" {
+		return ErrRuntimeLeaseInvalid
+	}
+	switch strings.TrimSpace(lease.Execution) {
+	case "sync":
+		if strings.TrimSpace(lease.OperationID) != "" || strings.TrimSpace(lease.StreamID) != "" {
+			return ErrRuntimeLeaseInvalid
+		}
+	case "operation":
+		if strings.TrimSpace(lease.OperationID) == "" || strings.TrimSpace(lease.StreamID) != "" {
+			return ErrRuntimeLeaseInvalid
+		}
+	case "subscription":
+		if strings.TrimSpace(lease.OperationID) == "" || strings.TrimSpace(lease.StreamID) == "" {
+			return ErrRuntimeLeaseInvalid
+		}
+	default:
 		return ErrRuntimeLeaseInvalid
 	}
 	expiresAt := lease.ExpiresAt.UTC()

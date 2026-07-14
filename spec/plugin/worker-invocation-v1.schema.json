@@ -21,6 +21,8 @@
     "export",
     "effect",
     "execution",
+    "audit_correlation_id",
+    "params_sha256",
     "params"
   ],
   "properties": {
@@ -46,6 +48,10 @@
     },
     "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
     "execution": { "enum": ["sync", "operation", "subscription"] },
+    "operation_id": { "type": "string", "minLength": 1 },
+    "stream_id": { "type": "string", "minLength": 1 },
+    "audit_correlation_id": { "type": "string", "minLength": 1 },
+    "params_sha256": { "$ref": "#/$defs/sha256" },
     "surface_instance_id": { "type": "string" },
     "owner_session_hash": { "type": "string" },
     "owner_user_hash": { "type": "string" },
@@ -61,5 +67,19 @@
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "execution": { "const": "sync" } }, "required": ["execution"] },
+      "then": { "not": { "anyOf": [{ "required": ["operation_id"] }, { "required": ["stream_id"] }] } }
+    },
+    {
+      "if": { "properties": { "execution": { "const": "operation" } }, "required": ["execution"] },
+      "then": { "required": ["operation_id"], "not": { "required": ["stream_id"] } }
+    },
+    {
+      "if": { "properties": { "execution": { "const": "subscription" } }, "required": ["execution"] },
+      "then": { "required": ["operation_id", "stream_id"] }
+    }
+  ]
 }

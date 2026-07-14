@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/permissions"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
@@ -23,7 +24,7 @@ import (
 )
 
 const (
-	devStateSchemaVersion = "redevplugin.dev_state.v2"
+	devStateSchemaVersion = "redevplugin.dev_state.v3"
 	devStateFile          = "redevplugin-dev-state.json"
 	devPackageFile        = "installed.redevplugin"
 	devStorageDir         = "storage"
@@ -38,7 +39,20 @@ type devLifecycleState struct {
 	Settings      settings.MemoryState    `json:"settings,omitempty"`
 	Secrets       secrets.MemoryState     `json:"secrets,omitempty"`
 	Permissions   permissions.MemoryState `json:"permissions,omitempty"`
+	Capabilities  []devCapabilityState    `json:"capabilities,omitempty"`
 	UpdatedAt     time.Time               `json:"updated_at"`
+}
+
+type devCapabilitySpec struct {
+	ArtifactRoot  string
+	PinFile       string
+	PublicKeyFile string
+}
+
+type devCapabilityState struct {
+	ArtifactRoot  string `json:"artifact_root"`
+	PinFile       string `json:"pin_file"`
+	PublicKeyFile string `json:"public_key_file"`
 }
 
 type devLifecycleSummary struct {
@@ -103,13 +117,47 @@ type devDataSummary struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-func devInstall(ctx context.Context, stateRoot string, packageFile string) error {
-	stateRoot, err := prepareDevStateRoot(stateRoot)
+func parseDevCapabilityArgs(args []string) ([]devCapabilitySpec, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if len(args)%4 != 0 {
+		return nil, errors.New("each --capability requires artifact-root, pin.json, and public.json")
+	}
+	specs := make([]devCapabilitySpec, 0, len(args)/4)
+	for index := 0; index < len(args); index += 4 {
+		if args[index] != "--capability" {
+			return nil, fmt.Errorf("unknown dev-install argument %q", args[index])
+		}
+		specs = append(specs, devCapabilitySpec{
+			ArtifactRoot:  args[index+1],
+			PinFile:       args[index+2],
+			PublicKeyFile: args[index+3],
+		})
+	}
+	return specs, nil
+}
+
+func devInstall(ctx context.Context, stateRoot string, packageFile string, capabilitySpecs []devCapabilitySpec) error {
+	stateRoot, err := normalizeDevStateRoot(stateRoot)
 	if err != nil {
 		return err
 	}
-	if stateExists(stateRoot) {
-		return fmt.Errorf("dev state already exists at %s", stateRoot)
+	precreatedEmptyRoot := false
+	if info, err := os.Lstat(stateRoot); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("dev state already exists at %s", stateRoot)
+		}
+		entries, readErr := os.ReadDir(stateRoot)
+		if readErr != nil {
+			return readErr
+		}
+		if len(entries) != 0 {
+			return fmt.Errorf("dev state already exists at %s", stateRoot)
+		}
+		precreatedEmptyRoot = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	data, err := os.ReadFile(packageFile)
 	if err != nil {
@@ -119,7 +167,28 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string) error
 	if err != nil {
 		return err
 	}
-	h, err := newDevInstallHost(stateRoot)
+	loadedCapabilities, err := loadDevCapabilitySpecs(capabilitySpecs)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(stateRoot), 0o700); err != nil {
+		return err
+	}
+	stagingRoot, err := os.MkdirTemp(filepath.Dir(stateRoot), "."+filepath.Base(stateRoot)+".install-")
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(stagingRoot, 0o700); err != nil {
+		_ = os.RemoveAll(stagingRoot)
+		return err
+	}
+	promoted := false
+	defer func() {
+		if !promoted {
+			_ = os.RemoveAll(stagingRoot)
+		}
+	}()
+	h, err := newDevInstallHost(stagingRoot, loadedCapabilities)
 	if err != nil {
 		return err
 	}
@@ -133,19 +202,43 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string) error
 	if record.PluginID != pkg.Manifest.PluginID() {
 		return fmt.Errorf("installed plugin identity mismatch")
 	}
-	packagePath := filepath.Join(stateRoot, devPackageFile)
+	packagePath := filepath.Join(stagingRoot, devPackageFile)
 	if err := writeBytesFile(packagePath, data, 0o600); err != nil {
+		return err
+	}
+	capabilityState, err := persistDevCapabilities(stagingRoot, loadedCapabilities)
+	if err != nil {
 		return err
 	}
 	state := devLifecycleState{
 		SchemaVersion: devStateSchemaVersion,
 		PackageFile:   devPackageFile,
 		Record:        record,
+		Capabilities:  capabilityState,
 		UpdatedAt:     time.Now().UTC(),
 	}
-	if err := saveDevState(stateRoot, state); err != nil {
+	if err := saveDevState(stagingRoot, state); err != nil {
 		return err
 	}
+	if precreatedEmptyRoot {
+		entries, err := os.ReadDir(stateRoot)
+		if err != nil {
+			return err
+		}
+		if len(entries) != 0 {
+			return fmt.Errorf("dev state root changed during installation: %s", stateRoot)
+		}
+		if err := os.Remove(stateRoot); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(stagingRoot, stateRoot); err != nil {
+		if precreatedEmptyRoot {
+			_ = os.Mkdir(stateRoot, 0o700)
+		}
+		return err
+	}
+	promoted = true
 	return writeDevLifecycle("dev-install", stateRoot, state)
 }
 
@@ -580,6 +673,14 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 	secretStore := secrets.NewMemoryStoreFromState(state.Secrets)
 	permissionStore := permissions.NewMemoryStoreFromState(state.Permissions)
 	registryStore := newDevRegistryStore(state.Record)
+	loadedCapabilities, err := loadPersistedDevCapabilities(stateRoot, state.Capabilities)
+	if err != nil {
+		return devHarness{}, devLifecycleState{}, err
+	}
+	capabilities, err := devCapabilityRegistry(loadedCapabilities)
+	if err != nil {
+		return devHarness{}, devLifecycleState{}, err
+	}
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
@@ -589,6 +690,7 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 		Settings:        settingsStore,
 		Secrets:         secretStore,
 		Permissions:     permissionStore,
+		Capabilities:    capabilities,
 	})
 	if err != nil {
 		return devHarness{}, devLifecycleState{}, err
@@ -603,8 +705,12 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, devLifec
 	}, state, nil
 }
 
-func newDevInstallHost(stateRoot string) (*host.Host, error) {
+func newDevInstallHost(stateRoot string, loadedCapabilities []loadedHostCapabilityArtifact) (*host.Host, error) {
 	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
+	if err != nil {
+		return nil, err
+	}
+	capabilities, err := devCapabilityRegistry(loadedCapabilities)
 	if err != nil {
 		return nil, err
 	}
@@ -615,6 +721,7 @@ func newDevInstallHost(stateRoot string) (*host.Host, error) {
 		Settings:        settings.NewMemoryStore(),
 		Secrets:         secrets.NewMemoryStore(),
 		Permissions:     permissions.NewMemoryStore(),
+		Capabilities:    capabilities,
 	})
 	if err != nil {
 		return nil, err
@@ -622,15 +729,115 @@ func newDevInstallHost(stateRoot string) (*host.Host, error) {
 	return h, nil
 }
 
-func prepareDevStateRoot(stateRoot string) (string, error) {
-	normalized, err := normalizeDevStateRoot(stateRoot)
+type devCapabilityAdapter struct{}
+
+func (devCapabilityAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	return capability.TargetDescriptor{Kind: "dev_reference_host", Fields: req.TargetInput}, nil
+}
+
+func (devCapabilityAdapter) Invoke(context.Context, capability.Invocation) (capability.Result, error) {
+	return capability.Result{}, errors.New("dev reference host does not implement this capability")
+}
+
+func loadDevCapabilitySpecs(specs []devCapabilitySpec) ([]loadedHostCapabilityArtifact, error) {
+	loaded := make([]loadedHostCapabilityArtifact, 0, len(specs))
+	for _, spec := range specs {
+		artifact, err := loadVerifiedHostCapability(spec.ArtifactRoot, spec.PinFile, spec.PublicKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		loaded = append(loaded, artifact)
+	}
+	return loaded, nil
+}
+
+func devCapabilityRegistry(loaded []loadedHostCapabilityArtifact) (*capability.Registry, error) {
+	capabilities := capability.NewRegistry()
+	for _, artifact := range loaded {
+		adapter := devCapabilityAdapter{}
+		if err := capabilities.Register(capability.Registration{Contract: artifact.Verified, TargetProjector: adapter, Adapter: adapter}); err != nil {
+			return nil, err
+		}
+	}
+	return capabilities, nil
+}
+
+func persistDevCapabilities(stateRoot string, loaded []loadedHostCapabilityArtifact) ([]devCapabilityState, error) {
+	states := make([]devCapabilityState, 0, len(loaded))
+	for _, artifact := range loaded {
+		contract := artifact.Verified.Contract
+		rootRel := filepath.ToSlash(filepath.Join("capability-artifacts", contract.ContractID, contract.ContractVersion))
+		root, err := resolveDevCapabilityStatePath(stateRoot, rootRel)
+		if err != nil {
+			return nil, err
+		}
+		if err := createEmptyDirectory(root); err != nil {
+			return nil, err
+		}
+		for ref, content := range artifact.Bundle.Files {
+			if err := writeArtifactFile(root, ref, content); err != nil {
+				return nil, err
+			}
+		}
+		pinRel := filepath.ToSlash(filepath.Join(rootRel, hostCapabilityPinFile))
+		pinFile, err := resolveDevCapabilityStatePath(stateRoot, pinRel)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeJSONFile(pinFile, artifact.Bundle.Pin, 0o600); err != nil {
+			return nil, err
+		}
+		publicRel := filepath.ToSlash(filepath.Join(rootRel, "host-capability.public.json"))
+		publicFile, err := resolveDevCapabilityStatePath(stateRoot, publicRel)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeJSONFile(publicFile, artifact.PublicDoc, 0o600); err != nil {
+			return nil, err
+		}
+		states = append(states, devCapabilityState{ArtifactRoot: rootRel, PinFile: pinRel, PublicKeyFile: publicRel})
+	}
+	return states, nil
+}
+
+func loadPersistedDevCapabilities(stateRoot string, states []devCapabilityState) ([]loadedHostCapabilityArtifact, error) {
+	loaded := make([]loadedHostCapabilityArtifact, 0, len(states))
+	for _, state := range states {
+		root, err := resolveDevCapabilityStatePath(stateRoot, state.ArtifactRoot)
+		if err != nil {
+			return nil, err
+		}
+		pinFile, err := resolveDevCapabilityStatePath(stateRoot, state.PinFile)
+		if err != nil {
+			return nil, err
+		}
+		publicFile, err := resolveDevCapabilityStatePath(stateRoot, state.PublicKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		artifact, err := loadVerifiedHostCapability(root, pinFile, publicFile)
+		if err != nil {
+			return nil, err
+		}
+		loaded = append(loaded, artifact)
+	}
+	return loaded, nil
+}
+
+func resolveDevCapabilityStatePath(stateRoot, relative string) (string, error) {
+	relative = filepath.Clean(filepath.FromSlash(strings.TrimSpace(relative)))
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("dev capability path must stay inside the state root")
+	}
+	rootAbs, err := filepath.Abs(stateRoot)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(normalized, 0o700); err != nil {
-		return "", err
+	resolved := filepath.Join(rootAbs, relative)
+	if !strings.HasPrefix(filepath.Clean(resolved), rootAbs+string(filepath.Separator)) {
+		return "", errors.New("dev capability path escaped the state root")
 	}
-	return normalized, nil
+	return resolved, nil
 }
 
 func normalizeDevStateRoot(stateRoot string) (string, error) {
@@ -643,11 +850,6 @@ func normalizeDevStateRoot(stateRoot string) (string, error) {
 		return "", err
 	}
 	return abs, nil
-}
-
-func stateExists(stateRoot string) bool {
-	_, err := os.Stat(filepath.Join(stateRoot, devStateFile))
-	return err == nil
 }
 
 func loadDevState(stateRoot string) (devLifecycleState, error) {

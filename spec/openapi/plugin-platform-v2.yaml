@@ -124,6 +124,26 @@ paths:
         $ref: "#/components/requestBodies/ReadSurfaceStreamRequest"
       responses:
         "200": { $ref: "#/components/responses/SurfaceStreamEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel:
+    post:
+      operationId: cancelSurfacePluginOperation
+      description: Cancels an operation only when it belongs to the authenticated surface, session, and private bridge channel.
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/CancelSurfaceOperationRequest"
+      responses:
+        "200": { $ref: "#/components/responses/OperationRecordEnvelope" }
+  /_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject:
+    post:
+      operationId: rejectSurfacePluginConfirmation
+      description: Atomically rejects a pending confirmation only when it belongs to the authenticated surface, session, current plugin revision, and private bridge channel.
+      parameters:
+        - $ref: "#/components/parameters/SurfaceInstanceID"
+      requestBody:
+        $ref: "#/components/requestBodies/RejectSurfaceConfirmationRequest"
+      responses:
+        "200": { $ref: "#/components/responses/ConfirmationRejectionEnvelope" }
   /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose:
     post:
       operationId: disposePluginSurface
@@ -139,7 +159,7 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/RPCRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/RPCEnvelope" }
   /_redevplugin/api/plugins/confirm:
     post:
       operationId: confirmPluginIntent
@@ -165,14 +185,14 @@ paths:
     get:
       operationId: listPluginOperations
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/OperationListEnvelope" }
   /_redevplugin/api/plugins/operations/{operation_id}:
     get:
       operationId: getPluginOperation
       parameters:
         - $ref: "#/components/parameters/OperationID"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/OperationRecordEnvelope" }
   /_redevplugin/api/plugins/operations/{operation_id}/cancel:
     post:
       operationId: cancelPluginOperation
@@ -181,7 +201,7 @@ paths:
       requestBody:
         $ref: "#/components/requestBodies/CancelOperationRequest"
       responses:
-        "200": { $ref: "#/components/responses/Envelope" }
+        "200": { $ref: "#/components/responses/OperationRecordEnvelope" }
   /_redevplugin/api/plugins/runtime/start:
     post:
       operationId: startPluginRuntime
@@ -358,6 +378,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Envelope"
+    RPCEnvelope:
+      description: Typed plugin method result. Subscriptions always bind one operation and one stream.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RPCResult"
     SurfaceBootstrapEnvelope:
       description: Trusted-parent surface bootstrap. Capability-bearing fields are never forwarded into the opaque iframe or plugin worker.
       content:
@@ -483,6 +514,17 @@ components:
                 properties:
                   data:
                     $ref: "#/components/schemas/ConfirmResult"
+    ConfirmationRejectionEnvelope:
+      description: Trusted-parent acknowledgement that the pending confirmation was atomically rejected and cannot be replayed.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ConfirmationRejectionResult"
     RetainedDataListEnvelope:
       description: Retained plugin data list response.
       content:
@@ -516,6 +558,35 @@ components:
                 properties:
                   data:
                     $ref: "#/components/schemas/RetainedDataCleanupResult"
+    OperationRecordEnvelope:
+      description: Host-owned operation record with its immutable execution binding.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/OperationRecord"
+    OperationListEnvelope:
+      description: Host-owned operation records with immutable execution bindings.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    additionalProperties: false
+                    required: [operations]
+                    properties:
+                      operations:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OperationRecord"
   requestBodies:
     ImportLocalPackageRequest:
       required: true
@@ -601,6 +672,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ReadSurfaceStreamRequest"
+    CancelSurfaceOperationRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CancelSurfaceOperationRequest"
+    RejectSurfaceConfirmationRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RejectSurfaceConfirmationRequest"
     DisposeSurfaceRequest:
       required: true
       content:
@@ -689,6 +772,7 @@ components:
     Envelope:
       type: object
       required: [ok]
+      additionalProperties: false
       properties:
         ok: { type: boolean }
         data: true
@@ -697,6 +781,16 @@ components:
           $ref: "#/components/schemas/ErrorCode"
         error_details:
           $ref: "#/components/schemas/ErrorDetails"
+      allOf:
+        - if:
+            properties:
+              error_code: { const: PLUGIN_CAPABILITY_ERROR }
+            required: [error_code]
+          then:
+            required: [error_details]
+            properties:
+              error_details:
+                $ref: "#/components/schemas/CapabilityBusinessErrorDetails"
     ErrorDetails:
       type: object
       additionalProperties: true
@@ -710,6 +804,41 @@ components:
         pointer:
           type: string
           description: JSON Pointer into manifest.json related to the error, when available.
+        business_error_code:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+        capability_id:
+          type: string
+          minLength: 1
+        capability_version:
+          type: string
+          minLength: 1
+        detail_schema_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        business_error_details:
+          type: object
+          additionalProperties: true
+    CapabilityBusinessErrorDetails:
+      type: object
+      additionalProperties: false
+      required: [capability_id, capability_version, detail_schema_sha256, business_error_code]
+      properties:
+        capability_id:
+          type: string
+          minLength: 1
+        capability_version:
+          type: string
+          minLength: 1
+        detail_schema_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        business_error_code:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+        business_error_details:
+          type: object
+          additionalProperties: true
     ErrorCode:
       type: string
       enum:
@@ -750,6 +879,7 @@ components:
         - PLUGIN_RUNTIME_UNAVAILABLE
         - PLUGIN_RUNTIME_VERSION_MISMATCH
         - PLUGIN_JSON_LIMIT_EXCEEDED
+        - PLUGIN_CAPABILITY_ERROR
         - PLUGIN_CONTRACT_MISMATCH
         - PLUGIN_STATE_VERSION_MISMATCH
         - PLUGIN_CSRF_REQUIRED
@@ -1117,12 +1247,59 @@ components:
     SurfaceStreamResult:
       type: object
       additionalProperties: false
-      required: [events]
+      required: [events, done]
       properties:
         events:
           type: array
           items:
             $ref: "#/components/schemas/StreamEvent"
+        done: { type: boolean }
+        terminal_status:
+          enum: [closed, canceled, failed, orphaned_after_disable, orphaned_after_uninstall]
+        next_stream_ticket: { type: string, minLength: 1 }
+        next_stream_ticket_id: { type: string, pattern: '^st_[A-Za-z0-9_-]+$' }
+        next_stream_expires_at: { type: string, format: date-time }
+      allOf:
+        - if:
+            properties: { done: { const: false } }
+            required: [done]
+          then:
+            required: [next_stream_ticket, next_stream_ticket_id, next_stream_expires_at]
+            not:
+              required: [terminal_status]
+        - if:
+            properties: { done: { const: true } }
+            required: [done]
+          then:
+            required: [terminal_status]
+            not:
+              anyOf:
+                - required: [next_stream_ticket]
+                - required: [next_stream_ticket_id]
+                - required: [next_stream_expires_at]
+    CancelSurfaceOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id, bridge_channel_id]
+      properties:
+        operation_id: { type: string, pattern: '^operation_[A-Za-z0-9_-]{8,150}$' }
+        bridge_channel_id: { type: string, minLength: 1, maxLength: 256 }
+        reason: { type: string, maxLength: 256 }
+    RejectSurfaceConfirmationRequest:
+      type: object
+      additionalProperties: false
+      required: [plugin_instance_id, bridge_channel_id, plugin_gateway_token, confirmation_id]
+      properties:
+        plugin_instance_id: { type: string, minLength: 1 }
+        bridge_channel_id: { type: string, minLength: 1, maxLength: 256 }
+        plugin_gateway_token: { type: string, minLength: 1 }
+        confirmation_id: { type: string, pattern: '^confirmation_[A-Za-z0-9_-]{8,128}$' }
+    ConfirmationRejectionResult:
+      type: object
+      additionalProperties: false
+      required: [rejected]
+      properties:
+        rejected: { const: true }
     StreamEvent:
       type: object
       additionalProperties: false
@@ -1154,6 +1331,41 @@ components:
         params:
           type: object
           additionalProperties: true
+    RPCResult:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          properties:
+            data: true
+          not:
+            anyOf:
+              - required: [operation_id]
+              - required: [stream_id]
+              - required: [confirmation_required]
+        - type: object
+          additionalProperties: false
+          required: [operation_id]
+          properties:
+            data: true
+            operation_id: { type: string, minLength: 1 }
+        - type: object
+          additionalProperties: false
+          required: [operation_id, stream_id, stream_ticket, stream_ticket_id, stream_expires_at]
+          properties:
+            data: true
+            operation_id: { type: string, minLength: 1 }
+            stream_id: { type: string, minLength: 1 }
+            stream_ticket: { type: string, minLength: 1 }
+            stream_ticket_id: { type: string, minLength: 1 }
+            stream_expires_at: { type: string, format: date-time }
+        - type: object
+          additionalProperties: false
+          required: [confirmation_required, confirmation_token_id, request_hash, plan_hash]
+          properties:
+            confirmation_required: { const: true }
+            confirmation_token_id: { type: string, minLength: 1 }
+            request_hash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+            plan_hash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
     RiskFlag:
       type: object
       required: [id, severity, summary]
@@ -1239,6 +1451,131 @@ components:
       additionalProperties: false
       properties:
         reason: { type: string }
+    CapabilityContractPin:
+      $ref: "../plugin/host-capability-pin-v1.schema.json"
+    ExecutionBinding:
+      type: object
+      description: Immutable execution fields embedded into operation and stream records.
+      required:
+        - invocation_id
+        - audit_correlation_id
+        - publisher_id
+        - plugin_id
+        - plugin_instance_id
+        - plugin_version
+        - active_fingerprint
+        - route_kind
+        - capability_id
+        - capability_version
+        - binding_id
+        - method
+        - target_method
+        - effect
+        - execution
+        - permissions
+        - confirmation
+        - revision
+        - quota
+        - target
+        - target_descriptor_sha256
+      properties:
+        invocation_id: { type: string, minLength: 1 }
+        audit_correlation_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1 }
+        stream_id: { type: string, minLength: 1 }
+        publisher_id: { type: string, minLength: 1 }
+        plugin_id: { type: string, minLength: 1 }
+        plugin_instance_id: { type: string, minLength: 1 }
+        plugin_version: { type: string, minLength: 1 }
+        active_fingerprint: { type: string, minLength: 1 }
+        surface_instance_id: { type: string }
+        owner_session_hash: { type: string }
+        owner_user_hash: { type: string }
+        session_channel_id_hash: { type: string }
+        bridge_channel_id: { type: string }
+        route_kind: { type: string, enum: [capability, worker, core_action] }
+        capability_id: { type: string, minLength: 1 }
+        capability_version: { type: string, minLength: 1 }
+        binding_id: { type: string, minLength: 1 }
+        contract:
+          $ref: "#/components/schemas/CapabilityContractPin"
+        method: { type: string, minLength: 1 }
+        target_method: { type: string, minLength: 1 }
+        effect: { type: string, enum: [read, write, execute, delete, admin] }
+        execution: { type: string, enum: [sync, operation, subscription] }
+        permissions:
+          type: object
+          additionalProperties: false
+          required: [required, granted]
+          properties:
+            required: { type: array, items: { type: string } }
+            granted: { type: array, items: { type: string } }
+        confirmation:
+          type: object
+          additionalProperties: false
+          required: [required, confirmed]
+          properties:
+            required: { type: boolean }
+            confirmed: { type: boolean }
+            confirmation_id: { type: string }
+            request_sha256: { type: string }
+            plan_sha256: { type: string }
+            target_sha256: { type: string }
+        revision:
+          type: object
+          additionalProperties: false
+          required: [policy_revision, management_revision, revoke_epoch]
+          properties:
+            policy_revision: { type: integer, minimum: 0 }
+            management_revision: { type: integer, minimum: 0 }
+            revoke_epoch: { type: integer, minimum: 0 }
+        quota:
+          type: object
+          additionalProperties: false
+          properties:
+            max_concurrent: { type: integer, minimum: 0 }
+            max_duration_ms: { type: integer, minimum: 0 }
+            max_stream_bytes: { type: integer, minimum: 0 }
+            expires_at: { type: string, format: date-time }
+        target:
+          type: object
+          additionalProperties: false
+          required: [kind, fields]
+          properties:
+            kind: { type: string, minLength: 1 }
+            fields: { type: object, additionalProperties: true }
+        target_descriptor_sha256: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        stream_event_type_name: { type: string, minLength: 1 }
+        stream_event_schema_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+      allOf:
+        - if:
+            properties:
+              route_kind: { const: capability }
+          then:
+            required: [contract]
+          else:
+            not:
+              required: [contract]
+    OperationRecord:
+      allOf:
+        - $ref: "#/components/schemas/ExecutionBinding"
+        - type: object
+          required: [operation_id, status, cancelable, created_at, updated_at]
+          properties:
+            operation_id: { type: string, minLength: 1 }
+            execution: { type: string, enum: [operation, subscription] }
+            status:
+              type: string
+              enum: [running, cancel_requested, canceled, completed, failed, orphaned_after_disable, orphaned_after_uninstall]
+            cancelable: { type: boolean }
+            cancel_ack_timeout_ms: { type: integer, minimum: 0 }
+            disable_behavior: { type: string, enum: [cancel, orphan, wait] }
+            uninstall_behavior: { type: string, enum: [cancel_then_block_delete, force_cleanup_allowed] }
+            reason: { type: string }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+            cancel_requested_at: { type: string, format: date-time }
+            orphaned_at: { type: string, format: date-time }
     StartRuntimeRequest:
       type: object
       additionalProperties: false

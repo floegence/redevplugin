@@ -23,189 +23,67 @@
   "capability_bindings": [
     {
       "binding_id": "task_runner",
-      "capability_id": "example.capability.tasks",
-      "min_capability_version": "1.0.0",
-      "required_permissions": ["read", "execute", "delete"]
+      "contract": {
+        "publisher_id": "example.contracts",
+        "contract_id": "example.capability.tasks.v1",
+        "contract_version": "1.0.0",
+        "artifact_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.schema.json",
+        "artifact_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "manifest_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.manifest.json",
+        "manifest_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "signature_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.sig",
+        "signature_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "signature_key_id": "example-contract-key",
+        "signature_policy_epoch": "1",
+        "signature_revocation_epoch": "1",
+        "compatibility_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.compatibility.json",
+        "compatibility_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+        "generated_client_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.client.ts",
+        "generated_client_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "notices_ref": "capabilities/example.capability.tasks/v1.0.0/example.capability.tasks.v1.notices.json",
+        "notices_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
     }
   ],
   "methods": [
     {
       "method": "tasks.list",
-      "effect": "read",
-      "execution": "sync",
       "route": {
         "kind": "capability",
         "binding_id": "task_runner",
         "target_method": "tasks.list"
-      },
-      "request_schema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "response_schema": {
-        "type": "object",
-        "additionalProperties": false
       }
     },
     {
       "method": "tasks.start.preflight",
-      "effect": "read",
-      "execution": "sync",
-      "dangerous": false,
-      "preflight_only": true,
       "route": {
         "kind": "capability",
         "binding_id": "task_runner",
         "target_method": "tasks.start.preflight"
-      },
-      "request_schema": {
-        "type": "object",
-        "required": ["task_id"],
-        "additionalProperties": false,
-        "properties": {
-          "task_id": { "type": "string" }
-        }
-      },
-      "response_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "schema_version": { "type": "string" },
-          "summary": { "type": "string" },
-          "effect": { "type": "string" },
-          "resource_ref": { "type": "string" },
-          "requires_admin": { "type": "boolean" },
-          "requires_confirmation": { "type": "boolean" },
-          "risk_flags": {
-            "type": "array",
-            "items": {
-              "oneOf": [
-                { "type": "string" },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "id": { "type": "string" },
-                    "severity": { "type": "string" },
-                    "summary": { "type": "string" },
-                    "requires_admin": { "type": "boolean" }
-                  }
-                }
-              ]
-            }
-          },
-          "details": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "env": { "type": "array", "items": { "type": "string" } },
-              "mounts": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "source": { "type": "string" },
-                    "target": { "type": "string" }
-                  }
-                }
-              }
-            }
-          }
-        }
       }
     },
     {
       "method": "tasks.start",
-      "effect": "execute",
-      "execution": "operation",
-      "dangerous": true,
-      "confirmation": {
-        "mode": "risk_based",
-        "preflight_method": "tasks.start.preflight",
-        "request_hash_fields": ["task_id"],
-        "plan_hash_required": true
-      },
-      "cancel_policy": {
-        "cancelable": true,
-        "disable_behavior": "cancel",
-        "uninstall_behavior": "cancel_then_block_delete",
-        "ack_timeout_ms": 2000
-      },
       "route": {
         "kind": "capability",
         "binding_id": "task_runner",
         "target_method": "tasks.start"
-      },
-      "request_schema": {
-        "type": "object",
-        "required": ["task_id"],
-        "additionalProperties": false,
-        "properties": {
-          "task_id": { "type": "string" }
-        }
-      },
-      "response_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "started": { "type": "boolean" }
-        }
       }
     },
     {
       "method": "tasks.logs.tail",
-      "effect": "read",
-      "execution": "subscription",
-      "cancel_policy": {
-        "cancelable": true,
-        "disable_behavior": "orphan",
-        "uninstall_behavior": "force_cleanup_allowed",
-        "ack_timeout_ms": 2000
-      },
       "route": {
         "kind": "capability",
         "binding_id": "task_runner",
         "target_method": "tasks.logs.tail"
-      },
-      "request_schema": {
-        "type": "object",
-        "required": ["task_id"],
-        "additionalProperties": false,
-        "properties": {
-          "task_id": { "type": "string" }
-        }
-      },
-      "response_schema": {
-        "type": "object",
-        "additionalProperties": false
       }
     },
     {
       "method": "tasks.remove",
-      "effect": "delete",
-      "execution": "sync",
-      "dangerous": true,
-      "confirmation": {
-        "mode": "required",
-        "request_hash_fields": ["task_id"]
-      },
       "route": {
         "kind": "capability",
         "binding_id": "task_runner",
         "target_method": "tasks.remove"
-      },
-      "request_schema": {
-        "type": "object",
-        "required": ["task_id"],
-        "additionalProperties": false,
-        "properties": {
-          "task_id": { "type": "string" }
-        }
-      },
-      "response_schema": {
-        "type": "object",
-        "additionalProperties": false
       }
     }
   ],

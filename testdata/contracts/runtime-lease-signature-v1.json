@@ -1,0 +1,53 @@
+{
+  "schema_version": "redevplugin.runtime_execution_lease.signature_fixture.v1",
+  "method": "worker.echo",
+  "public_key_base64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
+  "canonical_payload": "{\"schema_version\":\"redevplugin.runtime_execution_lease.v1\",\"token_kind\":\"runtime_execution_lease\",\"lease_id\":\"rel_fixture_v1\",\"token_id\":\"rel_token_fixture_v1\",\"lease_nonce\":\"nonce_fixture_1234567890\",\"plugin_instance_id\":\"plugini_fixture_v1\",\"plugin_id\":\"com.example.worker\",\"plugin_version\":\"1.2.3\",\"active_fingerprint\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"issued_at_unix_ms\":1783161900000,\"method\":\"worker.echo\",\"effect\":\"read\",\"execution\":\"subscription\",\"operation_id\":\"operation_fixture_v1\",\"stream_id\":\"stream_fixture_v1\",\"audit_correlation_id\":\"audit_fixture_v1\",\"surface_instance_id\":\"surface_fixture_v1\",\"owner_session_hash\":\"owner_session_fixture_v1\",\"owner_user_hash\":\"owner_user_fixture_v1\",\"session_channel_id_hash\":\"channel_fixture_v1\",\"bridge_channel_id\":\"bridge_fixture_v1\",\"target_descriptor_hashes\":[\"invocation:sha256:4892b536f8b8666aac26948fa870d5f3d52c6906673461510f87bd9632e58635\",\"method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"],\"limits\":{\"timeout_ms\":2000,\"memory_bytes\":65536,\"max_payload_bytes\":4096,\"max_stream_bytes_per_sec\":1024},\"policy_revision\":11,\"management_revision\":12,\"revoke_epoch\":13,\"expires_at_unix_ms\":1783161930000,\"runtime_shard_id\":\"rtshard_fixture_v1\",\"runtime_instance_id\":\"rtinst_fixture_v1\",\"runtime_generation_id\":\"rtgen_fixture_v1\",\"ipc_channel_id\":\"ipc_fixture_v1\",\"connection_nonce\":\"connection_nonce_fixture_1234567890\",\"key_id\":\"host_ephemeral_fixture_v1\"}",
+  "signature": "ed25519:ULSM4DuSnJ7q3IdrlrUiElsjMFWu9WD+SAOWv+PpIEyHR0XibMSBuylw/AMnqcyTGMK7KX2VxNRo3yJi5EGdDQ==",
+  "lease": {
+    "lease_id": "rel_fixture_v1",
+    "token_id": "rel_token_fixture_v1",
+    "lease_token": "runtime_execution_lease.rel_fixture_v1.secret",
+    "lease_nonce": "nonce_fixture_1234567890",
+    "plugin_instance_id": "plugini_fixture_v1",
+    "plugin_id": "com.example.worker",
+    "plugin_version": "1.2.3",
+    "active_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "issued_at_unix_ms": 1783161900000,
+    "issued_at": "2026-07-04T10:45:00Z",
+    "method": "worker.echo",
+    "effect": "read",
+    "execution": "subscription",
+    "operation_id": "operation_fixture_v1",
+    "stream_id": "stream_fixture_v1",
+    "audit_correlation_id": "audit_fixture_v1",
+    "surface_instance_id": "surface_fixture_v1",
+    "owner_session_hash": "owner_session_fixture_v1",
+    "owner_user_hash": "owner_user_fixture_v1",
+    "session_channel_id_hash": "channel_fixture_v1",
+    "bridge_channel_id": "bridge_fixture_v1",
+    "target_descriptor_hashes": [
+      "invocation:sha256:4892b536f8b8666aac26948fa870d5f3d52c6906673461510f87bd9632e58635",
+      "method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    ],
+    "limits": {
+      "timeout_ms": 2000,
+      "memory_bytes": 65536,
+      "max_payload_bytes": 4096,
+      "max_stream_bytes_per_sec": 1024
+    },
+    "policy_revision": 11,
+    "management_revision": 12,
+    "revoke_epoch": 13,
+    "expires_at_unix_ms": 1783161930000,
+    "expires_at": "2026-07-04T10:45:30Z",
+    "runtime_shard_id": "rtshard_fixture_v1",
+    "runtime_instance_id": "rtinst_fixture_v1",
+    "runtime_generation_id": "rtgen_fixture_v1",
+    "ipc_channel_id": "ipc_fixture_v1",
+    "connection_nonce": "connection_nonce_fixture_1234567890",
+    "key_id": "host_ephemeral_fixture_v1",
+    "signature": "ed25519:ULSM4DuSnJ7q3IdrlrUiElsjMFWu9WD+SAOWv+PpIEyHR0XibMSBuylw/AMnqcyTGMK7KX2VxNRo3yJi5EGdDQ=="
+  }
+}

@@ -1,5 +1,7 @@
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -8,6 +10,7 @@ pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
 pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
+pub const WORKER_INVOCATION_TARGET_SCHEMA_VERSION: &str = "redevplugin.worker_invocation_target.v1";
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_HEARTBEAT: &str = "heartbeat";
@@ -38,6 +41,7 @@ pub const ERR_NETWORK_STREAM_CLOSED: &str = "NETWORK_STREAM_CLOSED";
 pub const ERR_WORKER_INVOCATION_INVALID: &str = "WORKER_INVOCATION_INVALID";
 pub const ERR_RUNTIME_CAPABILITY_REVOKED: &str = "RUNTIME_CAPABILITY_REVOKED";
 pub const ERR_RUNTIME_CONTROL_CHANNEL_STALE: &str = "RUNTIME_CONTROL_CHANNEL_STALE";
+pub const ERR_RUNTIME_LEASE_INVALID: &str = "RUNTIME_LEASE_INVALID";
 pub const ERR_RUNTIME_LEASE_SIGNATURE_INVALID: &str = "RUNTIME_LEASE_SIGNATURE_INVALID";
 pub const ERR_LEASE_REPLAYED: &str = "PLUGIN_LEASE_REPLAYED";
 pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
@@ -132,14 +136,17 @@ pub fn parse_runtime_lease_public_keys(input: &str) -> Result<Vec<RuntimeLeasePu
         .get("payload")
         .and_then(|value| value.as_object())
         .ok_or_else(|| "missing hello payload".to_string())?;
-    let Some(keys_value) = payload.get("runtime_lease_public_keys") else {
-        return Ok(Vec::new());
-    };
+    let keys_value = payload
+        .get("runtime_lease_public_keys")
+        .ok_or_else(|| "runtime_lease_public_keys are required".to_string())?;
     let keys = keys_value
         .as_array()
         .ok_or_else(|| "runtime_lease_public_keys must be an array".to_string())?;
     let mut seen = HashSet::new();
     let mut parsed = Vec::with_capacity(keys.len());
+    if keys.is_empty() {
+        return Err("runtime_lease_public_keys must not be empty".to_string());
+    }
     for key in keys {
         let key = key
             .as_object()
@@ -175,7 +182,7 @@ pub fn verify_worker_runtime_lease_signature(
     public_keys: &[RuntimeLeasePublicKey],
 ) -> Result<(), String> {
     if public_keys.is_empty() {
-        return Ok(());
+        return Err("runtime lease public keys are required".to_string());
     }
     let value: serde_json::Value =
         serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
@@ -200,6 +207,206 @@ pub fn verify_worker_runtime_lease_signature(
     verifying_key
         .verify(payload.as_bytes(), &signature)
         .map_err(|_| "runtime lease signature is invalid".to_string())
+}
+
+pub fn validate_worker_runtime_lease(input: &str, now_unix_ms: i64) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
+    let frame = value
+        .as_object()
+        .ok_or_else(|| "worker invocation frame must be an object".to_string())?;
+    let frame_type = json_object_string(frame, "frame_type")?;
+    if frame_type != FRAME_TYPE_INVOKE_WORKER {
+        return Err("worker invocation frame_type is invalid".to_string());
+    }
+    let frame_generation_id = json_object_string(frame, "runtime_generation_id")?;
+    let payload = frame
+        .get("payload")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing worker invocation payload".to_string())?;
+    let lease = payload
+        .get("lease")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing runtime execution lease".to_string())?;
+    let invocation = payload
+        .get("invocation")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing worker invocation".to_string())?;
+
+    let expires_at_unix_ms = runtime_lease_expires_at_unix_ms(lease)?;
+    if expires_at_unix_ms <= now_unix_ms {
+        return Err("runtime execution lease is expired".to_string());
+    }
+    let payload_method = json_object_string(payload, "method")?;
+    validate_runtime_lease_string_binding(lease, invocation, "method", true)?;
+    if json_object_string(lease, "method")? != payload_method {
+        return Err("runtime lease method does not match the invocation envelope".to_string());
+    }
+    for field in [
+        "plugin_id",
+        "plugin_instance_id",
+        "active_fingerprint",
+        "runtime_instance_id",
+        "runtime_generation_id",
+        "effect",
+        "execution",
+        "audit_correlation_id",
+    ] {
+        validate_runtime_lease_string_binding(lease, invocation, field, true)?;
+    }
+    for field in [
+        "surface_instance_id",
+        "owner_session_hash",
+        "owner_user_hash",
+        "session_channel_id_hash",
+        "bridge_channel_id",
+        "operation_id",
+        "stream_id",
+    ] {
+        validate_runtime_lease_string_binding(lease, invocation, field, false)?;
+    }
+    if json_object_string(lease, "runtime_generation_id")? != frame_generation_id {
+        return Err(
+            "runtime lease runtime_generation_id does not match the invocation frame".to_string(),
+        );
+    }
+    validate_runtime_execution_handles(lease)?;
+    validate_runtime_execution_handles(invocation)?;
+    let invocation_target_hash = worker_invocation_target_hash(input)?;
+    let target_hashes = lease
+        .get("target_descriptor_hashes")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "runtime lease target_descriptor_hashes are required".to_string())?;
+    if target_hashes
+        .iter()
+        .filter(|value| value.as_str() == Some(invocation_target_hash.as_str()))
+        .count()
+        != 1
+    {
+        return Err("runtime lease does not bind the worker invocation target".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct RawWorkerInvocationFrame {
+    payload: RawWorkerInvocationEnvelope,
+}
+
+#[derive(Deserialize)]
+struct RawWorkerInvocationEnvelope {
+    invocation: RawWorkerInvocation,
+}
+
+#[derive(Deserialize)]
+struct RawWorkerInvocation {
+    params: Box<serde_json::value::RawValue>,
+}
+
+pub fn worker_invocation_target_hash(input: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
+    let invocation = value
+        .get("payload")
+        .and_then(|value| value.get("invocation"))
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "missing worker invocation".to_string())?;
+    let raw: RawWorkerInvocationFrame = serde_json::from_str(input)
+        .map_err(|err| format!("decode raw worker invocation parameters: {err}"))?;
+    let params_hash = format!(
+        "sha256:{}",
+        lowercase_hex(&Sha256::digest(
+            raw.payload.invocation.params.get().as_bytes()
+        ))
+    );
+    if json_object_string(invocation, "params_sha256")? != params_hash {
+        return Err("worker invocation params_sha256 does not match params".to_string());
+    }
+    let required = |field: &str| json_object_string(invocation, field);
+    let optional = |field: &str| {
+        json_object_optional_string(invocation, field).map(|value| value.unwrap_or_default())
+    };
+    let fields = [
+        WORKER_INVOCATION_TARGET_SCHEMA_VERSION.to_string(),
+        required("plugin_id")?,
+        required("plugin_instance_id")?,
+        required("active_fingerprint")?,
+        required("runtime_instance_id")?,
+        required("runtime_generation_id")?,
+        required("package_hash")?,
+        required("worker_id")?,
+        required("worker_mode")?,
+        required("worker_scope")?,
+        required("artifact")?,
+        required("artifact_sha256")?,
+        required("abi")?,
+        required("method")?,
+        required("export")?,
+        required("effect")?,
+        required("execution")?,
+        optional("surface_instance_id")?,
+        optional("owner_session_hash")?,
+        optional("owner_user_hash")?,
+        optional("session_channel_id_hash")?,
+        optional("bridge_channel_id")?,
+        optional("operation_id")?,
+        optional("stream_id")?,
+        required("audit_correlation_id")?,
+        params_hash,
+    ];
+    let mut canonical = Vec::new();
+    for field in fields {
+        let length = u32::try_from(field.len())
+            .map_err(|_| "worker invocation target field exceeds uint32 length".to_string())?;
+        canonical.extend_from_slice(&length.to_be_bytes());
+        canonical.extend_from_slice(field.as_bytes());
+    }
+    Ok(format!(
+        "invocation:sha256:{}",
+        lowercase_hex(&Sha256::digest(canonical))
+    ))
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn validate_runtime_lease_string_binding(
+    lease: &serde_json::Map<String, serde_json::Value>,
+    invocation: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    required: bool,
+) -> Result<(), String> {
+    let lease_value = json_object_optional_string(lease, field)?;
+    let invocation_value = json_object_optional_string(invocation, field)?;
+    if required && (lease_value.is_none() || invocation_value.is_none()) {
+        return Err(format!("runtime lease {field} binding is required"));
+    }
+    if lease_value != invocation_value {
+        return Err(format!(
+            "runtime lease {field} does not match the worker invocation"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_execution_handles(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let execution = json_object_string(object, "execution")?;
+    let operation_id = json_object_optional_string(object, "operation_id")?.unwrap_or_default();
+    let stream_id = json_object_optional_string(object, "stream_id")?.unwrap_or_default();
+    match execution.as_str() {
+        "sync" if operation_id.is_empty() && stream_id.is_empty() => Ok(()),
+        "operation" if !operation_id.is_empty() && stream_id.is_empty() => Ok(()),
+        "subscription" if !operation_id.is_empty() && !stream_id.is_empty() => Ok(()),
+        _ => Err("runtime lease execution handles are invalid".to_string()),
+    }
 }
 
 fn decode_runtime_lease_signature(input: &str) -> Result<Signature, String> {
@@ -288,6 +495,17 @@ fn runtime_lease_signature_payload_json(
         &mut out,
         "execution",
         lease.get("execution").and_then(|value| value.as_str()),
+    );
+    validate_runtime_execution_handles(lease)?;
+    let operation_id = json_object_optional_string(lease, "operation_id")?.unwrap_or_default();
+    let stream_id = json_object_optional_string(lease, "stream_id")?.unwrap_or_default();
+    append_json_optional_string_field(&mut out, "operation_id", Some(&operation_id));
+    append_json_optional_string_field(&mut out, "stream_id", Some(&stream_id));
+    append_json_string_field(
+        &mut out,
+        "audit_correlation_id",
+        &json_object_string(lease, "audit_correlation_id")?,
+        true,
     );
     append_json_optional_string_field(
         &mut out,
@@ -457,6 +675,28 @@ fn json_object_string(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("missing {key}"))
+}
+
+fn json_object_optional_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value
+        .as_str()
+        .ok_or_else(|| format!("{key} must be a string"))?
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
 }
 
 fn json_object_u64(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<u64> {
@@ -1494,20 +1734,31 @@ pub struct WorkerInvocationIdentity {
 pub struct WorkerLeaseReplayKey {
     pub lease_id: String,
     pub lease_nonce: String,
+    pub expires_at_unix_ms: i64,
 }
 
 pub fn parse_worker_lease_replay_key(input: &str) -> Result<WorkerLeaseReplayKey, &'static str> {
-    let lease_id = extract_json_string(input, "lease_id").ok_or("missing lease_id")?;
+    let value: serde_json::Value = serde_json::from_str(input).map_err(|_| "invalid invocation")?;
+    let lease = value
+        .get("payload")
+        .and_then(|value| value.get("lease"))
+        .and_then(|value| value.as_object())
+        .ok_or("missing runtime execution lease")?;
+    let lease_id = json_object_string(lease, "lease_id").map_err(|_| "missing lease_id")?;
     if lease_id.trim().is_empty() {
         return Err("empty lease_id");
     }
-    let lease_nonce = extract_json_string(input, "lease_nonce").ok_or("missing lease_nonce")?;
+    let lease_nonce =
+        json_object_string(lease, "lease_nonce").map_err(|_| "missing lease_nonce")?;
     if lease_nonce.trim().is_empty() {
         return Err("empty lease_nonce");
     }
+    let expires_at_unix_ms = runtime_lease_expires_at_unix_ms(lease)
+        .map_err(|_| "missing or invalid expires_at_unix_ms")?;
     Ok(WorkerLeaseReplayKey {
         lease_id,
         lease_nonce,
+        expires_at_unix_ms,
     })
 }
 
@@ -1622,6 +1873,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_hello_without_runtime_lease_public_keys() {
+        let missing = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{"channel_nonce":"nonce_1234567890"}}"#;
+        assert!(parse_runtime_lease_public_keys(missing).is_err());
+        let empty = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{"channel_nonce":"nonce_1234567890","runtime_lease_public_keys":[]}}"#;
+        assert!(parse_runtime_lease_public_keys(empty).is_err());
+    }
+
+    #[test]
     fn verifies_worker_runtime_lease_signature() {
         let signing_key = runtime_lease_signing_key_for_test(7);
         let frame = signed_runtime_lease_invocation_for_test(&signing_key, None);
@@ -1649,7 +1908,7 @@ mod tests {
     #[test]
     fn rejects_unsigned_worker_runtime_lease_when_keys_are_configured() {
         let signing_key = runtime_lease_signing_key_for_test(7);
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{"lease":{"lease_id":"rel_1","lease_token":"token_1","lease_nonce":"nonce_1234567890","runtime_generation_id":"rtgen_1","plugin_instance_id":"plugini_1","key_id":"host_ephemeral_key_1","expires_at":"2026-07-04T10:45:30Z"},"method":"worker.echo","invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{"lease":{"lease_id":"rel_1","lease_token":"token_1","lease_nonce":"nonce_1234567890","runtime_generation_id":"rtgen_1","plugin_instance_id":"plugini_1","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","key_id":"host_ephemeral_key_1","expires_at":"2026-07-04T10:45:30Z"},"method":"worker.echo","invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
         let err = verify_worker_runtime_lease_signature(
             frame,
             &[RuntimeLeasePublicKey {
@@ -1659,6 +1918,65 @@ mod tests {
         )
         .expect_err("missing signature should fail");
         assert!(err.contains("signature"));
+    }
+
+    #[test]
+    fn rejects_worker_runtime_lease_without_runtime_keys() {
+        let signing_key = runtime_lease_signing_key_for_test(7);
+        let frame = signed_runtime_lease_invocation_for_test(&signing_key, None);
+        let err = verify_worker_runtime_lease_signature(&frame, &[])
+            .expect_err("missing runtime keyring should fail closed");
+        assert!(err.contains("public keys"));
+    }
+
+    #[test]
+    fn validates_worker_runtime_lease_expiry_and_execution_binding() {
+        let frame =
+            include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json");
+        validate_worker_runtime_lease(frame, 1_783_161_901_000)
+            .expect("current runtime lease binding");
+
+        let expired = validate_worker_runtime_lease(frame, 1_783_161_930_000)
+            .expect_err("expired runtime lease must fail closed");
+        assert!(expired.contains("expired"), "{expired}");
+
+        let mut mismatched: Value = serde_json::from_str(frame).expect("invocation fixture");
+        mismatched["payload"]["invocation"]["stream_id"] =
+            Value::String("stream_other".to_string());
+        let mismatch = validate_worker_runtime_lease(
+            &serde_json::to_string(&mismatched).expect("mismatched invocation"),
+            1_783_161_901_000,
+        )
+        .expect_err("execution handle mismatch must fail closed");
+        assert!(mismatch.contains("stream_id"), "{mismatch}");
+
+        let mut tampered_params: Value = serde_json::from_str(frame).expect("invocation fixture");
+        tampered_params["payload"]["invocation"]["params"]["message"] =
+            Value::String("tampered".to_string());
+        let params_mismatch = validate_worker_runtime_lease(
+            &serde_json::to_string(&tampered_params).expect("tampered invocation"),
+            1_783_161_901_000,
+        )
+        .expect_err("tampered params must fail closed");
+        assert!(
+            params_mismatch.contains("params_sha256"),
+            "{params_mismatch}"
+        );
+
+        let mut unbound_target: Value = serde_json::from_str(frame).expect("invocation fixture");
+        unbound_target["payload"]["lease"]["target_descriptor_hashes"] = serde_json::json!([
+            "method:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "worker:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ]);
+        let target_mismatch = validate_worker_runtime_lease(
+            &serde_json::to_string(&unbound_target).expect("unbound invocation"),
+            1_783_161_901_000,
+        )
+        .expect_err("unbound invocation target must fail closed");
+        assert!(
+            target_mismatch.contains("does not bind"),
+            "{target_mismatch}"
+        );
     }
 
     #[test]
@@ -1677,6 +1995,7 @@ mod tests {
             "method": "worker.echo",
             "effect": "read",
             "execution": "sync",
+            "audit_correlation_id": "audit_lease_signature",
             "surface_instance_id": "surface_runtime",
             "owner_session_hash": "session_hash",
             "owner_user_hash": "user_hash",
@@ -1710,10 +2029,53 @@ mod tests {
         .expect("payload");
         assert_eq!(
             payload,
-            r#"{"schema_version":"redevplugin.runtime_execution_lease.v1","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","token_id":"rel_token_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","plugin_id":"com.example.worker","plugin_version":"1.2.3","active_fingerprint":"sha256:active","issued_at_unix_ms":1783161900000,"method":"worker.echo","effect":"read","execution":"sync","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"limits":{"timeout_ms":2000,"memory_bytes":65536,"max_payload_bytes":4096,"max_stream_bytes_per_sec":1024},"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
+            r#"{"schema_version":"redevplugin.runtime_execution_lease.v1","token_kind":"runtime_execution_lease","lease_id":"rel_lease_signature","token_id":"rel_token_signature","lease_nonce":"nonce_1234567890","plugin_instance_id":"plugini_1","plugin_id":"com.example.worker","plugin_version":"1.2.3","active_fingerprint":"sha256:active","issued_at_unix_ms":1783161900000,"method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_lease_signature","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","target_descriptor_hashes":["method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"limits":{"timeout_ms":2000,"memory_bytes":65536,"max_payload_bytes":4096,"max_stream_bytes_per_sec":1024},"policy_revision":11,"management_revision":12,"revoke_epoch":13,"expires_at_unix_ms":1783161930000,"runtime_shard_id":"rtshard_1","runtime_instance_id":"rtinst_1","runtime_generation_id":"rtgen_1","ipc_channel_id":"ipc_1","connection_nonce":"connection_nonce_1234567890","key_id":"host_ephemeral_key_1"}"#
         );
         assert!(!payload.contains("lease_token"));
         assert!(!payload.contains("not-part-of-the-payload"));
+    }
+
+    #[test]
+    fn runtime_lease_signature_shared_fixture_matches_go() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../testdata/contracts/runtime-lease-signature-v1.json"
+        ))
+        .expect("shared runtime lease fixture");
+        let lease = fixture
+            .get("lease")
+            .and_then(|value| value.as_object())
+            .expect("fixture lease");
+        let method = fixture
+            .get("method")
+            .and_then(|value| value.as_str())
+            .expect("fixture method");
+        let canonical = fixture
+            .get("canonical_payload")
+            .and_then(|value| value.as_str())
+            .expect("fixture canonical payload");
+        assert_eq!(
+            runtime_lease_signature_payload_json(lease, method).expect("canonical payload"),
+            canonical
+        );
+        let public_key: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(
+                fixture
+                    .get("public_key_base64")
+                    .and_then(|value| value.as_str())
+                    .expect("fixture public key")
+                    .as_bytes(),
+            )
+            .expect("fixture public key base64")
+            .try_into()
+            .expect("fixture public key length");
+        verify_worker_runtime_lease_signature(
+            include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json"),
+            &[RuntimeLeasePublicKey {
+                key_id: "host_ephemeral_fixture_v1".to_string(),
+                public_key,
+            }],
+        )
+        .expect("shared runtime lease fixture signature");
     }
 
     #[test]
@@ -2250,10 +2612,11 @@ mod tests {
 
     #[test]
     fn parses_worker_lease_replay_key() {
-        let input = r#"{"payload":{"lease":{"lease_id":"lease_1","lease_nonce":"nonce_1"}}}"#;
+        let input = r#"{"payload":{"lease":{"lease_id":"lease_1","lease_nonce":"nonce_1","expires_at_unix_ms":2000}}}"#;
         let key = parse_worker_lease_replay_key(input).expect("valid replay key");
         assert_eq!(key.lease_id, "lease_1");
         assert_eq!(key.lease_nonce, "nonce_1");
+        assert_eq!(key.expires_at_unix_ms, 2_000);
     }
 
     #[test]
@@ -2285,6 +2648,7 @@ mod tests {
             "method": "worker.echo",
             "effect": "read",
             "execution": "sync",
+            "audit_correlation_id": "audit_lease_signature",
             "surface_instance_id": "surface_runtime",
             "owner_session_hash": "session_hash",
             "owner_user_hash": "user_hash",

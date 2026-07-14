@@ -1,6 +1,7 @@
 import {
   PluginBridgeClient,
   type PluginMethodResult,
+  type PluginStreamEvent,
   type PluginUIVNode,
 } from "../../packages/redevplugin-ui/src/plugin.js";
 import { runWorkerSecurityProbe, type WorkerSecurityProbe } from "./worker-security-probe.js";
@@ -49,7 +50,7 @@ async function readStream(): Promise<void> {
   await runAction("Opening parent-owned stream...", "Stream received", async () => {
     const response = await bridge.call<PluginMethodResult>("demo.logs", { lines: 2 });
     if (!response.stream_handle) throw new Error("host response omitted stream_handle");
-    const events = await bridge.readStream(response.stream_handle);
+    const events = await readStreamToEnd(response.stream_handle);
     return {
       method: "demo.logs",
       events,
@@ -57,6 +58,18 @@ async function readStream(): Promise<void> {
       parent_stream_credential_visible: JSON.stringify(response).includes(["stream", "ticket"].join("_")),
     };
   });
+}
+
+async function readStreamToEnd(streamHandle: string): Promise<PluginStreamEvent[]> {
+  const events: PluginStreamEvent[] = [];
+  while (true) {
+    const batch = await bridge.readStream(streamHandle);
+    events.push(...batch.events);
+    if (batch.done) return events;
+    if (batch.events.length === 0 && batch.retry_after_ms > 0) {
+      await new Promise((resolve) => setTimeout(resolve, batch.retry_after_ms));
+    }
+  }
 }
 
 async function runDangerousAction(): Promise<void> {

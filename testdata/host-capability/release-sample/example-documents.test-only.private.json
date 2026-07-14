@@ -1,0 +1,8 @@
+{
+  "schema_version": "redevplugin.ed25519_signing_key.v1",
+  "algorithm": "ed25519",
+  "key_id": "example-contract-release-test",
+  "private_key": "1/LV63J4IKyyOEROZSD0dffEP92PWmKMBQeQOC93g6oRwq4gcT14bTCPGvRRY23nqukV6BAx+e2xjZ8B+Kn2GA==",
+  "public_key": "EcKuIHE9eG0wjxr0UWNt56rpFegQMfntsY2fAfip9hg=",
+  "created_at": "2026-07-13T12:28:52Z"
+}

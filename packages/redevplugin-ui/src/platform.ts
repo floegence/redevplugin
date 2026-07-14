@@ -42,6 +42,12 @@ export type PluginCompatibilityMatrix = {
   compatibility_schema_version: string;
   release_manifest_schema_version: string;
   worker_invocation_schema_version: string;
+  host_capability_contract_schema_version: string;
+  host_capability_pin_schema_version: string;
+  host_capability_manifest_schema_version: string;
+  host_capability_compatibility_schema_version: string;
+  host_capability_signature_schema_version: string;
+  host_capability_notices_schema_version: string;
   error_codes_schema_version: string;
   contract_registry_version: string;
   [key: string]: unknown;
@@ -256,19 +262,73 @@ export type PluginSettingsSnapshot = {
   updated_at: string;
 };
 
-export type PluginOperationRecord = {
+export type PluginCapabilityContractPin = {
+  publisher_id: string;
+  contract_id: string;
+  contract_version: string;
+  artifact_ref: string;
+  artifact_sha256: string;
+  manifest_ref: string;
+  manifest_sha256: string;
+  signature_ref: string;
+  signature_sha256: string;
+  signature_key_id: string;
+  signature_policy_epoch: string;
+  signature_revocation_epoch: string;
+  compatibility_ref: string;
+  compatibility_sha256: string;
+  generated_client_ref: string;
+  generated_client_sha256: string;
+  notices_ref: string;
+  notices_sha256: string;
+};
+
+export type PluginExecutionBinding = {
+  invocation_id: string;
+  audit_correlation_id: string;
   operation_id: string;
-  plugin_id?: string;
+  stream_id?: string;
+  publisher_id: string;
+  plugin_id: string;
   plugin_instance_id: string;
-  method: string;
-  effect?: string;
-  execution: string;
+  plugin_version: string;
+  active_fingerprint: string;
   surface_instance_id?: string;
+  owner_session_hash?: string;
+  owner_user_hash?: string;
   session_channel_id_hash?: string;
   bridge_channel_id?: string;
-  status: string;
-  disable_behavior?: string;
-  uninstall_behavior?: string;
+  capability_id: string;
+  capability_version: string;
+  binding_id: string;
+  contract: PluginCapabilityContractPin;
+  method: string;
+  target_method: string;
+  effect: "read" | "write" | "execute" | "delete" | "admin";
+  execution: "operation" | "subscription";
+  permissions: { required: string[]; granted: string[] };
+  confirmation: {
+    required: boolean;
+    confirmed: boolean;
+    confirmation_id?: string;
+    request_sha256?: string;
+    plan_sha256?: string;
+    target_sha256?: string;
+  };
+  revision: { policy_revision: number; management_revision: number; revoke_epoch: number };
+  quota: { max_concurrent?: number; max_duration_ms?: number; max_stream_bytes?: number; expires_at?: string };
+  target: { kind: string; fields: Record<string, unknown> };
+  target_descriptor_sha256: string;
+  stream_event_type_name?: string;
+  stream_event_schema_sha256?: string;
+};
+
+export type PluginOperationRecord = PluginExecutionBinding & {
+  status: "running" | "cancel_requested" | "canceled" | "completed" | "failed" | "orphaned_after_disable" | "orphaned_after_uninstall";
+  cancelable: boolean;
+  cancel_ack_timeout_ms?: number;
+  disable_behavior?: "cancel" | "orphan" | "wait";
+  uninstall_behavior?: "cancel_then_block_delete" | "force_cleanup_allowed";
   reason?: string;
   created_at: string;
   updated_at: string;

@@ -1,0 +1,20 @@
+{
+  "publisher_id": "example.publisher",
+  "contract_id": "example.documents.v1",
+  "contract_version": "1.0.0",
+  "artifact_ref": "capabilities/example.documents/v1.0.0/example.documents.v1.schema.json",
+  "artifact_sha256": "9436f2bb2917415f28dbdbd16ba31642cf8b573bff6b680c52dc0f00b1756106",
+  "manifest_ref": "capabilities/example.documents/v1.0.0/example.documents.v1.manifest.json",
+  "manifest_sha256": "1e2a735b35a50c1ed1c15af78d467f97e77d7e4e94b2ed5f98db450ba1a16ab5",
+  "signature_ref": "capabilities/example.documents/v1.0.0/example.documents.v1.sig",
+  "signature_sha256": "955a5d3aa3640f2b35d1f1eb6b4bdb5086d1fae90fbe5f9d0cc4167c4f32f975",
+  "signature_key_id": "example-contract-release-test",
+  "signature_policy_epoch": "7",
+  "signature_revocation_epoch": "11",
+  "compatibility_ref": "capabilities/example.documents/v1.0.0/example.documents.v1.compatibility.json",
+  "compatibility_sha256": "bce122611a301600cb12f316d709cd674013d8b014b93803dbb0b873418b2fec",
+  "generated_client_ref": "capabilities/example.documents/v1.0.0/example.documents.v1.client.ts",
+  "generated_client_sha256": "f968dcf9d75291dc8cbb373ee1ec866a34a8976785a9efffebd2d51fb1baef12",
+  "notices_ref": "capabilities/example.documents/v1.0.0/example.documents.v1.notices.json",
+  "notices_sha256": "7e6aeedea3215a645379aa23a2cc4e5d2173431893a1c8408cb7b5f325d37590"
+}

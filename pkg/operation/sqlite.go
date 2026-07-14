@@ -3,6 +3,7 @@ package operation
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 3
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -49,9 +50,12 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 		return Record{}, errors.New("operation store is nil")
 	}
 	operationID := strings.TrimSpace(req.OperationID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	method := strings.TrimSpace(req.Method)
+	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
+	method := strings.TrimSpace(req.ExecutionBinding.Method)
 	if operationID == "" || pluginInstanceID == "" || method == "" {
+		return Record{}, ErrInvalidOperation
+	}
+	if req.CancelAckTimeoutMS < 0 || !registerCancelable(req.Cancelable) && req.CancelAckTimeoutMS != 0 {
 		return Record{}, ErrInvalidOperation
 	}
 	now := req.Now
@@ -68,28 +72,23 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	existing, exists, err := getSQLiteOperation(ctx, tx, operationID)
+	_, exists, err := getSQLiteOperation(ctx, tx, operationID)
 	if err != nil {
 		return Record{}, err
 	}
 	if exists {
-		return existing, nil
+		return Record{}, ErrAlreadyExists
 	}
 	record := Record{
-		OperationID:          operationID,
-		PluginID:             strings.TrimSpace(req.PluginID),
-		PluginInstanceID:     pluginInstanceID,
-		Method:               method,
-		Effect:               strings.TrimSpace(req.Effect),
-		Execution:            strings.TrimSpace(req.Execution),
-		SurfaceInstanceID:    strings.TrimSpace(req.SurfaceInstanceID),
-		SessionChannelIDHash: strings.TrimSpace(req.SessionChannelIDHash),
-		BridgeChannelID:      strings.TrimSpace(req.BridgeChannelID),
-		Status:               StatusRunning,
-		DisableBehavior:      normalizeDisableBehavior(req.DisableBehavior),
-		UninstallBehavior:    normalizeUninstallBehavior(req.UninstallBehavior),
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		OperationID:        operationID,
+		ExecutionBinding:   req.ExecutionBinding,
+		Status:             StatusRunning,
+		Cancelable:         registerCancelable(req.Cancelable),
+		CancelAckTimeoutMS: req.CancelAckTimeoutMS,
+		DisableBehavior:    normalizeDisableBehavior(req.DisableBehavior),
+		UninstallBehavior:  normalizeUninstallBehavior(req.UninstallBehavior),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	if err := upsertSQLiteOperation(ctx, tx, record); err != nil {
 		return Record{}, err
@@ -154,8 +153,11 @@ func (s *SQLiteStore) Get(ctx context.Context, operationID string) (Record, erro
 }
 
 func (s *SQLiteStore) RequestCancel(ctx context.Context, req CancelRequest) (Record, error) {
-	return s.update(ctx, strings.TrimSpace(req.OperationID), req.Now, func(record Record, now time.Time) Record {
-		return requestCancel(record, now, req.Reason)
+	return s.update(ctx, strings.TrimSpace(req.OperationID), req.Now, func(record Record, now time.Time) (Record, error) {
+		if !terminal(record.Status) && !record.Cancelable {
+			return Record{}, ErrNotCancelable
+		}
+		return requestCancel(record, now, req.Reason), nil
 	})
 }
 
@@ -163,14 +165,14 @@ func (s *SQLiteStore) Finish(ctx context.Context, req FinishRequest) (Record, er
 	if !finishStatus(req.Status) {
 		return Record{}, ErrInvalidOperation
 	}
-	return s.update(ctx, strings.TrimSpace(req.OperationID), req.Now, func(record Record, now time.Time) Record {
+	return s.update(ctx, strings.TrimSpace(req.OperationID), req.Now, func(record Record, now time.Time) (Record, error) {
 		if terminal(record.Status) {
-			return record
+			return record, nil
 		}
 		record.Status = req.Status
 		record.Reason = req.Reason
 		record.UpdatedAt = now
-		return record
+		return record, nil
 	})
 }
 
@@ -202,7 +204,7 @@ func (s *SQLiteStore) MarkPluginUninstalled(ctx context.Context, req PluginTrans
 	})
 }
 
-func (s *SQLiteStore) update(ctx context.Context, operationID string, now time.Time, mutate func(Record, time.Time) Record) (Record, error) {
+func (s *SQLiteStore) update(ctx context.Context, operationID string, now time.Time, mutate func(Record, time.Time) (Record, error)) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("operation store is nil")
 	}
@@ -225,7 +227,10 @@ func (s *SQLiteStore) update(ctx context.Context, operationID string, now time.T
 	if !exists {
 		return Record{}, ErrNotFound
 	}
-	record = mutate(record, now)
+	record, err = mutate(record, now)
+	if err != nil {
+		return Record{}, err
+	}
 	if err := upsertSQLiteOperation(ctx, tx, record); err != nil {
 		return Record{}, err
 	}
@@ -321,16 +326,38 @@ CREATE TABLE IF NOT EXISTS plugin_operations (
 	surface_instance_id TEXT NOT NULL,
 	session_channel_id_hash TEXT NOT NULL,
 	bridge_channel_id TEXT NOT NULL,
+	execution_binding_json TEXT NOT NULL DEFAULT '{}',
 	status TEXT NOT NULL,
+	cancelable INTEGER NOT NULL DEFAULT 1,
+	cancel_ack_timeout_ms INTEGER NOT NULL DEFAULT 0,
 	disable_behavior TEXT NOT NULL,
 	uninstall_behavior TEXT NOT NULL,
 	reason TEXT NOT NULL,
-	created_at INTEGER NOT NULL,
+		created_at INTEGER NOT NULL,
 	updated_at INTEGER NOT NULL,
 	cancel_requested_at INTEGER,
 	orphaned_at INTEGER
 )`); err != nil {
 		return err
+	}
+	if maxVersion < 2 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_operations ADD COLUMN execution_binding_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_operation_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
+	if maxVersion < 3 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_operations ADD COLUMN cancelable INTEGER NOT NULL DEFAULT 1`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_operations ADD COLUMN cancel_ack_timeout_ms INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_operation_schema_migrations(version, applied_at) VALUES(?, ?)`, 3, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_operations_plugin_instance ON plugin_operations(plugin_instance_id, created_at, operation_id)`); err != nil {
 		return err
@@ -349,8 +376,8 @@ CREATE TABLE IF NOT EXISTS plugin_operations (
 const operationSelectColumns = `
 SELECT
 	operation_id, plugin_id, plugin_instance_id, method, effect, execution,
-	surface_instance_id, session_channel_id_hash, bridge_channel_id, status,
-	disable_behavior, uninstall_behavior, reason, created_at, updated_at,
+	surface_instance_id, session_channel_id_hash, bridge_channel_id, execution_binding_json, status,
+		cancelable, cancel_ack_timeout_ms, disable_behavior, uninstall_behavior, reason, created_at, updated_at,
 	cancel_requested_at, orphaned_at`
 
 func listSQLiteOperations(ctx context.Context, q sqliteQuerier, pluginInstanceID string) ([]Record, error) {
@@ -387,13 +414,17 @@ func getSQLiteOperation(ctx context.Context, q sqliteQuerier, operationID string
 }
 
 func upsertSQLiteOperation(ctx context.Context, tx *sql.Tx, record Record) error {
-	_, err := tx.ExecContext(ctx, `
+	bindingJSON, err := json.Marshal(record.ExecutionBinding)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_operations (
 	operation_id, plugin_id, plugin_instance_id, method, effect, execution,
-	surface_instance_id, session_channel_id_hash, bridge_channel_id, status,
-	disable_behavior, uninstall_behavior, reason, created_at, updated_at,
-	cancel_requested_at, orphaned_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	surface_instance_id, session_channel_id_hash, bridge_channel_id, execution_binding_json, status,
+		cancelable, cancel_ack_timeout_ms, disable_behavior, uninstall_behavior, reason, created_at, updated_at,
+		cancel_requested_at, orphaned_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(operation_id) DO UPDATE SET
 	plugin_id = excluded.plugin_id,
 	plugin_instance_id = excluded.plugin_instance_id,
@@ -403,11 +434,14 @@ ON CONFLICT(operation_id) DO UPDATE SET
 	surface_instance_id = excluded.surface_instance_id,
 	session_channel_id_hash = excluded.session_channel_id_hash,
 	bridge_channel_id = excluded.bridge_channel_id,
+	execution_binding_json = excluded.execution_binding_json,
 	status = excluded.status,
+	cancelable = excluded.cancelable,
+	cancel_ack_timeout_ms = excluded.cancel_ack_timeout_ms,
 	disable_behavior = excluded.disable_behavior,
 	uninstall_behavior = excluded.uninstall_behavior,
 	reason = excluded.reason,
-	created_at = excluded.created_at,
+		created_at = excluded.created_at,
 	updated_at = excluded.updated_at,
 	cancel_requested_at = excluded.cancel_requested_at,
 	orphaned_at = excluded.orphaned_at`,
@@ -420,7 +454,10 @@ ON CONFLICT(operation_id) DO UPDATE SET
 		record.SurfaceInstanceID,
 		record.SessionChannelIDHash,
 		record.BridgeChannelID,
+		string(bindingJSON),
 		string(record.Status),
+		record.Cancelable,
+		record.CancelAckTimeoutMS,
 		record.DisableBehavior,
 		record.UninstallBehavior,
 		record.Reason,
@@ -444,6 +481,8 @@ type sqliteOperationScanner interface {
 func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 	var record Record
 	var status string
+	var bindingJSON string
+	var cancelable int
 	var createdAt int64
 	var updatedAt int64
 	var cancelRequestedAt sql.NullInt64
@@ -458,7 +497,10 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 		&record.SurfaceInstanceID,
 		&record.SessionChannelIDHash,
 		&record.BridgeChannelID,
+		&bindingJSON,
 		&status,
+		&cancelable,
+		&record.CancelAckTimeoutMS,
 		&record.DisableBehavior,
 		&record.UninstallBehavior,
 		&record.Reason,
@@ -469,7 +511,13 @@ func scanSQLiteOperation(scanner sqliteOperationScanner) (Record, error) {
 	); err != nil {
 		return Record{}, err
 	}
+	if strings.TrimSpace(bindingJSON) != "" && strings.TrimSpace(bindingJSON) != "{}" {
+		if err := json.Unmarshal([]byte(bindingJSON), &record.ExecutionBinding); err != nil {
+			return Record{}, err
+		}
+	}
 	record.Status = Status(status)
+	record.Cancelable = cancelable != 0
 	record.CreatedAt = unixToTime(createdAt)
 	record.UpdatedAt = unixToTime(updatedAt)
 	record.CancelRequestedAt = nullableUnixToTimePtr(cancelRequestedAt)

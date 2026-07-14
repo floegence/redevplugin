@@ -21,6 +21,12 @@
     "compatibility_schema_version": "compatibility-manifest-v2",
     "release_manifest_schema_version": "release-manifest-v2",
     "worker_invocation_schema_version": "worker-invocation-v1",
+    "host_capability_contract_schema_version": "host-capability-contract-v1",
+    "host_capability_pin_schema_version": "host-capability-pin-v1",
+    "host_capability_manifest_schema_version": "host-capability-manifest-v1",
+    "host_capability_compatibility_schema_version": "host-capability-compatibility-v1",
+    "host_capability_signature_schema_version": "host-capability-signature-v1",
+    "host_capability_notices_schema_version": "host-capability-notices-v1",
     "error_codes_schema_version": "error-codes-v1",
     "contract_registry_version": "contract-registry-v1"
   },
@@ -89,6 +95,36 @@
       "id": "worker-invocation-schema",
       "path": "spec/plugin/worker-invocation-v1.schema.json",
       "version_key": "worker_invocation_schema_version"
+    },
+    {
+      "id": "host-capability-contract-schema",
+      "path": "spec/plugin/host-capability-contract-v1.schema.json",
+      "version_key": "host_capability_contract_schema_version"
+    },
+    {
+      "id": "host-capability-pin-schema",
+      "path": "spec/plugin/host-capability-pin-v1.schema.json",
+      "version_key": "host_capability_pin_schema_version"
+    },
+    {
+      "id": "host-capability-manifest-schema",
+      "path": "spec/plugin/host-capability-manifest-v1.schema.json",
+      "version_key": "host_capability_manifest_schema_version"
+    },
+    {
+      "id": "host-capability-compatibility-schema",
+      "path": "spec/plugin/host-capability-compatibility-v1.schema.json",
+      "version_key": "host_capability_compatibility_schema_version"
+    },
+    {
+      "id": "host-capability-signature-schema",
+      "path": "spec/plugin/host-capability-signature-v1.schema.json",
+      "version_key": "host_capability_signature_schema_version"
+    },
+    {
+      "id": "host-capability-notices-schema",
+      "path": "spec/plugin/host-capability-notices-v1.schema.json",
+      "version_key": "host_capability_notices_schema_version"
     },
     {
       "id": "error-codes-schema",

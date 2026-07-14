@@ -5,6 +5,7 @@ use wasmi::{AsContext, AsContextMut, Config};
 
 const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
+const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
 const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
 
 fn main() {
@@ -71,6 +72,7 @@ fn run() -> Result<(), String> {
                     resources: &mut resources,
                     control: &control,
                     runtime_lease_public_keys: &runtime_lease_public_keys,
+                    now_unix_ms: current_unix_millis()?,
                 },
                 &request_id,
                 &runtime_generation_id,
@@ -254,12 +256,21 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+fn current_unix_millis() -> Result<i64, String> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("system time is before UNIX epoch: {err}"))?;
+    i64::try_from(duration.as_millis())
+        .map_err(|_| "system time exceeds i64 milliseconds".to_string())
+}
+
 struct WorkerInvocationState<'a> {
     revocations: &'a RuntimeRevocations,
     lease_replays: &'a mut RuntimeLeaseReplayCache,
     resources: &'a mut RuntimeResourceRegistry,
     control: &'a ControlChannelState,
     runtime_lease_public_keys: &'a [redevplugin_ipc::RuntimeLeasePublicKey],
+    now_unix_ms: i64,
 }
 
 fn handle_worker_invocation<R: BufRead, W: Write>(
@@ -324,7 +335,21 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             Some(err.as_str()),
         ));
     }
-    if let Err(err) = state.lease_replays.consume_invocation_frame(line) {
+    if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, state.now_unix_ms) {
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+            Some(err.as_str()),
+        ));
+    }
+    if let Err(err) = state
+        .lease_replays
+        .consume_invocation_frame(line, state.now_unix_ms)
+    {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -930,21 +955,49 @@ fn remove_plugin_resources(
     u64::try_from(before.saturating_sub(resources.len())).unwrap_or(u64::MAX)
 }
 
-#[derive(Default)]
 struct RuntimeLeaseReplayCache {
-    consumed_leases: HashSet<String>,
+    consumed_leases: HashMap<String, i64>,
+    max_entries: usize,
+}
+
+impl Default for RuntimeLeaseReplayCache {
+    fn default() -> Self {
+        Self {
+            consumed_leases: HashMap::new(),
+            max_entries: DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY,
+        }
+    }
 }
 
 impl RuntimeLeaseReplayCache {
-    fn consume_invocation_frame(&mut self, frame: &str) -> Result<(), RuntimeLeaseReplayError> {
+    #[cfg(test)]
+    fn with_capacity(max_entries: usize) -> Self {
+        Self {
+            consumed_leases: HashMap::new(),
+            max_entries,
+        }
+    }
+
+    fn consume_invocation_frame(
+        &mut self,
+        frame: &str,
+        now_unix_ms: i64,
+    ) -> Result<(), RuntimeLeaseReplayError> {
         let key = redevplugin_ipc::parse_worker_lease_replay_key(frame)
             .map_err(|_| RuntimeLeaseReplayError::InvalidInvocation)?;
+        self.consumed_leases
+            .retain(|_, expires_at_unix_ms| *expires_at_unix_ms > now_unix_ms);
         let cache_key = format!("{}:{}", key.lease_id, key.lease_nonce);
-        if !self.consumed_leases.insert(cache_key) {
+        if self.consumed_leases.contains_key(&cache_key) {
             return Err(RuntimeLeaseReplayError::Replayed {
                 lease_id: key.lease_id,
             });
         }
+        if self.max_entries == 0 || self.consumed_leases.len() >= self.max_entries {
+            return Err(RuntimeLeaseReplayError::CapacityExceeded);
+        }
+        self.consumed_leases
+            .insert(cache_key, key.expires_at_unix_ms);
         Ok(())
     }
 }
@@ -953,6 +1006,7 @@ impl RuntimeLeaseReplayCache {
 enum RuntimeLeaseReplayError {
     InvalidInvocation,
     Replayed { lease_id: String },
+    CapacityExceeded,
 }
 
 impl RuntimeLeaseReplayError {
@@ -960,6 +1014,7 @@ impl RuntimeLeaseReplayError {
         match self {
             Self::InvalidInvocation => redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
             Self::Replayed { .. } => redevplugin_ipc::ERR_LEASE_REPLAYED,
+            Self::CapacityExceeded => redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
         }
     }
 }
@@ -977,6 +1032,12 @@ impl std::fmt::Display for RuntimeLeaseReplayError {
                 write!(
                     formatter,
                     "runtime execution lease {lease_id} was already consumed"
+                )
+            }
+            Self::CapacityExceeded => {
+                write!(
+                    formatter,
+                    "runtime lease replay cache capacity is exhausted"
                 )
             }
         }
@@ -2258,6 +2319,22 @@ fn network_execute_request(
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
+    for field in [
+        "stream_method",
+        "stream_effect",
+        "stream_execution",
+        "surface_instance_id",
+        "owner_session_hash",
+        "owner_user_hash",
+        "session_channel_id_hash",
+        "bridge_channel_id",
+    ] {
+        if request_json_string(request_json, field).is_some() {
+            return Err(format!(
+                "network request must not set host-owned invocation field {field}"
+            ));
+        }
+    }
     let plugin_id = required_json_string(invocation_frame, "plugin_id")?;
     let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
     let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
@@ -2265,15 +2342,28 @@ fn network_execute_request(
     let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
     let management_revision = required_json_number(invocation_frame, "management_revision")?;
     let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
-    let stream_method = request_json_string(request_json, "stream_method")
-        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "method"))
-        .unwrap_or_default();
-    let stream_effect = request_json_string(request_json, "stream_effect")
-        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "effect"))
-        .unwrap_or_default();
-    let stream_execution = request_json_string(request_json, "stream_execution")
-        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "execution"))
-        .unwrap_or_default();
+    let stream_method =
+        redevplugin_ipc::extract_json_string(invocation_frame, "method").unwrap_or_default();
+    let stream_effect =
+        redevplugin_ipc::extract_json_string(invocation_frame, "effect").unwrap_or_default();
+    let stream_execution =
+        redevplugin_ipc::extract_json_string(invocation_frame, "execution").unwrap_or_default();
+    let operation =
+        request_json_string(request_json, "operation").unwrap_or_else(|| "http".to_string());
+    let requested_stream_id = request_json_string(request_json, "stream_id");
+    let stream_id = if operation == "http_stream" {
+        if requested_stream_id.is_some() {
+            return Err("http_stream request must not select the host-owned stream_id".to_string());
+        }
+        let host_stream_id =
+            redevplugin_ipc::extract_json_string(invocation_frame, "stream_id").unwrap_or_default();
+        if host_stream_id.is_empty() {
+            return Err("http_stream invocation is missing the host-owned stream_id".to_string());
+        }
+        host_stream_id
+    } else {
+        requested_stream_id.unwrap_or_default()
+    };
     Ok(redevplugin_ipc::NetworkExecuteRequest {
         plugin_id,
         plugin_instance_id,
@@ -2291,8 +2381,7 @@ fn network_execute_request(
         destination: request_json_string(request_json, "destination")
             .unwrap_or_else(|| "https://api.example.com".to_string()),
         ttl_ms: request_json_number(request_json, "ttl_ms").unwrap_or(30_000),
-        operation: request_json_string(request_json, "operation")
-            .unwrap_or_else(|| "http".to_string()),
+        operation,
         method: request_json_string(request_json, "method").unwrap_or_else(|| "GET".to_string()),
         path: request_json_string(request_json, "path").unwrap_or_else(|| "/".to_string()),
         headers_json: request_json_object(request_json, "headers")
@@ -2308,31 +2397,32 @@ fn network_execute_request(
         max_buffered_bytes: request_json_number(request_json, "max_buffered_bytes")
             .unwrap_or(1024 * 1024),
         timeout_ms: request_json_number(request_json, "timeout_ms").unwrap_or(5_000),
-        stream_id: request_json_string(request_json, "stream_id").unwrap_or_default(),
+        stream_id,
         stream_method,
         stream_effect,
         stream_execution,
-        surface_instance_id: request_json_string(request_json, "surface_instance_id")
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "surface_instance_id")
-            })
+        surface_instance_id: redevplugin_ipc::extract_json_string(
+            invocation_frame,
+            "surface_instance_id",
+        )
+        .unwrap_or_default(),
+        owner_session_hash: redevplugin_ipc::extract_json_string(
+            invocation_frame,
+            "owner_session_hash",
+        )
+        .unwrap_or_default(),
+        owner_user_hash: redevplugin_ipc::extract_json_string(invocation_frame, "owner_user_hash")
             .unwrap_or_default(),
-        owner_session_hash: request_json_string(request_json, "owner_session_hash")
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "owner_session_hash")
-            })
-            .unwrap_or_default(),
-        owner_user_hash: request_json_string(request_json, "owner_user_hash")
-            .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "owner_user_hash"))
-            .unwrap_or_default(),
-        session_channel_id_hash: request_json_string(request_json, "session_channel_id_hash")
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "session_channel_id_hash")
-            })
-            .unwrap_or_default(),
-        bridge_channel_id: request_json_string(request_json, "bridge_channel_id")
-            .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "bridge_channel_id"))
-            .unwrap_or_default(),
+        session_channel_id_hash: redevplugin_ipc::extract_json_string(
+            invocation_frame,
+            "session_channel_id_hash",
+        )
+        .unwrap_or_default(),
+        bridge_channel_id: redevplugin_ipc::extract_json_string(
+            invocation_frame,
+            "bridge_channel_id",
+        )
+        .unwrap_or_default(),
         content_type: request_json_string(request_json, "content_type").unwrap_or_default(),
     })
 }
@@ -2533,6 +2623,26 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    fn runtime_lease_fixture_public_keys() -> &'static [redevplugin_ipc::RuntimeLeasePublicKey] {
+        static KEYS: OnceLock<Vec<redevplugin_ipc::RuntimeLeasePublicKey>> = OnceLock::new();
+        KEYS.get_or_init(|| {
+            let public_key: [u8; 32] =
+                decode_base64("IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=")
+                    .expect("fixture public key base64")
+                    .try_into()
+                    .expect("fixture public key length");
+            vec![redevplugin_ipc::RuntimeLeasePublicKey {
+                key_id: "host_ephemeral_fixture_v1".to_string(),
+                public_key,
+            }]
+        })
+    }
+
+    fn signed_worker_invocation_fixture() -> &'static str {
+        include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json")
+    }
 
     fn worker_invocation_state<'a>(
         revocations: &'a RuntimeRevocations,
@@ -2545,7 +2655,8 @@ mod tests {
             lease_replays,
             resources,
             control,
-            runtime_lease_public_keys: &[],
+            runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+            now_unix_ms: 1_783_161_901_000,
         }
     }
 
@@ -2613,10 +2724,10 @@ mod tests {
         let mut cache = RuntimeLeaseReplayCache::default();
         let frame = worker_invocation_frame("plugini_1", 1);
         cache
-            .consume_invocation_frame(&frame)
+            .consume_invocation_frame(&frame, 1_000)
             .expect("first lease use should pass");
         let err = cache
-            .consume_invocation_frame(&frame)
+            .consume_invocation_frame(&frame, 1_000)
             .expect_err("replayed lease should fail");
         assert_eq!(err.code(), redevplugin_ipc::ERR_LEASE_REPLAYED);
     }
@@ -2627,9 +2738,52 @@ mod tests {
         let err = cache
             .consume_invocation_frame(
                 r#"{"payload":{"lease":{"lease_id":"lease_1","plugin_instance_id":"plugini_1","revoke_epoch":1}}}"#,
+                1_000,
             )
             .expect_err("missing lease nonce should fail");
         assert_eq!(err.code(), redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID);
+    }
+
+    #[test]
+    fn runtime_lease_replay_cache_prunes_expired_entries_before_enforcing_capacity() {
+        let mut cache = RuntimeLeaseReplayCache::with_capacity(1);
+        cache
+            .consume_invocation_frame(
+                &worker_invocation_frame_with_lease_expiry(
+                    "plugini_1",
+                    1,
+                    "lease_1",
+                    "nonce_1",
+                    2_000,
+                ),
+                1_000,
+            )
+            .expect("first lease use should pass");
+        let full = cache
+            .consume_invocation_frame(
+                &worker_invocation_frame_with_lease_expiry(
+                    "plugini_1",
+                    1,
+                    "lease_2",
+                    "nonce_2",
+                    3_000,
+                ),
+                1_000,
+            )
+            .expect_err("live replay entries must enforce the hard capacity");
+        assert_eq!(full.code(), redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID);
+        cache
+            .consume_invocation_frame(
+                &worker_invocation_frame_with_lease_expiry(
+                    "plugini_1",
+                    1,
+                    "lease_2",
+                    "nonce_2",
+                    3_000,
+                ),
+                2_000,
+            )
+            .expect("expired replay entries should be pruned");
     }
 
     #[test]
@@ -2815,6 +2969,7 @@ mod tests {
             request.contains(r#""frame_type":"network_execute""#),
             "{request}"
         );
+        assert!(request.contains(r#""stream_id":"stream_1""#), "{request}");
         let closed = resources.revoke_plugin("plugini_1");
         assert_eq!(closed.socket, 1);
         assert_eq!(closed.stream, 1);
@@ -2931,7 +3086,7 @@ mod tests {
             ),
             "r1",
             "g1",
-            &worker_invocation_frame("plugini_1", 1),
+            signed_worker_invocation_fixture(),
         )
         .expect("worker invocation response");
 
@@ -2966,6 +3121,7 @@ mod tests {
                 resources: &mut resources,
                 control: &control,
                 runtime_lease_public_keys: &runtime_lease_public_keys,
+                now_unix_ms: 1_783_161_901_000,
             },
             "r1",
             "g1",
@@ -2983,9 +3139,78 @@ mod tests {
     }
 
     #[test]
+    fn worker_invocation_rejects_expired_lease_before_opening_artifact() {
+        let revocations = RuntimeRevocations::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
+        let control = ControlChannelState::new();
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+        let mut state =
+            worker_invocation_state(&revocations, &mut lease_replays, &mut resources, &control);
+        state.now_unix_ms = 1_783_161_930_000;
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut state,
+            "r1",
+            "g1",
+            signed_worker_invocation_fixture(),
+        )
+        .expect("worker invocation response");
+
+        assert!(
+            output.is_empty(),
+            "expired lease must not request an artifact"
+        );
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
+    }
+
+    #[test]
+    fn worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact() {
+        let revocations = RuntimeRevocations::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let mut resources = RuntimeResourceRegistry::default();
+        let control = ControlChannelState::new();
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+        let (prefix, invocation) = signed_worker_invocation_fixture()
+            .split_once("\"invocation\":{")
+            .expect("signed invocation object");
+        let invocation = invocation.replacen(
+            "\"operation_id\":\"operation_fixture_v1\"",
+            "\"operation_id\":\"operation_other\"",
+            1,
+        );
+        let frame = format!("{prefix}\"invocation\":{{{invocation}");
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut worker_invocation_state(
+                &revocations,
+                &mut lease_replays,
+                &mut resources,
+                &control,
+            ),
+            "r1",
+            "g1",
+            &frame,
+        )
+        .expect("worker invocation response");
+
+        assert!(
+            output.is_empty(),
+            "mismatched execution binding must not request an artifact"
+        );
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
+    }
+
+    #[test]
     fn worker_invocation_allows_current_epoch_to_open_artifact() {
         let mut revocations = RuntimeRevocations::default();
-        revocations.revoke_plugin("plugini_1", 5);
+        revocations.revoke_plugin("plugini_fixture_v1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
         let mut resources = RuntimeResourceRegistry::default();
         let control = ControlChannelState::new();
@@ -3003,7 +3228,7 @@ mod tests {
             ),
             "r1",
             "g1",
-            &worker_invocation_frame("plugini_1", 5),
+            signed_worker_invocation_fixture(),
         )
         .expect("worker invocation response");
 
@@ -3023,7 +3248,7 @@ mod tests {
         let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
-        let frame = worker_invocation_frame("plugini_1", 1);
+        let frame = signed_worker_invocation_fixture().to_string();
 
         let first = handle_worker_invocation(
             &mut input,
@@ -3227,13 +3452,14 @@ mod tests {
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
         let got = network_execute_request(invocation, "g1", request)
             .expect("stream network execute request");
 
         assert_eq!(got.plugin_id, "com.example.worker");
         assert_eq!(got.operation, "http_stream");
+        assert_eq!(got.stream_id, "stream_host_1");
         assert_eq!(got.stream_method, "worker.echo");
         assert_eq!(got.stream_effect, "read");
         assert_eq!(got.stream_execution, "subscription");
@@ -3245,6 +3471,53 @@ mod tests {
         assert_eq!(got.max_chunk_bytes, 4);
         assert_eq!(got.max_buffered_bytes, 65536);
         assert_eq!(got.content_type, "text/plain");
+    }
+
+    #[test]
+    fn network_execute_request_rejects_plugin_owned_audience_overrides() {
+        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        for field in [
+            "stream_method",
+            "stream_effect",
+            "stream_execution",
+            "surface_instance_id",
+            "owner_session_hash",
+            "owner_user_hash",
+            "session_channel_id_hash",
+            "bridge_channel_id",
+        ] {
+            let request = format!(
+                r#"{{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","{field}":"plugin-selected"}}"#
+            );
+            let err = network_execute_request(invocation, "g1", &request)
+                .expect_err("plugin-owned audience override must fail closed");
+            assert!(
+                err.contains("host-owned invocation field"),
+                "{field}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_execute_request_rejects_plugin_selected_stream_id() {
+        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
+
+        let err = network_execute_request(invocation, "g1", request)
+            .expect_err("plugin-selected stream id must fail closed");
+
+        assert!(err.contains("host-owned stream_id"), "{err}");
+    }
+
+    #[test]
+    fn network_execute_request_rejects_missing_host_owned_stream_id() {
+        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
+
+        let err = network_execute_request(invocation, "g1", request)
+            .expect_err("missing Host stream id must fail closed");
+
+        assert!(err.contains("host-owned stream_id"), "{err}");
     }
 
     #[test]
@@ -3300,7 +3573,7 @@ mod tests {
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grant_token":"handle_grant.secret","method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}"#
+            r#"{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grant_token":"handle_grant.secret","method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}"#
         )
     }
 
@@ -3310,8 +3583,24 @@ mod tests {
         lease_id: &str,
         lease_nonce: &str,
     ) -> String {
+        worker_invocation_frame_with_lease_expiry(
+            plugin_instance_id,
+            revoke_epoch,
+            lease_id,
+            lease_nonce,
+            10_000,
+        )
+    }
+
+    fn worker_invocation_frame_with_lease_expiry(
+        plugin_instance_id: &str,
+        revoke_epoch: u64,
+        lease_id: &str,
+        lease_nonce: &str,
+        expires_at_unix_ms: i64,
+    ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
         )
     }
 

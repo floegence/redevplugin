@@ -90,8 +90,11 @@ func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 				t.Fatalf("%s channel_nonce schema = %#v", frameType, channelNonce)
 			}
 			if frameType == "hello" {
+				if !containsRequiredString(required, "runtime_lease_public_keys") {
+					t.Fatalf("hello payload must require runtime_lease_public_keys: %#v", required)
+				}
 				keys := requireNestedObject(t, props, "runtime_lease_public_keys")
-				if keys["type"] != "array" {
+				if keys["type"] != "array" || keys["minItems"] != float64(1) {
 					t.Fatalf("hello runtime_lease_public_keys schema = %#v", keys)
 				}
 				items := requireNestedObject(t, keys, "items")
@@ -193,6 +196,7 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 			"method",
 			"effect",
 			"execution",
+			"audit_correlation_id",
 			"surface_instance_id",
 			"owner_session_hash",
 			"owner_user_hash",
@@ -205,6 +209,8 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 			"runtime_instance_id",
 			"ipc_channel_id",
 			"connection_nonce",
+			"key_id",
+			"signature",
 			"expires_at",
 		} {
 			if !containsRequiredString(required, name) {
@@ -226,6 +232,9 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 			"method",
 			"effect",
 			"execution",
+			"operation_id",
+			"stream_id",
+			"audit_correlation_id",
 			"surface_instance_id",
 			"owner_session_hash",
 			"owner_user_hash",

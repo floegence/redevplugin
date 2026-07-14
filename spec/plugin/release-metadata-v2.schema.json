@@ -142,34 +142,7 @@
       }
     },
     "host_capability_contract_ref": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "contract_id",
-        "contract_version",
-        "artifact_ref",
-        "artifact_sha256",
-        "manifest_sha256",
-        "signature_ref",
-        "signature_sha256",
-        "signature_key_id",
-        "compatibility_sha256",
-        "generated_client_sha256",
-        "notices_sha256"
-      ],
-      "properties": {
-        "contract_id": { "type": "string", "minLength": 1 },
-        "contract_version": { "type": "string", "minLength": 1 },
-        "artifact_ref": { "$ref": "#/$defs/artifact_ref" },
-        "artifact_sha256": { "$ref": "#/$defs/sha256" },
-        "manifest_sha256": { "$ref": "#/$defs/sha256" },
-        "signature_ref": { "$ref": "#/$defs/artifact_ref" },
-        "signature_sha256": { "$ref": "#/$defs/sha256" },
-        "signature_key_id": { "type": "string", "minLength": 1 },
-        "compatibility_sha256": { "$ref": "#/$defs/sha256" },
-        "generated_client_sha256": { "$ref": "#/$defs/sha256" },
-        "notices_sha256": { "$ref": "#/$defs/sha256" }
-      }
+      "$ref": "host-capability-pin-v1.schema.json"
     },
     "release_evidence": {
       "type": "object",

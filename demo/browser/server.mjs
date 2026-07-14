@@ -78,6 +78,7 @@ export function createBrowserDemoServer(options = {}) {
           gatewayTokenID: "",
           leaseVersion: 0,
           streamTicket: `parent_stream_ticket_${sequence}`,
+          streamReadCount: 0,
           confirmationID: `confirmation_${sequence}`,
           disposed: false,
         };
@@ -201,11 +202,28 @@ export function createBrowserDemoServer(options = {}) {
             writeError(response, 403, "PLUGIN_STREAM_TICKET_INVALID", "stream credential is invalid");
             return;
           }
+          if (surface.streamReadCount === 0) {
+            surface.streamReadCount = 1;
+            surface.streamTicket = `parent_stream_ticket_${sequence}_2`;
+            writeEnvelope(response, {
+              events: [
+                { stream_id: "stream_demo_logs", sequence: 1, kind: "data", data: Buffer.from("opaque log line 1\n").toString("base64"), at: "2026-07-12T00:00:01Z" },
+              ],
+              done: false,
+              next_stream_ticket: surface.streamTicket,
+              next_stream_ticket_id: "stream_ticket_id_parent_only_2",
+              next_stream_expires_at: new Date(Date.now() + 60_000).toISOString(),
+            });
+            return;
+          }
+          surface.streamReadCount = 2;
           writeEnvelope(response, {
             events: [
-              { stream_id: "stream_demo_logs", sequence: 1, kind: "data", data: Buffer.from("opaque log line 1\n").toString("base64"), at: "2026-07-12T00:00:01Z" },
               { stream_id: "stream_demo_logs", sequence: 2, kind: "data", data: Buffer.from("opaque log line 2\n").toString("base64"), at: "2026-07-12T00:00:02Z" },
+              { stream_id: "stream_demo_logs", sequence: 3, kind: "end", at: "2026-07-12T00:00:03Z" },
             ],
+            done: true,
+            terminal_status: "closed",
           });
           return;
         }
@@ -233,8 +251,11 @@ export function createBrowserDemoServer(options = {}) {
           return;
         }
         if (body.method === "demo.logs") {
+          surface.streamReadCount = 0;
+          surface.streamTicket = `parent_stream_ticket_${sequence}_1`;
           writeEnvelope(response, {
             data: { started: true },
+            operation_id: "operation_demo_logs",
             stream_id: "stream_demo_logs",
             stream_ticket: surface.streamTicket,
             stream_ticket_id: "stream_ticket_id_parent_only",

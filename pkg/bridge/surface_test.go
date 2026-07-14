@@ -487,28 +487,30 @@ func TestConfirmationTokenBindsRequestHashAndConsumesOnce(t *testing.T) {
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	audience.TargetDescriptorSHA256 = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
-		PluginID:             audience.PluginID,
-		PluginInstanceID:     audience.PluginInstanceID,
-		PluginVersion:        audience.PluginVersion,
-		ActiveFingerprint:    audience.ActiveFingerprint,
-		SurfaceID:            audience.SurfaceID,
-		SurfaceInstanceID:    audience.SurfaceInstanceID,
-		EntryPath:            audience.EntryPath,
-		EntrySHA256:          audience.EntrySHA256,
-		AssetSessionNonce:    audience.AssetSessionNonce,
-		RouteRole:            audience.RouteRole,
-		ConfirmationID:       audience.ConfirmationID,
-		OwnerSessionHash:     audience.OwnerSessionHash,
-		OwnerUserHash:        audience.OwnerUserHash,
-		SessionChannelIDHash: audience.SessionChannelIDHash,
-		BridgeChannelID:      audience.BridgeChannelID,
-		RuntimeGenerationID:  audience.RuntimeGenerationID,
-		Method:               audience.Method,
-		RequestHash:          audience.RequestHash,
-		PlanHash:             audience.PlanHash,
-		Revision:             testRevision(4),
-		Now:                  now,
+		PluginID:               audience.PluginID,
+		PluginInstanceID:       audience.PluginInstanceID,
+		PluginVersion:          audience.PluginVersion,
+		ActiveFingerprint:      audience.ActiveFingerprint,
+		SurfaceID:              audience.SurfaceID,
+		SurfaceInstanceID:      audience.SurfaceInstanceID,
+		EntryPath:              audience.EntryPath,
+		EntrySHA256:            audience.EntrySHA256,
+		AssetSessionNonce:      audience.AssetSessionNonce,
+		RouteRole:              audience.RouteRole,
+		ConfirmationID:         audience.ConfirmationID,
+		OwnerSessionHash:       audience.OwnerSessionHash,
+		OwnerUserHash:          audience.OwnerUserHash,
+		SessionChannelIDHash:   audience.SessionChannelIDHash,
+		BridgeChannelID:        audience.BridgeChannelID,
+		RuntimeGenerationID:    audience.RuntimeGenerationID,
+		Method:                 audience.Method,
+		RequestHash:            audience.RequestHash,
+		PlanHash:               audience.PlanHash,
+		TargetDescriptorSHA256: audience.TargetDescriptorSHA256,
+		Revision:               testRevision(4),
+		Now:                    now,
 	})
 	if err != nil {
 		t.Fatalf("MintConfirmationToken() error = %v", err)
@@ -564,28 +566,30 @@ func TestConfirmationTokenCanBeConsumedByServerHeldTokenID(t *testing.T) {
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	audience.TargetDescriptorSHA256 = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
-		PluginID:             audience.PluginID,
-		PluginInstanceID:     audience.PluginInstanceID,
-		PluginVersion:        audience.PluginVersion,
-		ActiveFingerprint:    audience.ActiveFingerprint,
-		SurfaceID:            audience.SurfaceID,
-		SurfaceInstanceID:    audience.SurfaceInstanceID,
-		EntryPath:            audience.EntryPath,
-		EntrySHA256:          audience.EntrySHA256,
-		AssetSessionNonce:    audience.AssetSessionNonce,
-		RouteRole:            audience.RouteRole,
-		ConfirmationID:       audience.ConfirmationID,
-		OwnerSessionHash:     audience.OwnerSessionHash,
-		OwnerUserHash:        audience.OwnerUserHash,
-		SessionChannelIDHash: audience.SessionChannelIDHash,
-		BridgeChannelID:      audience.BridgeChannelID,
-		RuntimeGenerationID:  audience.RuntimeGenerationID,
-		Method:               audience.Method,
-		RequestHash:          audience.RequestHash,
-		PlanHash:             audience.PlanHash,
-		Revision:             testRevision(4),
-		Now:                  now,
+		PluginID:               audience.PluginID,
+		PluginInstanceID:       audience.PluginInstanceID,
+		PluginVersion:          audience.PluginVersion,
+		ActiveFingerprint:      audience.ActiveFingerprint,
+		SurfaceID:              audience.SurfaceID,
+		SurfaceInstanceID:      audience.SurfaceInstanceID,
+		EntryPath:              audience.EntryPath,
+		EntrySHA256:            audience.EntrySHA256,
+		AssetSessionNonce:      audience.AssetSessionNonce,
+		RouteRole:              audience.RouteRole,
+		ConfirmationID:         audience.ConfirmationID,
+		OwnerSessionHash:       audience.OwnerSessionHash,
+		OwnerUserHash:          audience.OwnerUserHash,
+		SessionChannelIDHash:   audience.SessionChannelIDHash,
+		BridgeChannelID:        audience.BridgeChannelID,
+		RuntimeGenerationID:    audience.RuntimeGenerationID,
+		Method:                 audience.Method,
+		RequestHash:            audience.RequestHash,
+		PlanHash:               audience.PlanHash,
+		TargetDescriptorSHA256: audience.TargetDescriptorSHA256,
+		Revision:               testRevision(4),
+		Now:                    now,
 	})
 	if err != nil {
 		t.Fatalf("MintConfirmationToken() error = %v", err)
@@ -616,29 +620,31 @@ func TestConfirmationTokenTTLIsClamped(t *testing.T) {
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	audience.TargetDescriptorSHA256 = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
 	result, err := service.MintConfirmationToken(MintConfirmationTokenRequest{
-		PluginID:             audience.PluginID,
-		PluginInstanceID:     audience.PluginInstanceID,
-		PluginVersion:        audience.PluginVersion,
-		ActiveFingerprint:    audience.ActiveFingerprint,
-		SurfaceID:            audience.SurfaceID,
-		SurfaceInstanceID:    audience.SurfaceInstanceID,
-		EntryPath:            audience.EntryPath,
-		EntrySHA256:          audience.EntrySHA256,
-		AssetSessionNonce:    audience.AssetSessionNonce,
-		RouteRole:            audience.RouteRole,
-		ConfirmationID:       audience.ConfirmationID,
-		OwnerSessionHash:     audience.OwnerSessionHash,
-		OwnerUserHash:        audience.OwnerUserHash,
-		SessionChannelIDHash: audience.SessionChannelIDHash,
-		BridgeChannelID:      audience.BridgeChannelID,
-		RuntimeGenerationID:  audience.RuntimeGenerationID,
-		Method:               audience.Method,
-		RequestHash:          audience.RequestHash,
-		PlanHash:             audience.PlanHash,
-		Revision:             testRevision(4),
-		ExpiresAt:            now.Add(time.Hour),
-		Now:                  now,
+		PluginID:               audience.PluginID,
+		PluginInstanceID:       audience.PluginInstanceID,
+		PluginVersion:          audience.PluginVersion,
+		ActiveFingerprint:      audience.ActiveFingerprint,
+		SurfaceID:              audience.SurfaceID,
+		SurfaceInstanceID:      audience.SurfaceInstanceID,
+		EntryPath:              audience.EntryPath,
+		EntrySHA256:            audience.EntrySHA256,
+		AssetSessionNonce:      audience.AssetSessionNonce,
+		RouteRole:              audience.RouteRole,
+		ConfirmationID:         audience.ConfirmationID,
+		OwnerSessionHash:       audience.OwnerSessionHash,
+		OwnerUserHash:          audience.OwnerUserHash,
+		SessionChannelIDHash:   audience.SessionChannelIDHash,
+		BridgeChannelID:        audience.BridgeChannelID,
+		RuntimeGenerationID:    audience.RuntimeGenerationID,
+		Method:                 audience.Method,
+		RequestHash:            audience.RequestHash,
+		PlanHash:               audience.PlanHash,
+		TargetDescriptorSHA256: audience.TargetDescriptorSHA256,
+		Revision:               testRevision(4),
+		ExpiresAt:              now.Add(time.Hour),
+		Now:                    now,
 	})
 	if err != nil {
 		t.Fatalf("MintConfirmationToken() error = %v", err)
@@ -653,6 +659,7 @@ func TestStreamTicketTTLIsClamped(t *testing.T) {
 	now := testNow()
 	audience := testSurfaceAudience("bridge_1")
 	audience.StreamID = "stream_ttl"
+	audience.OperationID = "operation_ttl"
 	audience.StreamDirection = "read"
 	audience.Method = "logs.tail"
 	result, err := service.MintStreamTicket(MintStreamTicketRequest{
@@ -672,6 +679,7 @@ func TestStreamTicketTTLIsClamped(t *testing.T) {
 		BridgeChannelID:      audience.BridgeChannelID,
 		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		StreamID:             audience.StreamID,
+		OperationID:          audience.OperationID,
 		StreamDirection:      audience.StreamDirection,
 		Method:               audience.Method,
 		Revision:             testRevision(11),
@@ -694,28 +702,30 @@ func TestConfirmationTokenRequiresBoundMethodAndRequestHash(t *testing.T) {
 	audience.Method = "danger.run"
 	audience.RequestHash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	audience.PlanHash = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	audience.TargetDescriptorSHA256 = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
 	req := MintConfirmationTokenRequest{
-		PluginID:             audience.PluginID,
-		PluginInstanceID:     audience.PluginInstanceID,
-		PluginVersion:        audience.PluginVersion,
-		ActiveFingerprint:    audience.ActiveFingerprint,
-		SurfaceID:            audience.SurfaceID,
-		SurfaceInstanceID:    audience.SurfaceInstanceID,
-		EntryPath:            audience.EntryPath,
-		EntrySHA256:          audience.EntrySHA256,
-		AssetSessionNonce:    audience.AssetSessionNonce,
-		RouteRole:            audience.RouteRole,
-		ConfirmationID:       audience.ConfirmationID,
-		OwnerSessionHash:     audience.OwnerSessionHash,
-		OwnerUserHash:        audience.OwnerUserHash,
-		SessionChannelIDHash: audience.SessionChannelIDHash,
-		BridgeChannelID:      audience.BridgeChannelID,
-		RuntimeGenerationID:  audience.RuntimeGenerationID,
-		Method:               audience.Method,
-		RequestHash:          audience.RequestHash,
-		PlanHash:             audience.PlanHash,
-		Revision:             testRevision(4),
-		Now:                  now,
+		PluginID:               audience.PluginID,
+		PluginInstanceID:       audience.PluginInstanceID,
+		PluginVersion:          audience.PluginVersion,
+		ActiveFingerprint:      audience.ActiveFingerprint,
+		SurfaceID:              audience.SurfaceID,
+		SurfaceInstanceID:      audience.SurfaceInstanceID,
+		EntryPath:              audience.EntryPath,
+		EntrySHA256:            audience.EntrySHA256,
+		AssetSessionNonce:      audience.AssetSessionNonce,
+		RouteRole:              audience.RouteRole,
+		ConfirmationID:         audience.ConfirmationID,
+		OwnerSessionHash:       audience.OwnerSessionHash,
+		OwnerUserHash:          audience.OwnerUserHash,
+		SessionChannelIDHash:   audience.SessionChannelIDHash,
+		BridgeChannelID:        audience.BridgeChannelID,
+		RuntimeGenerationID:    audience.RuntimeGenerationID,
+		Method:                 audience.Method,
+		RequestHash:            audience.RequestHash,
+		PlanHash:               audience.PlanHash,
+		TargetDescriptorSHA256: audience.TargetDescriptorSHA256,
+		Revision:               testRevision(4),
+		Now:                    now,
 	}
 	missingMethod := req
 	missingMethod.Method = ""
@@ -773,6 +783,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 		Method:               "worker.echo",
 		Effect:               "read",
 		Execution:            "sync",
+		AuditCorrelationID:   "audit_worker_echo",
 		TargetDescriptorHashes: []string{
 			"method:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"worker:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -805,6 +816,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 		result.Method != "worker.echo" ||
 		result.Effect != "read" ||
 		result.Execution != "sync" ||
+		result.AuditCorrelationID != "audit_worker_echo" ||
 		result.PolicyRevision != revision.PolicyRevision ||
 		result.ManagementRevision != revision.ManagementRevision ||
 		result.RevokeEpoch != revision.RevokeEpoch ||
@@ -831,6 +843,7 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 		RuntimeShardID:       "runtime_shard_a",
 		IPCChannelID:         "ipc_1",
 		ConnectionNonce:      "connection_nonce_1234567890",
+		AuditCorrelationID:   "audit_worker_echo",
 		Method:               "worker.echo",
 	}
 	record, err := service.tokens.Validate(ValidateRequest{
@@ -866,11 +879,13 @@ func TestRuntimeExecutionLeaseBindsRuntimeGenerationAndMethod(t *testing.T) {
 func TestRuntimeExecutionLeaseRequiresGenerationAndMethod(t *testing.T) {
 	service := NewSurfaceTokenService(nil, SurfaceTokenOptions{})
 	req := MintRuntimeExecutionLeaseRequest{
-		PluginInstanceID:  "plugini_test",
-		ActiveFingerprint: "sha256:package",
-		Method:            "worker.echo",
-		Revision:          testRevision(8),
-		Now:               testNow(),
+		PluginInstanceID:   "plugini_test",
+		ActiveFingerprint:  "sha256:package",
+		Method:             "worker.echo",
+		Execution:          "sync",
+		AuditCorrelationID: "audit_runtime_required",
+		Revision:           testRevision(8),
+		Now:                testNow(),
 	}
 	if _, err := service.MintRuntimeExecutionLease(req); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintRuntimeExecutionLease() missing generation error = %v, want %v", err, ErrMissingTokenAudience)
@@ -896,6 +911,8 @@ func TestRuntimeExecutionLeaseTTLIsClamped(t *testing.T) {
 		IPCChannelID:        "ipc_1",
 		ConnectionNonce:     "connection_nonce_1234567890",
 		Method:              "worker.echo",
+		Execution:           "sync",
+		AuditCorrelationID:  "audit_runtime_ttl",
 		Revision:            testRevision(8),
 		Now:                 now,
 		ExpiresAt:           now.Add(time.Hour),
@@ -1059,6 +1076,7 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 	now := testNow()
 	audience := testSurfaceAudience("bridge_1")
 	audience.StreamID = "stream_logs_1"
+	audience.OperationID = "operation_logs_1"
 	audience.StreamDirection = "read"
 	audience.Method = "logs.tail"
 	result, err := service.MintStreamTicket(MintStreamTicketRequest{
@@ -1078,6 +1096,7 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 		BridgeChannelID:      audience.BridgeChannelID,
 		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		StreamID:             audience.StreamID,
+		OperationID:          audience.OperationID,
 		StreamDirection:      audience.StreamDirection,
 		Method:               audience.Method,
 		Revision:             testRevision(11),
@@ -1086,19 +1105,19 @@ func TestStreamTicketBindsStreamDirectionAndConsumesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintStreamTicket() error = %v", err)
 	}
-	if result.StreamTicket == "" || result.StreamID != audience.StreamID || result.Direction != "read" {
+	if result.StreamTicket == "" || result.StreamID != audience.StreamID || result.OperationID != audience.OperationID || result.Direction != "read" {
 		t.Fatalf("stream ticket result mismatch: %#v", result)
 	}
 
 	wrongAudience := audience
-	wrongAudience.StreamDirection = "write"
+	wrongAudience.OperationID = "operation_logs_other"
 	if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
 		StreamTicket: result.StreamTicket,
 		Audience:     wrongAudience,
 		Revision:     testRevision(11),
 		Now:          now.Add(time.Second),
 	}); !errors.Is(err, ErrTokenAudience) {
-		t.Fatalf("ValidateStreamTicket() wrong direction error = %v, want %v", err, ErrTokenAudience)
+		t.Fatalf("ValidateStreamTicket() wrong operation error = %v, want %v", err, ErrTokenAudience)
 	}
 	if _, err := service.ValidateStreamTicket(ValidateStreamTicketRequest{
 		StreamTicket: result.StreamTicket,
@@ -1123,6 +1142,7 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 	now := testNow()
 	audience := testSurfaceAudience("bridge_1")
 	audience.StreamID = "stream_logs_1"
+	audience.OperationID = "operation_logs_1"
 	audience.StreamDirection = "read"
 	audience.Method = "logs.tail"
 
@@ -1143,6 +1163,7 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 		BridgeChannelID:      audience.BridgeChannelID,
 		RuntimeGenerationID:  audience.RuntimeGenerationID,
 		StreamID:             audience.StreamID,
+		OperationID:          audience.OperationID,
 		StreamDirection:      audience.StreamDirection,
 		Method:               audience.Method,
 		Revision:             testRevision(11),
@@ -1199,6 +1220,7 @@ func TestStreamTicketRejectsExpiredAndAudienceMismatches(t *testing.T) {
 				BridgeChannelID:      audience.BridgeChannelID,
 				RuntimeGenerationID:  audience.RuntimeGenerationID,
 				StreamID:             audience.StreamID,
+				OperationID:          audience.OperationID,
 				StreamDirection:      audience.StreamDirection,
 				Method:               audience.Method,
 				Revision:             testRevision(11),
@@ -1233,6 +1255,7 @@ func TestStreamTicketRequiresStreamDirectionAndMethod(t *testing.T) {
 		SessionChannelIDHash: audience.SessionChannelIDHash,
 		BridgeChannelID:      audience.BridgeChannelID,
 		StreamID:             "stream_logs_1",
+		OperationID:          "operation_logs_1",
 		StreamDirection:      "read",
 		Method:               "logs.tail",
 		Revision:             testRevision(11),
@@ -1252,6 +1275,11 @@ func TestStreamTicketRequiresStreamDirectionAndMethod(t *testing.T) {
 	missingMethod.Method = ""
 	if _, err := service.MintStreamTicket(missingMethod); !errors.Is(err, ErrMissingTokenAudience) {
 		t.Fatalf("MintStreamTicket() missing method error = %v, want %v", err, ErrMissingTokenAudience)
+	}
+	missingOperation := req
+	missingOperation.OperationID = ""
+	if _, err := service.MintStreamTicket(missingOperation); !errors.Is(err, ErrMissingTokenAudience) {
+		t.Fatalf("MintStreamTicket() missing operation error = %v, want %v", err, ErrMissingTokenAudience)
 	}
 }
 

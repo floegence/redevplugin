@@ -108,11 +108,13 @@ entering host adapters. Storage SQLite and network execution use request
 storage file/KV, and network grant minting use the default hostcall cap.
 For `network_execute.operation = "http_stream"`, the supervisor registers a
 Host-owned read stream with the worker invocation's surface/session audience,
-streams bounded HTTP response chunks into `stream.Store`, closes or cancels the
-stream, and returns response metadata plus `stream_id` over IPC. This is a
-Host stream-store bridge for runtime-origin HTTP responses, not the Rust
-hot-path persistent stream transport with credit, resume, or bidirectional flow
-control.
+the Rust runtime injects that invocation's `stream_id` into the broker request,
+and the supervisor streams bounded HTTP response chunks into `stream.Store`,
+closes or cancels the stream, and returns response metadata plus `stream_id`
+over IPC. A plugin request cannot select a stream id; a missing Host id or any
+plugin-supplied id fails closed. This is a Host stream-store bridge for
+runtime-origin HTTP responses, not the Rust hot-path persistent stream
+transport with credit, resume, or bidirectional flow control.
 
 The supervisor maintains the control channel with `heartbeat` IPC frames. The
 default interval is 2 seconds and the default max-staleness window is 5 seconds.
@@ -126,21 +128,28 @@ before dispatching Host IO.
 
 `Health` includes the Host-side runtime instance ID, runtime generation ID, IPC
 channel ID, and handshake `connection_nonce` needed to mint a
-`RuntimeExecutionLease` for the active process. When a host configures
-`ProcessSupervisorOptions.RuntimeLeaseVerifier`, the supervisor requires a
-worker lease to carry that exact audience before verifying the Ed25519
-signature. The canonical signing payload excludes the bearer token and covers
-the display token ID, plugin metadata, active package fingerprint, issued
-timestamp, method, effect, execution mode, surface and owner context, target
-descriptor hashes, quota limits, policy revisions, revoke epoch, expiry,
-`lease_nonce`, `key_id`, and runtime audience fields. `MintRuntimeExecutionLease`
-returns separate `lease_id` and display `token_id` values plus the same metadata,
-and worker-route dispatch records a `plugin.runtime.lease.issued` Host audit
-event without persisting the bearer lease token.
-`ProcessSupervisorOptions.RuntimeLeasePublicKeys` sends the matching public keys
-to Rust in the startup `hello` frame. A runtime that receives at least one key
-verifies worker lease signatures before replay-cache consumption and before
-artifact open; failures use `RUNTIME_LEASE_SIGNATURE_INVALID`.
+`RuntimeExecutionLease` for the active process. `ProcessSupervisor` always
+creates an ephemeral Ed25519 keypair, sends its non-empty public-key set in the
+startup `hello` frame, overwrites any caller signature material, binds the lease
+to the current process audience, and signs every worker invocation. The
+canonical payload excludes the bearer token and covers the display token ID,
+plugin metadata, active package fingerprint, issued timestamp, method, effect,
+execution mode, Host-owned operation and stream ids, audit correlation id,
+surface and owner context, target descriptor hashes, quota limits, policy
+revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and runtime audience
+fields. `MintRuntimeExecutionLease` returns separate `lease_id` and display
+`token_id` values plus the same metadata, and worker-route dispatch records a
+`plugin.runtime.lease.issued` Host audit event without persisting the bearer
+lease token.
+
+The Go supervisor verifies the current runtime audience and Ed25519 signature
+before writing IPC. Rust requires the startup keyring and independently verifies
+the signature, lease expiry, method/effect/execution mode, operation/stream
+handle shape, audit correlation, plugin identity, surface/session scope, and
+runtime generation against the worker invocation before consuming the replay
+cache or opening an artifact. Signature failures use
+`RUNTIME_LEASE_SIGNATURE_INVALID`; validly signed but expired or audience-
+mismatched leases use `RUNTIME_LEASE_INVALID`.
 
 Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
 payloads return a structured result containing the plugin instance, revoke
@@ -284,19 +293,80 @@ ReDevPlugin uses explicit stores instead of implicit process memory:
 - secret binding stores track secret references without secret plaintext;
 - permission and security policy stores drive authorization and revoke epochs;
 - confirmation intent stores keep dangerous-method approval state without
-  persisting raw confirmation token capabilities;
+  persisting raw confirmation token capabilities and atomically consume either
+  an approved intent or a scope-matched trusted-parent rejection;
 - operation and stream stores keep observable long-running work and buffered
   events;
 - retained-data and cleanup stores make keep-data/delete-data outcomes auditable;
 - observability stores persist audit and diagnostic events.
 
+Memory and durable store APIs expose immutable value boundaries. Registry,
+operation, stream, execution-binding, and event data returned to callers are
+deep copies, so a host adapter or UI projection cannot mutate stored authority
+through a retained map, slice, pointer, or byte buffer.
+
 Operation cancellation is recorded before execution-side dispatch. The Host
-marks the operation `cancel_requested`, writes audit evidence, then calls the
-optional `OperationCanceler` adapter with the operation, plugin, method, surface,
-bridge-channel, reason, and requested-at context. A missing adapter means the
-Host has recorded the request but has no runtime/capability-specific cancel
-hook. A failing adapter returns a dispatch error to the caller while preserving
-the durable `cancel_requested` state for later retry or reconciliation.
+marks the operation `cancel_requested`, writes audit evidence, and signals the
+live execution lease. The lease captures the optional route-local
+`OperationCanceler` when the capability adapter, core action, or runtime
+supervisor starts the operation. A failing hook returns a dispatch error while
+the durable request remains recorded. An inactive persisted operation has no
+execution owner and is never redispatched through a capability registry.
+
+Confirmation rejection follows the same ownership rule. The trusted parent
+submits the opaque confirmation id through the bound surface route. The Host
+validates the current gateway token and exact owner-session, surface, bridge,
+fingerprint, policy, management, and revoke bindings before the confirmation
+store atomically deletes the intent. A mismatched rejection leaves the intent
+untouched. A successful rejection records `plugin.method.rejected` with the
+stable `confirmation_rejected` reason and never enters the business adapter.
+
+External host capability contracts are verified before package binding. One
+exact pin covers the contract, manifest, signature, compatibility metadata,
+generated TypeScript client, notices, publisher key id, policy epoch, and
+revocation epoch. The Host freezes that pin together with plugin identity,
+surface/session scope, permission and confirmation evidence, quota, revisions,
+target descriptor hash, and audit correlation into `ExecutionBinding` before
+calling a business adapter. Operation and stream records are allocated first;
+the adapter receives only scoped sinks and cannot select ids or mutate global
+stores. Every binding declares `route_kind`. Only `capability` bindings contain
+an exact host capability contract pin; `worker` and `core_action` bindings omit
+that field and carry explicit empty permission arrays instead of invalid zero
+pins or JSON `null` evidence.
+
+The artifact format is machine-defined by separate closed schemas for the
+contract, pin, manifest, compatibility document, signature envelope, and
+notices list. Release metadata and OpenAPI reuse the canonical pin schema rather
+than copying its fields. Verification recomputes every digest, verifies the
+manifest signature and epochs, regenerates the plugin-side TypeScript client,
+and compares its bytes before registry mutation. Go and TypeScript validators
+consume one restricted-schema conformance fixture so generated request,
+response, target, and business-error details cannot drift across languages.
+
+Operation methods allocate one operation record. Subscription methods allocate
+both an operation record and a stream record before dispatch, and every worker,
+lease, ticket, HTTP, trusted-parent, and plugin-side projection preserves that
+paired ownership. Business adapters report host-owned errors through the
+ReDevPlugin stable error envelope; capability id, capability version, details
+schema digest, code, and validated details remain bound end to end.
+
+Worker dispatch adds `params_sha256` to the closed invocation payload and
+derives an `invocation:sha256:*` target from a fixed-order, length-prefixed
+descriptor. That target is included in the signed runtime lease. Rust hashes
+the exact received `params` JSON, rebuilds the descriptor, and requires one
+exact match in `target_descriptor_hashes` before replay consumption or artifact
+access. The replay cache retains lease ids only until their signed expiry and
+has a fail-closed hard capacity.
+
+Stream reads use a per-stream serializer. Long polling observes events through
+non-destructive `Peek`, then revalidates the plugin revision and surface session
+before the final read. The store mutation and single-use ticket decision are
+guarded together: failure preserves the event queue and current ticket, an open
+stream rotates to exactly one next ticket, and a drained terminal stream commits
+the current ticket without allocating a replacement. Operation and stream
+terminal writes are independently durable; startup and later execution
+entrypoints reconcile either partial terminal state, including after reopening
+SQLite stores, before the live execution lease is released.
 
 Method result `data` is also normalized at the Host boundary. Capability,
 worker, and core-action routes share the same `capability.DefaultResponseRedactionPolicy`

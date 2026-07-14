@@ -112,6 +112,17 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	}
 	asyncMethod := requireEnumCondition(t, methodConditions, "execution", []string{string(manifest.MethodExecutionOperation), string(manifest.MethodExecutionSubscription)}, "async method")
 	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, asyncMethod, "then")["required"], "async method required"), []string{"cancel_policy"}, "async method required")
+	cancelPolicy := requireNestedObject(t, methodProps, "cancel_policy")
+	cancelConditions := requireObjectArray(t, cancelPolicy["allOf"], "cancel policy allOf")
+	cancelable := requireConstCondition(t, cancelConditions, "cancelable", true, "cancelable method")
+	assertStringSet(t, requireStringSlice(t, requireNestedObject(t, cancelable, "then")["required"], "cancelable method required"), []string{"ack_timeout_ms"}, "cancelable method required")
+	if got := requireNestedObject(t, cancelable, "then", "properties", "ack_timeout_ms")["minimum"]; got != float64(1) {
+		t.Fatalf("cancelable ack_timeout_ms minimum = %#v, want 1", got)
+	}
+	nonCancelable := requireConstCondition(t, cancelConditions, "cancelable", false, "non-cancelable method")
+	if got := requireNestedObject(t, nonCancelable, "then", "properties", "ack_timeout_ms")["const"]; got != float64(0) {
+		t.Fatalf("non-cancelable ack_timeout_ms const = %#v, want 0", got)
+	}
 
 	workerProps := requireNestedObject(t, props, "workers", "items", "properties")
 	if got := requireNestedObject(t, workerProps, "abi")["const"]; got != version.WASMABIVersion {
@@ -163,6 +174,13 @@ func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.Draft = jsonschema.Draft2020
+	pinSchemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "host-capability-pin-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/host-capability-pin-v1.schema.json", bytes.NewReader(pinSchemaRaw)); err != nil {
+		t.Fatal(err)
+	}
 	if err := compiler.AddResource("urn:redevplugin:manifest-v2", bytes.NewReader(schemaRaw)); err != nil {
 		t.Fatal(err)
 	}

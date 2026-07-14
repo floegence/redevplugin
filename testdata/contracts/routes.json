@@ -191,7 +191,17 @@
   },
   {
     "method": "POST",
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject",
+    "route_set": "default"
+  },
+  {
+    "method": "POST",
     "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose",
+    "route_set": "default"
+  },
+  {
+    "method": "POST",
+    "path": "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel",
     "route_set": "default"
   },
   {

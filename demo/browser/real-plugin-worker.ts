@@ -1,6 +1,7 @@
 import {
   PluginBridgeClient,
   type PluginMethodResult,
+  type PluginStreamEvent,
   type PluginUIVNode,
 } from "../../packages/redevplugin-ui/src/plugin.js";
 import { runWorkerSecurityProbe, type WorkerSecurityProbe } from "./worker-security-probe.js";
@@ -46,7 +47,7 @@ async function invokeStream(): Promise<void> {
   await runAction("Opening runtime stream...", "Runtime stream received", async () => {
     const response = await bridge.call<PluginMethodResult>("worker.httpStream");
     if (!response.stream_handle) throw new Error("runtime response omitted stream_handle");
-    const events = await bridge.readStream(response.stream_handle);
+    const events = await readStreamToEnd(response.stream_handle);
     return {
       method: "worker.httpStream",
       events,
@@ -55,6 +56,18 @@ async function invokeStream(): Promise<void> {
       token_leak_check: tokenLeakCheck(response),
     };
   });
+}
+
+async function readStreamToEnd(streamHandle: string): Promise<PluginStreamEvent[]> {
+  const events: PluginStreamEvent[] = [];
+  while (true) {
+    const batch = await bridge.readStream(streamHandle);
+    events.push(...batch.events);
+    if (batch.done) return events;
+    if (batch.events.length === 0 && batch.retry_after_ms > 0) {
+      await new Promise((resolve) => setTimeout(resolve, batch.retry_after_ms));
+    }
+  }
 }
 
 async function invokeWorker(): Promise<void> {

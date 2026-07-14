@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	modulePath = "github.com/floegence/redevplugin"
-	devVersion = "0.0.0-dev"
+	modulePath                      = "github.com/floegence/redevplugin"
+	devVersion                      = "0.0.0-dev"
+	developmentCompatibilityVersion = "0.3.0"
 )
 
 var (
@@ -50,6 +51,12 @@ type Matrix struct {
 	CompatibilitySchemaVersion     string `json:"compatibility_schema_version"`
 	ReleaseManifestSchemaVersion   string `json:"release_manifest_schema_version"`
 	WorkerInvocationSchemaVersion  string `json:"worker_invocation_schema_version"`
+	HostCapabilityContractVersion  string `json:"host_capability_contract_schema_version"`
+	HostCapabilityPinVersion       string `json:"host_capability_pin_schema_version"`
+	HostCapabilityManifestVersion  string `json:"host_capability_manifest_schema_version"`
+	HostCapabilityCompatVersion    string `json:"host_capability_compatibility_schema_version"`
+	HostCapabilitySignatureVersion string `json:"host_capability_signature_schema_version"`
+	HostCapabilityNoticesVersion   string `json:"host_capability_notices_schema_version"`
 	ErrorCodesSchemaVersion        string `json:"error_codes_schema_version"`
 	ContractRegistryVersion        string `json:"contract_registry_version"`
 }
@@ -98,9 +105,23 @@ func CurrentMatrix() Matrix {
 		CompatibilitySchemaVersion:     CompatibilitySchemaVersion,
 		ReleaseManifestSchemaVersion:   ReleaseManifestSchemaVersion,
 		WorkerInvocationSchemaVersion:  WorkerInvocationSchemaVersion,
+		HostCapabilityContractVersion:  HostCapabilityContractSchemaVersion,
+		HostCapabilityPinVersion:       HostCapabilityPinSchemaVersion,
+		HostCapabilityManifestVersion:  HostCapabilityManifestSchemaVersion,
+		HostCapabilityCompatVersion:    HostCapabilityCompatibilitySchemaVersion,
+		HostCapabilitySignatureVersion: HostCapabilitySignatureSchemaVersion,
+		HostCapabilityNoticesVersion:   HostCapabilityNoticesSchemaVersion,
 		ErrorCodesSchemaVersion:        ErrorCodesSchemaVersion,
 		ContractRegistryVersion:        ContractRegistryVersion,
 	}
+}
+
+func CurrentCompatibilityVersion() string {
+	version := resolvedReleaseVersion(GoModuleVersion)
+	if version == devVersion {
+		return developmentCompatibilityVersion
+	}
+	return version
 }
 
 func configuredArtifactVersion(configured string) string {

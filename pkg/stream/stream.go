@@ -2,11 +2,14 @@ package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/capability"
 )
 
 type Direction string
@@ -23,6 +26,7 @@ const (
 	StatusOpen             Status = "open"
 	StatusClosed           Status = "closed"
 	StatusCanceled         Status = "canceled"
+	StatusFailed           Status = "failed"
 	StatusOrphanedDisabled Status = "orphaned_after_disable"
 	StatusOrphanedRemoved  Status = "orphaned_after_uninstall"
 )
@@ -30,30 +34,23 @@ const (
 var (
 	ErrNotFound      = errors.New("plugin stream not found")
 	ErrInvalidStream = errors.New("plugin stream is invalid")
+	ErrAlreadyExists = errors.New("plugin stream already exists")
 	ErrStreamClosed  = errors.New("plugin stream is closed")
 	ErrBackpressure  = errors.New("plugin stream backpressure limit exceeded")
 )
 
 type Record struct {
-	StreamID             string     `json:"stream_id"`
-	PluginID             string     `json:"plugin_id"`
-	PluginInstanceID     string     `json:"plugin_instance_id"`
-	Method               string     `json:"method"`
-	Effect               string     `json:"effect,omitempty"`
-	Execution            string     `json:"execution"`
-	SurfaceInstanceID    string     `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string     `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string     `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string     `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string     `json:"bridge_channel_id,omitempty"`
-	Direction            Direction  `json:"direction"`
-	Status               Status     `json:"status"`
-	ContentType          string     `json:"content_type,omitempty"`
-	MaxBufferedBytes     int64      `json:"max_buffered_bytes,omitempty"`
-	BufferedBytes        int64      `json:"buffered_bytes,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	ClosedAt             *time.Time `json:"closed_at,omitempty"`
+	StreamID string `json:"stream_id"`
+	capability.ExecutionBinding
+	Direction        Direction  `json:"direction"`
+	Status           Status     `json:"status"`
+	Reason           string     `json:"reason,omitempty"`
+	ContentType      string     `json:"content_type,omitempty"`
+	MaxBufferedBytes int64      `json:"max_buffered_bytes,omitempty"`
+	BufferedBytes    int64      `json:"buffered_bytes,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	ClosedAt         *time.Time `json:"closed_at,omitempty"`
 }
 
 type Event struct {
@@ -66,21 +63,12 @@ type Event struct {
 }
 
 type RegisterRequest struct {
-	StreamID             string    `json:"stream_id"`
-	PluginID             string    `json:"plugin_id"`
-	PluginInstanceID     string    `json:"plugin_instance_id"`
-	Method               string    `json:"method"`
-	Effect               string    `json:"effect,omitempty"`
-	Execution            string    `json:"execution"`
-	SurfaceInstanceID    string    `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string    `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string    `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string    `json:"bridge_channel_id,omitempty"`
-	Direction            Direction `json:"direction,omitempty"`
-	ContentType          string    `json:"content_type,omitempty"`
-	MaxBufferedBytes     int64     `json:"max_buffered_bytes,omitempty"`
-	Now                  time.Time `json:"now,omitempty"`
+	StreamID         string                      `json:"stream_id"`
+	ExecutionBinding capability.ExecutionBinding `json:"execution_binding"`
+	Direction        Direction                   `json:"direction,omitempty"`
+	ContentType      string                      `json:"content_type,omitempty"`
+	MaxBufferedBytes int64                       `json:"max_buffered_bytes,omitempty"`
+	Now              time.Time                   `json:"now,omitempty"`
 }
 
 type AppendRequest struct {
@@ -107,13 +95,20 @@ type CloseRequest struct {
 type PluginTransitionRequest struct {
 	PluginInstanceID string    `json:"plugin_instance_id"`
 	Status           Status    `json:"status"`
+	Reason           string    `json:"reason,omitempty"`
 	Now              time.Time `json:"now,omitempty"`
+}
+
+type ListRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
 }
 
 type Store interface {
 	Register(ctx context.Context, req RegisterRequest) (Record, error)
+	List(ctx context.Context, req ListRequest) ([]Record, error)
 	Get(ctx context.Context, streamID string) (Record, error)
 	Append(ctx context.Context, req AppendRequest) (Event, error)
+	Peek(ctx context.Context, req ReadRequest) (Record, []Event, error)
 	Read(ctx context.Context, req ReadRequest) (Record, []Event, error)
 	Close(ctx context.Context, req CloseRequest) (Record, error)
 	MarkPluginTransition(ctx context.Context, req PluginTransitionRequest) ([]Record, error)
@@ -141,8 +136,8 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 		return Record{}, errors.New("stream store is nil")
 	}
 	streamID := strings.TrimSpace(req.StreamID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	method := strings.TrimSpace(req.Method)
+	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
+	method := strings.TrimSpace(req.ExecutionBinding.Method)
 	if streamID == "" || pluginInstanceID == "" || method == "" {
 		return Record{}, ErrInvalidStream
 	}
@@ -164,30 +159,25 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.records[streamID]; ok {
-		return existing, nil
+	if _, ok := s.records[streamID]; ok {
+		return Record{}, ErrAlreadyExists
+	}
+	binding, err := cloneExecutionBinding(req.ExecutionBinding)
+	if err != nil {
+		return Record{}, ErrInvalidStream
 	}
 	record := Record{
-		StreamID:             streamID,
-		PluginID:             req.PluginID,
-		PluginInstanceID:     pluginInstanceID,
-		Method:               method,
-		Effect:               req.Effect,
-		Execution:            req.Execution,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		OwnerSessionHash:     req.OwnerSessionHash,
-		OwnerUserHash:        req.OwnerUserHash,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		BridgeChannelID:      req.BridgeChannelID,
-		Direction:            direction,
-		Status:               StatusOpen,
-		ContentType:          req.ContentType,
-		MaxBufferedBytes:     maxBuffered,
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		StreamID:         streamID,
+		ExecutionBinding: binding,
+		Direction:        direction,
+		Status:           StatusOpen,
+		ContentType:      req.ContentType,
+		MaxBufferedBytes: maxBuffered,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	s.records[streamID] = record
-	return record, nil
+	return cloneRecord(record), nil
 }
 
 func (s *MemoryStore) Get(_ context.Context, streamID string) (Record, error) {
@@ -200,7 +190,29 @@ func (s *MemoryStore) Get(_ context.Context, streamID string) (Record, error) {
 	if !ok {
 		return Record{}, ErrNotFound
 	}
-	return record, nil
+	return cloneRecord(record), nil
+}
+
+func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error) {
+	if s == nil {
+		return nil, errors.New("stream store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	records := make([]Record, 0, len(s.records))
+	for _, record := range s.records {
+		if req.PluginInstanceID != "" && record.PluginInstanceID != req.PluginInstanceID {
+			continue
+		}
+		records = append(records, cloneRecord(record))
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
+			return records[i].StreamID < records[j].StreamID
+		}
+		return records[i].CreatedAt.Before(records[j].CreatedAt)
+	})
+	return records, nil
 }
 
 func (s *MemoryStore) Append(_ context.Context, req AppendRequest) (Event, error) {
@@ -247,7 +259,7 @@ func (s *MemoryStore) Append(_ context.Context, req AppendRequest) (Event, error
 	record.BufferedBytes = nextBuffered
 	record.UpdatedAt = now
 	s.records[streamID] = record
-	return event, nil
+	return cloneEvent(event), nil
 }
 
 func (s *MemoryStore) Read(_ context.Context, req ReadRequest) (Record, []Event, error) {
@@ -267,25 +279,11 @@ func (s *MemoryStore) Read(_ context.Context, req ReadRequest) (Record, []Event,
 	}
 	events := s.events[streamID]
 	if len(events) == 0 {
-		return record, nil, nil
+		return cloneRecord(record), nil, nil
 	}
-	limit := len(events)
-	if req.MaxEvents > 0 && req.MaxEvents < limit {
-		limit = req.MaxEvents
-	}
-	var total int64
-	if req.MaxBytes > 0 {
-		for i := 0; i < limit; i++ {
-			size := int64(len(events[i].Data))
-			if i > 0 && total+size > req.MaxBytes {
-				limit = i
-				break
-			}
-			total += size
-		}
-	}
+	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
 	if limit <= 0 {
-		return record, nil, nil
+		return cloneRecord(record), nil, nil
 	}
 	out := cloneEvents(events[:limit])
 	remaining := append([]Event(nil), events[limit:]...)
@@ -296,7 +294,26 @@ func (s *MemoryStore) Read(_ context.Context, req ReadRequest) (Record, []Event,
 	}
 	record.UpdatedAt = s.now()
 	s.records[streamID] = record
-	return record, out, nil
+	return cloneRecord(record), out, nil
+}
+
+func (s *MemoryStore) Peek(_ context.Context, req ReadRequest) (Record, []Event, error) {
+	if s == nil {
+		return Record{}, nil, errors.New("stream store is nil")
+	}
+	streamID := strings.TrimSpace(req.StreamID)
+	if streamID == "" {
+		return Record{}, nil, ErrInvalidStream
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[streamID]
+	if !ok {
+		return Record{}, nil, ErrNotFound
+	}
+	events := s.events[streamID]
+	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
+	return cloneRecord(record), cloneEvents(events[:limit]), nil
 }
 
 func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error) {
@@ -321,13 +338,14 @@ func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error)
 		return Record{}, ErrNotFound
 	}
 	if record.Status != StatusOpen {
-		return record, nil
+		return cloneRecord(record), nil
 	}
 	record.Status = status
+	record.Reason = req.Reason
 	record.UpdatedAt = now
 	record.ClosedAt = &now
 	s.records[record.StreamID] = record
-	return record, nil
+	return cloneRecord(record), nil
 }
 
 func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransitionRequest) ([]Record, error) {
@@ -349,10 +367,11 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 			continue
 		}
 		record.Status = req.Status
+		record.Reason = req.Reason
 		record.UpdatedAt = now
 		record.ClosedAt = &now
 		s.records[id] = record
-		changed = append(changed, record)
+		changed = append(changed, cloneRecord(record))
 	}
 	sort.Slice(changed, func(i, j int) bool {
 		return changed[i].StreamID < changed[j].StreamID
@@ -373,7 +392,7 @@ func validDirection(direction Direction) bool {
 
 func terminalStatus(status Status) bool {
 	switch status {
-	case StatusClosed, StatusCanceled, StatusOrphanedDisabled, StatusOrphanedRemoved:
+	case StatusClosed, StatusCanceled, StatusFailed, StatusOrphanedDisabled, StatusOrphanedRemoved:
 		return true
 	default:
 		return false
@@ -383,10 +402,38 @@ func terminalStatus(status Status) bool {
 func cloneEvents(events []Event) []Event {
 	out := make([]Event, len(events))
 	for i, event := range events {
-		out[i] = event
-		out[i].Data = append([]byte(nil), event.Data...)
+		out[i] = cloneEvent(event)
 	}
 	return out
+}
+
+func cloneEvent(event Event) Event {
+	event.Data = append([]byte(nil), event.Data...)
+	return event
+}
+
+func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return capability.ExecutionBinding{}, err
+	}
+	var cloned capability.ExecutionBinding
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return capability.ExecutionBinding{}, err
+	}
+	return cloned, nil
+}
+
+func cloneRecord(record Record) Record {
+	binding, err := cloneExecutionBinding(record.ExecutionBinding)
+	if err == nil {
+		record.ExecutionBinding = binding
+	}
+	if record.ClosedAt != nil {
+		value := *record.ClosedAt
+		record.ClosedAt = &value
+	}
+	return record
 }
 
 func eventsBytes(events []Event) int64 {
@@ -395,4 +442,23 @@ func eventsBytes(events []Event) int64 {
 		total += int64(len(event.Data))
 	}
 	return total
+}
+
+func streamReadLimit(events []Event, maxEvents int, maxBytes int64) int {
+	limit := len(events)
+	if maxEvents > 0 && maxEvents < limit {
+		limit = maxEvents
+	}
+	if maxBytes <= 0 {
+		return limit
+	}
+	var total int64
+	for index := 0; index < limit; index++ {
+		size := int64(len(events[index].Data))
+		if index > 0 && total+size > maxBytes {
+			return index
+		}
+		total += size
+	}
+	return limit
 }

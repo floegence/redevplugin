@@ -212,9 +212,11 @@ func assertReleaseManifestBuildScriptContract(t *testing.T, path string) {
 		`schema_version: "redevplugin.release_manifest.v2"`,
 		`source_commit: sourceCommit`,
 		`runtime_target: runtimeTarget || null`,
-		`generated_at: new Date().toISOString()`,
+		`generated_at: generatedAt`,
 		`compatibility_sha256: compatibilitySHA256`,
 		`npm_package: npmPackage`,
+		`"$OUT_DIR/bin/redevplugin" host-capability build "$sample_config" "$sample_root"`,
+		`source_commit: sourceCommit`,
 		"const sums = files.map((file) => `${file.sha256}  ${file.path}`).join(\"\\n\") + \"\\n\";",
 		`node "$ROOT_DIR/scripts/verify_redevplugin_release_bundle.mjs" "$OUT_DIR" "$VERSION"`,
 	} {
@@ -252,6 +254,10 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`const structuralOnly = args.includes("--structural-only");`,
 		`verifyExecutableTargets(bundleDir, manifest.runtime_target);`,
 		`verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);`,
+		`verifyHostCapabilitySample(bundleDir, manifest, structuralOnly);`,
+		`assertEqual(sampleManifest.source_commit, releaseManifest.source_commit, "host capability sample source_commit");`,
+		`assertEqual(sampleManifest.generated_at, releaseManifest.generated_at, "host capability sample generated_at");`,
+		`"examples/host-capability/sample-documents-v1/plugin-consumer.ts"`,
 	} {
 		if !strings.Contains(source, snippet) {
 			t.Fatalf("%s missing release manifest verifier contract snippet %q", path, snippet)

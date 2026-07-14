@@ -91,7 +91,7 @@ func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.
 		options.HandleGrants == nil ||
 		options.Connectivity != broker ||
 		options.NetworkExecutor != executor ||
-		options.Streams != h.adapters.Streams {
+		options.StreamSink == nil {
 		t.Fatalf("process supervisor options mismatch: %#v", options)
 	}
 }
@@ -99,7 +99,7 @@ func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.
 func TestNewHostProvidesDefaultNetworkExecutor(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
-	if options.Connectivity == nil || options.NetworkExecutor == nil || options.Streams == nil {
+	if options.Connectivity == nil || options.NetworkExecutor == nil || options.StreamSink == nil {
 		t.Fatalf("default runtime network hostcalls missing: %#v", options)
 	}
 }

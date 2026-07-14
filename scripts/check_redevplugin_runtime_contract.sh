@@ -85,7 +85,9 @@ export GOWORK=off
   grep -q '"surface_handle"' spec/plugin/opaque-surface-transport-v1.schema.json
   grep -q '"runtime_control"' spec/plugin/opaque-surface-transport-v1.schema.json
   grep -q '"plugin_bridge"' spec/plugin/opaque-surface-transport-v1.schema.json
-  grep -q '"required": \["method", "effect", "execution", "route", "request_schema", "response_schema"\]' spec/plugin/manifest-v2.schema.json
+  grep -q '"required": \["method", "route"\]' spec/plugin/manifest-v2.schema.json
+  grep -q '"required": \["effect", "execution", "request_schema", "response_schema"\]' spec/plugin/manifest-v2.schema.json
+  grep -q '{ "required": \["cancel_policy"\] }' spec/plugin/manifest-v2.schema.json
   test ! -e spec/openapi/plugin-platform-v1.yaml
   test ! -e spec/plugin/bridge-v1.schema.json
   test ! -e spec/plugin/compatibility-manifest-v1.schema.json
@@ -176,10 +178,10 @@ export GOWORK=off
 {
   "ok": true,
   "mode": "release",
-  "stress_categories": ["go_race","stream_backpressure","operation_cancel_dispatch","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle"],
+  "stress_categories": ["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle"],
   "stress_evidence": [
     {"category":"stream_backpressure","counters":{"workers":1,"backpressure_denials":1,"core_operation_checks":1,"stream_close_requests":1,"closed_streams":1,"post_close_append_denials":1,"stream_close_audit_events":1,"stream_close_status_checked":1}},
-    {"category":"operation_cancel_dispatch","counters":{"operations_registered":2,"successful_dispatches":1,"failed_dispatches":1,"cancel_requested_records":2,"http_503_failures":1,"runtime_unavailable_errors":1,"audit_cancel_requested_events":2,"adapter_context_fields_checked":8}},
+    {"category":"operation_cancel_ownership","counters":{"operations_registered":2,"cancel_requested_records":2,"durable_requests_without_active_lease":2,"http_accepted_requests":1,"audit_cancel_requested_events":2,"registry_redispatches":0}},
     {"category":"connectivity_classifier","counters":{"minted_grants":1,"stale_grant_denials":1,"blocked_resolved_ips":1,"connector_policy_count":1,"http_redirects_not_followed":1,"dns_rebinding_denials":1,"http_proxy_env_ignored":1,"http_connect_denials":1,"alt_svc_headers_dropped":1,"proxy_auth_headers_dropped":1,"http_stream_round_trips":1,"http_stream_chunks":1,"http_stream_request_denials":1,"http_stream_response_denials":1,"http_stream_cancelled_reads":1,"tcp_database_round_trips":1,"tcp_request_denials":1,"tcp_response_denials":1,"tcp_cancelled_reads":1,"udp_round_trips":1,"udp_source_mismatch_dropped":1,"udp_rate_limit_denials":1,"websocket_round_trips":1,"websocket_request_denials":1,"websocket_response_denials":1,"websocket_cancelled_reads":1}},
     {"category":"runtime_revoke_ack","counters":{"attempts":1,"p95_ms":1,"max_ms":1,"threshold_ms":500,"hard_timeout_ms":2000,"closed_actor":1,"closed_socket":1,"closed_stream":1,"closed_storage":1}},
     {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"file_quota_denials":1,"file_usage_files":1,"file_quota_files":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}}
@@ -302,6 +304,7 @@ JSON
   grep -q 'verifyExecutableTargets' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'test_published_release_verifier.mjs' scripts/check_redevplugin_stress.sh
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
+  grep -q 'verifyHostCapabilitySample' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v2"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-manifest-schema"'
@@ -311,6 +314,12 @@ JSON
   go run ./cmd/redevplugin version | grep -q '"network_grant_schema_version": "network-grant-v1"'
   go run ./cmd/redevplugin version | grep -q '"id": "network-grant-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "error-codes-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "host-capability-contract-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "host-capability-pin-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "host-capability-manifest-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "host-capability-compatibility-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "host-capability-signature-schema"'
+  go run ./cmd/redevplugin version | grep -q '"id": "host-capability-notices-schema"'
   test -f testdata/contracts/ipc/current_hello_ack.json
   test -f testdata/contracts/ipc/invoke_worker_result_ok.json
   test -f testdata/contracts/ipc/host_new_rust_old.json
@@ -383,9 +392,13 @@ JSON
   grep -q 'network_execute_frame' crates/redevplugin-ipc/src/lib.rs
   grep -q 'validate_network_execute_response' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_RUNTIME_CAPABILITY_REVOKED' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'ERR_RUNTIME_LEASE_INVALID' crates/redevplugin-ipc/src/lib.rs
   grep -q 'ERR_RUNTIME_LEASE_SIGNATURE_INVALID' crates/redevplugin-ipc/src/lib.rs
   grep -q 'parse_runtime_lease_public_keys' crates/redevplugin-ipc/src/lib.rs
   grep -q 'verify_worker_runtime_lease_signature' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'validate_worker_runtime_lease' crates/redevplugin-ipc/src/lib.rs
+  grep -q 'worker_invocation_rejects_expired_lease_before_opening_artifact' crates/redevplugin-runtime/src/main.rs
+  grep -q 'worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact' crates/redevplugin-runtime/src/main.rs
   grep -q 'runtime_lease_optional_unix_ms' crates/redevplugin-ipc/src/lib.rs
   grep -q 'append_runtime_lease_limits_field' crates/redevplugin-ipc/src/lib.rs
   grep -q 'RuntimeRevocations' crates/redevplugin-runtime/src/main.rs

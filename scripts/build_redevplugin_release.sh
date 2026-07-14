@@ -40,6 +40,10 @@ done
 if [[ -z "$VERSION" ]]; then
   VERSION="$(git -C "$ROOT_DIR" describe --tags --always --dirty)"
 fi
+if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "release version must be semantic version text without a v prefix: $VERSION" >&2
+  exit 1
+fi
 if [[ "$OUT_DIR" != /* ]]; then
   OUT_DIR="$ROOT_DIR/$OUT_DIR"
 fi
@@ -71,8 +75,10 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+GENERATED_AT=$(node --input-type=module -e 'process.stdout.write(new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z"))')
+
 rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/docs/release" "$OUT_DIR/npm" "$OUT_DIR/notices"
+mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/docs/release" "$OUT_DIR/examples/host-capability" "$OUT_DIR/npm" "$OUT_DIR/notices"
 
 go_version_pkg="github.com/floegence/redevplugin/pkg/version"
 ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UIPackageVersion=${VERSION} -X ${go_version_pkg}.RuntimeVersion=${VERSION}"
@@ -110,6 +116,36 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
   cp "$ROOT_DIR/CHANGELOG.md" "$OUT_DIR/CHANGELOG.md"
   cp "$ROOT_DIR/AGENTS.md" "$OUT_DIR/AGENTS.md"
   cp "$ROOT_DIR/docs/release/a2-tdd-evidence.md" "$OUT_DIR/docs/release/a2-tdd-evidence.md"
+  cp "$ROOT_DIR/docs/release/a3-tdd-evidence.md" "$OUT_DIR/docs/release/a3-tdd-evidence.md"
+  sample_root="$OUT_DIR/examples/host-capability/sample-documents-v1"
+  sample_config="$OUT_DIR/examples/host-capability/sample-documents-v1.build.json"
+  node --input-type=module - \
+    "$sample_config" \
+    "$ROOT_DIR/examples/host-capability/documents.contract.json" \
+    "$ROOT_DIR/testdata/host-capability/release-sample/example-documents.test-only.private.json" \
+    "$ROOT_DIR/examples/host-capability/documents.notices.json" \
+    "$GENERATED_AT" \
+    "$SOURCE_COMMIT" \
+    "$VERSION" <<'NODE'
+import { writeFileSync } from "node:fs";
+
+const [output, contractFile, privateKeyFile, noticesFile, generatedAt, sourceCommit, version] = process.argv.slice(2);
+writeFileSync(output, JSON.stringify({
+  contract_file: contractFile,
+  private_key_file: privateKeyFile,
+  artifact_base_ref: "capabilities/example.documents/v1.0.0",
+  generated_at: generatedAt,
+  source_commit: sourceCommit,
+  min_redevplugin_version: version,
+  signature_policy_epoch: "7",
+  signature_revocation_epoch: "11",
+  notices_file: noticesFile,
+}, null, 2) + "\n");
+NODE
+  "$OUT_DIR/bin/redevplugin" host-capability build "$sample_config" "$sample_root" >/dev/null
+  rm -f "$sample_config"
+  cp "$ROOT_DIR/testdata/host-capability/release-sample/example-documents.test-only.public.json" "$sample_root/example-documents.public.json"
+  cp "$ROOT_DIR/testdata/host-capability/sample-documents-v1/plugin-consumer.ts" "$sample_root/plugin-consumer.ts"
   cp "$ROOT_DIR/Cargo.lock" "$OUT_DIR/notices/Cargo.lock"
   cp "$ROOT_DIR/go.sum" "$OUT_DIR/notices/go.sum"
   cp "$ROOT_DIR/package-lock.json" "$OUT_DIR/notices/package-lock.json"
@@ -117,12 +153,12 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
 
 node "$ROOT_DIR/scripts/generate_third_party_notices.mjs" "$ROOT_DIR" "$OUT_DIR/THIRD_PARTY_NOTICES.md"
 
-node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" "$SOURCE_COMMIT" <<'NODE'
+node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" "$SOURCE_COMMIT" "$GENERATED_AT" <<'NODE'
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
-const [outDir, version, runtimeTarget, sourceCommit] = process.argv.slice(2);
+const [outDir, version, runtimeTarget, sourceCommit, generatedAt] = process.argv.slice(2);
 const files = [];
 function walk(dir) {
   for (const entry of readdirSync(dir)) {
@@ -167,7 +203,7 @@ writeFileSync(
       version,
       source_commit: sourceCommit,
       runtime_target: runtimeTarget || null,
-      generated_at: new Date().toISOString(),
+      generated_at: generatedAt,
       compatibility_sha256: compatibilitySHA256,
       npm_package: npmPackage,
       files,

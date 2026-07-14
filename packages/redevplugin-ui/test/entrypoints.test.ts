@@ -18,8 +18,15 @@ void pluginTree;
 void (null as unknown as ReDevPluginSurfaceTransport);
 void (null as unknown as PluginTrustedMethodResult);
 
-test("plugin worker entrypoint exposes only the bridge client at runtime", () => {
-  assert.deepEqual(Object.keys(pluginEntrypoint), ["PluginBridgeClient"]);
+test("plugin worker entrypoint exposes only bridge and generated capability client primitives", () => {
+  assert.deepEqual(Object.keys(pluginEntrypoint), [
+    "PluginBridgeClient",
+    "PluginBridgeError",
+    "callCapabilityOperation",
+    "callCapabilityStream",
+    "callCapabilitySync",
+    "isCapabilityBusinessError",
+  ]);
   for (const forbidden of [
     "PluginPlatformClient",
     "PluginSurfaceHost",

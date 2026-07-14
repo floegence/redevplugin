@@ -257,7 +257,7 @@ func TestRealDemoNetworkExecutorCoversAllSupportedTransports(t *testing.T) {
 
 func TestRealDemoRefreshesPolicyAfterPermissionGrant(t *testing.T) {
 	source := readSourceForTest(t, "real_demo.go")
-	grantIndex := strings.Index(source, "grantRealDemoDeclaredPermissions(ctx, pluginHost, record)")
+	grantIndex := strings.Index(source, "grantRealDemoDeclaredPermissions(ctx, pluginHost, record, verifiedCapability.Contract)")
 	if grantIndex < 0 {
 		t.Fatal("real demo does not grant declared permissions")
 	}

@@ -307,7 +307,7 @@ if (summary.mode !== "release") {
 
 const requiredCategories = [
   "stream_backpressure",
-  "operation_cancel_dispatch",
+  "operation_cancel_ownership",
   "connectivity_classifier",
   "runtime_revoke_ack",
   "storage_quota",
@@ -363,20 +363,21 @@ if (streamCloseAudits !== closedStreams) {
 }
 requireAtLeast(evidenceByCategory, "stream_backpressure", "stream_close_status_checked", 1);
 
-const operationCancelRegistered = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "operations_registered", 2);
-const operationCancelRequested = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "cancel_requested_records", 2);
+const operationCancelRegistered = requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "operations_registered", 2);
+const operationCancelRequested = requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "cancel_requested_records", 2);
 if (operationCancelRequested !== operationCancelRegistered) {
-  fail(`operation_cancel_dispatch cancel_requested_records ${operationCancelRequested} must equal operations_registered ${operationCancelRegistered}`);
+  fail(`operation_cancel_ownership cancel_requested_records ${operationCancelRequested} must equal operations_registered ${operationCancelRegistered}`);
 }
-requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "successful_dispatches", 1);
-requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "failed_dispatches", 1);
-requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "http_503_failures", 1);
-requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "runtime_unavailable_errors", 1);
-const operationCancelAudits = requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "audit_cancel_requested_events", 2);
+requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "durable_requests_without_active_lease", 2);
+requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "http_accepted_requests", 1);
+const operationCancelAudits = requireAtLeast(evidenceByCategory, "operation_cancel_ownership", "audit_cancel_requested_events", 2);
 if (operationCancelAudits !== operationCancelRequested) {
-  fail(`operation_cancel_dispatch audit_cancel_requested_events ${operationCancelAudits} must equal cancel_requested_records ${operationCancelRequested}`);
+  fail(`operation_cancel_ownership audit_cancel_requested_events ${operationCancelAudits} must equal cancel_requested_records ${operationCancelRequested}`);
 }
-requireAtLeast(evidenceByCategory, "operation_cancel_dispatch", "adapter_context_fields_checked", 8);
+const registryRedispatches = counter(evidenceByCategory, "operation_cancel_ownership", "registry_redispatches");
+if (registryRedispatches !== 0) {
+  fail(`operation_cancel_ownership registry_redispatches ${registryRedispatches} must equal 0`);
+}
 
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "minted_grants", 1);
 requireAtLeast(evidenceByCategory, "connectivity_classifier", "stale_grant_denials", 1);

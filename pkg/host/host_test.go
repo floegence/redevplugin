@@ -3,20 +3,25 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/cleanup"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/installstage"
@@ -463,7 +468,7 @@ func TestDowngradeRejectsIrreversibleMigrationPreflight(t *testing.T) {
 func TestEnableRejectsUntrusted(t *testing.T) {
 	host, _, _ := newTestHost(t, true, true)
 	pkg := readTestPackage(t, buildFixturePackage(t))
-	installed, err := host.adapters.Registry.PutPlugin(context.Background(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, "", nil), registry.PutOptions{})
+	installed, err := host.adapters.Registry.PutPlugin(context.Background(), packageRecord(pkg, registry.TrustAssessment{TrustState: registry.TrustUntrusted}, "", nil, nil), registry.PutOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,6 +685,26 @@ func TestInstallReleaseRefRejectsSourceSecurityFloorRollbackBeforeArtifactResolu
 	}
 	if artifactResolver.calls != 0 {
 		t.Fatalf("artifact resolver calls = %d, want 0 before rollback rejection", artifactResolver.calls)
+	}
+}
+
+func TestSourcePolicySnapshotHashExcludesAssessmentTimestamps(t *testing.T) {
+	snapshot := sourcePolicyForRelease(releaseRefForPackage(t, "official", readTestPackage(t, buildFixturePackage(t))))
+	firstHash, firstProjection, err := sourcePolicySnapshotProjection(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.AssessedAt = "2026-07-08T00:00:00Z"
+	snapshot.RevocationEvidence.VerifiedAt = "2026-07-08T00:00:01Z"
+	secondHash, secondProjection, err := sourcePolicySnapshotProjection(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("source policy security hash changed with assessment timestamps: %s != %s", firstHash, secondHash)
+	}
+	if firstProjection["assessed_at"] == secondProjection["assessed_at"] {
+		t.Fatalf("projected source policy did not retain the latest assessed_at: first=%#v second=%#v", firstProjection, secondProjection)
 	}
 }
 
@@ -1139,51 +1164,53 @@ func TestInstallReleaseRefRejectsReleaseDistributionImportID(t *testing.T) {
 
 func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.T) {
 	ctx := context.Background()
-	packageBytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	packageBytes := buildSignedReleasePackageBytes(t, buildRPCFixturePackage(t), "official")
 	pkg := readTestPackage(t, packageBytes)
 	baseRef := releaseRefForPackage(t, "official", pkg)
+	verified := fixtureVerifiedCapabilityContract(t, "example.capability.echo")
 
 	t.Run("accepts complete host capability contract pins", func(t *testing.T) {
 		ref := baseRef
 		release := releaseForPackage(ref, pkg)
+		contractRef := verified.Pin
 		release.HostRequirements = []HostRequirement{{
 			HostID:         "example-host",
 			MinHostVersion: "1.2.3",
 			RequiredCapabilityContracts: []HostCapabilityRequirement{{
-				CapabilityID:      "example.capability.resources",
-				CapabilityVersion: "1.0.0",
-				Contract: HostCapabilityContractRef{
-					ContractID:            "example.resources.v1",
-					ContractVersion:       "1.0.0",
-					ArtifactRef:           "capabilities/example/resources/v1/contract.json",
-					ArtifactSHA256:        strings.Repeat("1", 64),
-					ManifestSHA256:        strings.Repeat("2", 64),
-					SignatureRef:          "capabilities/example/resources/v1/contract.json.sig",
-					SignatureSHA256:       strings.Repeat("6", 64),
-					SignatureKeyID:        "official",
-					CompatibilitySHA256:   strings.Repeat("3", 64),
-					GeneratedClientSHA256: strings.Repeat("4", 64),
-					NoticesSHA256:         strings.Repeat("5", 64),
-				},
+				CapabilityID:      verified.Contract.CapabilityID,
+				CapabilityVersion: verified.Contract.CapabilityVersion,
+				Contract:          contractRef,
 			}},
 		}}
 		setReleaseRefMetadataHash(t, &ref, release)
 		metadataVerifier := &recordingReleaseMetadataVerifier{}
+		sourcePolicy := sourcePolicyForRelease(ref)
+		sourcePolicy.TrustedKeyIDs = append(sourcePolicy.TrustedKeyIDs, verified.Pin.SignatureKeyID)
+		sourcePolicy.TrustedKeys = append(sourcePolicy.TrustedKeys, SourcePolicyTrustedKey{
+			Algorithm: pluginpkg.PackageSignatureAlgorithmEd25519, KeyID: verified.Pin.SignatureKeyID,
+			PublicKeySHA256: verified.PublicKeySHA256(), Usage: []string{"host_capability_contract"},
+			AllowedCapabilityPublishers: []string{verified.Pin.PublisherID},
+			ValidFrom:                   "2026-01-01T00:00:00Z", ValidUntil: "2027-01-01T00:00:00Z", RevocationEpoch: "1",
+		})
+		capabilities := capability.NewRegistry()
+		if err := capabilities.AddContract(verified); err != nil {
+			t.Fatal(err)
+		}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{
 			developerMode:           true,
 			localGenerated:          true,
 			releaseMetadataVerifier: metadataVerifier,
-			releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)},
+			releaseSourcePolicy:     &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicy},
 			releaseArtifactResolver: &recordingReleaseArtifactResolver{artifact: resolvedArtifactForRelease(t, ref, release, packageBytes)},
+			hostRequirements:        &fixedHostRequirementPolicy{hostID: "example-host"},
+			capabilities:            capabilities,
 		})
 
 		if _, err := h.InstallReleaseRef(ctx, InstallReleaseRefRequest{ReleaseRef: ref}); err != nil {
 			t.Fatalf("InstallReleaseRef() error = %v", err)
 		}
 		got := metadataVerifier.last.Release.HostRequirements[0].RequiredCapabilityContracts[0].Contract
-		if got.GeneratedClientSHA256 != strings.Repeat("4", 64) ||
-			got.SignatureKeyID != "official" ||
-			got.SignatureSHA256 != strings.Repeat("6", 64) {
+		if got != verified.Pin {
 			t.Fatalf("host capability contract pins were not preserved: %#v", got)
 		}
 	})
@@ -1191,24 +1218,14 @@ func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.
 	t.Run("rejects incomplete host capability contract pins", func(t *testing.T) {
 		ref := baseRef
 		release := releaseForPackage(ref, pkg)
+		contractRef := completeHostCapabilityRef()
+		contractRef.GeneratedClientSHA256 = ""
 		release.HostRequirements = []HostRequirement{{
 			HostID: "example-host",
 			RequiredCapabilityContracts: []HostCapabilityRequirement{{
 				CapabilityID:      "example.capability.resources",
 				CapabilityVersion: "1.0.0",
-				Contract: HostCapabilityContractRef{
-					ContractID:      "example.resources.v1",
-					ContractVersion: "1.0.0",
-					ArtifactRef:     "capabilities/example/resources/v1/contract.json",
-					ArtifactSHA256:  strings.Repeat("1", 64),
-					ManifestSHA256:  strings.Repeat("2", 64),
-					SignatureRef:    "capabilities/example/resources/v1/contract.json.sig",
-					SignatureSHA256: strings.Repeat("6", 64),
-					SignatureKeyID:  "official",
-					// GeneratedClientSHA256 is intentionally omitted.
-					CompatibilitySHA256: strings.Repeat("3", 64),
-					NoticesSHA256:       strings.Repeat("5", 64),
-				},
+				Contract:          contractRef,
 			}},
 		}}
 		setReleaseRefMetadataHash(t, &ref, release)
@@ -1228,23 +1245,14 @@ func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.
 	t.Run("rejects missing host capability contract signature hash", func(t *testing.T) {
 		ref := baseRef
 		release := releaseForPackage(ref, pkg)
+		contractRef := completeHostCapabilityRef()
+		contractRef.SignatureSHA256 = ""
 		release.HostRequirements = []HostRequirement{{
 			HostID: "example-host",
 			RequiredCapabilityContracts: []HostCapabilityRequirement{{
 				CapabilityID:      "example.capability.resources",
 				CapabilityVersion: "1.0.0",
-				Contract: HostCapabilityContractRef{
-					ContractID:            "example.resources.v1",
-					ContractVersion:       "1.0.0",
-					ArtifactRef:           "capabilities/example/resources/v1/contract.json",
-					ArtifactSHA256:        strings.Repeat("1", 64),
-					ManifestSHA256:        strings.Repeat("2", 64),
-					SignatureRef:          "capabilities/example/resources/v1/contract.json.sig",
-					SignatureKeyID:        "official",
-					CompatibilitySHA256:   strings.Repeat("3", 64),
-					GeneratedClientSHA256: strings.Repeat("4", 64),
-					NoticesSHA256:         strings.Repeat("5", 64),
-				},
+				Contract:          contractRef,
 			}},
 		}}
 		setReleaseRefMetadataHash(t, &ref, release)
@@ -1260,6 +1268,238 @@ func TestInstallReleaseRefRequiresCompleteHostCapabilityContractPins(t *testing.
 			t.Fatalf("InstallReleaseRef() error = %v, want ErrReleaseRefVerificationFailed", err)
 		}
 	})
+}
+
+func TestResolveAndVerifyExternalHostCapabilityContract(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract:                 contract,
+		PublisherID:              contract.PublisherID,
+		ArtifactBaseRef:          "capabilities/example/echo/v1.0.0",
+		GeneratedAt:              time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC),
+		SourceCommit:             strings.Repeat("e", 40),
+		MinReDevPluginVersion:    "0.3.0",
+		SignatureKeyID:           "capability-contract-key",
+		SignaturePolicyEpoch:     "1",
+		SignatureRevocationEpoch: "1",
+		PrivateKey:               privateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := releaseRefForPackage(t, "official", readTestPackage(t, buildFixturePackage(t)))
+	policy := sourcePolicyForRelease(ref)
+	policy.AllowedArtifactHosts = []string{"artifacts.example.com"}
+	keyHash := sha256.Sum256(publicKey)
+	policy.TrustedKeys = append(policy.TrustedKeys, SourcePolicyTrustedKey{
+		Algorithm:                   pluginpkg.PackageSignatureAlgorithmEd25519,
+		KeyID:                       bundle.Pin.SignatureKeyID,
+		PublicKeySHA256:             "sha256:" + hex.EncodeToString(keyHash[:]),
+		Usage:                       []string{"host_capability_contract"},
+		AllowedCapabilityPublishers: []string{bundle.Pin.PublisherID},
+		ValidFrom:                   "2026-01-01T00:00:00Z",
+		ValidUntil:                  "2027-01-01T00:00:00Z",
+		RevocationEpoch:             "1",
+	})
+	artifactSet := &memoryCapabilityContractArtifactSet{bundle: bundle}
+	artifactResolver := &recordingCapabilityContractArtifactResolver{result: ResolvedCapabilityContractArtifact{Artifacts: artifactSet}}
+	keyResolver := &recordingCapabilityContractKeyResolver{publicKey: publicKey}
+	h := &Host{adapters: Adapters{
+		CapabilityContractArtifacts: artifactResolver,
+		CapabilityContractKeys:      keyResolver,
+	}}
+	verified, err := h.resolveAndVerifyCapabilityContract(context.Background(), PluginPackageRelease{
+		SourceID:    ref.SourceID,
+		PublisherID: ref.PublisherID,
+	}, policy, HostCapabilityRequirement{
+		CapabilityID:      contract.CapabilityID,
+		CapabilityVersion: contract.CapabilityVersion,
+		Contract:          bundle.Pin,
+	})
+	if err != nil {
+		t.Fatalf("resolveAndVerifyCapabilityContract() error = %v", err)
+	}
+	if verified.Pin != bundle.Pin || artifactResolver.calls != 1 || keyResolver.calls != 1 {
+		t.Fatalf("verified external contract mismatch: verified=%#v artifact=%#v key=%#v", verified.Pin, artifactResolver, keyResolver)
+	}
+	artifactSet.fetchChain = []CapabilityArtifactFetchHop{
+		{URL: "https://artifacts.example.com/releases/start", ResolvedIP: "93.184.216.34"},
+		{URL: "https://redirect.example.net/releases/final", ResolvedIP: "93.184.216.34"},
+	}
+	if _, err := h.resolveAndVerifyCapabilityContract(context.Background(), PluginPackageRelease{
+		SourceID: ref.SourceID, PublisherID: ref.PublisherID,
+	}, policy, HostCapabilityRequirement{CapabilityID: contract.CapabilityID, CapabilityVersion: contract.CapabilityVersion, Contract: bundle.Pin}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("unauthorized redirect error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestCapabilityContractArtifactFetchFailsClosed(t *testing.T) {
+	verified := fixtureVerifiedCapabilityContract(t, "example.capability.echo")
+	bundle, _, err := buildFixtureCapabilityBundle(verified.Contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := SourcePolicySnapshot{AllowedArtifactHosts: []string{"artifacts.example.com"}}
+	oversize := capabilitycontract.MaxArtifactFileBytes + 1
+	wrongSize := int64(len(bundle.Files[bundle.Pin.ArtifactRef]) + 1)
+	tests := []struct {
+		name string
+		set  *memoryCapabilityContractArtifactSet
+	}{
+		{name: "file URL", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "file:///tmp/contract.json", ResolvedIP: "93.184.216.34"}}}},
+		{name: "unapproved host", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://other.example.com/contract.json", ResolvedIP: "93.184.216.34"}}}},
+		{name: "private IP", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/contract.json", ResolvedIP: "127.0.0.1"}}}},
+		{name: "carrier grade NAT", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/contract.json", ResolvedIP: "100.64.0.1"}}}},
+		{name: "benchmark network", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/contract.json", ResolvedIP: "198.18.0.1"}}}},
+		{name: "documentation network", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/contract.json", ResolvedIP: "203.0.113.10"}}}},
+		{name: "IPv4 mapped carrier grade NAT", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/contract.json", ResolvedIP: "::ffff:100.64.0.1"}}}},
+		{name: "IPv6 documentation network", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/contract.json", ResolvedIP: "2001:db8::10"}}}},
+		{name: "path traversal", set: &memoryCapabilityContractArtifactSet{bundle: bundle, fetchChain: []CapabilityArtifactFetchHop{{URL: "https://artifacts.example.com/releases/%2e%2e/contract.json", ResolvedIP: "93.184.216.34"}}}},
+		{name: "media type", set: &memoryCapabilityContractArtifactSet{bundle: bundle, mediaType: "text/html"}},
+		{name: "declared size mismatch", set: &memoryCapabilityContractArtifactSet{bundle: bundle, declaredSize: &wrongSize}},
+		{name: "declared file too large", set: &memoryCapabilityContractArtifactSet{bundle: bundle, declaredSize: &oversize}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := loadCapabilityContractBundle(context.Background(), bundle.Pin, policy, ResolvedCapabilityContractArtifact{Artifacts: tc.set}); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+				t.Fatalf("loadCapabilityContractBundle() error = %v, want ErrReleaseRefVerificationFailed", err)
+			}
+		})
+	}
+}
+
+func TestTrustedSourceKeyAllowsHostCapabilityContractUsage(t *testing.T) {
+	ref := releaseRefForPackage(t, "official", readTestPackage(t, buildFixturePackage(t)))
+	policy := sourcePolicyForRelease(ref)
+	policy.TrustedKeyIDs = append(policy.TrustedKeyIDs, "capability-contract-key")
+	policy.TrustedKeys = append(policy.TrustedKeys, SourcePolicyTrustedKey{
+		Algorithm:                   pluginpkg.PackageSignatureAlgorithmEd25519,
+		KeyID:                       "capability-contract-key",
+		PublicKeySHA256:             strings.Repeat("b", 64),
+		Usage:                       []string{"host_capability_contract"},
+		AllowedCapabilityPublishers: []string{"example.contracts"},
+		ValidFrom:                   "2026-01-01T00:00:00Z",
+		ValidUntil:                  "2027-01-01T00:00:00Z",
+		RevocationEpoch:             "1",
+	})
+	if err := validateTrustedSourceKeys(policy, time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("validateTrustedSourceKeys() rejected host capability contract usage: %v", err)
+	}
+}
+
+func TestEnsureReleaseCapabilityContractsRevalidatesCachedSigningKey(t *testing.T) {
+	verified := fixtureVerifiedCapabilityContract(t, "example.capability.echo")
+	capabilities := capability.NewRegistry()
+	if err := capabilities.AddContract(verified); err != nil {
+		t.Fatal(err)
+	}
+	ref := releaseRefForPackage(t, "official", readTestPackage(t, buildFixturePackage(t)))
+	policy := sourcePolicyForRelease(ref)
+	policy.TrustedKeyIDs = append(policy.TrustedKeyIDs, verified.Pin.SignatureKeyID)
+	policy.TrustedKeys = append(policy.TrustedKeys, SourcePolicyTrustedKey{
+		Algorithm:                   pluginpkg.PackageSignatureAlgorithmEd25519,
+		KeyID:                       verified.Pin.SignatureKeyID,
+		PublicKeySHA256:             "sha256:" + verified.PublicKeySHA256(),
+		Usage:                       []string{"host_capability_contract"},
+		AllowedCapabilityPublishers: []string{verified.Pin.PublisherID},
+		ValidFrom:                   "2026-01-01T00:00:00Z",
+		ValidUntil:                  "2027-01-01T00:00:00Z",
+		RevocationEpoch:             "1",
+	})
+	hostRequirements := &fixedHostRequirementPolicy{hostID: "example-host"}
+	h := &Host{adapters: Adapters{
+		HostRequirements: hostRequirements,
+		Capabilities:     capabilities,
+	}}
+	release := PluginPackageRelease{
+		SourceID:    ref.SourceID,
+		PublisherID: ref.PublisherID,
+		HostRequirements: []HostRequirement{{
+			HostID: "example-host",
+			RequiredCapabilityContracts: []HostCapabilityRequirement{{
+				CapabilityID:      verified.Contract.CapabilityID,
+				CapabilityVersion: verified.Contract.CapabilityVersion,
+				Contract:          verified.Pin,
+			}},
+		}},
+	}
+	if _, err := h.ensureReleaseCapabilityContracts(context.Background(), release, policy); err != nil {
+		t.Fatalf("ensureReleaseCapabilityContracts() initial cache hit error = %v", err)
+	}
+	policy.TrustedKeys[len(policy.TrustedKeys)-1].PublicKeySHA256 = strings.Repeat("b", 64)
+	if _, err := h.ensureReleaseCapabilityContracts(context.Background(), release, policy); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("ensureReleaseCapabilityContracts() key mismatch error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+	policy.TrustedKeys[len(policy.TrustedKeys)-1].PublicKeySHA256 = verified.PublicKeySHA256()
+	setSourcePolicyRevokedKeys(&policy, []string{verified.Pin.SignatureKeyID})
+	if _, err := h.ensureReleaseCapabilityContracts(context.Background(), release, policy); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("ensureReleaseCapabilityContracts() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func TestReleaseHostRequirementsAreEvaluatedWithoutManifestBindings(t *testing.T) {
+	policyErr := errors.New("host version is unsupported")
+	hostRequirements := &fixedHostRequirementPolicy{err: policyErr}
+	h := &Host{adapters: Adapters{HostRequirements: hostRequirements, Capabilities: capability.NewRegistry()}}
+	release := PluginPackageRelease{
+		SourceID: "official", PublisherID: "example", PluginID: "com.example.no_capabilities", Version: "1.0.0",
+		HostRequirements: []HostRequirement{{HostID: "example-host", MinHostVersion: "2.0.0"}},
+	}
+	_, err := h.resolvePackageCapabilityPins(context.Background(), manifest.Manifest{}, packageTrustInput{
+		Release: &release, SourcePolicySnapshot: &SourcePolicySnapshot{},
+	})
+	if !errors.Is(err, ErrReleaseRefVerificationFailed) || !strings.Contains(err.Error(), policyErr.Error()) {
+		t.Fatalf("resolvePackageCapabilityPins() error = %v, want host policy rejection", err)
+	}
+	if hostRequirements.calls != 1 || len(hostRequirements.last.Requirements) != 1 {
+		t.Fatalf("host requirement policy call mismatch: %#v", hostRequirements)
+	}
+}
+
+func TestCapabilitySigningKeyRejectsPublisherOutsidePolicyScope(t *testing.T) {
+	ref := releaseRefForPackage(t, "official", readTestPackage(t, buildFixturePackage(t)))
+	policy := sourcePolicyForRelease(ref)
+	policy.TrustedKeyIDs = append(policy.TrustedKeyIDs, "capability-contract-key")
+	policy.TrustedKeys = append(policy.TrustedKeys, SourcePolicyTrustedKey{
+		Algorithm: pluginpkg.PackageSignatureAlgorithmEd25519, KeyID: "capability-contract-key",
+		PublicKeySHA256: strings.Repeat("b", 64), Usage: []string{"host_capability_contract"},
+		AllowedCapabilityPublishers: []string{"other.publisher"},
+		ValidFrom:                   "2026-01-01T00:00:00Z", ValidUntil: "2027-01-01T00:00:00Z", RevocationEpoch: "1",
+	})
+	pin := completeHostCapabilityRef()
+	pin.SignatureKeyID = "capability-contract-key"
+	pin.SignaturePolicyEpoch = "1"
+	pin.SignatureRevocationEpoch = "1"
+	if _, err := validateCapabilityContractSigningKey(policy, pin, time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC)); !errors.Is(err, ErrReleaseRefVerificationFailed) {
+		t.Fatalf("validateCapabilityContractSigningKey() error = %v, want ErrReleaseRefVerificationFailed", err)
+	}
+}
+
+func completeHostCapabilityRef() HostCapabilityContractRef {
+	return HostCapabilityContractRef{
+		PublisherID:              "example.contracts",
+		ContractID:               "example.resources.v1",
+		ContractVersion:          "1.0.0",
+		ArtifactRef:              "capabilities/example/resources/v1/contract.json",
+		ArtifactSHA256:           strings.Repeat("1", 64),
+		ManifestRef:              "capabilities/example/resources/v1/manifest.json",
+		ManifestSHA256:           strings.Repeat("2", 64),
+		SignatureRef:             "capabilities/example/resources/v1/manifest.sig",
+		SignatureSHA256:          strings.Repeat("6", 64),
+		SignatureKeyID:           "official",
+		SignaturePolicyEpoch:     "7",
+		SignatureRevocationEpoch: "11",
+		CompatibilityRef:         "capabilities/example/resources/v1/compatibility.json",
+		CompatibilitySHA256:      strings.Repeat("3", 64),
+		GeneratedClientRef:       "capabilities/example/resources/v1/client.ts",
+		GeneratedClientSHA256:    strings.Repeat("4", 64),
+		NoticesRef:               "capabilities/example/resources/v1/notices.json",
+		NoticesSHA256:            strings.Repeat("5", 64),
+	}
 }
 
 func TestInstallReleaseRefRejectsMissingPackageSignature(t *testing.T) {
@@ -1849,13 +2089,13 @@ func TestActiveFingerprintIncludesPackageCapabilitiesAndTrustEpochs(t *testing.T
 		PolicyEpoch:          "1",
 		RevocationEpoch:      "1",
 	}
-	first := activeFingerprintForPackage(pkg, "plugini_fingerprint", trust)
-	if first == "" || first != activeFingerprintForPackage(pkg, "plugini_fingerprint", trust) {
+	first := activeFingerprintForPackage(pkg, "plugini_fingerprint", trust, nil)
+	if first == "" || first != activeFingerprintForPackage(pkg, "plugini_fingerprint", trust, nil) {
 		t.Fatalf("active fingerprint should be stable, got %q", first)
 	}
 	metadataChanged := trust
 	metadataChanged.Metadata = map[string]string{"ignored": "metadata"}
-	if got := activeFingerprintForPackage(pkg, "plugini_fingerprint", metadataChanged); got != first {
+	if got := activeFingerprintForPackage(pkg, "plugini_fingerprint", metadataChanged, nil); got != first {
 		t.Fatalf("metadata-only trust change affected active fingerprint: got %q want %q", got, first)
 	}
 	for name, mutate := range map[string]func(pluginpkg.Package, registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment){
@@ -1864,7 +2104,10 @@ func TestActiveFingerprintIncludesPackageCapabilitiesAndTrustEpochs(t *testing.T
 			return pkg, trust
 		},
 		"capability_contract": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
-			pkg.Manifest.CapabilityBindings = append(pkg.Manifest.CapabilityBindings, manifest.CapabilityBinding{BindingID: "extra", CapabilityID: "example.capability.extra", MinCapabilityVersion: "1.0.0"})
+			contract := pkg.Manifest.CapabilityBindings[0].Contract
+			contract.ContractID = "example.extra.v1"
+			contract.ArtifactSHA256 = strings.Repeat("a", 64)
+			pkg.Manifest.CapabilityBindings = append(pkg.Manifest.CapabilityBindings, manifest.CapabilityBinding{BindingID: "extra", Contract: contract})
 			return pkg, trust
 		},
 		"trust_epoch": func(pkg pluginpkg.Package, trust registry.TrustAssessment) (pluginpkg.Package, registry.TrustAssessment) {
@@ -1882,10 +2125,62 @@ func TestActiveFingerprintIncludesPackageCapabilitiesAndTrustEpochs(t *testing.T
 	} {
 		t.Run(name, func(t *testing.T) {
 			changedPkg, changedTrust := mutate(pkg, trust)
-			if got := activeFingerprintForPackage(changedPkg, "plugini_fingerprint", changedTrust); got == first {
+			if got := activeFingerprintForPackage(changedPkg, "plugini_fingerprint", changedTrust, nil); got == first {
 				t.Fatalf("active fingerprint did not change for %s", name)
 			}
 		})
+	}
+}
+
+func TestLocalInstallUsesTheManifestExactCapabilityContractPin(t *testing.T) {
+	capabilities := capability.NewRegistry()
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	base := fixtureVerifiedCapabilityContract(t, "example.capability.echo")
+	newerContract := base.Contract
+	newerContract.ContractVersion = "1.4.0"
+	newerContract.CapabilityVersion = "1.4.0"
+	newer := verifyFixtureCapabilityContract(t, newerContract)
+	for _, verified := range []capabilitycontract.VerifiedContract{base, newer} {
+		if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: adapter, Adapter: adapter}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := New(Adapters{
+		SessionResolver: fakeSessionResolver{},
+		Policy:          policyAdapter{developerMode: true, localGenerated: true, decision: PolicyAllow},
+		Capabilities:    capabilities,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := ImportLocalPackageBytes(context.Background(), h, buildRPCFixturePackage(t))
+	if err != nil {
+		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
+	}
+	if len(installed.CapabilityContracts) != 1 || installed.CapabilityContracts[0] != base.Pin {
+		t.Fatalf("installed capability pins = %#v, want exact %#v", installed.CapabilityContracts, base.Pin)
+	}
+}
+
+func TestLocalInstallRejectsCapabilityMethodAliasesThatGeneratedClientsCannotCall(t *testing.T) {
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(rpcFixtureManifestJSON("1.0.0", "RPC"), `"method": "echo.ping"`, `"method": "plugin.echo"`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "RPC")
+	var packageBytes bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "must match route.target_method") {
+		t.Fatalf("BuildFromDir() error = %v, want method alias rejection", err)
+	}
+}
+
+func TestLocalInstallRejectsCapabilityPolicyDeclaredByPluginManifest(t *testing.T) {
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(dangerousRPCFixtureManifestJSON(), `"method": "danger.run",`, `"method": "danger.run", "confirmation": {"mode": "required"},`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Danger")
+	var packageBytes bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "derive policy and schemas from the signed capability contract") {
+		t.Fatalf("BuildFromDir() error = %v, want unsigned policy rejection", err)
 	}
 }
 
@@ -2294,6 +2589,8 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 		developerMode:     true,
 		localGenerated:    true,
 		runtimeSupervisor: runtime,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 	installed, err := ImportLocalPackageBytes(context.Background(), h, buildFixturePackage(t))
@@ -2569,16 +2866,70 @@ func TestCallPluginMethodDispatchesCapability(t *testing.T) {
 	if result.Data == nil {
 		t.Fatalf("CallPluginMethod() result missing data: %#v", result)
 	}
-	if capabilityAdapter.last.CapabilityID != "example.capability.echo" ||
-		capabilityAdapter.last.BindingID != "echo" ||
-		capabilityAdapter.last.Method != "echo.ping" ||
-		capabilityAdapter.last.TargetMethod != "echo.ping" ||
-		capabilityAdapter.last.PluginInstanceID != installed.PluginInstanceID ||
-		capabilityAdapter.last.BridgeChannelID != "bridge_rpc" {
+	if capabilityAdapter.last.Execution.CapabilityID != "example.capability.echo" ||
+		capabilityAdapter.last.Execution.RouteKind != capability.RouteCapability ||
+		capabilityAdapter.last.Execution.Contract == nil ||
+		capabilityAdapter.last.Execution.BindingID != "echo" ||
+		capabilityAdapter.last.Execution.Method != "echo.ping" ||
+		capabilityAdapter.last.Execution.TargetMethod != "echo.ping" ||
+		capabilityAdapter.last.Execution.PluginInstanceID != installed.PluginInstanceID ||
+		capabilityAdapter.last.Execution.BridgeChannelID != "bridge_rpc" {
 		t.Fatalf("capability invocation mismatch: %#v", capabilityAdapter.last)
 	}
 	if !audits.hasEvent("plugin.method.called") {
 		t.Fatalf("missing method audit event: %#v", audits.events)
+	}
+}
+
+func TestCapabilityRejectionFailsClosedWhenAuditPersistenceFails(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	h.adapters.Audit = failingAuditSink{err: errors.New("audit store unavailable")}
+	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "echo.ping", Params: map[string]any{"message": "hello", "unexpected": true},
+	})
+	if !errors.Is(err, ErrMethodRequestContract) || !errors.Is(err, ErrSecurityEventPersistence) {
+		t.Fatalf("CallPluginMethod() error = %v, want request contract and persistence errors", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestCapabilityTargetProjectorMayAddHostDerivedFields(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result:       capability.Result{Data: map[string]any{"ok": true}},
+		targetFields: map[string]any{"resource_id": "host-resource-1", "scope": "environment"},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	for index := range contract.Methods {
+		if contract.Methods[index].Name == "echo.ping" {
+			contract.Methods[index].TargetSchema = fixtureClosedObject(map[string]any{
+				"resource_id": map[string]any{"type": "string", "minLength": 1},
+				"scope":       map[string]any{"type": "string", "const": "environment"},
+			}, []string{"resource_id", "scope"})
+		}
+	}
+	verified := verifyFixtureCapabilityContract(t, contract)
+	if err := h.adapters.Capabilities.Register(capability.Registration{Contract: verified, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter}); err != nil {
+		t.Fatal(err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin), "rpc.view")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "echo.ping", Params: map[string]any{"message": "hello"},
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if capabilityAdapter.lastTarget.TargetInput["message"] != "hello" || capabilityAdapter.last.Execution.Target.Fields["resource_id"] != "host-resource-1" {
+		t.Fatalf("target projection mismatch: request=%#v execution=%#v", capabilityAdapter.lastTarget, capabilityAdapter.last.Execution.Target)
 	}
 }
 
@@ -2741,11 +3092,13 @@ func TestCallPluginMethodRedactsCapabilityResponseData(t *testing.T) {
 
 func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
+	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
+		diagnostics:       diagnostics,
 	})
 	installed, gateway := installEnableAndMintGatewayWithoutPermissions(t, h, buildRPCFixturePackage(t), "rpc.view")
 	call := CallMethodRequest{
@@ -2763,6 +3116,12 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called before permission grant: %d", capabilityAdapter.calls)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "permission_denied" {
+		t.Fatalf("missing permission rejection audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "permission_denied" {
+		t.Fatalf("missing permission rejection diagnostic: %#v", diagnostics.events)
 	}
 
 	beforeGrant, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
@@ -2889,7 +3248,7 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 }
 
 func TestCallPluginMethodRegistersOperation(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_pull_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -2906,21 +3265,21 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 		OwnerUserHash:        "user_hash",
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
-		Method:               "images.pull",
-		Params:               map[string]any{"image": "alpine:latest"},
+		Method:               "documents.archive",
+		Params:               map[string]any{"document_id": "doc-1"},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if result.OperationID != "op_pull_1" {
+	if result.OperationID == "" || capabilityAdapter.last.Execution.Operation == nil || result.OperationID != capabilityAdapter.last.Execution.Operation.ID() {
 		t.Fatalf("operation id mismatch: %#v", result)
 	}
-	registered, err := h.GetOperation(context.Background(), "op_pull_1")
+	registered, err := h.GetOperation(context.Background(), result.OperationID)
 	if err != nil {
 		t.Fatalf("GetOperation() error = %v", err)
 	}
 	if registered.PluginInstanceID != installed.PluginInstanceID ||
-		registered.Method != "images.pull" ||
+		registered.Method != "documents.archive" ||
 		registered.Effect != "execute" ||
 		registered.Execution != string(manifest.MethodExecutionOperation) ||
 		registered.DisableBehavior != operation.DisableBehaviorCancel ||
@@ -2932,8 +3291,44 @@ func TestCallPluginMethodRegistersOperation(t *testing.T) {
 	}
 }
 
+func TestCapabilityAdapterCannotMutateHostOwnedExecutionBinding(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{}},
+		mutateExecution: func(binding *capability.ExecutionBinding) {
+			binding.Permissions.Required[0] = "tampered.permission"
+			binding.Permissions.Granted[0] = "tampered.permission"
+			binding.Target.Fields["document_id"] = "tampered-document"
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.last.Execution.Permissions.Required[0] != "tampered.permission" || adapter.last.Execution.Target.Fields["document_id"] != "tampered-document" {
+		t.Fatalf("adapter mutation was not exercised: %#v", adapter.last.Execution.ExecutionBinding)
+	}
+	record, err := h.GetOperation(context.Background(), started.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Permissions.Required[0] != "execute" || record.Target.Fields["document_id"] != "doc-1" {
+		t.Fatalf("durable execution binding was mutated by the adapter: %#v", record.ExecutionBinding)
+	}
+	if err := adapter.last.Execution.Operation.Complete(context.Background()); err != nil {
+		t.Fatalf("Operation.Complete() error = %v", err)
+	}
+}
+
 func TestCallPluginMethodRegistersStream(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, StreamID: "stream_logs_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -2955,26 +3350,52 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if result.StreamID != "stream_logs_1" || result.StreamTicket == "" || result.StreamTicketID == "" || result.StreamExpiresAt == nil || result.StreamExpiresAt.IsZero() {
+	if result.StreamID == "" || capabilityAdapter.last.Execution.Stream == nil || result.StreamID != capabilityAdapter.last.Execution.Stream.ID() || result.StreamTicket == "" || result.StreamTicketID == "" || result.StreamExpiresAt == nil || result.StreamExpiresAt.IsZero() {
 		t.Fatalf("CallPluginMethod() stream result mismatch: %#v", result)
 	}
-	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
-		StreamID: "stream_logs_1",
-		Data:     []byte("line 1"),
-	}); err != nil {
-		t.Fatalf("AppendStreamEvent() error = %v", err)
+	if capabilityAdapter.last.Execution.StreamEventTypeName != "LogEvent" || len(capabilityAdapter.last.Execution.StreamEventSchemaSHA256) != 64 {
+		t.Fatalf("signed stream contract binding mismatch: %#v", capabilityAdapter.last.Execution.ExecutionBinding)
 	}
-	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: "stream_logs_1"}); !errors.Is(err, ErrStreamTicketRequired) {
+	if err := capabilityAdapter.last.Execution.Stream.Append(context.Background(), map[string]any{"unexpected": true}); err == nil || !strings.Contains(err.Error(), "signed contract") {
+		t.Fatalf("Stream.Append(invalid event) error = %v, want signed event schema rejection", err)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "line 1"}); err != nil {
+		t.Fatalf("Stream.Append() error = %v", err)
+	}
+	if _, err := h.ReadStream(context.Background(), ReadStreamRequest{StreamID: result.StreamID}); !errors.Is(err, ErrStreamTicketRequired) {
 		t.Fatalf("ReadStream() without ticket error = %v, want %v", err, ErrStreamTicketRequired)
 	}
-	streamResult, err := h.ReadStream(context.Background(), scopedReadStreamRequest("stream_logs_1", result.StreamTicket))
+	streamResult, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
 	if err != nil {
 		t.Fatalf("ReadStream() error = %v", err)
 	}
-	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != "line 1" {
+	if streamResult.Record.Method != "logs.tail" || len(streamResult.Events) != 1 || string(streamResult.Events[0].Data) != `{"line":"line 1"}` {
 		t.Fatalf("stream read mismatch: %#v", streamResult)
 	}
-	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest("stream_logs_1", result.StreamTicket)); !errors.Is(err, bridge.ErrTokenReplay) {
+	if streamResult.Done || streamResult.NextStreamTicket == "" || streamResult.NextStreamTicketID == "" || streamResult.NextStreamExpiresAt == nil {
+		t.Fatalf("open stream did not return a renewable read credential: %#v", streamResult)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "line 2"}); err != nil {
+		t.Fatalf("Stream.Append() after first read error = %v", err)
+	}
+	second, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, streamResult.NextStreamTicket))
+	if err != nil {
+		t.Fatalf("ReadStream() renewed read error = %v", err)
+	}
+	if second.Done || len(second.Events) != 1 || string(second.Events[0].Data) != `{"line":"line 2"}` || second.NextStreamTicket == "" {
+		t.Fatalf("renewed stream read mismatch: %#v", second)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Close(context.Background()); err != nil {
+		t.Fatalf("Stream.Close() error = %v", err)
+	}
+	final, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, second.NextStreamTicket))
+	if err != nil {
+		t.Fatalf("ReadStream() terminal read error = %v", err)
+	}
+	if !final.Done || final.TerminalStatus != stream.StatusClosed || final.NextStreamTicket != "" || final.NextStreamTicketID != "" || final.NextStreamExpiresAt != nil {
+		t.Fatalf("terminal stream read retained a renewable credential: %#v", final)
+	}
+	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket)); !errors.Is(err, bridge.ErrTokenReplay) {
 		t.Fatalf("ReadStream() replay error = %v, want %v", err, bridge.ErrTokenReplay)
 	}
 	if !audits.hasEvent("plugin.stream.started") {
@@ -2982,8 +3403,430 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	}
 }
 
+func TestReadStreamFailureKeepsCurrentTicketAndEvents(t *testing.T) {
+	readFailure := errors.New("injected stream read failure")
+	streams := &failFirstStreamReadStore{Store: stream.NewMemoryStore(), err: readFailure}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter, streams: streams,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "preserved"}); err != nil {
+		t.Fatal(err)
+	}
+	request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
+	if _, err := h.ReadStream(context.Background(), request); !errors.Is(err, readFailure) {
+		t.Fatalf("ReadStream(first) error = %v, want %v", err, readFailure)
+	}
+	retried, err := h.ReadStream(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ReadStream(retry) error = %v", err)
+	}
+	if len(retried.Events) != 1 || string(retried.Events[0].Data) != `{"line":"preserved"}` || retried.NextStreamTicket == "" {
+		t.Fatalf("retry did not preserve the event and rotate the ticket: %#v", retried)
+	}
+}
+
+func TestReadStreamSerializesConcurrentUseOfOneTicket(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "once"}); err != nil {
+		t.Fatal(err)
+	}
+	type readOutcome struct {
+		result ReadStreamResult
+		err    error
+	}
+	start := make(chan struct{})
+	outcomes := make(chan readOutcome, 2)
+	for range 2 {
+		go func() {
+			<-start
+			read, readErr := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+			outcomes <- readOutcome{result: read, err: readErr}
+		}()
+	}
+	close(start)
+	first := <-outcomes
+	second := <-outcomes
+	results := []readOutcome{first, second}
+	successes := 0
+	replays := 0
+	events := 0
+	for _, outcome := range results {
+		switch {
+		case outcome.err == nil:
+			successes++
+			events += len(outcome.result.Events)
+		case errors.Is(outcome.err, bridge.ErrTokenReplay):
+			replays++
+		default:
+			t.Fatalf("concurrent ReadStream() error = %v", outcome.err)
+		}
+	}
+	if successes != 1 || replays != 1 || events != 1 {
+		t.Fatalf("concurrent read outcomes = %#v", results)
+	}
+}
+
+func TestReadStreamLongPollRevalidatesPluginRevision(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
+		request.WaitTimeout = time.Second
+		_, readErr := h.ReadStream(context.Background(), request)
+		readDone <- readErr
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{
+		PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID), Reason: "policy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, bridge.ErrTokenRevoked) {
+			t.Fatalf("ReadStream() after revision change error = %v, want %v", err, bridge.ErrTokenRevoked)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("long-poll stream read did not finish after plugin revision changed")
+	}
+}
+
+func TestRuntimeStreamCloseCannotCompleteCanceledOperation(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Operations.RequestCancel(context.Background(), operation.CancelRequest{OperationID: result.OperationID}); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := h.executions.streamSink(result.StreamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.lease.requestCancel(errors.New("operation cancellation requested"))
+	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(context.Background(), result.StreamID); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("CloseRuntimeStream() error = %v, want %v", err, capability.ErrExecutionRevoked)
+	}
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCancelRequested)
+}
+
+func TestWorkerOperationCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "worker.echo", Params: map[string]any{"message": "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" {
+		t.Fatalf("worker operation result = %#v", result)
+	}
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("worker operation retained %d execution leases after runtime return", activeLeases)
+	}
+}
+
+func TestWorkerSubscriptionCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerSubscriptionFixturePackage(t), "worker.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "worker.echo", Params: map[string]any{"message": "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.StreamID == "" || result.StreamTicket == "" {
+		t.Fatalf("worker subscription result = %#v", result)
+	}
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
+	terminal, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || len(terminal.Events) != 0 || terminal.NextStreamTicket != "" {
+		t.Fatalf("worker subscription terminal read = %#v", terminal)
+	}
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("worker subscription retained %d execution leases after runtime return", activeLeases)
+	}
+}
+
+func TestReadStreamReportsFailedTerminalStatus(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Fail(context.Background(), "runtime failed"); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminal.Done || terminal.TerminalStatus != stream.StatusFailed || len(terminal.Events) != 0 {
+		t.Fatalf("failed terminal read mismatch: %#v", terminal)
+	}
+}
+
+func TestReadTerminalStreamDoesNotRequireNextTicketCapacity(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	manager := bridge.NewTokenManager(bridge.TokenManagerOptions{
+		MaxRecords:          4,
+		MaxRecordsPerPlugin: 4,
+	})
+	tokens := bridge.NewSurfaceTokenService(manager, bridge.SurfaceTokenOptions{})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+		surfaceTokens:     tokens,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capabilityAdapter.last.Execution.Stream.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	terminal, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	if err != nil {
+		t.Fatalf("ReadStream() terminal read error = %v", err)
+	}
+	if !terminal.Done || terminal.TerminalStatus != stream.StatusClosed || terminal.NextStreamTicket != "" {
+		t.Fatalf("terminal stream read = %#v", terminal)
+	}
+}
+
+func TestReadTerminalStreamKeepsTicketUntilZeroPayloadEventsAreDrained(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"marker.first", "marker.second"} {
+		if _, err := h.adapters.Streams.Append(context.Background(), stream.AppendRequest{StreamID: result.StreamID, Kind: kind}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.adapters.Streams.Close(context.Background(), stream.CloseRequest{StreamID: result.StreamID}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := scopedReadStreamRequest(result.StreamID, result.StreamTicket)
+	request.MaxEvents = 1
+	first, err := h.ReadStream(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Done || len(first.Events) != 1 || first.NextStreamTicket == "" {
+		t.Fatalf("first terminal stream page = %#v", first)
+	}
+	request.StreamTicket = first.NextStreamTicket
+	second, err := h.ReadStream(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Done || len(second.Events) != 1 || second.NextStreamTicket != "" {
+		t.Fatalf("second terminal stream page = %#v", second)
+	}
+}
+
+func TestCallPluginMethodClosesStreamWhenTicketMintFails(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	manager := bridge.NewTokenManager(bridge.TokenManagerOptions{
+		MaxRecords:          4,
+		MaxRecordsPerPlugin: 4,
+	})
+	tokens := bridge.NewSurfaceTokenService(manager, bridge.SurfaceTokenOptions{})
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+		surfaceTokens:     tokens,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	now := time.Now().UTC()
+	if _, err := manager.Mint(bridge.MintRequest{
+		Kind: bridge.TokenKindHandleGrant,
+		Audience: bridge.Audience{
+			PluginInstanceID:    installed.PluginInstanceID,
+			ActiveFingerprint:   installed.ActiveFingerprint,
+			RuntimeGenerationID: "runtime_filler",
+			HandleID:            "handle_filler",
+			Method:              "filler.reserve",
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision:     installed.PolicyRevision,
+			ManagementRevision: installed.ManagementRevision,
+			RevokeEpoch:        installed.RevokeEpoch,
+		},
+		Now:       now,
+		ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("Mint(filler) error = %v", err)
+	}
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "logs.tail",
+	}); !errors.Is(err, bridge.ErrTokenCapacity) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrTokenCapacity", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter ran before the initial stream ticket was available: calls=%d", capabilityAdapter.calls)
+	}
+	operations, err := h.adapters.Operations.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].Status != operation.StatusFailed || operations[0].StreamID == "" {
+		t.Fatalf("ticket failure did not persist the failed operation: %#v", operations)
+	}
+	assertHostStreamStatus(t, h, operations[0].StreamID, stream.StatusFailed)
+}
+
+func TestInitialStreamTicketFailurePersistsPartialCleanupForRestartReconciliation(t *testing.T) {
+	ticketErr := bridge.ErrTokenCapacity
+	finishErr := errors.New("operation terminal store unavailable")
+	operationStore := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
+	streamStore := stream.NewMemoryStore()
+	manager := bridge.NewTokenManager(bridge.TokenManagerOptions{MaxRecords: 4, MaxRecordsPerPlugin: 4})
+	tokens := bridge.NewSurfaceTokenService(manager, bridge.SurfaceTokenOptions{})
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		operations: operationStore, streams: streamStore, surfaceTokens: tokens,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	mintHostTokenCapacityFiller(t, manager, installed)
+	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if !errors.Is(err, ticketErr) || !errors.Is(err, finishErr) {
+		t.Fatalf("CallPluginMethod() error = %v, want ticket and cleanup failures", err)
+	}
+	if adapter.calls != 0 {
+		t.Fatalf("adapter ran before ticket issuance: calls=%d", adapter.calls)
+	}
+	records, err := operationStore.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Status != operation.StatusRunning {
+		t.Fatalf("partial cleanup operation state = %#v", records)
+	}
+	streamRecord, err := streamStore.Get(context.Background(), records[0].StreamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamRecord.Status != stream.StatusFailed || !strings.Contains(streamRecord.Reason, ticketErr.Error()) {
+		t.Fatalf("partial cleanup stream state = %#v", streamRecord)
+	}
+	restarted, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, operations: operationStore, streams: streamStore,
+	})
+	assertHostOperationStatus(t, restarted, records[0].OperationID, operation.StatusFailed)
+}
+
 func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, StreamID: "stream_disable_1"}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -3004,25 +3847,23 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
-	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
-		StreamID: "stream_disable_1",
-		Data:     []byte("line before disable"),
-	}); err != nil {
-		t.Fatalf("AppendStreamEvent() before disable error = %v", err)
+	streamSink := capabilityAdapter.last.Execution.Stream
+	if streamSink == nil || streamSink.ID() != result.StreamID {
+		t.Fatalf("stream sink mismatch: result=%#v invocation=%#v", result, capabilityAdapter.last)
+	}
+	if err := streamSink.Append(context.Background(), map[string]any{"line": "line before disable"}); err != nil {
+		t.Fatalf("Stream.Append() before disable error = %v", err)
 	}
 
 	if _, err := h.DisablePlugin(context.Background(), DisableRequest{PluginInstanceID: installed.PluginInstanceID, Reason: "policy", PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("DisablePlugin() error = %v", err)
 	}
 
-	assertHostStreamStatus(t, h, "stream_disable_1", stream.StatusOrphanedDisabled)
-	if _, err := h.AppendStreamEvent(context.Background(), AppendStreamEventRequest{
-		StreamID: "stream_disable_1",
-		Data:     []byte("line after disable"),
-	}); !errors.Is(err, stream.ErrStreamClosed) {
-		t.Fatalf("AppendStreamEvent() after disable error = %v, want %v", err, stream.ErrStreamClosed)
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusOrphanedDisabled)
+	if err := streamSink.Append(context.Background(), map[string]any{"line": "line after disable"}); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("Stream.Append() after disable error = %v, want %v", err, capability.ErrExecutionRevoked)
 	}
-	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest("stream_disable_1", result.StreamTicket)); !errors.Is(err, bridge.ErrTokenRevoked) {
+	if _, err := h.ReadStream(context.Background(), scopedReadStreamRequest(result.StreamID, result.StreamTicket)); !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("ReadStream() after disable error = %v, want %v", err, bridge.ErrTokenRevoked)
 	}
 	if !audits.hasEvent("plugin.streams.disabled_transitioned") {
@@ -3104,8 +3945,16 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 		payload.RuntimeInstanceID != "runtime_1" ||
 		payload.RuntimeGenerationID != "runtime_gen_1" ||
 		payload.Params["message"] != "hello" ||
+		!strings.HasPrefix(payload.ParamsSHA256, "sha256:") ||
 		payload.PluginInstanceID != installed.PluginInstanceID {
 		t.Fatalf("worker payload mismatch: %#v", payload)
+	}
+	invocationHash, err := workerInvocationTargetHash(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stringSliceContains(runtime.lastLease.TargetDescriptorHashes, invocationHash) {
+		t.Fatalf("runtime lease does not bind worker invocation %s: %#v", invocationHash, runtime.lastLease.TargetDescriptorHashes)
 	}
 	asset, err := h.adapters.Assets.ReadAsset(context.Background(), installed.PackageHash, "workers/echo.wasm")
 	if err != nil {
@@ -3293,9 +4142,13 @@ func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 	if result.Data == nil {
 		t.Fatalf("CallPluginMethod() result missing data: %#v", result)
 	}
-	if coreAdapter.last.TargetMethod != "example.open_settings" ||
-		coreAdapter.last.Method != "core.open" ||
-		coreAdapter.last.PluginInstanceID != installed.PluginInstanceID ||
+	if coreAdapter.last.Execution.TargetMethod != "example.open_settings" ||
+		coreAdapter.last.Execution.RouteKind != capability.RouteCoreAction ||
+		coreAdapter.last.Execution.Contract != nil ||
+		coreAdapter.last.Execution.Permissions.Required == nil ||
+		coreAdapter.last.Execution.Permissions.Granted == nil ||
+		coreAdapter.last.Execution.Method != "core.open" ||
+		coreAdapter.last.Execution.PluginInstanceID != installed.PluginInstanceID ||
 		coreAdapter.last.Arguments["target"] != "settings" {
 		t.Fatalf("core action invocation mismatch: %#v", coreAdapter.last)
 	}
@@ -3322,35 +4175,87 @@ func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
 	}
 }
 
-func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
+func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
+	t.Run("core action", func(t *testing.T) {
+		adapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, coreActions: adapter})
+		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousCoreActionFixturePackage(t), "core.view")
+		call := CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+			GatewayToken: gateway.GatewayToken, Method: "core.open", Params: map[string]any{"target": "settings"},
+		}
+		assertDangerousRouteConfirmation(t, h, &call)
+		if adapter.calls != 1 || !adapter.last.Execution.Confirmation.Confirmed {
+			t.Fatalf("confirmed core action invocation = %#v calls=%d", adapter.last, adapter.calls)
+		}
+	})
+
+	t.Run("worker", func(t *testing.T) {
+		runtime := &recordingRuntimeSupervisor{
+			health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+			result: capability.Result{Data: map[string]any{"from_worker": true}},
+		}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousWorkerFixturePackage(t), "worker.view")
+		call := CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+			GatewayToken: gateway.GatewayToken, Method: "worker.echo", Params: map[string]any{"message": "hello"},
+		}
+		assertDangerousRouteConfirmation(t, h, &call)
+		if runtime.calls != 1 {
+			t.Fatalf("confirmed worker calls = %d", runtime.calls)
+		}
+	})
+}
+
+func assertDangerousRouteConfirmation(t *testing.T, h *Host, call *CallMethodRequest) {
+	t.Helper()
+	result, err := h.CallPluginMethod(context.Background(), *call)
+	if !errors.Is(err, ErrConfirmationRequired) || !result.ConfirmationRequired {
+		t.Fatalf("CallPluginMethod() result=%#v error=%v, want confirmation", result, err)
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(*call))
+	if err != nil {
+		t.Fatalf("PrepareMethodConfirmation() error = %v", err)
+	}
+	call.ConfirmationID = confirmation.ConfirmationID
+	if _, err := h.CallPluginMethod(context.Background(), *call); err != nil {
+		t.Fatalf("confirmed CallPluginMethod() error = %v", err)
+	}
+}
+
+func TestCallPluginMethodOwnsExecutionHandles(t *testing.T) {
 	cases := []struct {
-		name         string
-		packageBytes []byte
-		method       string
-		result       capability.Result
+		name          string
+		packageBytes  []byte
+		method        string
+		wantOperation bool
+		wantStream    bool
 	}{
 		{
-			name:         "operation requires operation id",
-			packageBytes: buildOperationRPCFixturePackage(t),
-			method:       "images.pull",
-			result:       capability.Result{Data: map[string]any{"started": true}},
+			name:          "operation receives operation sink",
+			packageBytes:  buildOperationRPCFixturePackage(t),
+			method:        "documents.archive",
+			wantOperation: true,
 		},
 		{
-			name:         "sync rejects async handle",
+			name:         "sync receives no asynchronous sink",
 			packageBytes: buildRPCFixturePackage(t),
 			method:       "echo.ping",
-			result:       capability.Result{OperationID: "op_unexpected"},
 		},
 		{
-			name:         "subscription requires stream or operation id",
-			packageBytes: buildSubscriptionRPCFixturePackage(t),
-			method:       "logs.tail",
-			result:       capability.Result{Data: map[string]any{"started": true}},
+			name:          "subscription receives operation and stream sinks",
+			packageBytes:  buildSubscriptionRPCFixturePackage(t),
+			method:        "logs.tail",
+			wantOperation: true,
+			wantStream:    true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			capabilityAdapter := &recordingCapabilityAdapter{result: tc.result}
+			capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{
 				developerMode:     true,
 				localGenerated:    true,
@@ -3358,7 +4263,7 @@ func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
 				capabilityAdapter: capabilityAdapter,
 			})
 			installed, gateway := installEnableAndMintGateway(t, h, tc.packageBytes, surfaceIDForMethod(tc.method))
-			if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+			result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 				PluginInstanceID:     installed.PluginInstanceID,
 				SurfaceInstanceID:    "surface_rpc",
 				SessionChannelIDHash: "channel_hash",
@@ -3367,25 +4272,423 @@ func TestCallPluginMethodValidatesExecutionResultContract(t *testing.T) {
 				BridgeChannelID:      "bridge_rpc",
 				GatewayToken:         gateway.GatewayToken,
 				Method:               tc.method,
-			}); err == nil {
-				t.Fatal("CallPluginMethod() expected execution contract error")
+			})
+			if err != nil {
+				t.Fatalf("CallPluginMethod() error = %v", err)
+			}
+			if got := capabilityAdapter.last.Execution.Operation != nil; got != tc.wantOperation {
+				t.Fatalf("operation sink present = %v, want %v", got, tc.wantOperation)
+			}
+			if got := capabilityAdapter.last.Execution.Stream != nil; got != tc.wantStream {
+				t.Fatalf("stream sink present = %v, want %v", got, tc.wantStream)
+			}
+			if (result.OperationID != "") != tc.wantOperation || (result.StreamID != "") != tc.wantStream {
+				t.Fatalf("host-owned handle result mismatch: %#v", result)
 			}
 		})
 	}
 }
 
+func TestSubscriptionStreamCompletionCompletesOperation(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationID == "" || result.StreamID == "" {
+		t.Fatalf("subscription handles = %#v", result)
+	}
+	if err := adapter.last.Execution.Stream.Close(context.Background()); err != nil {
+		t.Fatalf("Stream.Close() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
+}
+
+func TestSubscriptionStreamRegistrationFailureRollsBackOperationAndLease(t *testing.T) {
+	operations := operation.NewMemoryStore()
+	streams := &failingStreamRegisterStore{
+		Store: stream.NewMemoryStore(),
+		err:   errors.New("stream registry unavailable"),
+	}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		operations: operations, streams: streams,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	}); err == nil {
+		t.Fatal("CallPluginMethod() succeeded after stream registration failed")
+	}
+	records, err := operations.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Status != operation.StatusFailed {
+		t.Fatalf("operation rollback mismatch: %#v", records)
+	}
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("active execution leases = %d, want 0", activeLeases)
+	}
+}
+
+func TestSubscriptionSetupRetainsLeaseUntilFailedOperationRollbackConverges(t *testing.T) {
+	rollbackErr := errors.New("operation rollback unavailable")
+	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: rollbackErr}
+	streams := &failingStreamRegisterStore{Store: stream.NewMemoryStore(), err: errors.New("stream registry unavailable")}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		operations: operations, streams: streams,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	}); !errors.Is(err, rollbackErr) {
+		t.Fatalf("CallPluginMethod() error = %v, want rollback failure", err)
+	}
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 1 {
+		t.Fatalf("active execution leases = %d, want 1 until rollback repair", activeLeases)
+	}
+	if err := h.reconcileFailedExecutionSetups(context.Background()); err != nil {
+		t.Fatalf("reconcileFailedExecutionSetups() error = %v", err)
+	}
+	records, err := operations.List(context.Background(), operation.ListRequest{PluginInstanceID: installed.PluginInstanceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Status != operation.StatusFailed {
+		t.Fatalf("reconciled operation state = %#v", records)
+	}
+	h.executions.mu.Lock()
+	activeLeases = len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("active execution leases after repair = %d, want 0", activeLeases)
+	}
+}
+
+func TestHostStartupReconcilesDurablePartialOperationAndStreamStates(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		operationStatus operation.Status
+		streamStatus    stream.Status
+		wantOperation   operation.Status
+		wantStream      stream.Status
+	}{
+		{name: "operation terminal", operationStatus: operation.StatusFailed, streamStatus: stream.StatusOpen, wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed},
+		{name: "stream terminal", operationStatus: operation.StatusRunning, streamStatus: stream.StatusFailed, wantOperation: operation.StatusFailed, wantStream: stream.StatusFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			operationPath := filepath.Join(t.TempDir(), "operations.sqlite")
+			streamPath := filepath.Join(t.TempDir(), "streams.sqlite")
+			operations, err := operation.NewSQLiteStore(ctx, operationPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			streams, err := stream.NewSQLiteStore(ctx, streamPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := capability.ExecutionBinding{
+				InvocationID: "invoke_reconcile", AuditCorrelationID: "audit_reconcile",
+				OperationID: "operation_reconcile", StreamID: "stream_reconcile",
+				PluginID: "com.example.reconcile", PluginInstanceID: "plugini_reconcile",
+				Method: "logs.tail", Execution: "subscription",
+			}
+			if _, err := operations.Register(ctx, operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := streams.Register(ctx, stream.RegisterRequest{StreamID: binding.StreamID, ExecutionBinding: binding}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.operationStatus != operation.StatusRunning {
+				if _, err := operations.Finish(ctx, operation.FinishRequest{OperationID: binding.OperationID, Status: tc.operationStatus, Reason: "setup failed"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.streamStatus != stream.StatusOpen {
+				if _, err := streams.Close(ctx, stream.CloseRequest{StreamID: binding.StreamID, Status: tc.streamStatus, Reason: "setup failed"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := operations.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := streams.CloseDatabase(); err != nil {
+				t.Fatal(err)
+			}
+			operations, err = operation.NewSQLiteStore(ctx, operationPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer operations.Close()
+			streams, err = stream.NewSQLiteStore(ctx, streamPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reopenedStreams := streams
+			t.Cleanup(func() {
+				if err := reopenedStreams.CloseDatabase(); err != nil {
+					t.Errorf("close reopened stream store: %v", err)
+				}
+			})
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations, streams: streams})
+			assertHostOperationStatus(t, h, binding.OperationID, tc.wantOperation)
+			assertHostStreamStatus(t, h, binding.StreamID, tc.wantStream)
+			streamRecord, err := streams.Get(ctx, binding.StreamID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if streamRecord.Reason != "setup failed" {
+				t.Fatalf("reconciled stream reason = %q", streamRecord.Reason)
+			}
+		})
+	}
+}
+
+func TestHostStartupTerminatesDurableOperationsWithoutLiveOwners(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		requestCancel bool
+		want          operation.Status
+	}{
+		{name: "running", want: operation.StatusFailed},
+		{name: "cancel requested", requestCancel: true, want: operation.StatusCanceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			operationPath := filepath.Join(t.TempDir(), "operations.sqlite")
+			operations, err := operation.NewSQLiteStore(ctx, operationPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancelable := true
+			binding := capability.ExecutionBinding{
+				InvocationID: "invoke_restart", AuditCorrelationID: "audit_restart", OperationID: "operation_restart",
+				PluginID: "com.example.restart", PluginInstanceID: "plugini_restart", Method: "documents.archive", Execution: "operation",
+			}
+			if _, err := operations.Register(ctx, operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding, Cancelable: &cancelable}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.requestCancel {
+				if _, err := operations.RequestCancel(ctx, operation.CancelRequest{OperationID: binding.OperationID, Reason: "user"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := operations.Close(); err != nil {
+				t.Fatal(err)
+			}
+			operations, err = operation.NewSQLiteStore(ctx, operationPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer operations.Close()
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
+			assertHostOperationStatus(t, h, binding.OperationID, tc.want)
+		})
+	}
+}
+
+func TestDurableReconciliationRejectsConflictingTerminalPairs(t *testing.T) {
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	binding := capability.ExecutionBinding{
+		InvocationID: "invoke_conflict", AuditCorrelationID: "audit_conflict", OperationID: "operation_conflict", StreamID: "stream_conflict",
+		PluginID: "com.example.conflict", PluginInstanceID: "plugini_conflict", Method: "logs.tail", Execution: "subscription",
+	}
+	if _, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{OperationID: binding.OperationID, ExecutionBinding: binding}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Streams.Register(context.Background(), stream.RegisterRequest{StreamID: binding.StreamID, ExecutionBinding: binding}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Operations.Finish(context.Background(), operation.FinishRequest{OperationID: binding.OperationID, Status: operation.StatusCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adapters.Streams.Close(context.Background(), stream.CloseRequest{StreamID: binding.StreamID, Status: stream.StatusFailed, Reason: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.reconcileDurableExecutionStates(context.Background()); !errors.Is(err, errExecutionTerminalConflict) {
+		t.Fatalf("reconcileDurableExecutionStates() error = %v, want terminal conflict", err)
+	}
+	assertHostOperationStatus(t, h, binding.OperationID, operation.StatusCompleted)
+	assertHostStreamStatus(t, h, binding.StreamID, stream.StatusFailed)
+}
+
+func TestSubscriptionTerminalWriteFailureRetainsLeaseUntilRetryConverges(t *testing.T) {
+	finishErr := errors.New("operation terminal store unavailable")
+	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		operations: operations,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.last.Execution.Stream.Close(context.Background()); !errors.Is(err, finishErr) {
+		t.Fatalf("Stream.Close() error = %v, want %v", err, finishErr)
+	}
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusRunning)
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 1 {
+		t.Fatalf("active execution leases after partial terminal write = %d, want 1", activeLeases)
+	}
+	if err := adapter.last.Execution.Stream.Close(context.Background()); err != nil {
+		t.Fatalf("Stream.Close() retry error = %v", err)
+	}
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
+	h.executions.mu.Lock()
+	activeLeases = len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("active execution leases after terminal retry = %d, want 0", activeLeases)
+	}
+}
+
+func TestSubscriptionLatchesOneTerminalIntentAcrossConcurrentCallers(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		errs <- adapter.last.Execution.Stream.Close(context.Background())
+	}()
+	go func() {
+		<-start
+		errs <- adapter.last.Execution.Stream.Fail(context.Background(), "adapter failed")
+	}()
+	close(start)
+	firstErr, secondErr := <-errs, <-errs
+	conflicts := 0
+	for _, terminalErr := range []error{firstErr, secondErr} {
+		if errors.Is(terminalErr, errExecutionTerminalConflict) {
+			conflicts++
+		} else if terminalErr != nil {
+			t.Fatalf("unexpected terminal error: %v", terminalErr)
+		}
+	}
+	if conflicts != 1 {
+		t.Fatalf("terminal conflict count = %d, errors = [%v, %v]", conflicts, firstErr, secondErr)
+	}
+	operationRecord, err := h.adapters.Operations.Get(context.Background(), result.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamRecord, err := h.adapters.Streams.Get(context.Background(), result.StreamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOperation, ok := operationStatusForStreamStatus(streamRecord.Status)
+	if !ok || operationRecord.Status != wantOperation {
+		t.Fatalf("terminal records diverged: operation=%#v stream=%#v", operationRecord, streamRecord)
+	}
+}
+
+func TestRuntimeStreamCompletionReleasesExecutionLease(t *testing.T) {
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	result, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (hostRuntimeStreamSink{executions: h.executions}).CloseRuntimeStream(context.Background(), result.StreamID); err != nil {
+		t.Fatalf("CloseRuntimeStream() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, result.OperationID, operation.StatusCompleted)
+	assertHostStreamStatus(t, h, result.StreamID, stream.StatusClosed)
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("active execution leases = %d, want 0", activeLeases)
+	}
+}
+
+func TestStreamAppendFailureReleasesReservedQuota(t *testing.T) {
+	streams := &failFirstStreamAppendStore{Store: stream.NewMemoryStore(), err: errors.New("stream write unavailable")}
+	adapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+		streams: streams,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildSubscriptionRPCFixturePackage(t), "subscription.view")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "logs.tail",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sink := adapter.last.Execution.Stream.(*hostStreamSink)
+	sink.maxBytes = 20
+	if err := sink.Append(context.Background(), map[string]any{"line": "a"}); !errors.Is(err, streams.err) {
+		t.Fatalf("first Append() error = %v, want %v", err, streams.err)
+	}
+	if err := sink.Append(context.Background(), map[string]any{"line": "abc"}); err != nil {
+		t.Fatalf("second Append() error = %v", err)
+	}
+}
+
 func TestCancelOperationRequestsCancel(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_cancel_1"}}
-	operationCanceler := &recordingOperationCanceler{}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
-		operationCanceler: operationCanceler,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
 		SessionChannelIDHash: "channel_hash",
@@ -3393,49 +4696,48 @@ func TestCancelOperationRequestsCancel(t *testing.T) {
 		OwnerUserHash:        "user_hash",
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
-		Method:               "images.pull",
-	}); err != nil {
+		Method:               "documents.archive",
+	})
+	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
 
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
-	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: "op_cancel_1", Reason: "user", Now: now})
+	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user", Now: now})
 	if err != nil {
 		t.Fatalf("CancelOperation() error = %v", err)
 	}
 	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
 		t.Fatalf("cancel operation mismatch: %#v", canceled)
 	}
-	if operationCanceler.calls != 1 {
-		t.Fatalf("operation canceler calls = %d, want 1", operationCanceler.calls)
+	if capabilityAdapter.cancelCalls != 1 {
+		t.Fatalf("operation canceler calls = %d, want 1", capabilityAdapter.cancelCalls)
 	}
-	if operationCanceler.last.OperationID != "op_cancel_1" ||
-		operationCanceler.last.PluginInstanceID != installed.PluginInstanceID ||
-		operationCanceler.last.Method != "images.pull" ||
-		operationCanceler.last.SurfaceInstanceID != "surface_rpc" ||
-		operationCanceler.last.SessionChannelIDHash != "channel_hash" ||
-		operationCanceler.last.BridgeChannelID != "bridge_rpc" ||
-		operationCanceler.last.Reason != "user" ||
-		!operationCanceler.last.RequestedAt.Equal(now) {
-		t.Fatalf("operation canceler request mismatch: %#v", operationCanceler.last)
+	if capabilityAdapter.lastCancellation.OperationID != started.OperationID ||
+		capabilityAdapter.lastCancellation.Execution.PluginInstanceID != installed.PluginInstanceID ||
+		capabilityAdapter.lastCancellation.Execution.Method != "documents.archive" ||
+		capabilityAdapter.lastCancellation.Execution.SurfaceInstanceID != "surface_rpc" ||
+		capabilityAdapter.lastCancellation.Execution.SessionChannelIDHash != "channel_hash" ||
+		capabilityAdapter.lastCancellation.Execution.BridgeChannelID != "bridge_rpc" ||
+		capabilityAdapter.lastCancellation.Reason != "user" ||
+		!capabilityAdapter.lastCancellation.RequestedAt.Equal(now) {
+		t.Fatalf("operation canceler request mismatch: %#v", capabilityAdapter.lastCancellation)
 	}
 	if !audits.hasEvent("plugin.operation.cancel_requested") {
 		t.Fatalf("missing cancel audit event: %#v", audits.events)
 	}
 }
 
-func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing.T) {
-	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_cancel_fail_1"}}
-	operationCanceler := &recordingOperationCanceler{err: errors.New("runtime unavailable")}
-	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+func TestCancelOperationCanBeAcknowledgedThroughHostOwnedSink(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
-		operationCanceler: operationCanceler,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
-	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
 		SurfaceInstanceID:    "surface_rpc",
 		SessionChannelIDHash: "channel_hash",
@@ -3443,21 +4745,521 @@ func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing
 		OwnerUserHash:        "user_hash",
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
-		Method:               "images.pull",
+		Method:               "documents.archive",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		t.Fatalf("CancelOperation() error = %v", err)
+	}
+	select {
+	case <-capabilityAdapter.invokeContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("capability adapter context was not canceled")
+	}
+	select {
+	case <-capabilityAdapter.last.Execution.Operation.CancelRequested():
+	case <-time.After(time.Second):
+		t.Fatal("operation sink did not publish the cancel request")
+	}
+	if err := capabilityAdapter.last.Execution.Operation.Cancel(context.Background(), "adapter acknowledged cancellation"); err != nil {
+		t.Fatalf("Operation.Cancel() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
+	if err := capabilityAdapter.last.Execution.Operation.Cancel(context.Background(), "duplicate"); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("duplicate Operation.Cancel() error = %v, want %v", err, capability.ErrExecutionRevoked)
+	}
+}
+
+func TestCancelOperationAckTimeoutForcesTerminalState(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		record, err := h.GetOperation(context.Background(), started.OperationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status == operation.StatusCanceled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation remained %s after ack timeout", record.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestCancelOperationAckTimeoutRetriesTerminalStoreFailure(t *testing.T) {
+	finishErr := errors.New("operation terminal store unavailable")
+	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+		operations: operations,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
+	if !operations.failedOne {
+		t.Fatal("ack timeout did not exercise the terminal store failure")
+	}
+	h.executions.mu.Lock()
+	activeLeases := len(h.executions.leases)
+	h.executions.mu.Unlock()
+	if activeLeases != 0 {
+		t.Fatalf("ack timeout retained %d execution leases after terminal retry", activeLeases)
+	}
+}
+
+func TestDetachedCancelAckTimeoutRetriesTerminalStoreFailure(t *testing.T) {
+	finishErr := errors.New("operation terminal store unavailable")
+	operations := &failFirstOperationFinishStore{Store: operation.NewMemoryStore(), err: finishErr}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, operations: operations})
+	cancelable := true
+	operationID := "operation_detached_12345678"
+	_, err := operations.Register(context.Background(), operation.RegisterRequest{
+		OperationID: operationID,
+		ExecutionBinding: capability.ExecutionBinding{
+			InvocationID: "invoke_detached_12345678", OperationID: operationID,
+			PluginID: "com.example.detached", PluginInstanceID: "plugini_detached_12345678", Method: "tasks.run",
+		},
+		Cancelable: &cancelable, CancelAckTimeoutMS: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: operationID, Reason: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForHostOperationStatus(t, h, operationID, operation.StatusCanceled)
+	if !operations.failedOne {
+		t.Fatal("detached ack timeout did not exercise the terminal store failure")
+	}
+}
+
+func TestCancelOperationRejectsNonCancelableMethod(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	for index := range contract.Methods {
+		if contract.Methods[index].Name == "documents.archive" {
+			cancelPolicy := *contract.Methods[index].CancelPolicy
+			cancelPolicy.Cancelable = false
+			cancelPolicy.AckTimeoutMS = 0
+			contract.Methods[index].CancelPolicy = &cancelPolicy
+		}
+	}
+	verified := verifyFixtureCapabilityContract(t, contract)
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t,
+		operationRPCFixtureManifestJSON(),
+		"Operation",
+		"echo",
+		verified.Pin,
+	), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID}); !errors.Is(err, operation.ErrNotCancelable) {
+		t.Fatalf("CancelOperation() error = %v, want %v", err, operation.ErrNotCancelable)
+	}
+	if capabilityAdapter.cancelCalls != 0 {
+		t.Fatalf("non-cancelable adapter cancel calls = %d, want 0", capabilityAdapter.cancelCalls)
+	}
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusRunning)
+	if err := capabilityAdapter.last.Execution.Operation.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancelSurfaceOperationRejectsScopeMismatch(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := CancelSurfaceOperationRequest{
+		OperationID: started.OperationID, SurfaceInstanceID: "surface_rpc", OwnerSessionHash: "session_hash",
+		OwnerUserHash: "user_hash", SessionChannelIDHash: "channel_hash", BridgeChannelID: "bridge_rpc", Reason: "user",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*CancelSurfaceOperationRequest)
+	}{
+		{name: "surface", mutate: func(req *CancelSurfaceOperationRequest) { req.SurfaceInstanceID = "surface_other" }},
+		{name: "owner session", mutate: func(req *CancelSurfaceOperationRequest) { req.OwnerSessionHash = "session_other" }},
+		{name: "owner user", mutate: func(req *CancelSurfaceOperationRequest) { req.OwnerUserHash = "user_other" }},
+		{name: "session channel", mutate: func(req *CancelSurfaceOperationRequest) { req.SessionChannelIDHash = "channel_other" }},
+		{name: "bridge channel", mutate: func(req *CancelSurfaceOperationRequest) { req.BridgeChannelID = "bridge_other" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := base
+			tc.mutate(&req)
+			if _, err := h.CancelSurfaceOperation(context.Background(), req); !errors.Is(err, bridge.ErrTokenAudience) {
+				t.Fatalf("CancelSurfaceOperation() error = %v, want %v", err, bridge.ErrTokenAudience)
+			}
+		})
+	}
+	if capabilityAdapter.cancelCalls != 0 {
+		t.Fatalf("mismatched surface cancellation reached adapter %d times", capabilityAdapter.cancelCalls)
+	}
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusRunning)
+	if _, err := h.CancelSurfaceOperation(context.Background(), base); err != nil {
+		t.Fatalf("CancelSurfaceOperation() valid scope error = %v", err)
+	}
+	if capabilityAdapter.cancelCalls != 1 {
+		t.Fatalf("valid surface cancellation reached adapter %d times, want 1", capabilityAdapter.cancelCalls)
+	}
+}
+
+func TestAsyncExecutionOutlivesSuccessfulRequestContext(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	started, err := h.CallPluginMethod(requestContext, CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "documents.archive",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	cancelRequest()
+	if err := capabilityAdapter.last.Execution.Operation.Complete(context.Background()); err != nil {
+		t.Fatalf("Operation.Complete() after request cancellation error = %v", err)
+	}
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCompleted)
+}
+
+func TestDisableCancelsHostOwnedOperationWithoutRewritingItAsFailed(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "documents.archive",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	if _, err := h.DisablePlugin(context.Background(), DisableRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID),
+		Reason:             "disabled by owner",
 	}); err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCanceled)
+	if err := capabilityAdapter.last.Execution.Operation.Cancel(context.Background(), "late adapter acknowledgement"); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("Operation.Cancel() after revoke error = %v, want %v", err, capability.ErrExecutionRevoked)
+	}
+}
+
+func TestCancelOperationUsesRouteLocalExecutionRegistration(t *testing.T) {
+	t.Run("core action", func(t *testing.T) {
+		coreAdapter := &recordingCoreActionAdapter{result: capability.Result{Data: map[string]any{"opened": true}}}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, coreActions: coreAdapter})
+		installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionOperationFixturePackage(t), "core.view")
+		started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			Method: "core.open", Params: map[string]any{"target": "settings"},
+		})
+		if err != nil {
+			t.Fatalf("CallPluginMethod() error = %v", err)
+		}
+		coreRecord, err := h.GetOperation(context.Background(), started.OperationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if coreRecord.RouteKind != capability.RouteCoreAction || coreRecord.Contract != nil || coreRecord.Permissions.Required == nil || coreRecord.Permissions.Granted == nil {
+			t.Fatalf("core action execution binding mismatch: %#v", coreRecord.ExecutionBinding)
+		}
+		if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+			t.Fatalf("CancelOperation() error = %v", err)
+		}
+		if coreAdapter.cancelCalls != 1 || coreAdapter.lastCancellation.OperationID != started.OperationID {
+			t.Fatalf("core action cancellation mismatch: calls=%d request=%#v", coreAdapter.cancelCalls, coreAdapter.lastCancellation)
+		}
+		if err := coreAdapter.last.Execution.Operation.Cancel(context.Background(), "acknowledged"); err != nil {
+			t.Fatalf("Operation.Cancel() error = %v", err)
+		}
+	})
+
+	t.Run("worker", func(t *testing.T) {
+		runtime := &recordingRuntimeSupervisor{
+			health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+			result: capability.Result{Data: map[string]any{"from_worker": true}},
+		}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeSupervisor: runtime})
+		installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
+		started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			Method: "worker.echo", Params: map[string]any{"message": "hello"},
+		})
+		if err != nil {
+			t.Fatalf("CallPluginMethod() error = %v", err)
+		}
+		workerRecord, err := h.GetOperation(context.Background(), started.OperationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if workerRecord.RouteKind != capability.RouteWorker || workerRecord.Contract != nil || workerRecord.Permissions.Required == nil || workerRecord.Permissions.Granted == nil {
+			t.Fatalf("worker execution binding mismatch: %#v", workerRecord.ExecutionBinding)
+		}
+		if _, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"}); err != nil {
+			t.Fatalf("CancelOperation() error = %v", err)
+		}
+		select {
+		case <-runtime.invokeContext.Done():
+		case <-time.After(time.Second):
+			t.Fatal("worker execution context was not canceled")
+		}
+	})
+}
+
+func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter *recordingCapabilityAdapter
+	}{
+		{name: "adapter error", adapter: &recordingCapabilityAdapter{err: errors.New("adapter failed")}},
+		{name: "response schema failure", adapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unexpected": true}}}},
+		{name: "adapter panic", adapter: &recordingCapabilityAdapter{panicValue: "adapter panic"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter,
+			})
+			installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+			if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+				Method: "documents.archive",
+			}); err == nil {
+				t.Fatal("CallPluginMethod() expected failure")
+			}
+			if tc.adapter.last.Execution.Operation == nil {
+				t.Fatal("adapter did not receive a Host-owned operation sink")
+			}
+			assertHostOperationStatus(t, h, tc.adapter.last.Execution.Operation.ID(), operation.StatusFailed)
+			if err := tc.adapter.last.Execution.Operation.Complete(context.Background()); !errors.Is(err, capability.ErrExecutionRevoked) {
+				t.Fatalf("Operation.Complete() after failure error = %v, want %v", err, capability.ErrExecutionRevoked)
+			}
+		})
+	}
+}
+
+func TestCallPluginMethodRecordsNegativeAuditAndDiagnostic(t *testing.T) {
+	cases := []struct {
+		name       string
+		adapter    *recordingCapabilityAdapter
+		params     map[string]any
+		wantReason string
+	}{
+		{name: "request schema", adapter: &recordingCapabilityAdapter{}, params: map[string]any{"unexpected": true}, wantReason: "request_contract"},
+		{name: "adapter panic", adapter: &recordingCapabilityAdapter{panicValue: "panic"}, wantReason: "adapter_panic"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			diagnostics := &diagnosticSink{}
+			h, _, audits := newTestHostWithOptions(t, testHostOptions{
+				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: tc.adapter, diagnostics: diagnostics,
+			})
+			installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+			if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+				OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+				Method: "echo.ping", Params: tc.params,
+			}); err == nil {
+				t.Fatal("CallPluginMethod() expected rejection")
+			}
+			event, ok := audits.lastEvent("plugin.method.rejected")
+			if !ok || event.Details["reason"] != tc.wantReason || event.Details["method"] != "echo.ping" {
+				t.Fatalf("negative audit mismatch: %#v", audits.events)
+			}
+			if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.method.rejected" || diagnostics.events[0].Details["reason"] != tc.wantReason {
+				t.Fatalf("negative diagnostic mismatch: %#v", diagnostics.events)
+			}
+			if tc.wantReason == "request_contract" && tc.adapter.calls != 0 {
+				t.Fatalf("adapter invoked after request schema rejection: %d", tc.adapter.calls)
+			}
+		})
+	}
+}
+
+func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
+	newHost := func(t *testing.T, adapter *recordingCapabilityAdapter) (*Host, registry.PluginRecord, bridge.GatewayTokenResult, *auditSink) {
+		t.Helper()
+		contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+		contract.Errors = []capabilitycontract.BusinessError{{
+			Code:    "DOCUMENT_NOT_FOUND",
+			Message: "Document not found",
+			DetailsSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"document_id"},
+				"properties": map[string]any{
+					"document_id": map[string]any{"type": "string", "minLength": 1},
+				},
+			},
+		}}
+		verified := verifyFixtureCapabilityContract(t, contract)
+		h, _, audits := newTestHostWithOptions(t, testHostOptions{
+			developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: adapter,
+		})
+		installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+			t,
+			rpcFixtureManifestJSON("1.0.0", "RPC"),
+			"RPC",
+			"echo",
+			verified.Pin,
+		), "rpc.view")
+		return h, installed, gateway, audits
+	}
+	call := func(h *Host, installed registry.PluginRecord, gateway bridge.GatewayTokenResult) error {
+		_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+			PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+			OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+			Method: "echo.ping",
+		})
+		return err
+	}
+
+	t.Run("declared error", func(t *testing.T) {
+		adapter := &recordingCapabilityAdapter{err: capability.NewBusinessError("DOCUMENT_NOT_FOUND", "adapter detail", map[string]any{"document_id": "doc-1"})}
+		h, installed, gateway, audits := newHost(t, adapter)
+		err := call(h, installed, gateway)
+		var businessError *capability.BusinessError
+		if !errors.As(err, &businessError) || businessError.Code != "DOCUMENT_NOT_FOUND" || businessError.Message != "Document not found" ||
+			businessError.CapabilityID != "example.capability.echo" || businessError.CapabilityVersion != "1.0.0" ||
+			len(businessError.DetailSchemaSHA256) != 64 || businessError.Details["document_id"] != "doc-1" {
+			t.Fatalf("business error mismatch: %#v, err=%v", businessError, err)
+		}
+		if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "business_error" {
+			t.Fatalf("missing business error audit: %#v", audits.events)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "undeclared code", err: capability.NewBusinessError("UNKNOWN", "unknown", nil)},
+		{name: "invalid details", err: capability.NewBusinessError("DOCUMENT_NOT_FOUND", "invalid", map[string]any{"unexpected": true})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &recordingCapabilityAdapter{err: tc.err}
+			h, installed, gateway, audits := newHost(t, adapter)
+			if err := call(h, installed, gateway); !errors.Is(err, ErrMethodResponseContract) {
+				t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+			}
+			if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "response_contract" {
+				t.Fatalf("missing response-contract audit: %#v", audits.events)
+			}
+		})
+	}
+}
+
+func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}, cancellationError: errors.New("runtime unavailable")}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "documents.archive",
+	})
+	if err != nil {
 		t.Fatalf("CallPluginMethod() error = %v", err)
 	}
 
-	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: "op_cancel_fail_1", Reason: "user"})
+	canceled, err := h.CancelOperation(context.Background(), CancelOperationRequest{OperationID: started.OperationID, Reason: "user"})
 	if !errors.Is(err, ErrOperationCancelDispatchFailed) {
 		t.Fatalf("CancelOperation() error = %v, want %v", err, ErrOperationCancelDispatchFailed)
 	}
 	if canceled.Status != operation.StatusCancelRequested {
 		t.Fatalf("returned operation status = %s, want %s: %#v", canceled.Status, operation.StatusCancelRequested, canceled)
 	}
-	assertHostOperationStatus(t, h, "op_cancel_fail_1", operation.StatusCancelRequested)
-	if operationCanceler.calls != 1 {
-		t.Fatalf("operation canceler calls = %d, want 1", operationCanceler.calls)
+	assertHostOperationStatus(t, h, started.OperationID, operation.StatusCancelRequested)
+	if capabilityAdapter.cancelCalls != 1 {
+		t.Fatalf("operation canceler calls = %d, want 1", capabilityAdapter.cancelCalls)
 	}
 	if !audits.hasEvent("plugin.operation.cancel_requested") {
 		t.Fatalf("missing cancel audit event: %#v", audits.events)
@@ -3466,11 +5268,13 @@ func TestCancelOperationReturnsDispatchFailureButKeepsCancelRequested(t *testing
 
 func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+	diagnostics := &diagnosticSink{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
+		diagnostics:       diagnostics,
 	})
 	installed, _ := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
@@ -3489,16 +5293,85 @@ func TestCallPluginMethodRejectsInvalidGatewayToken(t *testing.T) {
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
 	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "token_invalid" {
+		t.Fatalf("missing token rejection audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "token_invalid" {
+		t.Fatalf("missing token rejection diagnostic: %#v", diagnostics.events)
+	}
+}
+
+func TestCallPluginMethodAuditsRemoteSessionMismatch(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
+	diagnostics := &diagnosticSink{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo",
+		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_other",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	}); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("CallPluginMethod() error = %v, want %v", err, bridge.ErrTokenAudience)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "remote_mismatch" {
+		t.Fatalf("missing remote mismatch audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "remote_mismatch" {
+		t.Fatalf("missing remote mismatch diagnostic: %#v", diagnostics.events)
+	}
+}
+
+func TestCallPluginMethodAuditsTrustUnavailable(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
+	diagnostics := &diagnosticSink{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo",
+		capabilityAdapter: capabilityAdapter, diagnostics: diagnostics,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	record, err := h.adapters.Registry.GetPlugin(context.Background(), installed.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.TrustState = registry.TrustUnavailable
+	record.TrustAssessment.TrustState = registry.TrustUnavailable
+	if _, err := h.adapters.Registry.PutPlugin(context.Background(), record, registry.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc",
+		GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	}); err == nil {
+		t.Fatal("CallPluginMethod() accepted a trust-unavailable plugin")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "trust_unavailable" {
+		t.Fatalf("missing trust-unavailable audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "trust_unavailable" {
+		t.Fatalf("missing trust-unavailable diagnostic: %#v", diagnostics.events)
+	}
 }
 
 func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: "unreachable"}}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+	diagnostics := &diagnosticSink{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		policyDecision:    PolicyDeny,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
+		diagnostics:       diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 
@@ -3511,11 +5384,17 @@ func TestCallPluginMethodHonorsLocalPolicyDeny(t *testing.T) {
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
 		Method:               "echo.ping",
-	}); err == nil {
-		t.Fatal("CallPluginMethod() expected local policy deny")
+	}); !errors.Is(err, security.ErrPolicyDenied) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrPolicyDenied", err)
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "policy_denied" {
+		t.Fatalf("missing policy rejection audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "policy_denied" {
+		t.Fatalf("missing policy rejection diagnostic: %#v", diagnostics.events)
 	}
 }
 
@@ -3593,11 +5472,13 @@ func TestCallPluginMethodHonorsSecurityPolicyDeny(t *testing.T) {
 
 func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
+	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: capabilityAdapter,
+		diagnostics:       diagnostics,
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
 	call := CallMethodRequest{
@@ -3621,6 +5502,12 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "confirmation_required" {
+		t.Fatalf("missing confirmation rejection audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "confirmation_required" {
+		t.Fatalf("missing confirmation rejection diagnostic: %#v", diagnostics.events)
 	}
 
 	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
@@ -3647,9 +5534,86 @@ func TestCallPluginMethodRequiresConfirmationForDangerousMethod(t *testing.T) {
 	}
 }
 
+func TestRejectMethodConfirmationConsumesIntentWithoutDispatch(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
+	diagnostics := &diagnosticSink{}
+	confirmationIntents := security.NewMemoryConfirmationIntentStore()
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:       true,
+		localGenerated:      true,
+		capabilityID:        "example.capability.echo",
+		capabilityAdapter:   capabilityAdapter,
+		confirmationIntents: confirmationIntents,
+		diagnostics:         diagnostics,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reject := RejectMethodConfirmationRequest{
+		PluginInstanceID:     call.PluginInstanceID,
+		SurfaceInstanceID:    call.SurfaceInstanceID,
+		SessionChannelIDHash: call.SessionChannelIDHash,
+		OwnerSessionHash:     call.OwnerSessionHash,
+		OwnerUserHash:        call.OwnerUserHash,
+		BridgeChannelID:      call.BridgeChannelID,
+		GatewayToken:         call.GatewayToken,
+		ConfirmationID:       confirmation.ConfirmationID,
+	}
+	mismatched := reject
+	mismatched.BridgeChannelID = "bridge_other"
+	if _, err := h.RejectMethodConfirmation(context.Background(), mismatched); !errors.Is(err, bridge.ErrTokenAudience) {
+		t.Fatalf("RejectMethodConfirmation(scope mismatch) error = %v, want ErrTokenAudience", err)
+	}
+	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 1 {
+		t.Fatalf("scope mismatch consumed confirmation: listed=%#v err=%v", listed, err)
+	}
+
+	result, err := h.RejectMethodConfirmation(context.Background(), reject)
+	if err != nil {
+		t.Fatalf("RejectMethodConfirmation() error = %v", err)
+	}
+	if !result.Rejected {
+		t.Fatalf("rejection result mismatch: %#v", result)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("rejected confirmation dispatched adapter %d times", capabilityAdapter.calls)
+	}
+	if listed, err := confirmationIntents.ListConfirmationIntents(context.Background(), security.ListConfirmationIntentsRequest{PluginInstanceID: installed.PluginInstanceID}); err != nil || len(listed) != 0 {
+		t.Fatalf("rejected confirmation remained pending: listed=%#v err=%v", listed, err)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "confirmation_rejected" {
+		t.Fatalf("confirmation rejection audit mismatch: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "confirmation_rejected" {
+		t.Fatalf("confirmation rejection diagnostic mismatch: %#v", diagnostics.events)
+	}
+
+	call.ConfirmationID = confirmation.ConfirmationID
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, ErrConfirmationInvalid) {
+		t.Fatalf("CallPluginMethod(rejected confirmation) error = %v, want ErrConfirmationInvalid", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("rejected confirmation replay dispatched adapter %d times", capabilityAdapter.calls)
+	}
+}
+
 func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{
-		result: capability.Result{OperationID: "operation_start_task", Data: map[string]any{"started": true}},
+		result: capability.Result{Data: map[string]any{"started": true}},
 		resultsByTarget: map[string]capability.Result{
 			"tasks.start.preflight": {Data: map[string]any{
 				"summary":    "Start task",
@@ -3698,7 +5662,7 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	if !ok || plan["summary"] != "Start task" {
 		t.Fatalf("confirmation plan = %#v", confirmation.Plan)
 	}
-	if capabilityAdapter.calls != 1 || capabilityAdapter.last.TargetMethod != "tasks.start.preflight" || capabilityAdapter.last.Effect != capability.EffectRead {
+	if capabilityAdapter.calls != 1 || capabilityAdapter.last.Execution.TargetMethod != "tasks.start.preflight" || capabilityAdapter.last.Execution.Effect != capability.EffectRead {
 		t.Fatalf("preflight invocation mismatch: calls=%d last=%#v", capabilityAdapter.calls, capabilityAdapter.last)
 	}
 	if !audits.hasEvent("plugin.confirmation.preflighted") || !audits.hasEvent("plugin.confirmation.issued") {
@@ -3710,7 +5674,7 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with confirmation error = %v", err)
 	}
-	if capabilityAdapter.calls != 2 || capabilityAdapter.last.TargetMethod != "tasks.start" {
+	if capabilityAdapter.calls != 3 || capabilityAdapter.last.Execution.TargetMethod != "tasks.start" || confirmed.OperationID == "" {
 		t.Fatalf("confirmed invocation mismatch: calls=%d last=%#v", capabilityAdapter.calls, capabilityAdapter.last)
 	}
 	if confirmed.Data == nil {
@@ -3718,9 +5682,50 @@ func TestPrepareMethodConfirmationRunsRiskPreflightAndBindsPlanHash(t *testing.T
 	}
 }
 
+func TestConfirmedCapabilityRerunsPreflightAndRejectsAStalePlan(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result: capability.Result{Data: map[string]any{"started": true}},
+		resultsByTarget: map[string]capability.Result{
+			"tasks.start.preflight": {Data: map[string]any{"summary": "Start task", "risk_flags": []any{"executes_task"}}},
+		},
+	}
+	diagnostics := &diagnosticSink{}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.tasks", capabilityAdapter: capabilityAdapter,
+		diagnostics: diagnostics,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildMethodContractFixturePackage(t), "method_contract.view")
+	call := CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "tasks.start", Params: map[string]any{"task_id": "task_1"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityAdapter.resultsByTarget["tasks.start.preflight"] = capability.Result{Data: map[string]any{
+		"summary": "Start task after policy change", "risk_flags": []any{"executes_task", "elevated_scope"},
+	}}
+	call.ConfirmationID = confirmation.ConfirmationID
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, ErrConfirmationInvalid) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationInvalid", err)
+	}
+	if capabilityAdapter.last.Execution.TargetMethod != "tasks.start.preflight" {
+		t.Fatalf("stale confirmation dispatched business method: %#v", capabilityAdapter.last)
+	}
+	event, ok := audits.lastEvent("plugin.method.rejected")
+	if !ok || event.Details["reason"] != "confirmation_invalid" {
+		t.Fatalf("stale confirmation audit mismatch: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Details["reason"] != "confirmation_invalid" {
+		t.Fatalf("stale confirmation diagnostic mismatch: %#v", diagnostics.events)
+	}
+}
+
 func TestPrepareMethodConfirmationNormalizesTypedRiskPlanAndRedactsDetails(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{
-		result: capability.Result{OperationID: "operation_start_task", Data: map[string]any{"started": true}},
+		result: capability.Result{Data: map[string]any{"started": true}},
 		resultsByTarget: map[string]capability.Result{
 			"tasks.start.preflight": {Data: capability.RiskPlan{
 				Summary:     "Start high-risk container",
@@ -3823,6 +5828,122 @@ func TestConfirmationIntentRejectsTamperedPlanHash(t *testing.T) {
 	}
 	if capabilityAdapter.calls != 0 {
 		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result:       capability.Result{Data: map[string]any{"result": "done"}},
+		targetFields: map[string]any{"target": "db"},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:     true,
+		localGenerated:    true,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
+	call := CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "danger.run",
+		Params:               map[string]any{"target": "db"},
+	}
+	confirmation, err := h.PrepareMethodConfirmation(context.Background(), ConfirmMethodRequest(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.ConfirmationID = confirmation.ConfirmationID
+	capabilityAdapter.targetFields = map[string]any{"target": "other"}
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, ErrConfirmationInvalid) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrConfirmationInvalid", err)
+	}
+	capabilityAdapter.targetFields = map[string]any{"target": "db"}
+	if _, err := h.CallPluginMethod(context.Background(), call); err == nil {
+		t.Fatal("CallPluginMethod() accepted a consumed confirmation after target restoration")
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("capability adapter was called %d times", capabilityAdapter.calls)
+	}
+}
+
+func TestCapabilityExecutionEnforcesConcurrentAndDurationQuota(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h, _, audits := newTestHostWithOptions(t, testHostOptions{
+		developerMode:  true,
+		localGenerated: true,
+	})
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	for index := range contract.Methods {
+		if contract.Methods[index].Name == "documents.archive" {
+			contract.Methods[index].Quota = capabilitycontract.Quota{MaxConcurrent: 1, MaxDurationMS: 20}
+		}
+	}
+	verified := verifyFixtureCapabilityContract(t, contract)
+	if err := h.adapters.Capabilities.Register(capability.Registration{Contract: verified, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter}); err != nil {
+		t.Fatal(err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t,
+		operationRPCFixtureManifestJSON(),
+		"Operation",
+		"echo",
+		verified.Pin,
+	), "operation.view")
+	call := CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	}
+	first, err := h.CallPluginMethod(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CallPluginMethod(context.Background(), call); !errors.Is(err, capability.ErrQuotaExceeded) {
+		t.Fatalf("second CallPluginMethod() error = %v, want ErrQuotaExceeded", err)
+	}
+	if capabilityAdapter.calls != 1 {
+		t.Fatalf("adapter calls = %d, want 1", capabilityAdapter.calls)
+	}
+	if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "quota_exceeded" {
+		t.Fatalf("missing quota rejection audit: %#v", audits.events)
+	}
+	time.Sleep(40 * time.Millisecond)
+	assertHostOperationStatus(t, h, first.OperationID, operation.StatusFailed)
+	if err := capabilityAdapter.last.Execution.Operation.Complete(context.Background()); !errors.Is(err, capability.ErrExecutionRevoked) {
+		t.Fatalf("Operation.Complete() after quota expiry error = %v, want %v", err, capability.ErrExecutionRevoked)
+	}
+}
+
+func TestCapabilityExecutionRejectsSuccessReturnedAfterDurationQuota(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{
+		result:      capability.Result{Data: map[string]any{"ok": true}},
+		invokeDelay: 40 * time.Millisecond,
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	for index := range contract.Methods {
+		if contract.Methods[index].Name == "echo.ping" {
+			contract.Methods[index].Quota.MaxDurationMS = 10
+		}
+	}
+	verified := verifyFixtureCapabilityContract(t, contract)
+	if err := h.adapters.Capabilities.Register(capability.Registration{Contract: verified, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter}); err != nil {
+		t.Fatal(err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin), "rpc.view")
+	_, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "echo.ping", Params: map[string]any{"message": "hello"},
+	})
+	if !errors.Is(err, capability.ErrQuotaExceeded) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrQuotaExceeded", err)
 	}
 }
 
@@ -3997,7 +6118,7 @@ func TestListAndInvokeIntentDispatchesCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InvokeIntent() error = %v", err)
 	}
-	if result.Data == nil || capabilityAdapter.calls != 1 || capabilityAdapter.last.Method != "echo.ping" {
+	if result.Data == nil || capabilityAdapter.calls != 1 || capabilityAdapter.last.Execution.Method != "echo.ping" {
 		t.Fatalf("intent dispatch mismatch: result=%#v calls=%d last=%#v", result, capabilityAdapter.calls, capabilityAdapter.last)
 	}
 	if !audits.hasEvent("plugin.intent.invoked") {
@@ -5354,6 +7475,8 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 		developerMode:     true,
 		localGenerated:    true,
 		runtimeSupervisor: runtime,
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
 	uninstalled, err := h.UninstallPlugin(context.Background(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)})
@@ -5424,16 +7547,18 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 		t.Fatalf("MintConnectionGrant() before uninstall error = %v", err)
 	}
 	if _, err := h.adapters.Streams.Register(ctx, stream.RegisterRequest{
-		StreamID:             "stream_uninstall_1",
-		PluginID:             enabled.PluginID,
-		PluginInstanceID:     enabled.PluginInstanceID,
-		Method:               "network.watch",
-		Execution:            string(manifest.MethodExecutionSubscription),
-		SurfaceInstanceID:    "surface_network",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		SessionChannelIDHash: "channel_hash",
-		BridgeChannelID:      "bridge_network",
+		StreamID: "stream_uninstall_1",
+		ExecutionBinding: capability.ExecutionBinding{
+			PluginID:             enabled.PluginID,
+			PluginInstanceID:     enabled.PluginInstanceID,
+			Method:               "network.watch",
+			Execution:            string(manifest.MethodExecutionSubscription),
+			SurfaceInstanceID:    "surface_network",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			SessionChannelIDHash: "channel_hash",
+			BridgeChannelID:      "bridge_network",
+		},
 	}); err != nil {
 		t.Fatalf("Streams.Register() error = %v", err)
 	}
@@ -5446,11 +7571,11 @@ func TestUninstallEnabledPluginClearsSurfacesStreamsAndNetworkPolicy(t *testing.
 		t.Fatalf("uninstall did not clear surfaces: %#v", surfaces.snapshots)
 	}
 	assertHostStreamStatus(t, h, "stream_uninstall_1", stream.StatusOrphanedRemoved)
-	if _, err := h.AppendStreamEvent(ctx, AppendStreamEventRequest{
+	if _, err := h.adapters.Streams.Append(ctx, stream.AppendRequest{
 		StreamID: "stream_uninstall_1",
 		Data:     []byte("line after uninstall"),
 	}); !errors.Is(err, stream.ErrStreamClosed) {
-		t.Fatalf("AppendStreamEvent() after uninstall error = %v, want %v", err, stream.ErrStreamClosed)
+		t.Fatalf("Streams.Append() after uninstall error = %v, want %v", err, stream.ErrStreamClosed)
 	}
 	if _, err := connectivityBroker.MintConnectionGrant(ctx, connectivity.GrantRequest{
 		PluginInstanceID:   enabled.PluginInstanceID,
@@ -5514,18 +7639,14 @@ func TestDisableTransitionsOperations(t *testing.T) {
 	}
 	cancelOp, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
 		OperationID:      "op_disable_cancel",
-		PluginID:         installed.PluginID,
-		PluginInstanceID: installed.PluginInstanceID,
-		Method:           "images.pull",
+		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitOp, err := h.adapters.Operations.Register(context.Background(), operation.RegisterRequest{
 		OperationID:      "op_disable_wait",
-		PluginID:         installed.PluginID,
-		PluginInstanceID: installed.PluginInstanceID,
-		Method:           "sync.wait",
+		ExecutionBinding: testExecutionBinding(installed, "sync.wait", manifest.MethodExecutionOperation),
 		DisableBehavior:  operation.DisableBehaviorWait,
 	})
 	if err != nil {
@@ -5558,9 +7679,7 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
 		OperationID:      "op_blocks_delete",
-		PluginID:         installed.PluginID,
-		PluginInstanceID: installed.PluginInstanceID,
-		Method:           "images.pull",
+		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -5588,6 +7707,30 @@ func TestUninstallDeleteDataBlockedByRunningOperation(t *testing.T) {
 	}
 }
 
+func TestUninstallDeleteDataDispatchesCancellationToLiveAdapterBeforeBlocking(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"started": true}}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildOperationRPCFixturePackage(t), "operation.view")
+	started, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc", SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash: "session_hash", OwnerUserHash: "user_hash", BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "documents.archive", Params: map[string]any{"document_id": "doc-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.UninstallPlugin(context.Background(), UninstallRequest{
+		PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID),
+	}); !errors.Is(err, operation.ErrDeleteBlocked) {
+		t.Fatalf("UninstallPlugin() error = %v, want ErrDeleteBlocked", err)
+	}
+	if capabilityAdapter.cancelCalls != 1 || capabilityAdapter.lastCancellation.OperationID != started.OperationID {
+		t.Fatalf("live adapter cancellation mismatch: calls=%d request=%#v", capabilityAdapter.cancelCalls, capabilityAdapter.lastCancellation)
+	}
+}
+
 func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	ctx := context.Background()
 	broker := storage.NewMemoryBroker()
@@ -5601,9 +7744,7 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
 		OperationID:      "op_cancel_then_delete",
-		PluginID:         installed.PluginID,
-		PluginInstanceID: installed.PluginInstanceID,
-		Method:           "images.pull",
+		ExecutionBinding: testExecutionBinding(installed, "documents.archive", manifest.MethodExecutionOperation),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -5611,12 +7752,12 @@ func TestUninstallDeleteDataSucceedsAfterOperationCancelAck(t *testing.T) {
 	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); !errors.Is(err, operation.ErrDeleteBlocked) {
 		t.Fatalf("UninstallPlugin() first error = %v, want ErrDeleteBlocked", err)
 	}
-	if _, err := h.FinishOperation(ctx, FinishOperationRequest{
+	if _, err := h.adapters.Operations.Finish(ctx, operation.FinishRequest{
 		OperationID: "op_cancel_then_delete",
 		Status:      operation.StatusCanceled,
 		Reason:      "runtime ack",
 	}); err != nil {
-		t.Fatalf("FinishOperation() error = %v", err)
+		t.Fatalf("Operations.Finish() error = %v", err)
 	}
 	if _, err := h.UninstallPlugin(ctx, UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("UninstallPlugin() retry error = %v", err)
@@ -5643,9 +7784,7 @@ func TestUninstallForceCleanupOperationAllowsDeleteData(t *testing.T) {
 	}
 	if _, err := h.adapters.Operations.Register(ctx, operation.RegisterRequest{
 		OperationID:       "op_force_cleanup",
-		PluginID:          installed.PluginID,
-		PluginInstanceID:  installed.PluginInstanceID,
-		Method:            "cleanup.force",
+		ExecutionBinding:  testExecutionBinding(installed, "cleanup.force", manifest.MethodExecutionOperation),
 		UninstallBehavior: operation.UninstallBehaviorForceCleanupAllowed,
 	}); err != nil {
 		t.Fatal(err)
@@ -6069,23 +8208,60 @@ type testHostOptions struct {
 	permissions             permissions.Store
 	securityPolicy          security.PolicyStore
 	confirmationIntents     security.ConfirmationIntentStore
+	operations              operation.Store
+	streams                 stream.Store
 	runtimeSupervisor       runtimeclient.Supervisor
 	runtimeArtifactResolver RuntimeArtifactResolver
 	secrets                 SecretStoreAdapter
 	diagnostics             DiagnosticsSink
+	hostRequirements        HostRequirementPolicy
+	capabilities            *capability.Registry
 	capabilityID            string
-	capabilityAdapter       capability.Adapter
-	coreActions             CoreActionAdapter
-	operationCanceler       OperationCanceler
+	capabilityContract      *capabilitycontract.VerifiedContract
+	capabilityAdapter       interface {
+		capability.Adapter
+		capability.TargetProjector
+	}
+	coreActions   CoreActionAdapter
+	surfaceTokens *bridge.SurfaceTokenService
+}
+
+type fixedHostRequirementPolicy struct {
+	hostID string
+	err    error
+	calls  int
+	last   HostRequirementSelectionRequest
+}
+
+func (p *fixedHostRequirementPolicy) SelectHostRequirement(_ context.Context, req HostRequirementSelectionRequest) (HostRequirementSelection, error) {
+	p.calls++
+	p.last = req
+	if p.err != nil {
+		return HostRequirementSelection{}, p.err
+	}
+	return HostRequirementSelection{HostID: p.hostID}, nil
 }
 
 func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surfaceSink, *auditSink) {
 	t.Helper()
 	surfaces := &surfaceSink{}
 	audits := &auditSink{}
-	capabilities := capability.NewRegistry()
-	if opts.capabilityID != "" && opts.capabilityAdapter != nil {
-		capabilities.Register(opts.capabilityID, opts.capabilityAdapter)
+	capabilities := opts.capabilities
+	if capabilities == nil {
+		capabilities = capability.NewRegistry()
+	}
+	if opts.capabilityContract != nil {
+		if opts.capabilityAdapter == nil {
+			t.Fatal("custom capability contract requires an adapter")
+		}
+		if err := capabilities.Register(capability.Registration{Contract: *opts.capabilityContract, TargetProjector: opts.capabilityAdapter, Adapter: opts.capabilityAdapter}); err != nil {
+			t.Fatal(err)
+		}
+	} else if opts.capabilityID != "" && opts.capabilityAdapter != nil {
+		verified := fixtureVerifiedCapabilityContract(t, opts.capabilityID)
+		if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: opts.capabilityAdapter, Adapter: opts.capabilityAdapter}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	decision := opts.policyDecision
 	if decision == "" {
@@ -6106,6 +8282,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		ReleaseMetadataVerifier: opts.releaseMetadataVerifier,
 		ReleaseSourcePolicy:     opts.releaseSourcePolicy,
 		ReleaseArtifactResolver: opts.releaseArtifactResolver,
+		HostRequirements:        opts.hostRequirements,
 		SurfaceCatalog:          surfaces,
 		Audit:                   audits,
 		Diagnostics:             opts.diagnostics,
@@ -6118,17 +8295,244 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		Permissions:             opts.permissions,
 		SecurityPolicy:          opts.securityPolicy,
 		ConfirmationIntents:     opts.confirmationIntents,
+		Operations:              opts.operations,
+		Streams:                 opts.streams,
 		RuntimeSupervisor:       opts.runtimeSupervisor,
 		RuntimeArtifactResolver: opts.runtimeArtifactResolver,
 		Secrets:                 opts.secrets,
 		Capabilities:            capabilities,
 		CoreActions:             opts.coreActions,
-		OperationCanceler:       opts.operationCanceler,
+		SurfaceTokens:           opts.surfaceTokens,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return host, surfaces, audits
+}
+
+func fixtureVerifiedCapabilityContract(t *testing.T, capabilityID string) capabilitycontract.VerifiedContract {
+	t.Helper()
+	contract, err := fixtureCapabilityContract(capabilityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return verifyFixtureCapabilityContract(t, contract)
+}
+
+func fixtureCapabilityContract(capabilityID string) (capabilitycontract.Contract, error) {
+	empty := fixtureClosedObject(nil, nil)
+	stringField := func(required bool, name string) (map[string]any, []string) {
+		requiredFields := []string(nil)
+		if required {
+			requiredFields = []string{name}
+		}
+		return fixtureClosedObject(map[string]any{name: map[string]any{"type": "string"}}, requiredFields), []string{name}
+	}
+	asyncPolicy := func(disable, uninstall string) *capabilitycontract.CancelPolicy {
+		return &capabilitycontract.CancelPolicy{Cancelable: true, DisableBehavior: disable, UninstallBehavior: uninstall, AckTimeoutMS: 20}
+	}
+	base := capabilitycontract.Contract{
+		SchemaVersion:     capabilitycontract.SchemaVersion,
+		ContractID:        capabilityID + ".v1",
+		ContractVersion:   "1.0.0",
+		PublisherID:       "example.contracts",
+		CapabilityID:      capabilityID,
+		CapabilityVersion: "1.0.0",
+		ClientName:        fixtureTypeName(capabilityID) + "Client",
+	}
+	switch capabilityID {
+	case "example.capability.echo":
+		pingRequest := fixtureClosedObject(map[string]any{"message": map[string]any{"type": "string"}}, nil)
+		pingResponse := fixtureClosedObject(map[string]any{
+			"ok": map[string]any{"type": "boolean"}, "pong": map[string]any{"type": "boolean"},
+			"containers": map[string]any{"type": "array", "items": fixtureClosedObject(map[string]any{
+				"id": map[string]any{"type": "string"}, "image": map[string]any{"type": "string"},
+				"env":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"labels": fixtureClosedObject(map[string]any{"com.example.owner": map[string]any{"type": "string"}, "com.example.secret": map[string]any{"type": "string"}, "secret_token": map[string]any{"type": "string"}}, nil),
+				"mounts": map[string]any{"type": "array", "items": fixtureClosedObject(map[string]any{"source": map[string]any{"type": "string"}, "target": map[string]any{"type": "string"}}, nil)},
+			}, nil)},
+			"token_id": map[string]any{"type": "string"}, "secret_ref": map[string]any{"type": "string"},
+		}, nil)
+		dangerRequest, dangerTargets := stringField(true, "target")
+		dangerRequest["properties"].(map[string]any)["ui_note"] = map[string]any{"type": "string"}
+		archiveRequest, archiveTargets := stringField(false, "document_id")
+		base.Methods = []capabilitycontract.Method{
+			fixtureContractMethod("echo.ping", "read", "sync", []string{"read"}, []string{"message"}, pingRequest, pingResponse),
+			fixtureContractMethod("danger.run", "execute", "sync", []string{"execute"}, dangerTargets, dangerRequest, fixtureClosedObject(map[string]any{"result": map[string]any{"type": "string"}, "done": map[string]any{"type": "boolean"}}, nil)),
+			fixtureContractMethod("documents.archive", "execute", "operation", []string{"execute"}, archiveTargets, archiveRequest, fixtureClosedObject(map[string]any{"started": map[string]any{"type": "boolean"}}, nil)),
+			fixtureContractMethod("logs.tail", "read", "subscription", []string{"read"}, nil, empty, fixtureClosedObject(map[string]any{"started": map[string]any{"type": "boolean"}}, nil)),
+		}
+		base.Methods[1].Confirmation = &capabilitycontract.Confirmation{Mode: "required", RequestHashFields: []string{"target"}}
+		base.Methods[2].CancelPolicy = asyncPolicy("cancel", "cancel_then_block_delete")
+		base.Methods[3].EventTypeName = "LogEvent"
+		base.Methods[3].EventSchema = fixtureClosedObject(map[string]any{"line": map[string]any{"type": "string"}}, []string{"line"})
+		base.Methods[3].CancelPolicy = asyncPolicy("orphan", "force_cleanup_allowed")
+	case "example.capability.tasks":
+		taskRequest, taskTargets := stringField(true, "task_id")
+		riskPlan := fixtureClosedObject(map[string]any{
+			"schema_version": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"},
+			"effect": map[string]any{"type": "string"}, "resource_ref": map[string]any{"type": "string"},
+			"requires_admin": map[string]any{"type": "boolean"}, "requires_confirmation": map[string]any{"type": "boolean"},
+			"risk_flags": map[string]any{"type": "array", "items": map[string]any{"oneOf": []any{map[string]any{"type": "string"}, fixtureClosedObject(map[string]any{
+				"id": map[string]any{"type": "string"}, "severity": map[string]any{"type": "string"}, "summary": map[string]any{"type": "string"}, "requires_admin": map[string]any{"type": "boolean"},
+			}, nil)}}},
+			"details": fixtureClosedObject(map[string]any{
+				"env":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"mounts": map[string]any{"type": "array", "items": fixtureClosedObject(map[string]any{"source": map[string]any{"type": "string"}, "target": map[string]any{"type": "string"}}, nil)},
+			}, nil),
+		}, nil)
+		base.Methods = []capabilitycontract.Method{
+			fixtureContractMethod("tasks.list", "read", "sync", []string{"read"}, nil, empty, empty),
+			fixtureContractMethod("tasks.start.preflight", "read", "sync", []string{"read"}, taskTargets, taskRequest, riskPlan),
+			fixtureContractMethod("tasks.start", "execute", "operation", []string{"execute"}, taskTargets, taskRequest, fixtureClosedObject(map[string]any{"started": map[string]any{"type": "boolean"}}, nil)),
+			fixtureContractMethod("tasks.logs.tail", "read", "subscription", []string{"read"}, taskTargets, taskRequest, empty),
+			fixtureContractMethod("tasks.remove", "delete", "sync", []string{"delete"}, taskTargets, taskRequest, empty),
+		}
+		base.Methods[1].PreflightOnly = true
+		base.Methods[2].Confirmation = &capabilitycontract.Confirmation{Mode: "risk_based", PreflightMethod: "tasks.start.preflight", RequestHashFields: []string{"task_id"}, PlanHashRequired: true}
+		base.Methods[2].CancelPolicy = asyncPolicy("cancel", "cancel_then_block_delete")
+		base.Methods[3].EventTypeName = "TaskLogEvent"
+		base.Methods[3].EventSchema = fixtureClosedObject(map[string]any{"line": map[string]any{"type": "string"}}, []string{"line"})
+		base.Methods[3].CancelPolicy = asyncPolicy("orphan", "force_cleanup_allowed")
+		base.Methods[4].Confirmation = &capabilitycontract.Confirmation{Mode: "required", RequestHashFields: []string{"task_id"}}
+	default:
+		return capabilitycontract.Contract{}, fmt.Errorf("no fixture capability contract for %q", capabilityID)
+	}
+	return base, nil
+}
+
+func fixtureContractMethod(name, effect, execution string, permissions, targetFields []string, requestSchema, responseSchema map[string]any) capabilitycontract.Method {
+	return capabilitycontract.Method{
+		Name: name, ClientMethod: fixtureClientMethodName(name), Effect: effect, Execution: execution,
+		RequiredPermissions: append([]string(nil), permissions...), TargetFields: append([]string(nil), targetFields...),
+		TargetSchema: fixtureTargetSchema(requestSchema, targetFields), RequestTypeName: fixtureTypeName(name) + "Request", ResponseTypeName: fixtureTypeName(name) + "Response",
+		RequestSchema: cloneParams(requestSchema), ResponseSchema: cloneParams(responseSchema),
+	}
+}
+
+func fixtureTargetSchema(requestSchema map[string]any, targetFields []string) map[string]any {
+	requestProperties, _ := requestSchema["properties"].(map[string]any)
+	properties := make(map[string]any, len(targetFields))
+	for _, field := range targetFields {
+		if value, ok := requestProperties[field]; ok {
+			properties[field] = value
+		}
+	}
+	requiredSet := map[string]struct{}{}
+	switch required := requestSchema["required"].(type) {
+	case []string:
+		for _, field := range required {
+			requiredSet[field] = struct{}{}
+		}
+	case []any:
+		for _, value := range required {
+			if field, ok := value.(string); ok {
+				requiredSet[field] = struct{}{}
+			}
+		}
+	}
+	var required []string
+	for _, field := range targetFields {
+		if _, ok := requiredSet[field]; ok {
+			required = append(required, field)
+		}
+	}
+	return fixtureClosedObject(properties, required)
+}
+
+func fixtureClosedObject(properties map[string]any, required []string) map[string]any {
+	if properties == nil {
+		properties = map[string]any{}
+	}
+	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": properties}
+	if len(required) > 0 {
+		schema["required"] = append([]string(nil), required...)
+	}
+	return schema
+}
+
+func verifyFixtureCapabilityContract(t *testing.T, contract capabilitycontract.Contract) capabilitycontract.VerifiedContract {
+	t.Helper()
+	bundle, publicKey, err := buildFixtureCapabilityBundle(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
+		Bundle:      bundle,
+		ExpectedPin: bundle.Pin,
+		TrustedKey: capabilitycontract.TrustedKey{
+			PublisherID:     contract.PublisherID,
+			KeyID:           "fixture-key",
+			PublicKey:       publicKey,
+			PolicyEpoch:     "1",
+			RevocationEpoch: "1",
+		},
+		CurrentReDevPluginVersion: "0.3.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return verified
+}
+
+func buildFixtureCapabilityBundle(contract capabilitycontract.Contract) (capabilitycontract.Bundle, ed25519.PublicKey, error) {
+	contractBytes, err := json.Marshal(contract)
+	if err != nil {
+		return capabilitycontract.Bundle{}, nil, err
+	}
+	seed := sha256.Sum256(contractBytes)
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	baseRef := "capabilities/fixtures/" + strings.ReplaceAll(contract.CapabilityID, ".", "-") + "/" + contract.ContractVersion
+	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract:                 contract,
+		PublisherID:              contract.PublisherID,
+		ArtifactBaseRef:          baseRef,
+		GeneratedAt:              time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC),
+		SourceCommit:             strings.Repeat("f", 40),
+		MinReDevPluginVersion:    "0.3.0",
+		SignatureKeyID:           "fixture-key",
+		SignaturePolicyEpoch:     "1",
+		SignatureRevocationEpoch: "1",
+		PrivateKey:               privateKey,
+	})
+	return bundle, publicKey, err
+}
+
+func fixtureCapabilityPinJSON(capabilityID string) string {
+	contract, err := fixtureCapabilityContract(capabilityID)
+	if err != nil {
+		panic(err)
+	}
+	bundle, _, err := buildFixtureCapabilityBundle(contract)
+	if err != nil {
+		panic(err)
+	}
+	raw, err := json.Marshal(bundle.Pin)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func fixtureClientMethodName(method string) string {
+	parts := strings.Split(method, ".")
+	return parts[0] + fixtureTypeName(strings.Join(parts[1:], "."))
+}
+
+func fixtureTypeName(value string) string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '.' || r == '-' || r == '_'
+	})
+	var builder strings.Builder
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		builder.WriteString(strings.ToUpper(part[:1]))
+		builder.WriteString(part[1:])
+	}
+	return builder.String()
 }
 
 func buildFixturePackage(t *testing.T) []byte {
@@ -6234,12 +8638,53 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 
 func buildMethodContractFixturePackage(t *testing.T) []byte {
 	t.Helper()
-	dir := filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract")
+	source := filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract")
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), methodContractFixtureManifestJSON(t))
+	for _, relative := range []string{"ui/index.html", "ui/assets/app.js"} {
+		content, err := os.ReadFile(filepath.Join(source, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, filepath.FromSlash(relative)), string(content))
+	}
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+func methodContractFixtureManifestJSON(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "generated_plugins", "method-contract", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	contract, err := fixtureCapabilityContract("example.capability.tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, _, err := buildFixtureCapabilityBundle(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document["capability_bindings"] = []any{map[string]any{"binding_id": "task_runner", "contract": bundle.Pin}}
+	methods, _ := document["methods"].([]any)
+	for index, rawMethod := range methods {
+		method, _ := rawMethod.(map[string]any)
+		methods[index] = map[string]any{"method": method["method"], "route": method["route"]}
+	}
+	document["methods"] = methods
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded) + "\n"
 }
 
 func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
@@ -6251,6 +8696,49 @@ func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 	}
 	writeFile(t, filepath.Join(dir, "manifest.json"), addIntentToManifestJSON(t, manifestJSON, dangerous))
 	writeSurfaceFixture(t, dir, "Intent")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildCapabilityPinnedFixturePackage(
+	t *testing.T,
+	manifestJSON string,
+	title string,
+	bindingID string,
+	pin capabilitycontract.Pin,
+) []byte {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal([]byte(manifestJSON), &document); err != nil {
+		t.Fatal(err)
+	}
+	bindings, ok := document["capability_bindings"].([]any)
+	if !ok {
+		t.Fatal("fixture manifest is missing capability_bindings")
+	}
+	found := false
+	for _, rawBinding := range bindings {
+		binding, ok := rawBinding.(map[string]any)
+		if !ok || binding["binding_id"] != bindingID {
+			continue
+		}
+		binding["contract"] = pin
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("fixture manifest is missing capability binding %q", bindingID)
+	}
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), string(encoded)+"\n")
+	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -6294,10 +8782,84 @@ func buildCoreActionFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildDangerousCoreActionFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(coreActionFixtureManifestJSON(), `"execution": "sync",`, `"execution": "sync", "dangerous": true, "confirmation": {"mode": "required", "request_hash_fields": ["target"]},`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Core Action")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildCoreActionOperationFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(coreActionFixtureManifestJSON(), `"execution": "sync"`, `"execution": "operation"`, 1)
+	manifestJSON = strings.Replace(manifestJSON, `"request_schema": {`, `"cancel_policy": {"cancelable": true, "disable_behavior": "cancel", "uninstall_behavior": "cancel_then_block_delete", "ack_timeout_ms": 2000}, "request_schema": {`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Core Action")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildWorkerFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerFixtureManifestJSON())
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildDangerousWorkerFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"execution": "sync",`, `"execution": "sync", "dangerous": true, "confirmation": {"mode": "required", "request_hash_fields": ["message"]},`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildWorkerOperationFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"execution": "sync"`, `"execution": "operation"`, 1)
+	manifestJSON = strings.Replace(manifestJSON, `"route": {"kind": "worker"`, `"cancel_policy": {"cancelable": true, "disable_behavior": "cancel", "uninstall_behavior": "cancel_then_block_delete", "ack_timeout_ms": 2000}, "route": {"kind": "worker"`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Worker")
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildWorkerSubscriptionFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerFixtureManifestJSON(), `"execution": "sync"`, `"execution": "subscription"`, 1)
+	manifestJSON = strings.Replace(manifestJSON, `"route": {"kind": "worker"`, `"cancel_policy": {"cancelable": true, "disable_behavior": "cancel", "uninstall_behavior": "cancel_then_block_delete", "ack_timeout_ms": 2000}, "route": {"kind": "worker"`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
@@ -6330,6 +8892,23 @@ func buildWorkerNetworkSubscriptionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker Network Stream")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifestJSON := strings.Replace(workerNetworkFixtureManifestJSON(), `"execution": "sync"`, `"execution": "subscription"`, 1)
+	manifestJSON = strings.Replace(manifestJSON, `"route": {"kind": "worker"`, `"cancel_policy": {"cancelable": true, "disable_behavior": "orphan", "uninstall_behavior": "force_cleanup_allowed", "ack_timeout_ms": 2000}, "route": {"kind": "worker"`, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
+	writeSurfaceFixture(t, dir, "Worker Network Stream Memory Hostcall")
+	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"max_chunk_bytes":4,"max_buffered_bytes":65536,"timeout_ms":1000,"content_type":"text/plain"}`)
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "redevplugin_worker_invoke", request))
 	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
@@ -6890,58 +9469,11 @@ func rpcFixtureManifestJSON(version string, title string) string {
 			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
 		"methods": [
 			{
 				"method": "echo.ping",
-				"effect": "read",
-				"execution": "sync",
-				"request_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"message": {"type": "string"}}
-				},
-				"response_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"ok": {"type": "boolean"},
-						"containers": {
-							"type": "array",
-							"items": {
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"id": {"type": "string"},
-									"image": {"type": "string"},
-									"env": {"type": "array", "items": {"type": "string"}},
-									"labels": {
-										"type": "object",
-										"additionalProperties": false,
-										"properties": {
-											"com.example.owner": {"type": "string"},
-											"com.example.secret": {"type": "string"}
-										}
-									},
-									"mounts": {
-										"type": "array",
-										"items": {
-											"type": "object",
-											"additionalProperties": false,
-											"properties": {
-												"source": {"type": "string"},
-												"target": {"type": "string"}
-											}
-										}
-									}
-								}
-							}
-						},
-						"token_id": {"type": "string"},
-						"secret_ref": {"type": "string"}
-					}
-				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
 			}
 		]
@@ -6964,29 +9496,11 @@ func dangerousRPCFixtureManifestJSON() string {
 			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
 		"methods": [
 			{
 				"method": "danger.run",
-				"effect": "execute",
-				"execution": "sync",
-				"dangerous": true,
-				"confirmation": {"mode": "required", "request_hash_fields": ["target"]},
-				"request_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"required": ["target"],
-					"properties": {
-						"target": {"type": "string"},
-						"ui_note": {"type": "string"}
-					}
-				},
-				"response_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"result": {"type": "string"}}
-				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "danger.run"}
 			}
 		]
@@ -7009,30 +9523,12 @@ func operationRPCFixtureManifestJSON() string {
 			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
 		"methods": [
 			{
-				"method": "images.pull",
-				"effect": "execute",
-				"execution": "operation",
-				"cancel_policy": {
-					"cancelable": true,
-					"disable_behavior": "cancel",
-					"uninstall_behavior": "cancel_then_block_delete",
-					"ack_timeout_ms": 2000
-				},
-				"request_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"image": {"type": "string"}}
-				},
-				"response_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"started": {"type": "boolean"}}
-				},
-				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
+				"method": "documents.archive",
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "documents.archive"}
 			}
 		]
 	}`
@@ -7054,25 +9550,11 @@ func subscriptionRPCFixtureManifestJSON() string {
 			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+			{"binding_id": "echo", "contract": ` + fixtureCapabilityPinJSON("example.capability.echo") + `}
 		],
 		"methods": [
 			{
 				"method": "logs.tail",
-				"effect": "read",
-				"execution": "subscription",
-				"cancel_policy": {
-					"cancelable": true,
-					"disable_behavior": "orphan",
-					"uninstall_behavior": "force_cleanup_allowed",
-					"ack_timeout_ms": 2000
-				},
-				"request_schema": {"type": "object", "additionalProperties": false},
-				"response_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"started": {"type": "boolean"}}
-				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "logs.tail"}
 			}
 		]
@@ -7661,9 +10143,28 @@ func scopedReadStreamRequest(streamID string, streamTicket string) ReadStreamReq
 	return ReadStreamRequest{
 		StreamID:             streamID,
 		StreamTicket:         streamTicket,
+		SurfaceInstanceID:    "surface_rpc",
 		OwnerSessionHash:     "session_hash",
 		OwnerUserHash:        "user_hash",
 		SessionChannelIDHash: "channel_hash",
+	}
+}
+
+func mintHostTokenCapacityFiller(t *testing.T, manager *bridge.TokenManager, installed registry.PluginRecord) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, err := manager.Mint(bridge.MintRequest{
+		Kind: bridge.TokenKindHandleGrant,
+		Audience: bridge.Audience{
+			PluginInstanceID: installed.PluginInstanceID, ActiveFingerprint: installed.ActiveFingerprint,
+			RuntimeGenerationID: "runtime_filler", HandleID: "handle_filler", Method: "filler.reserve",
+		},
+		Revision: bridge.RevisionBinding{
+			PolicyRevision: installed.PolicyRevision, ManagementRevision: installed.ManagementRevision, RevokeEpoch: installed.RevokeEpoch,
+		},
+		Now: now, ExpiresAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("Mint(filler) error = %v", err)
 	}
 }
 
@@ -7671,7 +10172,15 @@ func grantDeclaredPermissions(t *testing.T, h *Host, record registry.PluginRecor
 	t.Helper()
 	permissionsToGrant := map[string]struct{}{}
 	for _, method := range record.Manifest.Methods {
-		for _, permissionID := range requiredPermissionsForMethod(record.Manifest, method) {
+		effective, err := h.effectiveMethod(record, method)
+		if err != nil {
+			t.Fatal(err)
+		}
+		required, err := h.requiredPermissionsForMethod(record, effective)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, permissionID := range required {
 			permissionsToGrant[permissionID] = struct{}{}
 		}
 	}
@@ -7751,6 +10260,77 @@ type recordingReleaseArtifactResolver struct {
 	err      error
 	last     ReleaseArtifactResolveRequest
 	calls    int
+}
+
+type recordingCapabilityContractArtifactResolver struct {
+	result ResolvedCapabilityContractArtifact
+	err    error
+	last   CapabilityContractResolveRequest
+	calls  int
+}
+
+type memoryCapabilityContractArtifactSet struct {
+	bundle       capabilitycontract.Bundle
+	fetchChain   []CapabilityArtifactFetchHop
+	mediaType    string
+	declaredSize *int64
+	contentByRef map[string][]byte
+}
+
+func (s *memoryCapabilityContractArtifactSet) OpenCapabilityContractArtifact(_ context.Context, ref string) (ResolvedCapabilityContractFile, error) {
+	content, ok := s.bundle.Files[ref]
+	if override, exists := s.contentByRef[ref]; exists {
+		content, ok = override, true
+	}
+	if !ok {
+		return ResolvedCapabilityContractFile{}, os.ErrNotExist
+	}
+	mediaType := s.mediaType
+	if mediaType == "" {
+		var err error
+		mediaType, err = capabilityArtifactMediaType(s.bundle.Pin, ref)
+		if err != nil {
+			return ResolvedCapabilityContractFile{}, err
+		}
+	}
+	chain := append([]CapabilityArtifactFetchHop(nil), s.fetchChain...)
+	if len(chain) == 0 {
+		chain = []CapabilityArtifactFetchHop{{
+			URL: "https://artifacts.example.com/" + ref, ResolvedIP: "93.184.216.34",
+		}}
+	}
+	size := int64(len(content))
+	if s.declaredSize != nil {
+		size = *s.declaredSize
+	}
+	return ResolvedCapabilityContractFile{
+		Reader: io.NopCloser(bytes.NewReader(content)), Size: size, MediaType: mediaType, FetchChain: chain,
+	}, nil
+}
+
+func (r *recordingCapabilityContractArtifactResolver) ResolveCapabilityContract(_ context.Context, req CapabilityContractResolveRequest) (ResolvedCapabilityContractArtifact, error) {
+	r.calls++
+	r.last = req
+	if r.err != nil {
+		return ResolvedCapabilityContractArtifact{}, r.err
+	}
+	return r.result, nil
+}
+
+type recordingCapabilityContractKeyResolver struct {
+	publicKey []byte
+	err       error
+	last      CapabilityContractKeyRequest
+	calls     int
+}
+
+func (r *recordingCapabilityContractKeyResolver) ResolveCapabilityContractKey(_ context.Context, req CapabilityContractKeyRequest) ([]byte, error) {
+	r.calls++
+	r.last = req
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]byte(nil), r.publicKey...), nil
 }
 
 type recordingReleaseMetadataVerifier struct {
@@ -8094,15 +10674,20 @@ func (s *failingSurfaceSink) PublishSurfaces(_ context.Context, snapshot Surface
 }
 
 type auditSink struct {
+	mu     sync.Mutex
 	events []AuditEvent
 }
 
 func (s *auditSink) AppendPluginAudit(_ context.Context, event AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.events = append(s.events, event)
 	return nil
 }
 
 func (s *auditSink) hasEvent(eventType string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, event := range s.events {
 		if event.Type == eventType {
 			return true
@@ -8112,6 +10697,8 @@ func (s *auditSink) hasEvent(eventType string) bool {
 }
 
 func (s *auditSink) lastEvent(eventType string) (AuditEvent, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := len(s.events) - 1; i >= 0; i-- {
 		if s.events[i].Type == eventType {
 			return s.events[i], true
@@ -8160,30 +10747,95 @@ type diagnosticSink struct {
 	events []DiagnosticEvent
 }
 
+type failingAuditSink struct {
+	err error
+}
+
+func (s failingAuditSink) AppendPluginAudit(context.Context, AuditEvent) error {
+	return s.err
+}
+
 func (s *diagnosticSink) AppendPluginDiagnostic(_ context.Context, event DiagnosticEvent) error {
 	s.events = append(s.events, event)
 	return nil
 }
 
 type recordingCapabilityAdapter struct {
-	calls           int
-	last            capability.Invocation
-	result          capability.Result
-	resultsByTarget map[string]capability.Result
-	err             error
+	calls             int
+	last              capability.Invocation
+	lastTarget        capability.TargetResolutionRequest
+	result            capability.Result
+	resultsByTarget   map[string]capability.Result
+	err               error
+	cancelCalls       int
+	lastCancellation  capability.OperationCancellation
+	cancellationError error
+	invokeContext     context.Context
+	panicValue        any
+	invokeDelay       time.Duration
+	targetFields      map[string]any
+	mutateExecution   func(*capability.ExecutionBinding)
+}
+
+type failingStreamRegisterStore struct {
+	stream.Store
+	err error
+}
+
+func (s *failingStreamRegisterStore) Register(context.Context, stream.RegisterRequest) (stream.Record, error) {
+	return stream.Record{}, s.err
+}
+
+type failFirstOperationFinishStore struct {
+	operation.Store
+	err       error
+	failedOne bool
+}
+
+func (s *failFirstOperationFinishStore) Finish(ctx context.Context, req operation.FinishRequest) (operation.Record, error) {
+	if !s.failedOne {
+		s.failedOne = true
+		return operation.Record{}, s.err
+	}
+	return s.Store.Finish(ctx, req)
+}
+
+type failFirstStreamAppendStore struct {
+	stream.Store
+	err       error
+	failedOne bool
+}
+
+type failFirstStreamReadStore struct {
+	stream.Store
+	err       error
+	failedOne bool
+}
+
+func (s *failFirstStreamReadStore) Read(ctx context.Context, req stream.ReadRequest) (stream.Record, []stream.Event, error) {
+	if !s.failedOne {
+		s.failedOne = true
+		return stream.Record{}, nil, s.err
+	}
+	return s.Store.Read(ctx, req)
+}
+
+func (s *failFirstStreamAppendStore) Append(ctx context.Context, req stream.AppendRequest) (stream.Event, error) {
+	if !s.failedOne {
+		s.failedOne = true
+		return stream.Event{}, s.err
+	}
+	return s.Store.Append(ctx, req)
 }
 
 type recordingCoreActionAdapter struct {
-	calls  int
-	last   capability.Invocation
-	result capability.Result
-	err    error
-}
-
-type recordingOperationCanceler struct {
-	calls int
-	last  OperationCancelAdapterRequest
-	err   error
+	calls             int
+	last              capability.Invocation
+	result            capability.Result
+	err               error
+	cancelCalls       int
+	lastCancellation  capability.OperationCancellation
+	cancellationError error
 }
 
 type tamperingConfirmationIntentStore struct {
@@ -8223,6 +10875,7 @@ type recordingRuntimeSupervisor struct {
 	lastPayload       []byte
 	lastRevokedPlugin string
 	lastRevokeEpoch   uint64
+	invokeContext     context.Context
 }
 
 type recordingRuntimeArtifactResolver struct {
@@ -8233,7 +10886,7 @@ type recordingRuntimeArtifactResolver struct {
 }
 
 func surfaceIDForMethod(method string) string {
-	if method == "images.pull" {
+	if method == "documents.archive" {
 		return "operation.view"
 	}
 	if method == "logs.tail" {
@@ -8253,6 +10906,35 @@ func assertHostOperationStatus(t *testing.T, h *Host, operationID string, want o
 	}
 }
 
+func waitForHostOperationStatus(t *testing.T, h *Host, operationID string, want operation.Status) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		record, err := h.GetOperation(context.Background(), operationID)
+		if err != nil {
+			t.Fatalf("GetOperation(%s) error = %v", operationID, err)
+		}
+		if record.Status == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation %s remained %s, want %s", operationID, record.Status, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func testExecutionBinding(record registry.PluginRecord, method string, execution manifest.MethodExecutionMode) capability.ExecutionBinding {
+	return capability.ExecutionBinding{
+		PluginID:          record.PluginID,
+		PluginInstanceID:  record.PluginInstanceID,
+		PluginVersion:     record.Version,
+		ActiveFingerprint: record.ActiveFingerprint,
+		Method:            method,
+		Execution:         string(execution),
+	}
+}
+
 func assertHostStreamStatus(t *testing.T, h *Host, streamID string, want stream.Status) {
 	t.Helper()
 	record, err := h.adapters.Streams.Get(context.Background(), streamID)
@@ -8264,18 +10946,42 @@ func assertHostStreamStatus(t *testing.T, h *Host, streamID string, want stream.
 	}
 }
 
-func (a *recordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+func (a *recordingCapabilityAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	a.lastTarget = req
+	if a.targetFields != nil {
+		return capability.TargetDescriptor{Kind: "fixture", Fields: cloneParams(a.targetFields)}, nil
+	}
+	return capability.TargetDescriptor{Kind: "fixture", Fields: cloneParams(req.TargetInput)}, nil
+}
+
+func (a *recordingCapabilityAdapter) Invoke(ctx context.Context, req capability.Invocation) (capability.Result, error) {
 	a.calls++
+	if a.mutateExecution != nil {
+		a.mutateExecution(&req.Execution.ExecutionBinding)
+	}
 	a.last = req
+	a.invokeContext = ctx
+	if a.panicValue != nil {
+		panic(a.panicValue)
+	}
+	if a.invokeDelay > 0 {
+		time.Sleep(a.invokeDelay)
+	}
 	if a.err != nil {
 		return capability.Result{}, a.err
 	}
 	if a.resultsByTarget != nil {
-		if result, ok := a.resultsByTarget[req.TargetMethod]; ok {
+		if result, ok := a.resultsByTarget[req.Execution.TargetMethod]; ok {
 			return result, nil
 		}
 	}
 	return a.result, nil
+}
+
+func (a *recordingCapabilityAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
+	a.cancelCalls++
+	a.lastCancellation = req
+	return a.cancellationError
 }
 
 func (a *recordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req capability.Invocation) (capability.Result, error) {
@@ -8287,10 +10993,14 @@ func (a *recordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req cap
 	return a.result, nil
 }
 
-func (c *recordingOperationCanceler) RequestOperationCancel(_ context.Context, req OperationCancelAdapterRequest) error {
-	c.calls++
-	c.last = req
-	return c.err
+func (a *recordingCoreActionAdapter) ResolveCoreActionTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	return capability.TargetDescriptor{Kind: "core_action", Fields: cloneParams(req.TargetInput)}, nil
+}
+
+func (a *recordingCoreActionAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
+	a.cancelCalls++
+	a.lastCancellation = req
+	return a.cancellationError
 }
 
 func (s *recordingSecretStore) BindSecretRef(_ context.Context, req SecretBindRequest) error {
@@ -8364,8 +11074,9 @@ func (r *recordingRuntimeSupervisor) Heartbeat(context.Context) (runtimeclient.H
 	}, nil
 }
 
-func (r *recordingRuntimeSupervisor) InvokeWorker(_ context.Context, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
+func (r *recordingRuntimeSupervisor) InvokeWorker(ctx context.Context, lease runtimeclient.Lease, method string, payload []byte) ([]byte, error) {
 	r.calls++
+	r.invokeContext = ctx
 	r.lastLease = lease
 	r.lastMethod = method
 	r.lastPayload = append([]byte(nil), payload...)

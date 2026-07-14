@@ -52,6 +52,22 @@ try {
   if (rejected.status === 0) {
     throw new Error("structural verifier accepted a runtime binary for the wrong target");
   }
+
+  const provenanceNegative = bundles[1];
+  const provenanceManifestPath = join(provenanceNegative.bundleRoot, "release-manifest.json");
+  const provenanceManifest = JSON.parse(readFileSync(provenanceManifestPath, "utf8"));
+  provenanceManifest.source_commit = provenanceManifest.source_commit === "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ? "cccccccccccccccccccccccccccccccccccccccc"
+    : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  writeFileSync(provenanceManifestPath, JSON.stringify(provenanceManifest, null, 2) + "\n");
+  const provenanceRejected = spawnSync(
+    "node",
+    [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--structural-only", provenanceNegative.bundleRoot, version],
+    { encoding: "utf8" },
+  );
+  if (provenanceRejected.status === 0 || !`${provenanceRejected.stderr}${provenanceRejected.stdout}`.includes("host capability sample source_commit")) {
+    throw new Error("structural verifier accepted a host capability sample from another source commit");
+  }
   console.log("published release structural verifier matrix passed");
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });

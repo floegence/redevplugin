@@ -32,6 +32,15 @@
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
     },
+    "allowed_artifact_hosts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$"
+      },
+      "uniqueItems": true
+    },
     "trusted_key_ids": {
       "type": "array",
       "minItems": 1,
@@ -76,7 +85,13 @@
         "usage": {
           "type": "array",
           "minItems": 1,
-          "items": { "enum": ["release_metadata", "package_signature", "revocation_metadata"] }
+          "items": { "enum": ["release_metadata", "package_signature", "revocation_metadata", "host_capability_contract"] }
+        },
+        "allowed_capability_publishers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
         },
         "valid_from": { "type": "string", "format": "date-time" },
         "valid_until": { "type": "string", "format": "date-time" },

@@ -38,7 +38,7 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	for _, item := range requireStringSlice(t, schema["required"], "worker invocation required") {
 		required[item] = true
 	}
-	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "runtime_instance_id", "runtime_generation_id", "package_hash", "worker_id", "artifact_sha256", "method", "params"} {
+	for _, name := range []string{"plugin_instance_id", "active_fingerprint", "runtime_instance_id", "runtime_generation_id", "package_hash", "worker_id", "artifact_sha256", "method", "params_sha256", "params"} {
 		if !required[name] {
 			t.Fatalf("worker invocation schema missing required field %q", name)
 		}
@@ -61,6 +61,37 @@ func TestWorkerInvocationSchemaDefinesHostRuntimePayload(t *testing.T) {
 	params := requireNestedObject(t, properties, "params")
 	if params["type"] != "object" {
 		t.Fatalf("params type = %#v, want object", params["type"])
+	}
+}
+
+func TestWorkerInvocationSchemaBindsOperationAndStreamHandlesByExecution(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	conditions := requireObjectArray(t, schema["allOf"], "worker invocation allOf")
+	wantRequired := map[string][]string{
+		"operation":    {"operation_id"},
+		"subscription": {"operation_id", "stream_id"},
+	}
+	for execution, want := range wantRequired {
+		var matched map[string]any
+		for _, condition := range conditions {
+			if requireNestedObject(t, condition, "if", "properties", "execution")["const"] == execution {
+				matched = condition
+				break
+			}
+		}
+		if matched == nil {
+			t.Fatalf("worker invocation schema missing %q execution condition", execution)
+		}
+		then := requireNestedObject(t, matched, "then")
+		assertStringSet(t, requireStringSlice(t, then["required"], execution+" required"), want, execution+" required")
 	}
 }
 

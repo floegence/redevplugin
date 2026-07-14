@@ -55,11 +55,11 @@ type RiskPlan struct {
 func NewRiskPlan(inv Invocation, summary string) RiskPlan {
 	return RiskPlan{
 		SchemaVersion: RiskPlanSchemaVersion,
-		CapabilityID:  strings.TrimSpace(inv.CapabilityID),
-		BindingID:     strings.TrimSpace(inv.BindingID),
-		Method:        strings.TrimSpace(inv.Method),
-		TargetMethod:  strings.TrimSpace(inv.TargetMethod),
-		Effect:        inv.Effect,
+		CapabilityID:  strings.TrimSpace(inv.Execution.CapabilityID),
+		BindingID:     strings.TrimSpace(inv.Execution.BindingID),
+		Method:        strings.TrimSpace(inv.Execution.Method),
+		TargetMethod:  strings.TrimSpace(inv.Execution.TargetMethod),
+		Effect:        inv.Execution.Effect,
 		Summary:       strings.TrimSpace(summary),
 		RiskFlags:     []RiskFlag{},
 	}

@@ -1,0 +1,174 @@
+{
+  "schema_version": "redevplugin.host_capability_contract.v1",
+  "contract_id": "example.documents.v1",
+  "contract_version": "1.0.0",
+  "publisher_id": "example.publisher",
+  "capability_id": "example.capability.documents",
+  "capability_version": "1.0.0",
+  "client_name": "ExampleDocumentsClient",
+  "methods": [
+    {
+      "name": "documents.list",
+      "client_method": "list",
+      "effect": "read",
+      "execution": "sync",
+      "required_permissions": ["documents.read"],
+      "target_fields": ["workspace_id"],
+      "target_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspace_id"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "request_type_name": "DocumentsListRequest",
+      "response_type_name": "DocumentsListResponse",
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspace_id"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["documents"],
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["document_id", "title"],
+              "properties": {
+                "document_id": { "type": "string", "minLength": 1 },
+                "title": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      },
+      "quota": {}
+    },
+    {
+      "name": "documents.archive",
+      "client_method": "archive",
+      "effect": "write",
+      "execution": "operation",
+      "required_permissions": ["documents.manage"],
+      "target_fields": ["document_id"],
+      "target_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document_id"],
+        "properties": {
+          "document_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "request_type_name": "DocumentsArchiveRequest",
+      "response_type_name": "DocumentsArchiveResponse",
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document_id"],
+        "properties": {
+          "document_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["accepted"],
+        "properties": {
+          "accepted": { "type": "boolean" }
+        }
+      },
+      "confirmation": {
+        "mode": "required",
+        "request_hash_fields": ["document_id"],
+        "plan_hash_required": true
+      },
+      "cancel_policy": {
+        "cancelable": true,
+        "disable_behavior": "cancel",
+        "uninstall_behavior": "cancel_then_block_delete",
+        "ack_timeout_ms": 1000
+      },
+      "quota": {
+        "max_concurrent": 2,
+        "max_duration_ms": 30000
+      }
+    },
+    {
+      "name": "documents.watch",
+      "client_method": "watch",
+      "effect": "read",
+      "execution": "subscription",
+      "required_permissions": ["documents.read"],
+      "target_fields": ["workspace_id"],
+      "target_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspace_id"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "request_type_name": "DocumentsWatchRequest",
+      "response_type_name": "DocumentsWatchResponse",
+      "request_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspace_id"],
+        "properties": {
+          "workspace_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "response_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["watching"],
+        "properties": {
+          "watching": { "type": "boolean" }
+        }
+      },
+      "event_type_name": "DocumentsWatchEvent",
+      "event_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document_id", "change"],
+        "properties": {
+          "document_id": { "type": "string", "minLength": 1 },
+          "change": { "type": "string", "enum": ["created", "updated", "deleted"] }
+        }
+      },
+      "cancel_policy": {
+        "cancelable": true,
+        "disable_behavior": "cancel",
+        "uninstall_behavior": "cancel_then_block_delete",
+        "ack_timeout_ms": 1000
+      },
+      "quota": {
+        "max_concurrent": 4,
+        "max_stream_bytes": 1048576
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": "DOCUMENT_NOT_FOUND",
+      "message": "The requested document does not exist",
+      "details_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document_id"],
+        "properties": {
+          "document_id": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ]
+}

@@ -41,6 +41,7 @@ const (
 	ErrRuntimeUnavailable           ErrorCode = "PLUGIN_RUNTIME_UNAVAILABLE"
 	ErrRuntimeVersionMismatch       ErrorCode = "PLUGIN_RUNTIME_VERSION_MISMATCH"
 	ErrJSONLimitExceeded            ErrorCode = "PLUGIN_JSON_LIMIT_EXCEEDED"
+	ErrCapabilityError              ErrorCode = "PLUGIN_CAPABILITY_ERROR"
 	ErrContractMismatch             ErrorCode = "PLUGIN_CONTRACT_MISMATCH"
 	ErrStateVersionMismatch         ErrorCode = "PLUGIN_STATE_VERSION_MISMATCH"
 	ErrCSRFRequired                 ErrorCode = "PLUGIN_CSRF_REQUIRED"
@@ -93,6 +94,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrRuntimeUnavailable,
 	ErrRuntimeVersionMismatch,
 	ErrJSONLimitExceeded,
+	ErrCapabilityError,
 	ErrContractMismatch,
 	ErrStateVersionMismatch,
 	ErrCSRFRequired,

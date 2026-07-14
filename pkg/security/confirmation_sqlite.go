@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteConfirmationIntentSchemaVersion = 1
+const sqliteConfirmationIntentSchemaVersion = 2
 
 type SQLiteConfirmationIntentStore struct {
 	db *sql.DB
@@ -138,6 +139,54 @@ func (s *SQLiteConfirmationIntentStore) ConsumeConfirmationIntent(ctx context.Co
 	return record, nil
 }
 
+func (s *SQLiteConfirmationIntentStore) RejectConfirmationIntent(ctx context.Context, req RejectConfirmationIntentRequest) (ConfirmationIntentRecord, error) {
+	if s == nil {
+		return ConfirmationIntentRecord{}, errors.New("confirmation intent store is nil")
+	}
+	normalized, err := normalizeRejectConfirmationIntentRequest(req)
+	if err != nil {
+		return ConfirmationIntentRecord{}, err
+	}
+	if normalized.Now.IsZero() {
+		normalized.Now = time.Now().UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ConfirmationIntentRecord{}, err
+	}
+	defer rollbackUnlessCommitted(tx)
+	record, exists, err := getSQLiteConfirmationIntent(ctx, tx, normalized.ConfirmationID)
+	if err != nil {
+		return ConfirmationIntentRecord{}, err
+	}
+	if !exists {
+		return ConfirmationIntentRecord{}, ErrConfirmationIntentNotFound
+	}
+	if !record.ExpiresAt.After(normalized.Now) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_confirmation_intents WHERE confirmation_id = ?`, normalized.ConfirmationID); err != nil {
+			return ConfirmationIntentRecord{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return ConfirmationIntentRecord{}, err
+		}
+		return ConfirmationIntentRecord{}, ErrConfirmationIntentExpired
+	}
+	if !confirmationIntentMatchesRejection(record, normalized) {
+		return ConfirmationIntentRecord{}, ErrConfirmationIntentScopeMismatch
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugin_confirmation_intents WHERE confirmation_id = ?`, normalized.ConfirmationID); err != nil {
+		return ConfirmationIntentRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ConfirmationIntentRecord{}, err
+	}
+	return record, nil
+}
+
 func (s *SQLiteConfirmationIntentStore) ListConfirmationIntents(ctx context.Context, req ListConfirmationIntentsRequest) ([]ConfirmationIntentRecord, error) {
 	if s == nil {
 		return nil, errors.New("confirmation intent store is nil")
@@ -238,10 +287,19 @@ CREATE TABLE IF NOT EXISTS plugin_confirmation_intents (
 	method TEXT NOT NULL,
 	request_hash TEXT NOT NULL,
 	plan_hash TEXT NOT NULL,
+	scope_json TEXT NOT NULL DEFAULT '{}',
 	issued_at INTEGER NOT NULL,
 	expires_at INTEGER NOT NULL
 )`); err != nil {
 		return err
+	}
+	if maxVersion < 2 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_confirmation_intents ADD COLUMN scope_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_confirmation_intent_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_confirmation_intents_plugin_instance ON plugin_confirmation_intents(plugin_instance_id, issued_at, confirmation_id)`); err != nil {
 		return err
@@ -261,7 +319,7 @@ const confirmationIntentSelectColumns = `
 SELECT
 	confirmation_id, confirmation_token_id, plugin_id, plugin_instance_id,
 	surface_instance_id, bridge_channel_id, method, request_hash, plan_hash,
-	issued_at, expires_at`
+	scope_json, issued_at, expires_at`
 
 func deleteSQLiteExpiredConfirmationIntents(ctx context.Context, q sqliteConfirmationIntentQuerier, now time.Time) error {
 	_, err := q.ExecContext(ctx, `DELETE FROM plugin_confirmation_intents WHERE expires_at <= ?`, now.UTC().UnixNano())
@@ -306,12 +364,16 @@ func getSQLiteConfirmationIntent(ctx context.Context, q sqliteConfirmationIntent
 }
 
 func upsertSQLiteConfirmationIntent(ctx context.Context, tx *sql.Tx, record ConfirmationIntentRecord) error {
-	_, err := tx.ExecContext(ctx, `
+	scopeJSON, err := json.Marshal(record.Scope)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_confirmation_intents (
 	confirmation_id, confirmation_token_id, plugin_id, plugin_instance_id,
-	surface_instance_id, bridge_channel_id, method, request_hash, plan_hash,
+	surface_instance_id, bridge_channel_id, method, request_hash, plan_hash, scope_json,
 	issued_at, expires_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(confirmation_id) DO UPDATE SET
 	confirmation_token_id = excluded.confirmation_token_id,
 	plugin_id = excluded.plugin_id,
@@ -321,6 +383,7 @@ ON CONFLICT(confirmation_id) DO UPDATE SET
 	method = excluded.method,
 	request_hash = excluded.request_hash,
 	plan_hash = excluded.plan_hash,
+	scope_json = excluded.scope_json,
 	issued_at = excluded.issued_at,
 	expires_at = excluded.expires_at`,
 		record.ConfirmationID,
@@ -332,6 +395,7 @@ ON CONFLICT(confirmation_id) DO UPDATE SET
 		record.Method,
 		record.RequestHash,
 		record.PlanHash,
+		string(scopeJSON),
 		record.IssuedAt.UTC().UnixNano(),
 		record.ExpiresAt.UTC().UnixNano(),
 	)
@@ -350,6 +414,7 @@ type sqliteConfirmationIntentScanner interface {
 
 func scanSQLiteConfirmationIntent(scanner sqliteConfirmationIntentScanner) (ConfirmationIntentRecord, error) {
 	var record ConfirmationIntentRecord
+	var scopeJSON string
 	var issuedAt int64
 	var expiresAt int64
 	if err := scanner.Scan(
@@ -362,10 +427,16 @@ func scanSQLiteConfirmationIntent(scanner sqliteConfirmationIntentScanner) (Conf
 		&record.Method,
 		&record.RequestHash,
 		&record.PlanHash,
+		&scopeJSON,
 		&issuedAt,
 		&expiresAt,
 	); err != nil {
 		return ConfirmationIntentRecord{}, err
+	}
+	if strings.TrimSpace(scopeJSON) != "" && strings.TrimSpace(scopeJSON) != "{}" {
+		if err := json.Unmarshal([]byte(scopeJSON), &record.Scope); err != nil {
+			return ConfirmationIntentRecord{}, err
+		}
 	}
 	record.IssuedAt = time.Unix(0, issuedAt).UTC()
 	record.ExpiresAt = time.Unix(0, expiresAt).UTC()

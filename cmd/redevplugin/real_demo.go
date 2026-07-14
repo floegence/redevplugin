@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
@@ -140,15 +142,92 @@ func (r realDemoRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget
 
 type realDemoCapabilityAdapter struct{}
 
-func (realDemoCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+func (realDemoCapabilityAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	return capability.TargetDescriptor{Kind: "real_demo", Fields: req.TargetInput}, nil
+}
+
+func (realDemoCapabilityAdapter) Invoke(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	return capability.Result{Data: map[string]any{
 		"done":          true,
-		"method":        req.Method,
-		"target_method": req.TargetMethod,
-		"effect":        req.Effect,
+		"method":        req.Execution.Method,
+		"target_method": req.Execution.TargetMethod,
+		"effect":        req.Execution.Effect,
 		"target":        req.Arguments["target"],
 		"transport":     "real http adapter confirmation",
 	}}, nil
+}
+
+func realDemoVerifiedCapabilityContract() (capabilitycontract.VerifiedContract, error) {
+	requestSchema := closedMethodObjectSchema(map[string]any{
+		"target": map[string]any{"type": "string"},
+	})
+	responseSchema := closedMethodObjectSchema(map[string]any{
+		"done":          map[string]any{"type": "boolean"},
+		"method":        map[string]any{"type": "string"},
+		"target_method": map[string]any{"type": "string"},
+		"effect":        map[string]any{"type": "string"},
+		"target":        map[string]any{"type": "string"},
+		"transport":     map[string]any{"type": "string"},
+	})
+	contract := capabilitycontract.Contract{
+		SchemaVersion:     capabilitycontract.SchemaVersion,
+		ContractID:        "example.real_demo.v1",
+		ContractVersion:   "1.0.0",
+		PublisherID:       "example.real_demo",
+		CapabilityID:      realDemoCapability,
+		CapabilityVersion: "1.0.0",
+		ClientName:        "RealDemoCapabilityClient",
+		Methods: []capabilitycontract.Method{{
+			Name:                "danger.run",
+			ClientMethod:        "runDangerousDemo",
+			Effect:              "execute",
+			Execution:           "sync",
+			RequiredPermissions: []string{"execute"},
+			TargetFields:        []string{"target"},
+			TargetSchema:        requestSchema,
+			RequestTypeName:     "RealDemoRunRequest",
+			ResponseTypeName:    "RealDemoRunResponse",
+			RequestSchema:       requestSchema,
+			ResponseSchema:      responseSchema,
+			Confirmation: &capabilitycontract.Confirmation{
+				Mode:              "required",
+				RequestHashFields: []string{"target"},
+			},
+		}},
+	}
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract:                 contract,
+		PublisherID:              contract.PublisherID,
+		ArtifactBaseRef:          "capabilities/example/real-demo/v1.0.0",
+		GeneratedAt:              time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC),
+		SourceCommit:             strings.Repeat("0", 40),
+		MinReDevPluginVersion:    "0.2.2",
+		SignatureKeyID:           "real-demo-key",
+		SignaturePolicyEpoch:     "1",
+		SignatureRevocationEpoch: "1",
+		PrivateKey:               privateKey,
+		Notices: []capabilitycontract.Notice{{
+			Name:    "redevplugin-real-demo-capability",
+			Version: "1.0.0",
+			License: "MIT",
+		}},
+	})
+	if err != nil {
+		return capabilitycontract.VerifiedContract{}, err
+	}
+	return capabilitycontract.Verify(capabilitycontract.VerifyRequest{
+		Bundle:      bundle,
+		ExpectedPin: bundle.Pin,
+		TrustedKey: capabilitycontract.TrustedKey{
+			PublisherID:     contract.PublisherID,
+			KeyID:           "real-demo-key",
+			PublicKey:       privateKey.Public().(ed25519.PublicKey),
+			PolicyEpoch:     "1",
+			RevocationEpoch: "1",
+		},
+		CurrentReDevPluginVersion: "0.2.2",
+	})
 }
 
 type realDemoNetworkExecutor struct{}
@@ -236,10 +315,14 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if err := resetDirectory(pluginDir); err != nil {
 		return err
 	}
+	verifiedCapability, err := realDemoVerifiedCapabilityContract()
+	if err != nil {
+		return err
+	}
 	if _, err := createPluginScaffold(realDemoPluginID, realDemoPluginName, pluginDir); err != nil {
 		return err
 	}
-	if err := addRealDemoMethods(filepath.Join(pluginDir, "manifest.json")); err != nil {
+	if err := addRealDemoMethods(filepath.Join(pluginDir, "manifest.json"), verifiedCapability.Pin); err != nil {
 		return err
 	}
 	if err := writeBytesFile(filepath.Join(pluginDir, "workers", "broker.wasm"), realDemoBrokerWorkerWASM(), 0o644); err != nil {
@@ -277,6 +360,11 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if err != nil {
 		return err
 	}
+	capabilities := capability.NewRegistry()
+	capabilityAdapter := realDemoCapabilityAdapter{}
+	if err := capabilities.Register(capability.Registration{Contract: verifiedCapability, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter}); err != nil {
+		return err
+	}
 	pluginHost, err := host.New(host.Adapters{
 		SessionResolver:         staticSessionResolver{},
 		Policy:                  staticPolicyAdapter{},
@@ -284,11 +372,11 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 		Storage:                 storageBroker,
 		Connectivity:            connectivity.NewMemoryBroker(),
 		NetworkExecutor:         realDemoNetworkExecutor{},
+		Capabilities:            capabilities,
 	})
 	if err != nil {
 		return err
 	}
-	pluginHost.Capabilities().Register(realDemoCapability, realDemoCapabilityAdapter{})
 	health, err := pluginHost.StartRuntime(ctx, host.StartRuntimeRequest{
 		Target: host.RuntimeTarget{OS: runtime.GOOS, Arch: runtime.GOARCH},
 	})
@@ -311,7 +399,7 @@ func demoRealServer(ctx context.Context, stateRoot string, runtimePath string) e
 	if err != nil {
 		return err
 	}
-	if err := grantRealDemoDeclaredPermissions(ctx, pluginHost, record); err != nil {
+	if err := grantRealDemoDeclaredPermissions(ctx, pluginHost, record, verifiedCapability.Contract); err != nil {
 		return err
 	}
 	record, err = currentPluginRecord(ctx, pluginHost, record.PluginInstanceID)
@@ -557,7 +645,7 @@ func resetDirectory(dir string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
-func addRealDemoMethods(manifestFile string) error {
+func addRealDemoMethods(manifestFile string, capabilityPin capabilitycontract.Pin) error {
 	raw, err := os.ReadFile(manifestFile)
 	if err != nil {
 		return err
@@ -669,36 +757,16 @@ func addRealDemoMethods(manifestFile string) error {
 		Connectors: realDemoNetworkConnectors(),
 	}
 	doc.CapabilityBindings = appendCapabilityBindingIfMissing(doc.CapabilityBindings, manifest.CapabilityBinding{
-		BindingID:            "real_demo",
-		CapabilityID:         realDemoCapability,
-		MinCapabilityVersion: "1.0.0",
-		RequiredPermissions:  []string{"execute"},
+		BindingID: "real_demo",
+		Contract:  capabilityPin,
 	})
 	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
-		Method:    "danger.run",
-		Effect:    manifest.MethodEffectExecute,
-		Execution: manifest.MethodExecutionSync,
-		Dangerous: true,
-		Confirmation: &manifest.ConfirmationSpec{
-			Mode:              manifest.ConfirmationRequired,
-			RequestHashFields: []string{"target"},
-		},
+		Method: "danger.run",
 		Route: manifest.MethodRouteSpec{
 			Kind:         manifest.MethodRouteCapability,
 			BindingID:    "real_demo",
 			TargetMethod: "danger.run",
 		},
-		RequestSchema: closedMethodObjectSchema(map[string]any{
-			"target": map[string]any{"type": "string"},
-		}),
-		ResponseSchema: closedMethodObjectSchema(map[string]any{
-			"done":          map[string]any{"type": "boolean"},
-			"method":        map[string]any{"type": "string"},
-			"target_method": map[string]any{"type": "string"},
-			"effect":        map[string]any{"type": "string"},
-			"target":        map[string]any{"type": "string"},
-			"transport":     map[string]any{"type": "string"},
-		}),
 	})
 	doc.Methods = appendMethodIfMissing(doc.Methods, manifest.MethodSpec{
 		Method:    "worker.brokerDemo",
@@ -1089,10 +1157,10 @@ func appendLEBInt32(out []byte, value int32) []byte {
 	}
 }
 
-func grantRealDemoDeclaredPermissions(ctx context.Context, pluginHost *host.Host, record registry.PluginRecord) error {
+func grantRealDemoDeclaredPermissions(ctx context.Context, pluginHost *host.Host, record registry.PluginRecord, contract capabilitycontract.Contract) error {
 	seen := map[string]struct{}{}
-	for _, binding := range record.Manifest.CapabilityBindings {
-		for _, permissionID := range binding.RequiredPermissions {
+	for _, method := range contract.Methods {
+		for _, permissionID := range method.RequiredPermissions {
 			permissionID = strings.TrimSpace(permissionID)
 			if permissionID == "" {
 				continue

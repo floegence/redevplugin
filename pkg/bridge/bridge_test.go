@@ -368,6 +368,86 @@ func TestMintUsesKindSpecificTokenIDNamespaces(t *testing.T) {
 	}
 }
 
+func TestRotateSingleUseCommitsTokenAndMutationTogether(t *testing.T) {
+	manager := NewTokenManager()
+	now := testNow()
+	audience := testAudienceForTokenKind(TokenKindStreamTicket)
+	revision := testRevision(12)
+	minted, err := manager.Mint(MintRequest{
+		Kind: TokenKindStreamTicket, Audience: audience, Revision: revision, Now: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFailure := errors.New("stream mutation failed")
+	if _, err := manager.RotateSingleUse(RotateSingleUseRequest{
+		Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(time.Second), NextExpiresAt: now.Add(time.Minute),
+		Validate: func(record TokenRecord) error {
+			if record.Audience != audience || record.Revision != revision {
+				return ErrTokenAudience
+			}
+			return nil
+		},
+	}, func() (bool, error) {
+		return false, commitFailure
+	}); !errors.Is(err, commitFailure) {
+		t.Fatalf("RotateSingleUse(failed commit) error = %v, want %v", err, commitFailure)
+	}
+	if _, err := manager.Inspect(InspectRequest{Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(2 * time.Second)}); err != nil {
+		t.Fatalf("failed rotation consumed the current ticket: %v", err)
+	}
+	rotated, err := manager.RotateSingleUse(RotateSingleUseRequest{
+		Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(3 * time.Second), NextExpiresAt: now.Add(time.Minute),
+	}, func() (bool, error) {
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("RotateSingleUse(success) error = %v", err)
+	}
+	if rotated.Next == nil || rotated.Next.Token == "" || rotated.Next.Audience != audience {
+		t.Fatalf("RotateSingleUse(success) result = %#v", rotated)
+	}
+	if _, err := manager.Inspect(InspectRequest{Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(4 * time.Second)}); !errors.Is(err, ErrTokenReplay) {
+		t.Fatalf("old ticket after rotation error = %v, want %v", err, ErrTokenReplay)
+	}
+	if _, err := manager.Inspect(InspectRequest{Kind: TokenKindStreamTicket, Token: rotated.Next.Token, Now: now.Add(4 * time.Second)}); err != nil {
+		t.Fatalf("next ticket is not active: %v", err)
+	}
+}
+
+func TestCommitSingleUseDoesNotReserveReplacementCapacity(t *testing.T) {
+	manager := NewTokenManager(TokenManagerOptions{MaxRecords: 1, MaxRecordsPerPlugin: 1})
+	now := testNow()
+	minted, err := manager.Mint(MintRequest{
+		Kind: TokenKindStreamTicket, Audience: testAudienceForTokenKind(TokenKindStreamTicket),
+		Revision: testRevision(12), Now: now, ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFailure := errors.New("terminal stream mutation failed")
+	if _, err := manager.CommitSingleUse(CommitSingleUseRequest{
+		Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(time.Second),
+	}, func() error {
+		return commitFailure
+	}); !errors.Is(err, commitFailure) {
+		t.Fatalf("CommitSingleUse(failed) error = %v, want %v", err, commitFailure)
+	}
+	if _, err := manager.Inspect(InspectRequest{Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(2 * time.Second)}); err != nil {
+		t.Fatalf("failed terminal commit consumed the current ticket: %v", err)
+	}
+	if _, err := manager.CommitSingleUse(CommitSingleUseRequest{
+		Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(3 * time.Second),
+	}, func() error {
+		return nil
+	}); err != nil {
+		t.Fatalf("CommitSingleUse(success) error = %v", err)
+	}
+	if _, err := manager.Inspect(InspectRequest{Kind: TokenKindStreamTicket, Token: minted.Token, Now: now.Add(4 * time.Second)}); !errors.Is(err, ErrTokenReplay) {
+		t.Fatalf("committed terminal ticket error = %v, want %v", err, ErrTokenReplay)
+	}
+}
+
 func TestMintRejectsCallerOverrideOfKindSpecificUse(t *testing.T) {
 	manager := NewTokenManager()
 	now := testNow()
@@ -564,6 +644,7 @@ func testAudienceForTokenKind(kind TokenKind) Audience {
 		audience.Method = "plugin.confirm"
 		audience.RequestHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 		audience.PlanHash = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+		audience.TargetDescriptorSHA256 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	case TokenKindRuntimeExecutionLease:
 		audience.EntrySHA256 = ""
 		audience.AssetSessionNonce = ""
@@ -575,6 +656,7 @@ func testAudienceForTokenKind(kind TokenKind) Audience {
 		audience.RuntimeShardID = "runtime_shard_test"
 		audience.IPCChannelID = "ipc_test"
 		audience.ConnectionNonce = "connection_nonce_1234567890"
+		audience.AuditCorrelationID = "audit_runtime_test"
 		audience.Method = "runtime.execute"
 	case TokenKindHandleGrant:
 		audience.PluginID = ""

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/operation"
@@ -178,6 +179,19 @@ type readSurfaceStreamRequest struct {
 	StreamTicket string `json:"stream_ticket"`
 }
 
+type cancelSurfaceOperationRequest struct {
+	OperationID     string `json:"operation_id"`
+	BridgeChannelID string `json:"bridge_channel_id"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+type rejectSurfaceConfirmationRequest struct {
+	PluginInstanceID string `json:"plugin_instance_id"`
+	BridgeChannelID  string `json:"bridge_channel_id"`
+	GatewayToken     string `json:"plugin_gateway_token"`
+	ConfirmationID   string `json:"confirmation_id"`
+}
+
 type disposeSurfaceRequest struct {
 	BridgeNonce string `json:"bridge_nonce"`
 }
@@ -267,6 +281,7 @@ type startRuntimeRequest struct {
 const pluginBridgeHandshakeType = "redevplugin.bridge.handshake"
 const defaultStreamReadMaxEvents = 256
 const defaultStreamReadMaxBytes = 1 << 20
+const defaultStreamReadWaitTimeout = 20 * time.Second
 const defaultJSONRequestMaxBytes = 1 << 20
 const defaultJSONMaxDepth = 64
 const maxJSONSafeInteger int64 = 1<<53 - 1
@@ -350,6 +365,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleReadSurfaceAsset(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/streams/read"):
 		h.handleReadSurfaceStream(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/operations/cancel"):
+		h.handleCancelSurfaceOperation(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/confirmations/reject"):
+		h.handleRejectSurfaceConfirmation(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/_redevplugin/api/plugins/surfaces/") && strings.HasSuffix(r.URL.Path, "/dispose"):
 		h.handleDisposeSurface(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/_redevplugin/api/plugins/rpc":
@@ -411,6 +430,69 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
 	}
+}
+
+func (h Handler) handleCancelSurfaceOperation(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/operations/cancel")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req cancelSurfaceOperationRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope := trustedRequestScope(r)
+	record, err := h.Host.CancelSurfaceOperation(r.Context(), host.CancelSurfaceOperationRequest{
+		OperationID: req.OperationID, SurfaceInstanceID: surfaceInstanceID,
+		OwnerSessionHash: scope.OwnerSessionHash, OwnerUserHash: scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash, BridgeChannelID: req.BridgeChannelID,
+		Reason: req.Reason,
+	})
+	if err != nil {
+		WriteJSON(w, httpStatusForOperationError(err), Envelope{OK: false, Error: publicPluginErrorMessage(errorCodeForOperationError(err)), ErrorCode: string(errorCodeForOperationError(err))})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: record})
+}
+
+func (h Handler) handleRejectSurfaceConfirmation(w http.ResponseWriter, r *http.Request) {
+	if h.Host == nil {
+		WriteJSON(w, http.StatusServiceUnavailable, Envelope{OK: false, Error: "host is unavailable", ErrorCode: string(security.ErrRuntimeUnavailable)})
+		return
+	}
+	surfaceInstanceID, ok := surfaceInstanceIDFromPath(r.URL.Path, "/confirmations/reject")
+	if !ok {
+		WriteJSON(w, http.StatusNotFound, Envelope{OK: false, Error: "route not found", ErrorCode: string(security.ErrInvalidRequest)})
+		return
+	}
+	var req rejectSurfaceConfirmationRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeInvalidRequestError(w, err)
+		return
+	}
+	scope := trustedRequestScope(r)
+	result, err := h.Host.RejectMethodConfirmation(r.Context(), host.RejectMethodConfirmationRequest{
+		PluginInstanceID:     req.PluginInstanceID,
+		SurfaceInstanceID:    surfaceInstanceID,
+		OwnerSessionHash:     scope.OwnerSessionHash,
+		OwnerUserHash:        scope.OwnerUserHash,
+		SessionChannelIDHash: scope.SessionChannelIDHash,
+		BridgeChannelID:      req.BridgeChannelID,
+		GatewayToken:         req.GatewayToken,
+		ConfirmationID:       req.ConfirmationID,
+	})
+	if err != nil {
+		code := errorCodeForRPCError(err)
+		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
+		return
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
 }
 
 func (h Handler) enforceWebSecurity(w http.ResponseWriter, r *http.Request) (websecurity.RequestContext, bool) {
@@ -488,6 +570,8 @@ func RouteSetWithOptions(options RouteSetOptions) []Route {
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel"},
+		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/confirmations/reject"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/rpc"},
 		{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/confirm"},
@@ -992,13 +1076,25 @@ func (h Handler) handleReadSurfaceStream(w http.ResponseWriter, r *http.Request)
 		SessionChannelIDHash: scope.SessionChannelIDHash,
 		MaxEvents:            defaultStreamReadMaxEvents,
 		MaxBytes:             defaultStreamReadMaxBytes,
+		WaitTimeout:          defaultStreamReadWaitTimeout,
 	})
 	if err != nil {
 		code := errorCodeForStreamError(err)
 		WriteJSON(w, httpStatusForStreamError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
 		return
 	}
-	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: map[string]any{"events": result.Events}})
+	data := map[string]any{
+		"events": result.Events,
+		"done":   result.Done,
+	}
+	if result.Done {
+		data["terminal_status"] = result.TerminalStatus
+	} else {
+		data["next_stream_ticket"] = result.NextStreamTicket
+		data["next_stream_ticket_id"] = result.NextStreamTicketID
+		data["next_stream_expires_at"] = result.NextStreamExpiresAt
+	}
+	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: data})
 }
 
 func (h Handler) handleDisposeSurface(w http.ResponseWriter, r *http.Request) {
@@ -1078,7 +1174,7 @@ func (h Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		code := errorCodeForRPCError(err)
-		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code)})
+		WriteJSON(w, httpStatusForRPCError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code), ErrorDetails: errorDetailsForRPCError(err)})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -1151,7 +1247,8 @@ func (h Handler) handleInvokeIntent(w http.ResponseWriter, r *http.Request) {
 		SessionChannelIDHash: scope.SessionChannelIDHash,
 	})
 	if err != nil {
-		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: err.Error(), ErrorCode: string(errorCodeForIntentError(err))})
+		code := errorCodeForIntentError(err)
+		WriteJSON(w, httpStatusForIntentError(err), Envelope{OK: false, Error: publicPluginErrorMessage(code), ErrorCode: string(code), ErrorDetails: errorDetailsForRPCError(err)})
 		return
 	}
 	WriteJSON(w, http.StatusOK, Envelope{OK: true, Data: result})
@@ -1840,12 +1937,16 @@ func httpStatusForBridgeError(err error) int {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case isCapabilityBusinessError(err):
+		return security.ErrCapabilityError
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrMethodResponseContract):
 		return security.ErrContractMismatch
 	case errors.Is(err, host.ErrConfirmationRequired):
 		return security.ErrConfirmationRequired
+	case errors.Is(err, host.ErrConfirmationInvalid):
+		return security.ErrConfirmationInvalid
 	case errors.Is(err, security.ErrPolicyDenied):
 		return security.ErrPermissionDenied
 	case errors.Is(err, permissions.ErrPermissionDenied):
@@ -1883,6 +1984,8 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin stream was cancelled"
 	case security.ErrRuntimeUnavailable:
 		return "plugin runtime is unavailable"
+	case security.ErrCapabilityError:
+		return "host capability request failed"
 	case security.ErrContractMismatch:
 		return "plugin contract validation failed"
 	default:
@@ -2011,6 +2114,8 @@ func errorCodeForOperationError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
 		return security.ErrRuntimeUnavailable
+	case errors.Is(err, operation.ErrNotCancelable):
+		return security.ErrOperationNotCancelable
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return security.ErrInvalidRequest
 	default:
@@ -2022,6 +2127,8 @@ func httpStatusForOperationError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrOperationCancelDispatchFailed):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, operation.ErrNotCancelable):
+		return http.StatusConflict
 	case errors.Is(err, operation.ErrNotFound), errors.Is(err, operation.ErrInvalidOperation):
 		return http.StatusBadRequest
 	default:
@@ -2055,6 +2162,8 @@ func httpStatusForStreamError(err error) int {
 
 func httpStatusForRPCError(err error) int {
 	switch {
+	case isCapabilityBusinessError(err):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrMethodResponseContract):
@@ -2076,6 +2185,8 @@ func httpStatusForRPCError(err error) int {
 
 func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
+	case isCapabilityBusinessError(err):
+		return security.ErrCapabilityError
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrMethodResponseContract):
@@ -2095,8 +2206,32 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 	}
 }
 
+func errorDetailsForRPCError(err error) map[string]any {
+	var businessError *capability.BusinessError
+	if !errors.As(err, &businessError) {
+		return nil
+	}
+	details := map[string]any{
+		"capability_id":        businessError.CapabilityID,
+		"capability_version":   businessError.CapabilityVersion,
+		"detail_schema_sha256": businessError.DetailSchemaSHA256,
+		"business_error_code":  businessError.Code,
+	}
+	if businessError.Details != nil {
+		details["business_error_details"] = businessError.Details
+	}
+	return details
+}
+
+func isCapabilityBusinessError(err error) bool {
+	var businessError *capability.BusinessError
+	return errors.As(err, &businessError)
+}
+
 func httpStatusForIntentError(err error) int {
 	switch {
+	case isCapabilityBusinessError(err):
+		return http.StatusUnprocessableEntity
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrMethodResponseContract):

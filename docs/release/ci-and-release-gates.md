@@ -61,11 +61,19 @@ the same command shape.
   package builder, and TypeScript trusted renderer;
 - compatibility manifest schema and emitted compatibility manifest shape;
 - manifest, package signature, token/ticket, bridge, error-code, release
-  manifest, IPC, WASM ABI, worker invocation, network grant, and target
-  classifier contract snippets;
+  manifest, IPC, WASM ABI, worker invocation, network grant, all six
+  host-capability artifact schemas, and target classifier contract snippets;
+- shared Go/TypeScript restricted-schema conformance fixtures, typed capability
+  business-error identity, paired operation/stream subscription handles, and
+  atomic surface-scoped confirmation rejection;
 - executable Go/Rust runtime IPC golden fixtures for handshake/version
   mismatch, replay, unknown-frame, missing-field, and runtime-generation
   mismatch cases;
+- mandatory ephemeral runtime lease signing, non-empty Rust startup keyrings,
+  Rust-side expiry and invocation-binding validation, and pre-artifact rejection;
+- serialized non-destructive stream polling, transactional ticket commit/rotate,
+  terminal reads at token capacity, failure retry, and durable operation/stream
+  terminal reconciliation across SQLite reopen;
 - release artifact verifier fixture behavior, including exact four-target and
   signed-file sets plus rejection of every extra tar or non-tar asset;
 - npm registry readback mutation fixtures for tarball SHA-512, SLSA subject,
@@ -102,7 +110,7 @@ and `--summary PATH`.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
 counters for stream backpressure, stream close/cancel fail-closed checks,
-operation cancel dispatch success/failure persistence, connectivity
+operation cancel ownership and inactive-operation non-redispatch, connectivity
 classifier/grant denials, runtime revoke ACK p95 latency, KV and SQLite storage
 quota pressure, and SQLite sidecar/sparse bypass checks. CI uploads summaries as artifacts, and tagged release workflows
 include release-mode stress evidence in the published checksum and signature
@@ -123,6 +131,8 @@ evidence chain.
 - the root MIT `LICENSE`;
 - `docs/release/a2-tdd-evidence.md` so changelog evidence links remain valid in
   standalone bundles;
+- `docs/release/a3-tdd-evidence.md` plus the complete signed
+  `examples/host-capability/sample-documents-v1/` artifact;
 - `notices/THIRD_PARTY_LICENSES.json` plus actual redistributed license, notice,
   and copyright texts under `notices/licenses/`.
 
@@ -134,8 +144,9 @@ digest, and the npm tarball path, SHA-256, SRI, and size. The bundle verifier
 checks compatibility, release manifest hashes, `SHA256SUMS`, executable target
 format, runtime hello, npm package version/license, every declared root and
 subpath export target, actual self-referenced imports from the unpacked package,
-required contract files, and
-generated license evidence. License verification checks the exact legal-file
+required contract files, the A3 sample pin, per-file hashes, signed manifest,
+generated-client identity, host-neutral vocabulary, and generated license
+evidence. License verification checks the exact legal-file
 set and each manifest SHA-256; a dependency entry that names a license without
 redistributed legal text fails the build. Each runtime matrix runner executes
 its own Go and Rust binaries. The post-publication aggregate runner uses structural-only
@@ -152,16 +163,23 @@ The npm package exposes four deliberate import surfaces:
 - `@floegence/redevplugin-ui/trusted-parent` contains host-shell management,
   surface ownership, transport, and policy clients. It does not export the
   plugin worker bridge client or the internal bootstrap HTML factory.
-- `@floegence/redevplugin-ui/plugin` contains only `PluginBridgeClient` for
-  untrusted plugin worker bundles. It cannot import management, surface-host,
-  transport, token, or local-import APIs.
+- `@floegence/redevplugin-ui/plugin` contains exactly six runtime exports for
+  untrusted plugin worker bundles: `PluginBridgeClient`, `PluginBridgeError`,
+  `callCapabilitySync`, `callCapabilityOperation`, `callCapabilityStream`, and
+  `isCapabilityBusinessError`. It cannot import management, surface-host,
+  transport, token, stream-decoder, or local-import APIs.
 - `@floegence/redevplugin-ui/local-import` contains the explicit dev/admin raw
   package import client. Official release-reference product paths must not
   import or bundle it.
 
 The release-bundle verifier imports every packed entrypoint, requires this
 exact export set, checks the plugin runtime namespace, and scans the generated
-declarations for trusted-parent and bearer-token leakage.
+declarations for trusted-parent and bearer-token leakage. It also installs the
+packed tarball into a standalone temporary consumer and runs `tsc --noEmit` on
+the released host-capability sample without source aliases.
+
+Ordinary branch CI builds a synthetic `0.0.0-ci.<run-number>` bundle. Only the
+tagged release workflow builds and publishes the immutable `0.3.0` identity.
 
 Tagged release workflows also publish `@floegence/redevplugin-ui` to the npm
 registry with the same version as the Git tag. The publish job downloads the
@@ -186,7 +204,9 @@ nullable runtime targets, and ISO date-time generation metadata.
 The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,
 source revocations, IPC/WASM contracts, release manifest schema, error codes,
-network grants, worker invocation payloads, and target classifier fixtures.
+network grants, the host-capability contract/pin/manifest/compatibility/
+signature/notices schemas, worker invocation payloads, and target classifier
+fixtures.
 
 Any change to the release-reference install/update request schema, route set,
 trust-state enum, token/ticket schema, or bridge contract must update the

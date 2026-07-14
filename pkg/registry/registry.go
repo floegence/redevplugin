@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 )
@@ -65,50 +67,52 @@ type TrustAssessment struct {
 }
 
 type PluginRecord struct {
-	PluginInstanceID         string                 `json:"plugin_instance_id"`
-	PublisherID              string                 `json:"publisher_id"`
-	PluginID                 string                 `json:"plugin_id"`
-	Version                  string                 `json:"version"`
-	ActiveFingerprint        string                 `json:"active_fingerprint"`
-	PackageHash              string                 `json:"package_hash"`
-	ManifestHash             string                 `json:"manifest_hash"`
-	EntriesHash              string                 `json:"entries_hash"`
-	TrustState               TrustState             `json:"trust_state"`
-	TrustAssessment          TrustAssessment        `json:"trust_assessment"`
-	SourcePolicySnapshotHash string                 `json:"source_policy_snapshot_hash,omitempty"`
-	SourcePolicySnapshot     map[string]any         `json:"source_policy_snapshot,omitempty"`
-	LocalImportProvenance    *LocalImportProvenance `json:"local_import_provenance,omitempty"`
-	EnableState              EnableState            `json:"enable_state"`
-	DisabledReason           string                 `json:"disabled_reason,omitempty"`
-	RetainedDataState        RetainedDataState      `json:"retained_data_state"`
-	PolicyRevision           uint64                 `json:"policy_revision"`
-	ManagementRevision       uint64                 `json:"management_revision"`
-	RevokeEpoch              uint64                 `json:"revoke_epoch"`
-	Manifest                 manifest.Manifest      `json:"manifest"`
-	PackageEntries           []pluginpkg.Entry      `json:"package_entries"`
-	VersionHistory           []PluginVersion        `json:"version_history,omitempty"`
-	InstalledAt              time.Time              `json:"installed_at"`
-	EnabledAt                *time.Time             `json:"enabled_at,omitempty"`
-	UpdatedAt                time.Time              `json:"updated_at"`
-	DeletedAt                *time.Time             `json:"deleted_at,omitempty"`
-	Metadata                 map[string]string      `json:"metadata,omitempty"`
+	PluginInstanceID         string                   `json:"plugin_instance_id"`
+	PublisherID              string                   `json:"publisher_id"`
+	PluginID                 string                   `json:"plugin_id"`
+	Version                  string                   `json:"version"`
+	ActiveFingerprint        string                   `json:"active_fingerprint"`
+	PackageHash              string                   `json:"package_hash"`
+	ManifestHash             string                   `json:"manifest_hash"`
+	EntriesHash              string                   `json:"entries_hash"`
+	TrustState               TrustState               `json:"trust_state"`
+	TrustAssessment          TrustAssessment          `json:"trust_assessment"`
+	SourcePolicySnapshotHash string                   `json:"source_policy_snapshot_hash,omitempty"`
+	SourcePolicySnapshot     map[string]any           `json:"source_policy_snapshot,omitempty"`
+	LocalImportProvenance    *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
+	CapabilityContracts      []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
+	EnableState              EnableState              `json:"enable_state"`
+	DisabledReason           string                   `json:"disabled_reason,omitempty"`
+	RetainedDataState        RetainedDataState        `json:"retained_data_state"`
+	PolicyRevision           uint64                   `json:"policy_revision"`
+	ManagementRevision       uint64                   `json:"management_revision"`
+	RevokeEpoch              uint64                   `json:"revoke_epoch"`
+	Manifest                 manifest.Manifest        `json:"manifest"`
+	PackageEntries           []pluginpkg.Entry        `json:"package_entries"`
+	VersionHistory           []PluginVersion          `json:"version_history,omitempty"`
+	InstalledAt              time.Time                `json:"installed_at"`
+	EnabledAt                *time.Time               `json:"enabled_at,omitempty"`
+	UpdatedAt                time.Time                `json:"updated_at"`
+	DeletedAt                *time.Time               `json:"deleted_at,omitempty"`
+	Metadata                 map[string]string        `json:"metadata,omitempty"`
 }
 
 type PluginVersion struct {
-	Version                  string                 `json:"version"`
-	ActiveFingerprint        string                 `json:"active_fingerprint"`
-	PackageHash              string                 `json:"package_hash"`
-	ManifestHash             string                 `json:"manifest_hash"`
-	EntriesHash              string                 `json:"entries_hash"`
-	TrustState               TrustState             `json:"trust_state"`
-	TrustAssessment          TrustAssessment        `json:"trust_assessment"`
-	SourcePolicySnapshotHash string                 `json:"source_policy_snapshot_hash,omitempty"`
-	SourcePolicySnapshot     map[string]any         `json:"source_policy_snapshot,omitempty"`
-	LocalImportProvenance    *LocalImportProvenance `json:"local_import_provenance,omitempty"`
-	Manifest                 manifest.Manifest      `json:"manifest"`
-	PackageEntries           []pluginpkg.Entry      `json:"package_entries"`
-	ActivatedAt              time.Time              `json:"activated_at"`
-	Metadata                 map[string]string      `json:"metadata,omitempty"`
+	Version                  string                   `json:"version"`
+	ActiveFingerprint        string                   `json:"active_fingerprint"`
+	PackageHash              string                   `json:"package_hash"`
+	ManifestHash             string                   `json:"manifest_hash"`
+	EntriesHash              string                   `json:"entries_hash"`
+	TrustState               TrustState               `json:"trust_state"`
+	TrustAssessment          TrustAssessment          `json:"trust_assessment"`
+	SourcePolicySnapshotHash string                   `json:"source_policy_snapshot_hash,omitempty"`
+	SourcePolicySnapshot     map[string]any           `json:"source_policy_snapshot,omitempty"`
+	LocalImportProvenance    *LocalImportProvenance   `json:"local_import_provenance,omitempty"`
+	CapabilityContracts      []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
+	Manifest                 manifest.Manifest        `json:"manifest"`
+	PackageEntries           []pluginpkg.Entry        `json:"package_entries"`
+	ActivatedAt              time.Time                `json:"activated_at"`
+	Metadata                 map[string]string        `json:"metadata,omitempty"`
 }
 
 type LocalImportProvenance struct {
@@ -172,6 +176,11 @@ func (s *MemoryStore) PutPlugin(_ context.Context, record PluginRecord, opts Put
 	if record.PluginInstanceID == "" {
 		return PluginRecord{}, errors.New("plugin_instance_id is required")
 	}
+	cloned, err := clonePluginRecord(record)
+	if err != nil {
+		return PluginRecord{}, fmt.Errorf("clone plugin record: %w", err)
+	}
+	record = cloned
 	existing, exists := s.records[record.PluginInstanceID]
 	if exists {
 		record.InstalledAt = existing.InstalledAt
@@ -193,7 +202,7 @@ func (s *MemoryStore) PutPlugin(_ context.Context, record PluginRecord, opts Put
 	}
 	record = normalizeTrustAssessment(record)
 	s.records[record.PluginInstanceID] = record
-	return record, nil
+	return clonePluginRecord(record)
 }
 
 func (s *MemoryStore) GetPlugin(_ context.Context, pluginInstanceID string) (PluginRecord, error) {
@@ -204,7 +213,7 @@ func (s *MemoryStore) GetPlugin(_ context.Context, pluginInstanceID string) (Plu
 	if !ok || record.DeletedAt != nil {
 		return PluginRecord{}, ErrNotFound
 	}
-	return record, nil
+	return clonePluginRecord(record)
 }
 
 func (s *MemoryStore) ListPlugins(_ context.Context) ([]PluginRecord, error) {
@@ -214,7 +223,11 @@ func (s *MemoryStore) ListPlugins(_ context.Context) ([]PluginRecord, error) {
 	records := make([]PluginRecord, 0, len(s.records))
 	for _, record := range s.records {
 		if record.DeletedAt == nil {
-			records = append(records, record)
+			cloned, err := clonePluginRecord(record)
+			if err != nil {
+				return nil, fmt.Errorf("clone plugin record: %w", err)
+			}
+			records = append(records, cloned)
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -248,7 +261,7 @@ func (s *MemoryStore) SetEnableState(_ context.Context, pluginInstanceID string,
 		record.EnabledAt = nil
 	}
 	s.records[pluginInstanceID] = record
-	return record, nil
+	return clonePluginRecord(record)
 }
 
 func (s *MemoryStore) BumpPolicyRevision(_ context.Context, pluginInstanceID string, revoke bool, now time.Time) (PluginRecord, error) {
@@ -268,7 +281,7 @@ func (s *MemoryStore) BumpPolicyRevision(_ context.Context, pluginInstanceID str
 	}
 	record.UpdatedAt = now
 	s.records[pluginInstanceID] = record
-	return record, nil
+	return clonePluginRecord(record)
 }
 
 func (s *MemoryStore) MarkUninstalled(_ context.Context, pluginInstanceID string, retained RetainedDataState, now time.Time) (PluginRecord, error) {
@@ -291,7 +304,7 @@ func (s *MemoryStore) MarkUninstalled(_ context.Context, pluginInstanceID string
 	record.DeletedAt = &now
 	record.EnabledAt = nil
 	s.records[pluginInstanceID] = record
-	return record, nil
+	return clonePluginRecord(record)
 }
 
 func (s *MemoryStore) DeletePlugin(_ context.Context, pluginInstanceID string) error {
@@ -356,6 +369,18 @@ func normalizeTrustAssessment(record PluginRecord) PluginRecord {
 	return record
 }
 
+func clonePluginRecord(record PluginRecord) (PluginRecord, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	var cloned PluginRecord
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return PluginRecord{}, err
+	}
+	return cloned, nil
+}
+
 func validateSourceSecurityFloor(floor SourceSecurityFloor) error {
 	if floor.SourceID == "" {
 		return errors.New("source_id is required")
@@ -405,6 +430,13 @@ func ensureSourceSecurityFloorMonotonic(existing SourceSecurityFloor, next Sourc
 	}
 	if cmp == 0 && next.RevocationMetadataSHA256 != existing.RevocationMetadataSHA256 {
 		return fmt.Errorf("%w: revocation_metadata_sha256 changed for epoch %s", ErrSourceSecurityFloorRollback, existing.RevocationEpoch)
+	}
+	cmp, err = compareSourceSecurityEpoch(next.PolicyEpoch, existing.PolicyEpoch)
+	if err != nil {
+		return err
+	}
+	if cmp == 0 && next.SourcePolicySnapshotHash != existing.SourcePolicySnapshotHash {
+		return fmt.Errorf("%w: source_policy_snapshot_hash changed for epoch %s", ErrSourceSecurityFloorRollback, existing.PolicyEpoch)
 	}
 	return nil
 }

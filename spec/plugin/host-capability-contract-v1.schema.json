@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/host-capability-contract-v1.schema.json",
+  "title": "ReDevPlugin host capability contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "contract_version",
+    "publisher_id",
+    "capability_id",
+    "capability_version",
+    "client_name",
+    "methods"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.host_capability_contract.v1" },
+    "contract_id": { "$ref": "#/$defs/id" },
+    "contract_version": { "$ref": "#/$defs/semver" },
+    "publisher_id": { "$ref": "#/$defs/id" },
+    "capability_id": { "$ref": "#/$defs/id" },
+    "capability_version": { "$ref": "#/$defs/semver" },
+    "client_name": { "$ref": "#/$defs/typescript_declaration_identifier" },
+    "methods": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/method" }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/business_error" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "typescript_declaration_identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$",
+      "not": {
+        "enum": [
+          "PluginBridgeClient", "PluginBridgeError", "PluginOperation", "PluginStream",
+          "abstract", "accessor", "any", "as", "assert", "asserts", "async", "await", "bigint", "boolean",
+          "break", "case", "catch", "class", "const", "continue", "debugger", "declare", "default", "delete",
+          "do", "else", "enum", "export", "extends", "false", "finally", "for", "from", "function", "get",
+          "if", "implements", "import", "in", "infer", "instanceof", "interface", "intrinsic", "is", "keyof",
+          "let", "module", "namespace", "never", "new", "null", "number", "object", "of", "out", "override",
+          "package", "private", "protected", "public", "readonly", "require", "return", "satisfies", "set", "static",
+          "string", "super", "switch", "symbol", "this", "throw", "true", "try", "type", "typeof", "undefined",
+          "unique", "unknown", "using", "var", "void", "while", "with", "yield",
+          "callCapabilityOperation", "callCapabilityStream", "callCapabilitySync", "decodePluginStreamText",
+          "isCapabilityBusinessError"
+        ]
+      }
+    },
+    "typescript_member_identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$",
+      "not": { "const": "constructor" }
+    },
+    "string_set": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "pattern": "^\\S+$" }
+    },
+    "method": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "client_method",
+        "effect",
+        "execution",
+        "target_fields",
+        "target_schema",
+        "request_type_name",
+        "response_type_name",
+        "request_schema",
+        "response_schema",
+        "quota"
+      ],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9_]*)+$" },
+        "client_method": { "$ref": "#/$defs/typescript_member_identifier" },
+        "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
+        "execution": { "enum": ["sync", "operation", "subscription"] },
+        "preflight_only": { "type": "boolean" },
+        "required_permissions": { "$ref": "#/$defs/string_set" },
+        "target_fields": { "$ref": "#/$defs/string_set" },
+        "target_schema": { "$ref": "#/$defs/object_value_schema" },
+        "request_type_name": { "$ref": "#/$defs/typescript_declaration_identifier" },
+        "response_type_name": { "$ref": "#/$defs/typescript_declaration_identifier" },
+        "request_schema": { "$ref": "#/$defs/object_value_schema" },
+        "response_schema": { "$ref": "#/$defs/restricted_schema" },
+        "event_type_name": { "$ref": "#/$defs/typescript_declaration_identifier" },
+        "event_schema": { "$ref": "#/$defs/restricted_schema" },
+        "confirmation": { "$ref": "#/$defs/confirmation" },
+        "cancel_policy": { "$ref": "#/$defs/cancel_policy" },
+        "quota": { "$ref": "#/$defs/quota" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "execution": { "const": "subscription" } }, "required": ["execution"] },
+          "then": { "required": ["event_type_name", "event_schema", "cancel_policy"] }
+        },
+        {
+          "if": { "properties": { "execution": { "const": "operation" } }, "required": ["execution"] },
+          "then": { "required": ["cancel_policy"] }
+        },
+        {
+          "if": { "properties": { "execution": { "const": "sync" } }, "required": ["execution"] },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["event_type_name"] },
+                { "required": ["event_schema"] },
+                { "required": ["cancel_policy"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["required", "risk_based"] },
+        "preflight_method": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9_]*)+$" },
+        "request_hash_fields": { "$ref": "#/$defs/string_set" },
+        "plan_hash_required": { "type": "boolean" }
+      }
+    },
+    "cancel_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cancelable", "disable_behavior", "uninstall_behavior"],
+      "properties": {
+        "cancelable": { "type": "boolean" },
+        "disable_behavior": { "enum": ["cancel", "orphan", "wait"] },
+        "uninstall_behavior": { "enum": ["cancel_then_block_delete", "force_cleanup_allowed"] },
+        "ack_timeout_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_concurrent": { "type": "integer", "minimum": 0 },
+        "max_duration_ms": { "type": "integer", "minimum": 0 },
+        "max_stream_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "business_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1 },
+        "details_schema": { "$ref": "#/$defs/object_value_schema" }
+      }
+    },
+    "restricted_schema": {
+      "oneOf": [
+        { "$ref": "#/$defs/object_schema" },
+        { "$ref": "#/$defs/array_schema" },
+        { "$ref": "#/$defs/string_schema" },
+        { "$ref": "#/$defs/integer_schema" },
+        { "$ref": "#/$defs/number_schema" },
+        { "$ref": "#/$defs/boolean_schema" },
+        { "$ref": "#/$defs/null_schema" },
+        { "$ref": "#/$defs/one_of_schema" }
+      ]
+    },
+    "object_value_schema": {
+      "oneOf": [
+        { "$ref": "#/$defs/object_schema" },
+        { "$ref": "#/$defs/object_one_of_schema" }
+      ]
+    },
+    "object_one_of_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oneOf"],
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "oneOf": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/object_value_schema" }
+        }
+      }
+    },
+    "object_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "additionalProperties"],
+      "properties": {
+        "type": { "const": "object" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "properties": {
+          "type": "object",
+          "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } },
+          "additionalProperties": { "$ref": "#/$defs/restricted_schema" }
+        },
+        "required": { "$ref": "#/$defs/string_set" },
+        "additionalProperties": { "const": false },
+        "minProperties": { "type": "integer", "minimum": 0 },
+        "maxProperties": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "array_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "items"],
+      "properties": {
+        "type": { "const": "array" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "items": { "$ref": "#/$defs/restricted_schema" },
+        "minItems": { "type": "integer", "minimum": 0 },
+        "maxItems": { "type": "integer", "minimum": 0 },
+        "uniqueItems": { "type": "boolean" }
+      }
+    },
+    "string_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "enum": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+        "const": { "type": "string" },
+        "minLength": { "type": "integer", "minimum": 0 },
+        "maxLength": { "type": "integer", "minimum": 0 },
+        "pattern": { "type": "string" },
+        "format": { "enum": ["date-time", "uuid", "hostname", "ipv4", "ipv6"] }
+      }
+    },
+    "integer_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "integer" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "enum": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer" } },
+        "const": { "type": "integer" },
+        "minimum": { "type": "integer" },
+        "maximum": { "type": "integer" },
+        "exclusiveMinimum": { "type": "integer" },
+        "exclusiveMaximum": { "type": "integer" },
+        "multipleOf": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+    "number_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "number" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "enum": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "number" } },
+        "const": { "type": "number" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "exclusiveMinimum": { "type": "number" },
+        "exclusiveMaximum": { "type": "number" },
+        "multipleOf": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "boolean_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "boolean" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "const": { "type": "boolean" }
+      }
+    },
+    "null_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "null" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "const": { "type": "null" }
+      }
+    },
+    "one_of_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["oneOf"],
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "oneOf": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/restricted_schema" }
+        }
+      }
+    }
+  }
+}

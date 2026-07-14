@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
@@ -607,6 +608,9 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	scaffoldDir := filepath.Join(dir, "generated")
 	stateRoot := filepath.Join(dir, "state")
 	packageFile := filepath.Join(dir, "generated.redevplugin")
+	if err := os.Mkdir(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
@@ -1106,12 +1110,12 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.permissions", "Generated Permissions Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	addLifecyclePermissionBindingToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
+	capabilityRoot, capabilityPin, capabilityPublicKey := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 
-	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
+	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile, "--capability", capabilityRoot, capabilityPin, capabilityPublicKey)
 	if err != nil {
 		t.Fatalf("dev-install error = %v", err)
 	}
@@ -1226,6 +1230,99 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	uninstalledState := loadDevStateForTest(t, stateRoot)
 	if len(uninstalledState.Permissions.Records) != 0 {
 		t.Fatalf("permission grants remained after uninstall: %#v", uninstalledState.Permissions)
+	}
+}
+
+func TestCLIHostCapabilityGenerateClientRequiresVerifiedBundleAndDetectsStaleOutput(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.client", "Generated Client Plugin", scaffoldDir); err != nil {
+		t.Fatal(err)
+	}
+	manifestFile := filepath.Join(scaffoldDir, "manifest.json")
+	artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, manifestFile)
+	outputFile := filepath.Join(dir, "generated", "client.ts")
+	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, outputFile); err != nil {
+		t.Fatalf("generate-client error = %v", err)
+	}
+	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, outputFile, "--check"); err != nil {
+		t.Fatalf("generate-client --check error = %v", err)
+	}
+	if err := os.WriteFile(outputFile, []byte("stale client\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, outputFile, "--check"); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("generate-client --check error = %v, want stale output", err)
+	}
+}
+
+func TestCLIHostCapabilityVerifyRejectsLinkedArtifacts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		link func(string, string) error
+	}{
+		{name: "symlink", link: os.Symlink},
+		{name: "hardlink", link: os.Link},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			scaffoldDir := filepath.Join(dir, "generated")
+			if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.linked", "Generated Linked Plugin", scaffoldDir); err != nil {
+				t.Fatal(err)
+			}
+			manifestFile := filepath.Join(scaffoldDir, "manifest.json")
+			artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, manifestFile)
+			var pin capabilitycontract.Pin
+			if err := readStrictJSONFile(pinFile, &pin); err != nil {
+				t.Fatal(err)
+			}
+			artifactFile := filepath.Join(artifactRoot, filepath.FromSlash(pin.ArtifactRef))
+			outsideFile := filepath.Join(dir, "outside.schema.json")
+			content, err := os.ReadFile(artifactFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(outsideFile, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(artifactFile); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.link(outsideFile, artifactFile); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := captureCLIOutput(t, "host-capability", "verify", artifactRoot, pinFile, publicKeyFile); err == nil || !strings.Contains(err.Error(), "regular unlinked file") {
+				t.Fatalf("verify linked artifact error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCLIDevInstallCapabilityFailureLeavesNoState(t *testing.T) {
+	dir := t.TempDir()
+	scaffoldDir := filepath.Join(dir, "generated")
+	stateRoot := filepath.Join(dir, "state")
+	packageFile := filepath.Join(dir, "generated.redevplugin")
+	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.atomic", "Generated Atomic Plugin", scaffoldDir); err != nil {
+		t.Fatal(err)
+	}
+	artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+		t.Fatal(err)
+	}
+	var pin capabilitycontract.Pin
+	if err := readStrictJSONFile(pinFile, &pin); err != nil {
+		t.Fatal(err)
+	}
+	artifactFile := filepath.Join(artifactRoot, filepath.FromSlash(pin.ArtifactRef))
+	if err := os.WriteFile(artifactFile, []byte("tampered\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile, "--capability", artifactRoot, pinFile, publicKeyFile); err == nil {
+		t.Fatal("dev-install accepted a tampered capability artifact")
+	}
+	if _, err := os.Lstat(stateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed dev-install left state root behind: %v", err)
 	}
 }
 
@@ -1592,7 +1689,90 @@ func addLifecycleSettingsToManifest(t *testing.T, filename string) {
 	}
 }
 
-func addLifecyclePermissionBindingToManifest(t *testing.T, filename string) {
+func buildCLITestCapabilityArtifact(t *testing.T, root, manifestFile string) (string, string, string) {
+	t.Helper()
+	raw, err := os.ReadFile(manifestFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plugin manifest.Manifest
+	if err := json.Unmarshal(raw, &plugin); err != nil {
+		t.Fatal(err)
+	}
+	if len(plugin.Methods) == 0 {
+		t.Fatalf("capability fixture manifest mismatch: %#v", plugin)
+	}
+	method := plugin.Methods[0]
+	responseSchema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+	}
+	contract := capabilitycontract.Contract{
+		SchemaVersion:     capabilitycontract.SchemaVersion,
+		ContractID:        "example.capability.demo.v1",
+		ContractVersion:   "1.0.0",
+		PublisherID:       "example.contracts",
+		CapabilityID:      "example.capability.demo",
+		CapabilityVersion: "1.0.0",
+		ClientName:        "ExampleDemoCapabilityClient",
+		Methods: []capabilitycontract.Method{{
+			Name:                "worker.echo",
+			ClientMethod:        "echo",
+			Effect:              string(method.Effect),
+			Execution:           string(method.Execution),
+			RequiredPermissions: []string{"demo.execute"},
+			TargetFields:        []string{},
+			TargetSchema:        method.RequestSchema,
+			RequestTypeName:     "ExampleDemoEchoRequest",
+			ResponseTypeName:    "ExampleDemoEchoResponse",
+			RequestSchema:       method.RequestSchema,
+			ResponseSchema:      responseSchema,
+		}},
+	}
+	contractFile := filepath.Join(root, "host-capability.contract.json")
+	privateKeyFile := filepath.Join(root, "host-capability.private.json")
+	publicKeyFile := filepath.Join(root, "host-capability.public.json")
+	configFile := filepath.Join(root, "host-capability.build.json")
+	artifactRoot := filepath.Join(root, "host-capability-artifact")
+	if err := writeJSONFile(contractFile, contract, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "keygen", "host-capability-test-key", privateKeyFile, publicKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONFile(configFile, hostCapabilityBuildConfig{
+		ContractFile:             contractFile,
+		PrivateKeyFile:           privateKeyFile,
+		ArtifactBaseRef:          "capabilities/example/demo/v1.0.0",
+		GeneratedAt:              "2026-07-13T00:00:00Z",
+		SourceCommit:             strings.Repeat("a", 40),
+		MinReDevPluginVersion:    version.CurrentMatrix().GoModuleVersion,
+		SignaturePolicyEpoch:     "1",
+		SignatureRevocationEpoch: "1",
+	}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureCLIOutput(t, "host-capability", "build", configFile, artifactRoot); err != nil {
+		t.Fatal(err)
+	}
+	pinFile := filepath.Join(artifactRoot, hostCapabilityPinFile)
+	if _, err := captureCLIOutput(t, "host-capability", "verify", artifactRoot, pinFile, publicKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	var pin capabilitycontract.Pin
+	if err := readStrictJSONFile(pinFile, &pin); err != nil {
+		t.Fatal(err)
+	}
+	addLifecyclePermissionBindingToManifest(t, manifestFile, pin)
+	clientFile := filepath.Join(root, "host-capability.client.ts")
+	if _, err := captureCLIOutput(t, "host-capability", "generate-client", artifactRoot, pinFile, publicKeyFile, clientFile); err != nil {
+		t.Fatal(err)
+	}
+	return artifactRoot, pinFile, publicKeyFile
+}
+
+func addLifecyclePermissionBindingToManifest(t *testing.T, filename string, pin capabilitycontract.Pin) {
 	t.Helper()
 	raw, err := os.ReadFile(filename)
 	if err != nil {
@@ -1603,10 +1783,8 @@ func addLifecyclePermissionBindingToManifest(t *testing.T, filename string) {
 		t.Fatal(err)
 	}
 	doc["capability_bindings"] = []map[string]any{{
-		"binding_id":             "demo",
-		"capability_id":          "example.capability.demo",
-		"min_capability_version": "1.0.0",
-		"required_permissions":   []string{"demo.execute"},
+		"binding_id": "demo",
+		"contract":   pin,
 	}}
 	methods, ok := doc["methods"].([]any)
 	if !ok || len(methods) == 0 {
@@ -1620,6 +1798,18 @@ func addLifecyclePermissionBindingToManifest(t *testing.T, filename string) {
 		"kind":          "capability",
 		"binding_id":    "demo",
 		"target_method": "worker.echo",
+	}
+	for _, field := range []string{
+		"effect",
+		"execution",
+		"dangerous",
+		"preflight_only",
+		"confirmation",
+		"cancel_policy",
+		"request_schema",
+		"response_schema",
+	} {
+		delete(method, field)
 	}
 	updated, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

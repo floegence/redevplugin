@@ -2,10 +2,14 @@ package operation
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/capability"
+	_ "modernc.org/sqlite"
 )
 
 func TestStoreRegisterListAndGet(t *testing.T) {
@@ -16,16 +20,14 @@ func TestStoreRegisterListAndGet(t *testing.T) {
 			now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 
 			registered, err := store.Register(ctx, RegisterRequest{
-				OperationID:          "op_1",
-				PluginID:             "com.example.plugin",
-				PluginInstanceID:     "plugin_1",
-				Method:               "images.pull",
-				Effect:               "execute",
-				Execution:            "operation",
-				SurfaceInstanceID:    "surface_1",
-				SessionChannelIDHash: "session_hash",
-				BridgeChannelID:      "bridge_1",
-				Now:                  now,
+				OperationID: "op_1",
+				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", func(binding *capability.ExecutionBinding) {
+					binding.Effect = capability.EffectExecute
+					binding.SurfaceInstanceID = "surface_1"
+					binding.SessionChannelIDHash = "session_hash"
+					binding.BridgeChannelID = "bridge_1"
+				}),
+				Now: now,
 			})
 			if err != nil {
 				t.Fatalf("Register() error = %v", err)
@@ -34,16 +36,11 @@ func TestStoreRegisterListAndGet(t *testing.T) {
 				t.Fatalf("registered operation mismatch: %#v", registered)
 			}
 
-			duplicate, err := store.Register(ctx, RegisterRequest{
+			if _, err := store.Register(ctx, RegisterRequest{
 				OperationID:      "op_1",
-				PluginInstanceID: "plugin_1",
-				Method:           "images.other",
-			})
-			if err != nil {
-				t.Fatalf("duplicate Register() error = %v", err)
-			}
-			if duplicate.Method != registered.Method {
-				t.Fatalf("duplicate registration changed existing record: %#v", duplicate)
+				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.other", nil),
+			}); !errors.Is(err, ErrAlreadyExists) {
+				t.Fatalf("duplicate Register() error = %v, want ErrAlreadyExists", err)
 			}
 
 			got, err := store.Get(ctx, "op_1")
@@ -62,8 +59,52 @@ func TestStoreRegisterListAndGet(t *testing.T) {
 				t.Fatalf("List() mismatch: %#v", listed)
 			}
 
-			if _, err := store.Register(ctx, RegisterRequest{OperationID: "", PluginInstanceID: "plugin_1", Method: "x"}); !errors.Is(err, ErrInvalidOperation) {
+			if _, err := store.Register(ctx, RegisterRequest{ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.invalid", nil)}); !errors.Is(err, ErrInvalidOperation) {
 				t.Fatalf("Register() invalid error = %v, want ErrInvalidOperation", err)
+			}
+		})
+	}
+}
+
+func TestStoreDeepClonesExecutionBindings(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			binding := operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", nil)
+			registered := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_clone", ExecutionBinding: binding})
+			binding.Target.Fields["document_id"] = "mutated-input"
+			registered.Target.Fields["document_id"] = "mutated-return"
+			stored, err := store.Get(context.Background(), "op_clone")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := stored.Target.Fields["document_id"]; got != "doc-1" {
+				t.Fatalf("stored target was mutated through a boundary: %#v", got)
+			}
+			stored.Target.Fields["document_id"] = "mutated-get"
+			again, err := store.Get(context.Background(), "op_clone")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := again.Target.Fields["document_id"]; got != "doc-1" {
+				t.Fatalf("Get() returned shared target state: %#v", got)
+			}
+			finished, err := store.Finish(context.Background(), FinishRequest{OperationID: "op_clone", Status: StatusCompleted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			terminal, err := store.Finish(context.Background(), FinishRequest{OperationID: "op_clone", Status: StatusCompleted})
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished.Target.Fields["document_id"] = "mutated-finish"
+			terminal.Target.Fields["document_id"] = "mutated-terminal-return"
+			afterFinish, err := store.Get(context.Background(), "op_clone")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := afterFinish.Target.Fields["document_id"]; got != "doc-1" {
+				t.Fatalf("Finish() returned shared target state: %#v", got)
 			}
 		})
 	}
@@ -76,8 +117,7 @@ func TestStoreRequestCancel(t *testing.T) {
 			store := tc.open(t)
 			registered := mustRegisterOperation(t, store, RegisterRequest{
 				OperationID:      "op_cancel",
-				PluginInstanceID: "plugin_1",
-				Method:           "images.pull",
+				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", nil),
 			})
 			now := registered.CreatedAt.Add(time.Minute)
 
@@ -96,6 +136,25 @@ func TestStoreRequestCancel(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsNonCancelableRequest(t *testing.T) {
+	for _, tc := range operationStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			cancelable := false
+			mustRegisterOperation(t, store, RegisterRequest{
+				OperationID:      "op_not_cancelable",
+				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", nil),
+				Cancelable:       &cancelable,
+			})
+			if _, err := store.RequestCancel(ctx, CancelRequest{OperationID: "op_not_cancelable"}); !errors.Is(err, ErrNotCancelable) {
+				t.Fatalf("RequestCancel() error = %v, want ErrNotCancelable", err)
+			}
+			assertOperationStatus(t, store, "op_not_cancelable", StatusRunning)
+		})
+	}
+}
+
 func TestStoreFinishOperation(t *testing.T) {
 	for _, tc := range operationStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,8 +162,7 @@ func TestStoreFinishOperation(t *testing.T) {
 			store := tc.open(t)
 			registered := mustRegisterOperation(t, store, RegisterRequest{
 				OperationID:      "op_finish",
-				PluginInstanceID: "plugin_1",
-				Method:           "images.pull",
+				ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", nil),
 			})
 			now := registered.CreatedAt.Add(time.Minute)
 
@@ -146,10 +204,14 @@ func TestStoreDisableTransitions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := tc.open(t)
-			cancelOp := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_cancel", PluginInstanceID: "plugin_1", Method: "a"})
-			orphanOp := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_orphan", PluginInstanceID: "plugin_1", Method: "b", DisableBehavior: DisableBehaviorOrphan})
-			waitOp := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_wait", PluginInstanceID: "plugin_1", Method: "c", DisableBehavior: DisableBehaviorWait})
-			otherOp := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_other", PluginInstanceID: "plugin_2", Method: "d"})
+			cancelOp := mustRegisterOperation(t, store, operationTestRegister("op_cancel", "plugin_1", "documents.cancel"))
+			orphanReq := operationTestRegister("op_orphan", "plugin_1", "documents.orphan")
+			orphanReq.DisableBehavior = DisableBehaviorOrphan
+			orphanOp := mustRegisterOperation(t, store, orphanReq)
+			waitReq := operationTestRegister("op_wait", "plugin_1", "documents.wait")
+			waitReq.DisableBehavior = DisableBehaviorWait
+			waitOp := mustRegisterOperation(t, store, waitReq)
+			otherOp := mustRegisterOperation(t, store, operationTestRegister("op_other", "plugin_2", "documents.other"))
 			now := cancelOp.CreatedAt.Add(time.Minute)
 
 			changed, err := store.MarkPluginDisabled(ctx, PluginTransitionRequest{
@@ -176,11 +238,10 @@ func TestStoreUninstallTransitions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := tc.open(t)
-			cancelOp := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_cancel", PluginInstanceID: "plugin_1", Method: "a"})
+			cancelOp := mustRegisterOperation(t, store, operationTestRegister("op_cancel", "plugin_1", "documents.cancel"))
 			forceOp := mustRegisterOperation(t, store, RegisterRequest{
 				OperationID:       "op_force",
-				PluginInstanceID:  "plugin_1",
-				Method:            "b",
+				ExecutionBinding:  operationTestBinding("com.example.plugin", "plugin_1", "documents.force", nil),
 				UninstallBehavior: UninstallBehaviorForceCleanupAllowed,
 			})
 			now := cancelOp.CreatedAt.Add(time.Minute)
@@ -207,7 +268,7 @@ func TestStoreTransitionSkipsTerminalStatuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			store := tc.open(t)
-			completed := mustRegisterOperation(t, store, RegisterRequest{OperationID: "op_completed", PluginInstanceID: "plugin_1", Method: "a"})
+			completed := mustRegisterOperation(t, store, operationTestRegister("op_completed", "plugin_1", "documents.complete"))
 			if _, err := store.Finish(ctx, FinishRequest{OperationID: completed.OperationID, Status: StatusCompleted, Reason: "done"}); err != nil {
 				t.Fatal(err)
 			}
@@ -233,16 +294,14 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 	}
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	registered := mustRegisterOperation(t, store, RegisterRequest{
-		OperationID:          "op_persist",
-		PluginID:             "com.example.plugin",
-		PluginInstanceID:     "plugin_1",
-		Method:               "images.pull",
-		Effect:               "execute",
-		Execution:            "operation",
-		SurfaceInstanceID:    "surface_1",
-		SessionChannelIDHash: "session_hash",
-		BridgeChannelID:      "bridge_1",
-		Now:                  now,
+		OperationID: "op_persist",
+		ExecutionBinding: operationTestBinding("com.example.plugin", "plugin_1", "documents.archive", func(binding *capability.ExecutionBinding) {
+			binding.Effect = capability.EffectExecute
+			binding.SurfaceInstanceID = "surface_1"
+			binding.SessionChannelIDHash = "session_hash"
+			binding.BridgeChannelID = "bridge_1"
+		}),
+		Now: now,
 	})
 	canceled, err := store.RequestCancel(ctx, CancelRequest{OperationID: registered.OperationID, Reason: "pause", Now: now.Add(time.Minute)})
 	if err != nil {
@@ -291,6 +350,64 @@ func TestSQLiteStoreRejectsNewerSchema(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreMigratesV1DataAndIndexesIdempotently(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "operations-v1.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE plugin_operation_schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`,
+		`INSERT INTO plugin_operation_schema_migrations(version, applied_at) VALUES(1, 1)`,
+		`CREATE TABLE plugin_operations (
+			operation_id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL, plugin_instance_id TEXT NOT NULL,
+			method TEXT NOT NULL, effect TEXT NOT NULL, execution TEXT NOT NULL, surface_instance_id TEXT NOT NULL,
+			session_channel_id_hash TEXT NOT NULL, bridge_channel_id TEXT NOT NULL, status TEXT NOT NULL,
+			disable_behavior TEXT NOT NULL, uninstall_behavior TEXT NOT NULL, reason TEXT NOT NULL,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cancel_requested_at INTEGER, orphaned_at INTEGER
+		)`,
+		`INSERT INTO plugin_operations VALUES(
+			'op_v1', 'com.example.v1', 'plugini_v1', 'documents.archive', 'execute', 'operation', 'surface_v1',
+			'channel_v1', 'bridge_v1', 'running', 'cancel', 'cancel_then_block_delete', '', 100, 200, NULL, NULL
+		)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		store, err := NewSQLiteStore(ctx, path)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() migration attempt %d error = %v", attempt+1, err)
+		}
+		record, err := store.Get(ctx, "op_v1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.PluginInstanceID != "plugini_v1" || record.Method != "documents.archive" || !record.Cancelable || record.CancelAckTimeoutMS != 0 {
+			t.Fatalf("migrated operation mismatch: %#v", record)
+		}
+		for _, indexName := range []string{"idx_plugin_operations_plugin_instance", "idx_plugin_operations_status"} {
+			var count int
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'plugin_operations' AND name = ?`, indexName).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("index %s count = %d, want 1", indexName, count)
+			}
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func mustRegisterOperation(t *testing.T, store Store, req RegisterRequest) Record {
 	t.Helper()
 	record, err := store.Register(context.Background(), req)
@@ -298,6 +415,38 @@ func mustRegisterOperation(t *testing.T, store Store, req RegisterRequest) Recor
 		t.Fatalf("Register(%s) error = %v", req.OperationID, err)
 	}
 	return record
+}
+
+func operationTestRegister(operationID, pluginInstanceID, method string) RegisterRequest {
+	return RegisterRequest{
+		OperationID:      operationID,
+		ExecutionBinding: operationTestBinding("com.example.plugin", pluginInstanceID, method, nil),
+	}
+}
+
+func operationTestBinding(pluginID, pluginInstanceID, method string, mutate func(*capability.ExecutionBinding)) capability.ExecutionBinding {
+	binding := capability.ExecutionBinding{
+		InvocationID:           "invoke_test",
+		AuditCorrelationID:     "audit_test",
+		PublisherID:            "example.publisher",
+		PluginID:               pluginID,
+		PluginInstanceID:       pluginInstanceID,
+		PluginVersion:          "1.0.0",
+		ActiveFingerprint:      "sha256:test",
+		CapabilityID:           "example.capability.documents",
+		CapabilityVersion:      "1.0.0",
+		BindingID:              "documents",
+		Method:                 method,
+		TargetMethod:           method,
+		Effect:                 capability.EffectWrite,
+		Execution:              "operation",
+		Target:                 capability.TargetDescriptor{Kind: "document", Fields: map[string]any{"document_id": "doc-1"}},
+		TargetDescriptorSHA256: "sha256:target",
+	}
+	if mutate != nil {
+		mutate(&binding)
+	}
+	return binding
 }
 
 func assertOperationStatus(t *testing.T, store Store, operationID string, want Status) {

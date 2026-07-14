@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/host-capability-compatibility-v1.schema.json",
+  "title": "ReDevPlugin host capability compatibility v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "contract_version",
+    "capability_id",
+    "capability_version",
+    "min_redevplugin_version"
+  ],
+  "properties": {
+    "schema_version": { "const": "redevplugin.host_capability_compatibility.v1" },
+    "contract_id": { "$ref": "#/$defs/id" },
+    "contract_version": { "$ref": "#/$defs/semver" },
+    "capability_id": { "$ref": "#/$defs/id" },
+    "capability_version": { "$ref": "#/$defs/semver" },
+    "min_redevplugin_version": { "$ref": "#/$defs/semver" }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    }
+  }
+}

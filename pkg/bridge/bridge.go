@@ -120,32 +120,35 @@ type CallRequest struct {
 }
 
 type Audience struct {
-	PluginID             string `json:"plugin_id,omitempty"`
-	PluginInstanceID     string `json:"plugin_instance_id"`
-	PluginVersion        string `json:"plugin_version,omitempty"`
-	ActiveFingerprint    string `json:"active_fingerprint"`
-	SurfaceID            string `json:"surface_id,omitempty"`
-	SurfaceInstanceID    string `json:"surface_instance_id,omitempty"`
-	EntryPath            string `json:"entry_path,omitempty"`
-	EntrySHA256          string `json:"entry_sha256,omitempty"`
-	AssetSessionNonce    string `json:"asset_session_nonce,omitempty"`
-	RouteRole            string `json:"route_role,omitempty"`
-	OwnerSessionHash     string `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string `json:"bridge_channel_id,omitempty"`
-	RuntimeInstanceID    string `json:"runtime_instance_id,omitempty"`
-	RuntimeGenerationID  string `json:"runtime_generation_id,omitempty"`
-	RuntimeShardID       string `json:"runtime_shard_id,omitempty"`
-	IPCChannelID         string `json:"ipc_channel_id,omitempty"`
-	ConnectionNonce      string `json:"connection_nonce,omitempty"`
-	StreamID             string `json:"stream_id,omitempty"`
-	StreamDirection      string `json:"stream_direction,omitempty"`
-	HandleID             string `json:"handle_id,omitempty"`
-	ConfirmationID       string `json:"confirmation_id,omitempty"`
-	Method               string `json:"method,omitempty"`
-	RequestHash          string `json:"request_hash,omitempty"`
-	PlanHash             string `json:"plan_hash,omitempty"`
+	PluginID               string `json:"plugin_id,omitempty"`
+	PluginInstanceID       string `json:"plugin_instance_id"`
+	PluginVersion          string `json:"plugin_version,omitempty"`
+	ActiveFingerprint      string `json:"active_fingerprint"`
+	SurfaceID              string `json:"surface_id,omitempty"`
+	SurfaceInstanceID      string `json:"surface_instance_id,omitempty"`
+	EntryPath              string `json:"entry_path,omitempty"`
+	EntrySHA256            string `json:"entry_sha256,omitempty"`
+	AssetSessionNonce      string `json:"asset_session_nonce,omitempty"`
+	RouteRole              string `json:"route_role,omitempty"`
+	OwnerSessionHash       string `json:"owner_session_hash,omitempty"`
+	OwnerUserHash          string `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash   string `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID        string `json:"bridge_channel_id,omitempty"`
+	RuntimeInstanceID      string `json:"runtime_instance_id,omitempty"`
+	RuntimeGenerationID    string `json:"runtime_generation_id,omitempty"`
+	RuntimeShardID         string `json:"runtime_shard_id,omitempty"`
+	IPCChannelID           string `json:"ipc_channel_id,omitempty"`
+	ConnectionNonce        string `json:"connection_nonce,omitempty"`
+	StreamID               string `json:"stream_id,omitempty"`
+	StreamDirection        string `json:"stream_direction,omitempty"`
+	OperationID            string `json:"operation_id,omitempty"`
+	AuditCorrelationID     string `json:"audit_correlation_id,omitempty"`
+	HandleID               string `json:"handle_id,omitempty"`
+	ConfirmationID         string `json:"confirmation_id,omitempty"`
+	Method                 string `json:"method,omitempty"`
+	RequestHash            string `json:"request_hash,omitempty"`
+	PlanHash               string `json:"plan_hash,omitempty"`
+	TargetDescriptorSHA256 string `json:"target_descriptor_sha256,omitempty"`
 }
 
 type RevisionBinding struct {
@@ -205,6 +208,26 @@ type InspectRequest struct {
 	Kind  TokenKind `json:"kind"`
 	Token string    `json:"token"`
 	Now   time.Time `json:"now,omitempty"`
+}
+
+type RotateSingleUseRequest struct {
+	Kind          TokenKind
+	Token         string
+	Now           time.Time
+	NextExpiresAt time.Time
+	Validate      func(TokenRecord) error
+}
+
+type CommitSingleUseRequest struct {
+	Kind     TokenKind
+	Token    string
+	Now      time.Time
+	Validate func(TokenRecord) error
+}
+
+type RotateSingleUseResult struct {
+	Current TokenRecord
+	Next    *MintedToken
 }
 
 type ChannelBinding struct {
@@ -286,42 +309,11 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 	if m == nil {
 		return MintedToken{}, errors.New("token manager is nil")
 	}
-	if err := validateMintRequest(req); err != nil {
-		return MintedToken{}, err
-	}
-	now := req.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	if req.ExpiresAt.Sub(now) > m.options.MaxTTL {
-		return MintedToken{}, ErrTokenTTLExceeded
-	}
-	use := defaultTokenUse(req.Kind)
-	tokenID, err := prefixedID(req.Kind)
+	record, cleartext, err := m.prepareMint(req)
 	if err != nil {
 		return MintedToken{}, err
 	}
-	nonce, err := randomString(24)
-	if err != nil {
-		return MintedToken{}, err
-	}
-	cleartext, err := randomString(32)
-	if err != nil {
-		return MintedToken{}, err
-	}
-	cleartext = string(req.Kind) + "." + tokenID + "." + cleartext
-	record := TokenRecord{
-		Kind:      req.Kind,
-		TokenID:   tokenID,
-		TokenHash: hashToken(cleartext),
-		Audience:  req.Audience,
-		Revision:  req.Revision,
-		IssuedAt:  now,
-		ExpiresAt: req.ExpiresAt.UTC(),
-		Nonce:     nonce,
-		Use:       use,
-		Limits:    req.Limits,
-	}
+	now := record.IssuedAt
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -348,6 +340,48 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 	}
 	m.addRecordLocked(record)
 
+	return mintedToken(record, cleartext), nil
+}
+
+func (m *TokenManager) prepareMint(req MintRequest) (TokenRecord, string, error) {
+	if err := validateMintRequest(req); err != nil {
+		return TokenRecord{}, "", err
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if req.ExpiresAt.Sub(now) > m.options.MaxTTL {
+		return TokenRecord{}, "", ErrTokenTTLExceeded
+	}
+	tokenID, err := prefixedID(req.Kind)
+	if err != nil {
+		return TokenRecord{}, "", err
+	}
+	nonce, err := randomString(24)
+	if err != nil {
+		return TokenRecord{}, "", err
+	}
+	secret, err := randomString(32)
+	if err != nil {
+		return TokenRecord{}, "", err
+	}
+	cleartext := string(req.Kind) + "." + tokenID + "." + secret
+	return TokenRecord{
+		Kind:      req.Kind,
+		TokenID:   tokenID,
+		TokenHash: hashToken(cleartext),
+		Audience:  req.Audience,
+		Revision:  req.Revision,
+		IssuedAt:  now,
+		ExpiresAt: req.ExpiresAt.UTC(),
+		Nonce:     nonce,
+		Use:       defaultTokenUse(req.Kind),
+		Limits:    req.Limits,
+	}, cleartext, nil
+}
+
+func mintedToken(record TokenRecord, cleartext string) MintedToken {
 	return MintedToken{
 		Kind:      record.Kind,
 		TokenID:   record.TokenID,
@@ -359,7 +393,143 @@ func (m *TokenManager) Mint(req MintRequest) (MintedToken, error) {
 		Nonce:     record.Nonce,
 		Use:       record.Use,
 		Limits:    record.Limits,
-	}, nil
+	}
+}
+
+// RotateSingleUse keeps the current token usable unless commit succeeds. The
+// callback must only perform the short, final mutation guarded by the token.
+func (m *TokenManager) RotateSingleUse(req RotateSingleUseRequest, commit func() (bool, error)) (RotateSingleUseResult, error) {
+	if m == nil {
+		return RotateSingleUseResult{}, errors.New("token manager is nil")
+	}
+	if commit == nil {
+		return RotateSingleUseResult{}, errors.New("single-use token rotation commit is required")
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if req.NextExpiresAt.IsZero() || !req.NextExpiresAt.After(now) {
+		return RotateSingleUseResult{}, ErrTokenExpired
+	}
+	if req.NextExpiresAt.Sub(now) > m.options.MaxTTL {
+		return RotateSingleUseResult{}, ErrTokenTTLExceeded
+	}
+	nextTokenID, err := prefixedID(req.Kind)
+	if err != nil {
+		return RotateSingleUseResult{}, err
+	}
+	nextNonce, err := randomString(24)
+	if err != nil {
+		return RotateSingleUseResult{}, err
+	}
+	nextSecret, err := randomString(32)
+	if err != nil {
+		return RotateSingleUseResult{}, err
+	}
+	nextCleartext := string(req.Kind) + "." + nextTokenID + "." + nextSecret
+	currentHash := hashToken(req.Token)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, err := m.loadValidSingleUseLocked(req.Kind, req.Token, currentHash, now, req.Validate)
+	if err != nil {
+		return RotateSingleUseResult{}, err
+	}
+	if len(m.records) >= m.options.MaxRecords {
+		return RotateSingleUseResult{}, ErrTokenCapacity
+	}
+	if len(m.pluginIndex[current.Audience.PluginInstanceID]) >= m.options.MaxRecordsPerPlugin {
+		return RotateSingleUseResult{}, ErrTokenPluginCapacity
+	}
+	next := TokenRecord{
+		Kind:      current.Kind,
+		TokenID:   nextTokenID,
+		TokenHash: hashToken(nextCleartext),
+		Audience:  current.Audience,
+		Revision:  current.Revision,
+		IssuedAt:  now,
+		ExpiresAt: req.NextExpiresAt.UTC(),
+		Nonce:     nextNonce,
+		Use:       current.Use,
+		Limits:    current.Limits,
+	}
+	if _, exists := m.records[next.TokenHash]; exists {
+		return RotateSingleUseResult{}, errors.New("generated token hash collision")
+	}
+	if _, exists := m.idIndex[tokenIDIndexKey(next.Kind, next.TokenID)]; exists {
+		return RotateSingleUseResult{}, errors.New("generated token ID collision")
+	}
+	issueNext, err := commit()
+	if err != nil {
+		return RotateSingleUseResult{}, err
+	}
+	current = m.consumeSingleUseLocked(currentHash, current, now)
+	result := RotateSingleUseResult{Current: current}
+	if issueNext {
+		m.addRecordLocked(next)
+		minted := mintedToken(next, nextCleartext)
+		result.Next = &minted
+	}
+	return result, nil
+}
+
+// CommitSingleUse consumes a single-use token only after the guarded mutation
+// succeeds. It is the terminal counterpart to RotateSingleUse and never
+// reserves capacity for a replacement token.
+func (m *TokenManager) CommitSingleUse(req CommitSingleUseRequest, commit func() error) (TokenRecord, error) {
+	if m == nil {
+		return TokenRecord{}, errors.New("token manager is nil")
+	}
+	if commit == nil {
+		return TokenRecord{}, errors.New("single-use token commit is required")
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	currentHash := hashToken(req.Token)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, err := m.loadValidSingleUseLocked(req.Kind, req.Token, currentHash, now, req.Validate)
+	if err != nil {
+		return TokenRecord{}, err
+	}
+	if err := commit(); err != nil {
+		return TokenRecord{}, err
+	}
+	return m.consumeSingleUseLocked(currentHash, current, now), nil
+}
+
+func (m *TokenManager) loadValidSingleUseLocked(kind TokenKind, token string, tokenHash string, now time.Time, validate func(TokenRecord) error) (TokenRecord, error) {
+	m.pruneExpiredRecordsLocked(now)
+	current, err := m.loadTokenRecordLocked(InspectRequest{Kind: kind, Token: token, Now: now}, tokenHash)
+	if err != nil {
+		return TokenRecord{}, err
+	}
+	if current.Use != TokenUseSingleUse {
+		return TokenRecord{}, fmt.Errorf("token kind %s is not single-use", current.Kind)
+	}
+	if validate != nil {
+		if err := validate(current); err != nil {
+			return TokenRecord{}, err
+		}
+	}
+	if m.revokeFloorsSaturated {
+		if _, tracked := m.pluginRevokeFloors[current.Audience.PluginInstanceID]; !tracked {
+			return TokenRecord{}, ErrTokenRevokeFloorCapacity
+		}
+	}
+	return current, nil
+}
+
+func (m *TokenManager) consumeSingleUseLocked(tokenHash string, current TokenRecord, now time.Time) TokenRecord {
+	current.Consumed = true
+	consumedAt := now
+	current.ConsumedAt = &consumedAt
+	m.records[tokenHash] = current
+	return current
 }
 
 func (m *TokenManager) pruneExpiredRecordsLocked(now time.Time) {
@@ -740,6 +910,7 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.Method,
 			audience.RequestHash,
 			audience.PlanHash,
+			audience.TargetDescriptorSHA256,
 			audience.RuntimeGenerationID,
 		)
 	case TokenKindRuntimeExecutionLease:
@@ -748,6 +919,7 @@ func validateTokenAudience(kind TokenKind, audience Audience) error {
 			audience.RuntimeGenerationID,
 			audience.IPCChannelID,
 			audience.ConnectionNonce,
+			audience.AuditCorrelationID,
 			audience.Method,
 		)
 	case TokenKindHandleGrant:
@@ -826,11 +998,14 @@ func audienceMatches(expected Audience, got Audience) bool {
 		expected.ConnectionNonce == got.ConnectionNonce &&
 		expected.StreamID == got.StreamID &&
 		expected.StreamDirection == got.StreamDirection &&
+		expected.OperationID == got.OperationID &&
+		expected.AuditCorrelationID == got.AuditCorrelationID &&
 		expected.HandleID == got.HandleID &&
 		expected.ConfirmationID == got.ConfirmationID &&
 		expected.Method == got.Method &&
 		expected.RequestHash == got.RequestHash &&
-		expected.PlanHash == got.PlanHash
+		expected.PlanHash == got.PlanHash &&
+		expected.TargetDescriptorSHA256 == got.TargetDescriptorSHA256
 }
 
 func prefixedID(kind TokenKind) (string, error) {

@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/manifest"
 )
 
@@ -116,6 +118,100 @@ func TestStorePreservesVersionHistoryOnOverwrite(t *testing.T) {
 	}
 }
 
+func TestStoreDeepClonesNestedPluginRecords(t *testing.T) {
+	for _, tc := range registryStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tc.open(t)
+			record := PluginRecord{
+				PluginInstanceID:  "plugini_clone",
+				PublisherID:       "example.publisher",
+				PluginID:          "com.example.clone",
+				Version:           "1.0.0",
+				ActiveFingerprint: "sha256:clone",
+				TrustState:        TrustVerified,
+				TrustAssessment: TrustAssessment{
+					TrustState:  TrustVerified,
+					ReasonCodes: []string{"verified"},
+					Metadata:    map[string]string{"key": "original"},
+				},
+				SourcePolicySnapshot: map[string]any{
+					"nested": map[string]any{"value": "original"},
+				},
+				LocalImportProvenance: &LocalImportProvenance{ImportID: "import_original", Distribution: "local_import"},
+				CapabilityContracts: []capabilitycontract.Pin{{
+					PublisherID:              "example.publisher",
+					ContractID:               "example.documents.v1",
+					ContractVersion:          "1.0.0",
+					ArtifactRef:              "capabilities/documents/schema.json",
+					ArtifactSHA256:           strings.Repeat("1", 64),
+					ManifestRef:              "capabilities/documents/manifest.json",
+					ManifestSHA256:           strings.Repeat("2", 64),
+					SignatureRef:             "capabilities/documents/manifest.sig",
+					SignatureSHA256:          strings.Repeat("3", 64),
+					SignatureKeyID:           "documents-key",
+					SignaturePolicyEpoch:     "1",
+					SignatureRevocationEpoch: "1",
+					CompatibilityRef:         "capabilities/documents/compatibility.json",
+					CompatibilitySHA256:      strings.Repeat("4", 64),
+					GeneratedClientRef:       "capabilities/documents/client.ts",
+					GeneratedClientSHA256:    strings.Repeat("5", 64),
+					NoticesRef:               "capabilities/documents/notices.json",
+					NoticesSHA256:            strings.Repeat("6", 64),
+				}},
+				EnableState: EnableDisabled,
+				Manifest: manifest.Manifest{
+					Plugin: manifest.Plugin{PluginID: "com.example.clone", Version: "1.0.0"},
+					Methods: []manifest.MethodSpec{{
+						Method:        "documents.get",
+						RequestSchema: map[string]any{"type": "object", "properties": map[string]any{"document_id": map[string]any{"type": "string"}}},
+					}},
+				},
+				VersionHistory: []PluginVersion{{
+					Version:              "0.9.0",
+					SourcePolicySnapshot: map[string]any{"epoch": "previous"},
+					Metadata:             map[string]string{"history": "original"},
+				}},
+				Metadata: map[string]string{"record": "original"},
+			}
+			stored, err := store.PutPlugin(context.Background(), record, PutOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			record.SourcePolicySnapshot["nested"].(map[string]any)["value"] = "mutated-input"
+			record.TrustAssessment.Metadata["key"] = "mutated-input"
+			stored.SourcePolicySnapshot["nested"].(map[string]any)["value"] = "mutated-return"
+			stored.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] = "number"
+			stored.VersionHistory[0].Metadata["history"] = "mutated-return"
+
+			got, err := store.GetPlugin(context.Background(), record.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.SourcePolicySnapshot["nested"].(map[string]any)["value"] != "original" ||
+				got.TrustAssessment.Metadata["key"] != "original" ||
+				got.Manifest.Methods[0].RequestSchema["properties"].(map[string]any)["document_id"].(map[string]any)["type"] != "string" ||
+				got.VersionHistory[0].Metadata["history"] != "original" {
+				t.Fatalf("stored plugin record was mutated through an input or return boundary: %#v", got)
+			}
+
+			got.Metadata["record"] = "mutated-get"
+			listed, err := store.ListPlugins(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed[0].CapabilityContracts[0].ArtifactSHA256 = strings.Repeat("0", 64)
+			again, err := store.GetPlugin(context.Background(), record.PluginInstanceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.Metadata["record"] != "original" || again.CapabilityContracts[0].ArtifactSHA256 != strings.Repeat("1", 64) {
+				t.Fatalf("stored plugin record was mutated through get/list: %#v", again)
+			}
+		})
+	}
+}
+
 func TestStoreDeletePlugin(t *testing.T) {
 	for _, tc := range registryStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,6 +268,12 @@ func TestStoreSourceSecurityFloorRejectsRollback(t *testing.T) {
 			}
 			if got.PolicyEpoch != "10" || got.KeyRotationEpoch != "20" || got.RevocationEpoch != "30" {
 				t.Fatalf("source floor mismatch: %#v", got)
+			}
+
+			equivocated := initial
+			equivocated.SourcePolicySnapshotHash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+			if _, err := store.PutSourceSecurityFloor(context.Background(), equivocated, PutOptions{Now: now.Add(500 * time.Millisecond)}); !errors.Is(err, ErrSourceSecurityFloorRollback) {
+				t.Fatalf("PutSourceSecurityFloor(same epoch equivocation) error = %v, want %v", err, ErrSourceSecurityFloorRollback)
 			}
 
 			higher := initial

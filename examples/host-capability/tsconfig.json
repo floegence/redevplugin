@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"],
+    "baseUrl": "../..",
+    "paths": {
+      "@floegence/redevplugin-ui/plugin": ["packages/redevplugin-ui/src/plugin.ts"]
+    }
+  },
+  "include": [
+    "../../testdata/host-capability/sample-documents-v1/plugin-consumer.ts",
+    "../../testdata/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.client.ts"
+  ]
+}

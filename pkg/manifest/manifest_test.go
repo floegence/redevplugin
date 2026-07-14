@@ -1,8 +1,12 @@
 package manifest
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 )
 
 func TestDecodeValidManifest(t *testing.T) {
@@ -274,7 +278,7 @@ func TestValidateRequiresCancelPolicyForSubscription(t *testing.T) {
 		Method:    "resources.logs.tail",
 		Effect:    MethodEffectRead,
 		Execution: MethodExecutionSubscription,
-		Route:     MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.logs.tail"},
+		Route:     MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "resources.logs.tail"},
 	})
 
 	if err := Validate(m); err == nil {
@@ -284,14 +288,14 @@ func TestValidateRequiresCancelPolicyForSubscription(t *testing.T) {
 
 func TestValidateMethodRouteDiscriminatedUnion(t *testing.T) {
 	t.Run("capability route requires target method", func(t *testing.T) {
-		m := validManifest()
+		m := validCapabilityManifest()
 		m.Methods[0].Route.TargetMethod = ""
 
 		expectValidationField(t, m, "methods[0].route.target_method")
 	})
 
 	t.Run("capability route rejects worker fields", func(t *testing.T) {
-		m := validManifest()
+		m := validCapabilityManifest()
 		m.Methods[0].Route.WorkerID = "echo_worker"
 
 		expectValidationField(t, m, "methods[0].route.worker_id")
@@ -877,7 +881,7 @@ func riskPreflightMethod() MethodSpec {
 		Effect:         MethodEffectRead,
 		Execution:      MethodExecutionSync,
 		PreflightOnly:  true,
-		Route:          MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start.preflight"},
+		Route:          MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "resources.start.preflight"},
 		RequestSchema:  closedObjectSchema(),
 		ResponseSchema: closedObjectSchema(),
 	}
@@ -891,7 +895,7 @@ func riskyOperationMethod() MethodSpec {
 		Dangerous:    true,
 		Confirmation: &ConfirmationSpec{Mode: ConfirmationRiskBased, PreflightMethod: stringPtr("resources.start.preflight"), RequestHashFields: []string{"resource_id"}, PlanHashRequired: true},
 		CancelPolicy: &CancelPolicySpec{Cancelable: true, DisableBehavior: CancelDisableBehaviorCancel, UninstallBehavior: CancelUninstallBehaviorCancelThenBlockDelete, AckTimeoutMS: 2000},
-		Route:        MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.start"},
+		Route:        MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "resources.start"},
 		RequestSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -926,16 +930,16 @@ func validManifest() Manifest {
 			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html"},
 		},
 		CapabilityBindings: []CapabilityBinding{
-			{BindingID: "resource_provider", CapabilityID: "example.capability.resources", MinCapabilityVersion: "1.0.0", RequiredPermissions: []string{"read"}},
+			{BindingID: "resource_provider", Contract: validCapabilityPin()},
 		},
 		Methods: []MethodSpec{
 			{
 				Method:         "resources.list",
 				Effect:         MethodEffectRead,
 				Execution:      MethodExecutionSync,
-				Route:          MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.list"},
-				RequestSchema:  map[string]any{"type": "object", "additionalProperties": false},
-				ResponseSchema: map[string]any{"type": "object", "additionalProperties": false},
+				Route:          MethodRouteSpec{Kind: MethodRouteCoreAction, ActionID: "resources.list"},
+				RequestSchema:  closedObjectSchema(),
+				ResponseSchema: closedObjectSchema(),
 			},
 		},
 		Settings: &SettingsSpec{
@@ -949,6 +953,15 @@ func validManifest() Manifest {
 	}
 }
 
+func validCapabilityManifest() Manifest {
+	m := validManifest()
+	m.Methods[0] = MethodSpec{
+		Method: "resources.list",
+		Route:  MethodRouteSpec{Kind: MethodRouteCapability, BindingID: "resource_provider", TargetMethod: "resources.list"},
+	}
+	return m
+}
+
 func noopMigration() MigrationSpec {
 	return MigrationSpec{
 		FromVersion:    1,
@@ -960,7 +973,7 @@ func noopMigration() MigrationSpec {
 }
 
 func validManifestJSON() string {
-	return `{
+	return fmt.Sprintf(`{
 		"schema_version": "redevplugin.manifest.v2",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
@@ -975,14 +988,14 @@ func validManifestJSON() string {
 			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "resource_provider", "capability_id": "example.capability.resources", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+			{"binding_id": "resource_provider", "contract": %s}
 		],
 		"methods": [
 			{
 				"method": "resources.list",
 				"effect": "read",
 				"execution": "sync",
-				"route": {"kind": "capability", "binding_id": "resource_provider", "target_method": "resources.list"},
+				"route": {"kind": "core_action", "action_id": "resources.list"},
 				"request_schema": {"type": "object", "additionalProperties": false},
 				"response_schema": {"type": "object", "additionalProperties": false}
 			}
@@ -1006,5 +1019,36 @@ func validManifestJSON() string {
 		"intents": [
 			{"intent_id": "open-resource-list", "method": "resources.list"}
 		]
-	}`
+	}`, validCapabilityPinJSON())
+}
+
+func validCapabilityPin() capabilitycontract.Pin {
+	return capabilitycontract.Pin{
+		PublisherID:              "example.publisher",
+		ContractID:               "example.resources.v1",
+		ContractVersion:          "1.0.0",
+		ArtifactRef:              "capabilities/example.resources/v1.0.0/contract.json",
+		ArtifactSHA256:           strings.Repeat("1", 64),
+		ManifestRef:              "capabilities/example.resources/v1.0.0/manifest.json",
+		ManifestSHA256:           strings.Repeat("2", 64),
+		SignatureRef:             "capabilities/example.resources/v1.0.0/manifest.sig",
+		SignatureSHA256:          strings.Repeat("3", 64),
+		SignatureKeyID:           "example-key",
+		SignaturePolicyEpoch:     "1",
+		SignatureRevocationEpoch: "1",
+		CompatibilityRef:         "capabilities/example.resources/v1.0.0/compatibility.json",
+		CompatibilitySHA256:      strings.Repeat("4", 64),
+		GeneratedClientRef:       "capabilities/example.resources/v1.0.0/client.ts",
+		GeneratedClientSHA256:    strings.Repeat("5", 64),
+		NoticesRef:               "capabilities/example.resources/v1.0.0/notices.json",
+		NoticesSHA256:            strings.Repeat("6", 64),
+	}
+}
+
+func validCapabilityPinJSON() string {
+	raw, err := json.Marshal(validCapabilityPin())
+	if err != nil {
+		panic(fmt.Sprintf("marshal valid capability pin: %v", err))
+	}
+	return string(raw)
 }

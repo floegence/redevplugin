@@ -1,0 +1,253 @@
+{
+  "schema_version": "redevplugin.restricted_schema_conformance.v1",
+  "cases": [
+    {
+      "name": "empty closed object",
+      "schema": { "type": "object", "additionalProperties": false },
+      "value": {},
+      "valid": true
+    },
+    {
+      "name": "closed object rejects unknown property",
+      "schema": { "type": "object", "additionalProperties": false },
+      "value": { "unexpected": true },
+      "valid": false
+    },
+    {
+      "name": "prototype-sensitive object property is forbidden",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["__proto__"],
+        "properties": { "__proto__": { "type": "string" } }
+      },
+      "value": { "__proto__": "unsafe" },
+      "valid": false
+    },
+    {
+      "name": "required nested object",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document"],
+        "properties": {
+          "document": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": { "id": { "type": "string", "minLength": 1 } }
+          }
+        }
+      },
+      "value": { "document": { "id": "doc-1" } },
+      "valid": true
+    },
+    {
+      "name": "required nested property is missing",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document"],
+        "properties": {
+          "document": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": { "id": { "type": "string", "minLength": 1 } }
+          }
+        }
+      },
+      "value": { "document": {} },
+      "valid": false
+    },
+    {
+      "name": "oneOf requires exactly one matching branch",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": { "type": "string", "const": "document" },
+              "id": { "type": "string", "minLength": 1 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "slug"],
+            "properties": {
+              "kind": { "type": "string", "const": "folder" },
+              "slug": { "type": "string", "pattern": "^[a-z0-9-]+$" }
+            }
+          }
+        ]
+      },
+      "value": { "kind": "folder", "slug": "release-notes" },
+      "valid": true
+    },
+    {
+      "name": "oneOf rejects no matching branch",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": { "type": "string", "const": "document" },
+              "id": { "type": "string", "minLength": 1 }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "slug"],
+            "properties": {
+              "kind": { "type": "string", "const": "folder" },
+              "slug": { "type": "string", "pattern": "^[a-z0-9-]+$" }
+            }
+          }
+        ]
+      },
+      "value": { "kind": "folder", "slug": "Invalid Slug" },
+      "valid": false
+    },
+    {
+      "name": "string length counts Unicode code points",
+      "schema": { "type": "string", "minLength": 1, "maxLength": 1 },
+      "value": "😀",
+      "valid": true
+    },
+    {
+      "name": "portable pattern accepts an ASCII full match",
+      "schema": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+      "value": "release_2026-07",
+      "valid": true
+    },
+    {
+      "name": "portable pattern rejects a trailing newline",
+      "schema": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+      "value": "release\n",
+      "valid": false
+    },
+    {
+      "name": "unique bounded array",
+      "schema": {
+        "type": "array",
+        "items": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "minItems": 2,
+        "maxItems": 3,
+        "uniqueItems": true
+      },
+      "value": [1, 3, 5],
+      "valid": true
+    },
+    {
+      "name": "unique array rejects duplicate",
+      "schema": {
+        "type": "array",
+        "items": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "minItems": 2,
+        "maxItems": 3,
+        "uniqueItems": true
+      },
+      "value": [1, 1],
+      "valid": false
+    },
+    {
+      "name": "unique array rejects equivalent objects with reordered keys",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["document_id", "revision"],
+          "properties": {
+            "document_id": { "type": "string" },
+            "revision": { "type": "integer" }
+          }
+        },
+        "uniqueItems": true
+      },
+      "value": [
+        { "document_id": "doc-1", "revision": 2 },
+        { "revision": 2, "document_id": "doc-1" }
+      ],
+      "valid": false
+    },
+    {
+      "name": "date-time format",
+      "schema": { "type": "string", "format": "date-time" },
+      "value": "2026-07-13T08:09:10Z",
+      "valid": true
+    },
+    {
+      "name": "date-time format rejects missing timezone",
+      "schema": { "type": "string", "format": "date-time" },
+      "value": "2026-07-13T08:09:10",
+      "valid": false
+    },
+    {
+      "name": "uuid format",
+      "schema": { "type": "string", "format": "uuid" },
+      "value": "123e4567-e89b-42d3-a456-426614174000",
+      "valid": true
+    },
+    {
+      "name": "hostname format rejects leading dash",
+      "schema": { "type": "string", "format": "hostname" },
+      "value": "-invalid.example",
+      "valid": false
+    },
+    {
+      "name": "ipv4 format",
+      "schema": { "type": "string", "format": "ipv4" },
+      "value": "192.0.2.10",
+      "valid": true
+    },
+    {
+      "name": "ipv6 format",
+      "schema": { "type": "string", "format": "ipv6" },
+      "value": "2001:db8::10",
+      "valid": true
+    },
+    {
+      "name": "integer rejects fractional number",
+      "schema": { "type": "integer", "minimum": 0 },
+      "value": 1.5,
+      "valid": false
+    },
+    {
+      "name": "number honors exclusive bounds and multipleOf",
+      "schema": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 10, "multipleOf": 2 },
+      "value": 6,
+      "valid": true
+    },
+    {
+      "name": "decimal number honors multipleOf",
+      "schema": { "type": "number", "multipleOf": 0.1 },
+      "value": 0.3,
+      "valid": true
+    },
+    {
+      "name": "decimal number rejects a nearby binary value",
+      "schema": { "type": "number", "multipleOf": 0.1 },
+      "value": 0.30000000000000004,
+      "valid": false
+    },
+    {
+      "name": "boolean const",
+      "schema": { "type": "boolean", "const": true },
+      "value": false,
+      "valid": false
+    },
+    {
+      "name": "null value",
+      "schema": { "type": "null" },
+      "value": null,
+      "valid": true
+    }
+  ]
+}

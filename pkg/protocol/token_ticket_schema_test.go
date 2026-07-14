@@ -117,6 +117,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"ipc_channel_id",
 		"connection_nonce",
 		"method",
+		"audit_correlation_id",
 	}, "^rel_[A-Za-z0-9_-]+$")
 	assertTokenTicketCondition(t, conditions, "handle_grant", "reusable", []string{
 		"plugin_instance_id",
@@ -134,6 +135,7 @@ func TestTokenTicketSchemaBindsEveryTokenKind(t *testing.T) {
 		"owner_session_hash",
 		"session_channel_id_hash",
 		"stream_id",
+		"operation_id",
 		"stream_direction",
 		"method",
 	}, "^st_[A-Za-z0-9_-]+$")

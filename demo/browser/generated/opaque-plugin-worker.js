@@ -39,6 +39,7 @@
     "PLUGIN_RUNTIME_UNAVAILABLE",
     "PLUGIN_RUNTIME_VERSION_MISMATCH",
     "PLUGIN_JSON_LIMIT_EXCEEDED",
+    "PLUGIN_CAPABILITY_ERROR",
     "PLUGIN_CONTRACT_MISMATCH",
     "PLUGIN_STATE_VERSION_MISMATCH",
     "PLUGIN_CSRF_REQUIRED",
@@ -105,6 +106,11 @@
   var maxPendingPluginBridgeRequests = 256;
   var maxPluginBridgeMessageBytes = 256 * 1024;
   var maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
+  var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
+  var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
+  var canonicalSemverPattern = new RegExp("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$");
+  var lowercaseSHA256Pattern = new RegExp("^[0-9a-f]{64}$");
+  var businessErrorCodePattern = new RegExp("^[A-Z][A-Z0-9_]*$");
   var PluginBridgeClient = class {
     surfaceHandle;
     timeoutMs;
@@ -167,6 +173,19 @@
         id,
         stream_handle: streamHandle
       });
+    }
+    cancelOperation(operationID, reason) {
+      this.#assertActive();
+      if (!validOpaqueHandle(operationID, "operation") || reason !== void 0 && (typeof reason !== "string" || reason.length > 256)) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin operation cancellation is invalid");
+      }
+      const id = this.#requestID("operation");
+      return this.#request(id, removeUndefined({
+        type: "redevplugin.bridge.operation.cancel",
+        id,
+        operation_id: operationID,
+        reason
+      }));
     }
     render(tree) {
       this.#assertActive();
@@ -255,13 +274,17 @@
     #handleMessage(event) {
       if (this.#disposed || !messageWithinLimit(event.data)) return;
       const data = event.data;
-      if (isBridgeResponse(data)) {
+      if (isBridgeResponseCandidate(data)) {
         const pending = this.#pending.get(data.id);
         if (!pending) return;
         this.#pending.delete(data.id);
         clearTimeout(pending.timer);
+        if (!isBridgeResponse(data)) {
+          pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin bridge response ${data.id} is invalid`));
+          return;
+        }
         if (data.ok) pending.resolve(data.data);
-        else pending.reject(new PluginBridgeError(data.error_code, data.error));
+        else pending.reject(new PluginBridgeError(data.error_code, data.error, void 0, data.error_details));
         return;
       }
       if (isLifecycleMessage(data)) {
@@ -329,10 +352,41 @@
     "usb 'none'",
     "xr-spatial-tracking 'none'"
   ].join("; ");
+  function isBridgeResponseCandidate(value) {
+    return isRecord(value) && value.type === "redevplugin.bridge.response" && typeof value.id === "string";
+  }
   function isBridgeResponse(value) {
-    if (!isRecord(value) || value.type !== "redevplugin.bridge.response" || typeof value.id !== "string") return false;
+    if (!isBridgeResponseCandidate(value) || !validBridgeRequestID(value.id)) return false;
     if (value.ok === true) return Object.keys(value).every((key) => ["type", "id", "ok", "data"].includes(key));
-    return value.ok === false && typeof value.error_code === "string" && typeof value.error === "string" && Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error"].includes(key));
+    if (value.ok !== false || typeof value.error_code !== "string" || !pluginBridgeErrorCodeSet.has(value.error_code) || typeof value.error !== "string" || value.error.length > 4096 || !Object.keys(value).every((key) => ["type", "id", "ok", "error_code", "error", "error_details"].includes(key))) {
+      return false;
+    }
+    if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);
+    if (value.error_details === void 0) return true;
+    try {
+      return Object.keys(normalizePluginJSONObject(value.error_details)).length <= 8;
+    } catch {
+      return false;
+    }
+  }
+  function isCapabilityBusinessErrorDetails(value) {
+    if (!hasAllowedKeys(value, [
+      "capability_id",
+      "capability_version",
+      "detail_schema_sha256",
+      "business_error_code",
+      "business_error_details"
+    ])) return false;
+    if (typeof value.capability_id !== "string" || !hostCapabilityIDPattern.test(value.capability_id) || typeof value.capability_version !== "string" || !canonicalSemverPattern.test(value.capability_version) || typeof value.detail_schema_sha256 !== "string" || !lowercaseSHA256Pattern.test(value.detail_schema_sha256) || typeof value.business_error_code !== "string" || !businessErrorCodePattern.test(value.business_error_code)) {
+      return false;
+    }
+    if (value.business_error_details === void 0) return true;
+    try {
+      normalizePluginJSONObject(value.business_error_details);
+      return true;
+    } catch {
+      return false;
+    }
   }
   function isLifecycleMessage(value) {
     return hasExactKeys(value, ["type", "event"]) && value.type === "redevplugin.bridge.lifecycle" && hasExactKeys(value.event, ["type"]) && (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose");
@@ -346,6 +400,13 @@
   var pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
   var pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
   var opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
+  var bridgeRequestIDPattern = /^(rpc|stream|render|operation)_([1-9][0-9]{0,15})$/;
+  function validBridgeRequestID(value, expectedKind) {
+    if (typeof value !== "string") return false;
+    const match = bridgeRequestIDPattern.exec(value);
+    if (!match || expectedKind && match[1] !== expectedKind) return false;
+    return Number.isSafeInteger(Number(match[2]));
+  }
   function validMethod(value) {
     return typeof value === "string" && pluginMethodPattern.test(value);
   }
@@ -389,6 +450,7 @@
       const result = {};
       for (const key of Reflect.ownKeys(value)) {
         if (typeof key !== "string") throw new TypeError("JSON object keys must be strings");
+        if (prototypeSensitivePropertyNames.has(key)) throw new TypeError("JSON object keys must not alter object prototypes");
         const descriptor = Object.getOwnPropertyDescriptor(value, key);
         if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError("JSON object fields must be enumerable data properties");
         result[key] = normalizePluginJSONValue(descriptor.value, depth + 1, state2);
@@ -398,10 +460,15 @@
       state2.seen.delete(value);
     }
   }
+  var prototypeSensitivePropertyNames = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
   function normalizeTimeout(timeoutMs) {
     if (timeoutMs == null) return 3e4;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("timeoutMs must be a positive finite number");
     return timeoutMs;
+  }
+  function removeUndefined(value) {
+    for (const key of Object.keys(value)) if (value[key] === void 0) delete value[key];
+    return value;
   }
 
   // demo/browser/worker-security-probe.ts
@@ -524,7 +591,7 @@
   }
 
   // demo/browser/opaque-plugin-worker.ts
-  function decodePluginStreamText(event) {
+  function decodePluginStreamText2(event) {
     if (!event.data) return "";
     const binary = atob(event.data);
     return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
@@ -562,14 +629,25 @@
     await runAction("Opening parent-owned stream...", "Stream received", async () => {
       const response = await bridge.call("demo.logs", { lines: 2 });
       if (!response.stream_handle) throw new Error("host response omitted stream_handle");
-      const events = await bridge.readStream(response.stream_handle);
+      const events = await readStreamToEnd(response.stream_handle);
       return {
         method: "demo.logs",
         events,
-        text: events.map((event) => decodePluginStreamText(event)).join(""),
+        text: events.map((event) => decodePluginStreamText2(event)).join(""),
         parent_stream_credential_visible: JSON.stringify(response).includes(["stream", "ticket"].join("_"))
       };
     });
+  }
+  async function readStreamToEnd(streamHandle) {
+    const events = [];
+    while (true) {
+      const batch = await bridge.readStream(streamHandle);
+      events.push(...batch.events);
+      if (batch.done) return events;
+      if (batch.events.length === 0 && batch.retry_after_ms > 0) {
+        await new Promise((resolve) => setTimeout(resolve, batch.retry_after_ms));
+      }
+    }
   }
   async function runDangerousAction() {
     await runAction("Waiting for confirmation...", "Dangerous action confirmed", async () => ({

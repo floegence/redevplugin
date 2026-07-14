@@ -8,6 +8,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 )
 
 type Manifest struct {
@@ -51,10 +53,8 @@ func (m Manifest) APIVersion() string {
 }
 
 type CapabilityBinding struct {
-	BindingID            string   `json:"binding_id"`
-	CapabilityID         string   `json:"capability_id"`
-	MinCapabilityVersion string   `json:"min_capability_version"`
-	RequiredPermissions  []string `json:"required_permissions,omitempty"`
+	BindingID string                 `json:"binding_id"`
+	Contract  capabilitycontract.Pin `json:"contract"`
 }
 
 type MethodEffect string
@@ -94,8 +94,8 @@ type MethodRouteSpec struct {
 
 type MethodSpec struct {
 	Method         string              `json:"method"`
-	Effect         MethodEffect        `json:"effect"`
-	Execution      MethodExecutionMode `json:"execution"`
+	Effect         MethodEffect        `json:"effect,omitempty"`
+	Execution      MethodExecutionMode `json:"execution,omitempty"`
 	Dangerous      bool                `json:"dangerous,omitempty"`
 	PreflightOnly  bool                `json:"preflight_only,omitempty"`
 	Confirmation   *ConfirmationSpec   `json:"confirmation,omitempty"`
@@ -301,6 +301,9 @@ func Validate(m Manifest) error {
 			return ValidationError{Field: fmt.Sprintf("capability_bindings[%d].binding_id", i), Message: "must be unique"}
 		}
 		bindings[binding.BindingID] = struct{}{}
+		if err := capabilitycontract.ValidatePin(binding.Contract); err != nil {
+			return ValidationError{Field: fmt.Sprintf("capability_bindings[%d].contract", i), Message: err.Error()}
+		}
 	}
 
 	workers := map[string]struct{}{}
@@ -337,14 +340,24 @@ func Validate(m Manifest) error {
 		if _, ok := methods[method.Method]; ok {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].method", i), Message: "must be unique"}
 		}
+		if err := validateMethodRoute(fmt.Sprintf("methods[%d].route", i), method.Route, bindings, workers); err != nil {
+			return err
+		}
+		if method.Route.Kind == MethodRouteCapability {
+			if method.Method != method.Route.TargetMethod {
+				return ValidationError{Field: fmt.Sprintf("methods[%d].method", i), Message: "must match route.target_method for capability routes"}
+			}
+			if capabilityMethodDeclaresUnsignedPolicy(method) {
+				return ValidationError{Field: fmt.Sprintf("methods[%d]", i), Message: "capability routes must derive policy and schemas from the signed capability contract"}
+			}
+			methods[method.Method] = method
+			continue
+		}
 		if !validEffect(method.Effect) {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].effect", i), Message: "is invalid"}
 		}
 		if !validExecutionMode(method.Execution) {
 			return ValidationError{Field: fmt.Sprintf("methods[%d].execution", i), Message: "is invalid"}
-		}
-		if err := validateMethodRoute(fmt.Sprintf("methods[%d].route", i), method.Route, bindings, workers); err != nil {
-			return err
 		}
 		if err := validateMethodConfirmation(fmt.Sprintf("methods[%d]", i), method); err != nil {
 			return err
@@ -362,6 +375,9 @@ func Validate(m Manifest) error {
 		methods[method.Method] = method
 	}
 	for i, method := range m.Methods {
+		if method.Route.Kind == MethodRouteCapability {
+			continue
+		}
 		if method.Confirmation == nil || method.Confirmation.PreflightMethod == nil {
 			continue
 		}
@@ -491,6 +507,11 @@ func Validate(m Manifest) error {
 	}
 
 	return nil
+}
+
+func capabilityMethodDeclaresUnsignedPolicy(method MethodSpec) bool {
+	return method.Effect != "" || method.Execution != "" || method.Dangerous || method.PreflightOnly ||
+		method.Confirmation != nil || method.CancelPolicy != nil || method.RequestSchema != nil || method.ResponseSchema != nil
 }
 
 func validSurfaceKind(kind SurfaceKind) bool {
@@ -741,6 +762,12 @@ func validateMethodCancelPolicy(field string, method MethodSpec) error {
 	}
 	if method.CancelPolicy.AckTimeoutMS < 0 {
 		return ValidationError{Field: field + ".cancel_policy.ack_timeout_ms", Message: "must be zero or positive"}
+	}
+	if method.CancelPolicy.Cancelable && method.CancelPolicy.AckTimeoutMS == 0 {
+		return ValidationError{Field: field + ".cancel_policy.ack_timeout_ms", Message: "must be positive for cancelable methods"}
+	}
+	if !method.CancelPolicy.Cancelable && method.CancelPolicy.AckTimeoutMS != 0 {
+		return ValidationError{Field: field + ".cancel_policy.ack_timeout_ms", Message: "must be zero for non-cancelable methods"}
 	}
 	return nil
 }

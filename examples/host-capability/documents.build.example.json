@@ -1,0 +1,11 @@
+{
+  "contract_file": "documents.contract.json",
+  "private_key_file": "../../testdata/host-capability/release-sample/example-documents.test-only.private.json",
+  "artifact_base_ref": "capabilities/example.documents/v1.0.0",
+  "generated_at": "2026-07-13T12:28:52Z",
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "min_redevplugin_version": "0.3.0",
+  "signature_policy_epoch": "7",
+  "signature_revocation_epoch": "11",
+  "notices_file": "documents.notices.json"
+}

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -73,7 +74,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 		heartbeat.HostSentUnixNanoEcho <= 0 {
 		t.Fatalf("heartbeat mismatch: %#v", heartbeat)
 	}
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
 	if err != nil {
 		t.Fatalf("InvokeWorker() error = %v", err)
 	}
@@ -108,7 +109,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if health.Ready {
 		t.Fatalf("health after stop still ready: %#v", health)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{}, "worker.echo", nil); !errors.Is(err, ErrRuntimeNotReady) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{}, "worker.echo", nil); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("InvokeWorker(after stop) error = %v, want ErrRuntimeNotReady", err)
 	}
 }
@@ -144,10 +145,10 @@ func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *te
 		RevokeEpoch:         13,
 		ExpiresAt:           time.Now().Add(time.Minute),
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), lease, "worker.echo", workerInvocationFixture()); err != nil {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), lease, "worker.echo", workerInvocationFixture()); err != nil {
 		t.Fatalf("InvokeWorker(first) error = %v", err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), lease, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeLeaseReplay) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), lease, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeLeaseReplay) {
 		t.Fatalf("InvokeWorker(replay) error = %v, want %v", err, ErrRuntimeLeaseReplay)
 	}
 	waitForDiagnostic(t, diagnostics, "plugin.runtime.lease.replayed")
@@ -166,7 +167,7 @@ func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -192,7 +193,7 @@ func TestProcessSupervisorInvalidatesRuntimeOnCanceledIPC(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if _, err := supervisor.InvokeWorker(ctx, Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := supervisor.invokeWorkerForTest(ctx, Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("InvokeWorker() canceled error = %v, want %v", err, context.DeadlineExceeded)
 	}
 	health, err = supervisor.Health(context.Background())
@@ -202,7 +203,7 @@ func TestProcessSupervisorInvalidatesRuntimeOnCanceledIPC(t *testing.T) {
 	if health.Ready {
 		t.Fatalf("runtime should be marked not ready after canceled IPC: %#v", health)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_2"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeNotReady) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_2"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("InvokeWorker(after canceled IPC) error = %v, want %v", err, ErrRuntimeNotReady)
 	}
 	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
@@ -229,7 +230,7 @@ func TestProcessSupervisorRevokeInvalidatesRuntimeWhenIPCLockIsBusy(t *testing.T
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := supervisor.InvokeWorker(context.Background(), Lease{
+		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 			LeaseID:             "lease_busy",
 			LeaseToken:          "token_busy",
 			RuntimeGenerationID: health.RuntimeGenerationID,
@@ -429,7 +430,7 @@ func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
 	if err != nil {
 		t.Fatalf("InvokeWorker() error = %v", err)
 	}
@@ -477,7 +478,7 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 		t.Fatal(err)
 	}
 	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture())
 	if err != nil {
 		t.Fatalf("InvokeWorker() error = %v", err)
 	}
@@ -534,7 +535,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 		t.Fatal(err)
 	}
 	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -602,7 +603,7 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 		t.Fatal(err)
 	}
 	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -676,7 +677,7 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 		t.Fatal(err)
 	}
 	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -752,7 +753,7 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 		t.Fatal(err)
 	}
 	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -822,7 +823,7 @@ func TestProcessSupervisorRejectsNetworkGrantClassifierVersionMismatch(t *testin
 		t.Fatal(err)
 	}
 	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	_, err = supervisor.InvokeWorker(context.Background(), Lease{
+	_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -884,7 +885,7 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -957,7 +958,7 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http_stream"),
 		Connectivity:    broker,
 		NetworkExecutor: executor,
-		Streams:         streams,
+		StreamSink:      storeRuntimeStreamSink{store: streams},
 		Now:             func() time.Time { return now },
 	})
 	if err != nil {
@@ -971,7 +972,27 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 		t.Fatal(err)
 	}
 	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+	const streamID = "stream_runtime_1"
+	if _, err := streams.Register(context.Background(), stream.RegisterRequest{
+		StreamID: streamID,
+		ExecutionBinding: capability.ExecutionBinding{
+			PluginID:             "com.example.worker",
+			PluginInstanceID:     "plugini_1",
+			Method:               "worker.echo",
+			Effect:               capability.EffectRead,
+			Execution:            "subscription",
+			SurfaceInstanceID:    "surface_runtime",
+			OwnerSessionHash:     "session_hash",
+			OwnerUserHash:        "user_hash",
+			SessionChannelIDHash: "channel_hash",
+			BridgeChannelID:      "bridge_runtime",
+		},
+		Direction: stream.DirectionRead,
+		Now:       now,
+	}); err != nil {
+		t.Fatalf("Streams.Register() error = %v", err)
+	}
+	rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 		LeaseID:             "lease_1",
 		LeaseToken:          "token_1",
 		RuntimeGenerationID: health.RuntimeGenerationID,
@@ -991,10 +1012,10 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 	if !ok {
 		t.Fatalf("network execute result missing: %#v", decoded)
 	}
-	streamID, _ := networkExecute["stream_id"].(string)
+	returnedStreamID, _ := networkExecute["stream_id"].(string)
 	if networkExecute["ok"] != true ||
 		networkExecute["status_code"] != float64(http.StatusAccepted) ||
-		streamID == "" ||
+		returnedStreamID != streamID ||
 		networkExecute["body_base64"] != nil ||
 		networkExecute["bytes_read"] != float64(len("alpha\nbeta\n")) ||
 		networkExecute["chunk_count"] != float64(2) {
@@ -1148,7 +1169,7 @@ func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocatio
 				t.Fatal(err)
 			}
 			broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-			rawResult, err := supervisor.InvokeWorker(context.Background(), Lease{
+			rawResult, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
 				LeaseID:             "lease_1",
 				LeaseToken:          "token_1",
 				RuntimeGenerationID: health.RuntimeGenerationID,
@@ -1214,7 +1235,7 @@ func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
 		t.Fatal(err)
 	}
 	broker.grant.RuntimeGenerationID = health.RuntimeGenerationID
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -1236,7 +1257,7 @@ func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -1269,7 +1290,7 @@ func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 {
@@ -1305,7 +1326,7 @@ func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	validator.result.RuntimeGenerationID = health.RuntimeGenerationID
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 {
@@ -1440,7 +1461,7 @@ func TestProcessSupervisorRejectsInvalidHandleGrantRequestBeforeValidator(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if validator.calls != 0 {
@@ -1470,7 +1491,7 @@ func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1", LeaseToken: "token_1", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	if provider.calls != 0 {
@@ -1491,7 +1512,7 @@ func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T)
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", []byte(`{"message":"hello"}`)); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", []byte(`{"message":"hello"}`)); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -1510,7 +1531,7 @@ func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	payload := []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":"ui/index.html","artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo","export":"redevplugin_worker_invoke"}`, fixturePackageHash, fixtureArtifactSHA))
-	if _, err := supervisor.InvokeWorker(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", payload); !errors.Is(err, ErrRuntimeRequestFailed) {
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", payload); !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeRequestFailed", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
@@ -1605,7 +1626,7 @@ func runRuntimeClientHelper() {
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_LEASE_PUBLIC_KEY") == "1" {
 		if len(hello.RuntimeLeasePublicKeys) != 1 ||
 			hello.RuntimeLeasePublicKeys[0].Algorithm != RuntimeLeaseSignatureAlgorithm ||
-			hello.RuntimeLeasePublicKeys[0].KeyID != "host_ephemeral_key_1" {
+			!strings.HasPrefix(hello.RuntimeLeasePublicKeys[0].KeyID, "host_ephemeral_") {
 			os.Exit(60)
 		}
 		rawKey, err := base64.StdEncoding.DecodeString(hello.RuntimeLeasePublicKeys[0].PublicKeyBase64)
@@ -1661,6 +1682,9 @@ func runRuntimeClientHelper() {
 				Payload:             raw,
 			})
 		case ipcFrameTypeInvokeWorker:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_SIGNED_LEASE") == "1" && !verifySignedLeaseFromHelper(request, hello) {
+				os.Exit(62)
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE") == "1" {
 				time.Sleep(10 * time.Second)
 				continue
@@ -1754,6 +1778,30 @@ func runRuntimeClientHelper() {
 			os.Exit(6)
 		}
 	}
+}
+
+func verifySignedLeaseFromHelper(request ipcFrame, hello helloRequestPayload) bool {
+	if len(hello.RuntimeLeasePublicKeys) != 1 {
+		return false
+	}
+	var payload invokeWorkerRequestPayload
+	if err := json.Unmarshal(request.Payload, &payload); err != nil {
+		return false
+	}
+	publicKey := hello.RuntimeLeasePublicKeys[0]
+	rawKey, err := base64.StdEncoding.DecodeString(publicKey.PublicKeyBase64)
+	if err != nil || len(rawKey) != ed25519.PublicKeySize || payload.Lease.KeyID != publicKey.KeyID || payload.Lease.Signature == "" {
+		return false
+	}
+	verifier := Ed25519RuntimeLeaseVerifier{
+		Keyring: StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{
+			KeyID: publicKey.KeyID, PublicKey: ed25519.PublicKey(rawKey),
+		}}},
+		Now: func() time.Time { return payload.Lease.IssuedAt.Add(time.Second) },
+	}
+	return verifier.VerifyRuntimeLease(context.Background(), RuntimeLeaseVerificationRequest{
+		Lease: payload.Lease, Method: payload.Method, Now: payload.Lease.IssuedAt.Add(time.Second),
+	}) == nil
 }
 
 func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
@@ -2281,6 +2329,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 			OwnerUserHash        string `json:"owner_user_hash"`
 			SessionChannelIDHash string `json:"session_channel_id_hash"`
 			BridgeChannelID      string `json:"bridge_channel_id"`
+			StreamID             string `json:"stream_id"`
 		}
 		if err := json.Unmarshal(request.Payload, &payload); err == nil {
 			_ = json.Unmarshal(payload.Invocation, &invocation)
@@ -2298,6 +2347,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 			req.OwnerUserHash = invocation.OwnerUserHash
 			req.SessionChannelIDHash = invocation.SessionChannelIDHash
 			req.BridgeChannelID = invocation.BridgeChannelID
+			req.StreamID = invocation.StreamID
 		}
 	}
 	switch operation {
@@ -2715,7 +2765,107 @@ func assertBoundedDeadline(t *testing.T, label string, calledAt time.Time, deadl
 }
 
 func workerInvocationFixture() []byte {
-	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v1","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
+	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v1","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","operation_id":"operation_runtime_1","stream_id":"stream_runtime_1","audit_correlation_id":"audit_runtime_1","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
+}
+
+func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {
+	now := time.Now().UTC()
+	if s != nil && s.now != nil {
+		now = s.now()
+	}
+	health := s.healthSnapshot()
+	if lease.LeaseID == "" {
+		lease.LeaseID = "lease_test"
+	}
+	if lease.LeaseToken == "" {
+		lease.LeaseToken = "runtime_execution_lease." + lease.LeaseID + ".secret"
+	}
+	if lease.LeaseNonce == "" {
+		lease.LeaseNonce = "nonce_" + lease.LeaseID + "_1234567890"
+	}
+	if lease.PluginID == "" {
+		lease.PluginID = "com.example.worker"
+	}
+	if lease.PluginVersion == "" {
+		lease.PluginVersion = "1.0.0"
+	}
+	if lease.ActiveFingerprint == "" {
+		lease.ActiveFingerprint = "sha256:active"
+	}
+	if lease.PluginInstanceID == "" {
+		lease.PluginInstanceID = "plugini_1"
+	}
+	if lease.Method == "" {
+		lease.Method = method
+	}
+	if lease.Effect == "" {
+		lease.Effect = "read"
+	}
+	if lease.Execution == "" {
+		lease.Execution = "subscription"
+	}
+	if lease.Execution == "operation" && lease.OperationID == "" {
+		lease.OperationID = "operation_runtime_1"
+	}
+	if lease.Execution == "subscription" {
+		if lease.OperationID == "" {
+			lease.OperationID = "operation_runtime_1"
+		}
+		if lease.StreamID == "" {
+			lease.StreamID = "stream_runtime_1"
+		}
+	}
+	if lease.AuditCorrelationID == "" {
+		lease.AuditCorrelationID = "audit_runtime_1"
+	}
+	if lease.PolicyRevision == 0 {
+		lease.PolicyRevision = 1
+	}
+	if lease.ManagementRevision == 0 {
+		lease.ManagementRevision = 1
+	}
+	if lease.RevokeEpoch == 0 {
+		lease.RevokeEpoch = 1
+	}
+	if lease.RuntimeInstanceID == "" {
+		lease.RuntimeInstanceID = health.RuntimeInstanceID
+	}
+	if lease.RuntimeGenerationID == "" {
+		lease.RuntimeGenerationID = health.RuntimeGenerationID
+	}
+	if lease.IPCChannelID == "" {
+		lease.IPCChannelID = health.IPCChannelID
+	}
+	if lease.ConnectionNonce == "" {
+		lease.ConnectionNonce = health.ConnectionNonce
+	}
+	if lease.IssuedAt.IsZero() {
+		lease.IssuedAt = now.Add(-time.Second)
+	}
+	if lease.ExpiresAt.IsZero() {
+		lease.ExpiresAt = now.Add(time.Minute)
+	}
+	return s.InvokeWorker(ctx, lease, method, payload)
+}
+
+type storeRuntimeStreamSink struct {
+	store stream.Store
+}
+
+func (s storeRuntimeStreamSink) AppendRuntimeStream(ctx context.Context, streamID, kind string, data []byte) error {
+	_, err := s.store.Append(ctx, stream.AppendRequest{StreamID: streamID, Kind: kind, Data: data})
+	return err
+}
+
+func (s storeRuntimeStreamSink) CloseRuntimeStream(ctx context.Context, streamID string) error {
+	_, err := s.store.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusClosed})
+	return err
+}
+
+func (s storeRuntimeStreamSink) FailRuntimeStream(ctx context.Context, streamID, reason string) error {
+	_, _ = s.store.Append(ctx, stream.AppendRequest{StreamID: streamID, Kind: "error", Error: reason})
+	_, err := s.store.Close(ctx, stream.CloseRequest{StreamID: streamID, Status: stream.StatusFailed, Reason: reason})
+	return err
 }
 
 func stopRuntimeSupervisor(t *testing.T, supervisor *ProcessSupervisor) {

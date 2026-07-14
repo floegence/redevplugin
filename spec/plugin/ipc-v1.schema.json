@@ -23,7 +23,7 @@
           "payload": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["target", "host_process_id", "host_ipc_version", "host_wasm_abi", "started_unix_nano", "channel_nonce"],
+            "required": ["target", "host_process_id", "host_ipc_version", "host_wasm_abi", "started_unix_nano", "channel_nonce", "runtime_lease_public_keys"],
             "properties": {
               "target": {
                 "type": "object",
@@ -41,6 +41,7 @@
               "channel_nonce": { "type": "string", "minLength": 16 },
               "runtime_lease_public_keys": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -119,6 +120,7 @@
                   "method",
                   "effect",
                   "execution",
+                  "audit_correlation_id",
                   "surface_instance_id",
                   "owner_session_hash",
                   "owner_user_hash",
@@ -131,6 +133,8 @@
                   "runtime_instance_id",
                   "ipc_channel_id",
                   "connection_nonce",
+                  "key_id",
+                  "signature",
                   "expires_at"
                 ],
                 "properties": {
@@ -148,6 +152,9 @@
                   "method": { "type": "string", "minLength": 1 },
                   "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
                   "execution": { "enum": ["sync", "operation", "subscription"] },
+                  "operation_id": { "type": "string", "minLength": 1 },
+                  "stream_id": { "type": "string", "minLength": 1 },
+                  "audit_correlation_id": { "type": "string", "minLength": 1 },
                   "surface_instance_id": { "type": "string", "minLength": 1 },
                   "owner_session_hash": { "type": "string", "minLength": 1 },
                   "owner_user_hash": { "type": "string", "minLength": 1 },
@@ -178,7 +185,21 @@
                   "key_id": { "type": "string", "minLength": 1 },
                   "signature": { "type": "string", "pattern": "^ed25519:.+" },
                   "expires_at": { "type": "string", "format": "date-time" }
-                }
+                },
+                "allOf": [
+                  {
+                    "if": { "properties": { "execution": { "const": "sync" } }, "required": ["execution"] },
+                    "then": { "not": { "anyOf": [{ "required": ["operation_id"] }, { "required": ["stream_id"] }] } }
+                  },
+                  {
+                    "if": { "properties": { "execution": { "const": "operation" } }, "required": ["execution"] },
+                    "then": { "required": ["operation_id"], "not": { "required": ["stream_id"] } }
+                  },
+                  {
+                    "if": { "properties": { "execution": { "const": "subscription" } }, "required": ["execution"] },
+                    "then": { "required": ["operation_id", "stream_id"] }
+                  }
+                ]
               },
               "method": { "type": "string", "minLength": 1 },
               "invocation": {

@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 1
+const sqliteSchemaVersion = 3
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -49,8 +50,8 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 		return Record{}, errors.New("stream store is nil")
 	}
 	streamID := strings.TrimSpace(req.StreamID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	method := strings.TrimSpace(req.Method)
+	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
+	method := strings.TrimSpace(req.ExecutionBinding.Method)
 	if streamID == "" || pluginInstanceID == "" || method == "" {
 		return Record{}, ErrInvalidStream
 	}
@@ -79,31 +80,22 @@ func (s *SQLiteStore) Register(ctx context.Context, req RegisterRequest) (Record
 	}
 	defer rollbackUnlessCommitted(tx)
 
-	existing, exists, err := getSQLiteStream(ctx, tx, streamID)
+	_, exists, err := getSQLiteStream(ctx, tx, streamID)
 	if err != nil {
 		return Record{}, err
 	}
 	if exists {
-		return existing, nil
+		return Record{}, ErrAlreadyExists
 	}
 	record := Record{
-		StreamID:             streamID,
-		PluginID:             strings.TrimSpace(req.PluginID),
-		PluginInstanceID:     pluginInstanceID,
-		Method:               method,
-		Effect:               strings.TrimSpace(req.Effect),
-		Execution:            strings.TrimSpace(req.Execution),
-		SurfaceInstanceID:    strings.TrimSpace(req.SurfaceInstanceID),
-		OwnerSessionHash:     strings.TrimSpace(req.OwnerSessionHash),
-		OwnerUserHash:        strings.TrimSpace(req.OwnerUserHash),
-		SessionChannelIDHash: strings.TrimSpace(req.SessionChannelIDHash),
-		BridgeChannelID:      strings.TrimSpace(req.BridgeChannelID),
-		Direction:            direction,
-		Status:               StatusOpen,
-		ContentType:          strings.TrimSpace(req.ContentType),
-		MaxBufferedBytes:     maxBuffered,
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		StreamID:         streamID,
+		ExecutionBinding: req.ExecutionBinding,
+		Direction:        direction,
+		Status:           StatusOpen,
+		ContentType:      strings.TrimSpace(req.ContentType),
+		MaxBufferedBytes: maxBuffered,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if err := upsertSQLiteStream(ctx, tx, record); err != nil {
 		return Record{}, err
@@ -129,6 +121,38 @@ func (s *SQLiteStore) Get(ctx context.Context, streamID string) (Record, error) 
 		return Record{}, ErrNotFound
 	}
 	return record, nil
+}
+
+func (s *SQLiteStore) List(ctx context.Context, req ListRequest) ([]Record, error) {
+	if s == nil {
+		return nil, errors.New("stream store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	query := streamSelectColumns + ` FROM plugin_streams`
+	args := []any{}
+	if pluginInstanceID := strings.TrimSpace(req.PluginInstanceID); pluginInstanceID != "" {
+		query += ` WHERE plugin_instance_id = ?`
+		args = append(args, pluginInstanceID)
+	}
+	query += ` ORDER BY created_at ASC, stream_id ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := []Record{}
+	for rows.Next() {
+		record, err := scanSQLiteStream(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func (s *SQLiteStore) Append(ctx context.Context, req AppendRequest) (Event, error) {
@@ -232,21 +256,7 @@ func (s *SQLiteStore) Read(ctx context.Context, req ReadRequest) (Record, []Even
 		}
 		return record, nil, nil
 	}
-	limit := len(events)
-	if req.MaxEvents > 0 && req.MaxEvents < limit {
-		limit = req.MaxEvents
-	}
-	var total int64
-	if req.MaxBytes > 0 {
-		for i := 0; i < limit; i++ {
-			size := int64(len(events[i].Data))
-			if i > 0 && total+size > req.MaxBytes {
-				limit = i
-				break
-			}
-			total += size
-		}
-	}
+	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
 	if limit <= 0 {
 		if err := tx.Commit(); err != nil {
 			return Record{}, nil, err
@@ -271,6 +281,31 @@ func (s *SQLiteStore) Read(ctx context.Context, req ReadRequest) (Record, []Even
 	return record, out, nil
 }
 
+func (s *SQLiteStore) Peek(ctx context.Context, req ReadRequest) (Record, []Event, error) {
+	if s == nil {
+		return Record{}, nil, errors.New("stream store is nil")
+	}
+	streamID := strings.TrimSpace(req.StreamID)
+	if streamID == "" {
+		return Record{}, nil, ErrInvalidStream
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, exists, err := getSQLiteStream(ctx, s.db, streamID)
+	if err != nil {
+		return Record{}, nil, err
+	}
+	if !exists {
+		return Record{}, nil, ErrNotFound
+	}
+	events, err := listSQLiteStreamEvents(ctx, s.db, streamID)
+	if err != nil {
+		return Record{}, nil, err
+	}
+	limit := streamReadLimit(events, req.MaxEvents, req.MaxBytes)
+	return record, cloneEvents(events[:limit]), nil
+}
+
 func (s *SQLiteStore) Close(ctx context.Context, req CloseRequest) (Record, error) {
 	if s == nil {
 		return Record{}, errors.New("stream store is nil")
@@ -291,6 +326,7 @@ func (s *SQLiteStore) Close(ctx context.Context, req CloseRequest) (Record, erro
 			return record
 		}
 		record.Status = status
+		record.Reason = req.Reason
 		record.UpdatedAt = now
 		record.ClosedAt = &now
 		return record
@@ -332,6 +368,7 @@ func (s *SQLiteStore) MarkPluginTransition(ctx context.Context, req PluginTransi
 			continue
 		}
 		record.Status = req.Status
+		record.Reason = req.Reason
 		record.UpdatedAt = now
 		record.ClosedAt = &now
 		if err := upsertSQLiteStream(ctx, tx, record); err != nil {
@@ -418,8 +455,10 @@ CREATE TABLE IF NOT EXISTS plugin_streams (
 	owner_user_hash TEXT NOT NULL,
 	session_channel_id_hash TEXT NOT NULL,
 	bridge_channel_id TEXT NOT NULL,
+	execution_binding_json TEXT NOT NULL DEFAULT '{}',
 	direction TEXT NOT NULL,
 	status TEXT NOT NULL,
+	reason TEXT NOT NULL DEFAULT '',
 	content_type TEXT NOT NULL,
 	max_buffered_bytes INTEGER NOT NULL,
 	buffered_bytes INTEGER NOT NULL,
@@ -428,6 +467,22 @@ CREATE TABLE IF NOT EXISTS plugin_streams (
 	closed_at INTEGER
 )`); err != nil {
 		return err
+	}
+	if maxVersion < 2 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_streams ADD COLUMN execution_binding_json TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_stream_schema_migrations(version, applied_at) VALUES(?, ?)`, 2, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
+	if maxVersion < 3 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_streams ADD COLUMN reason TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_stream_schema_migrations(version, applied_at) VALUES(?, ?)`, 3, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_stream_events (
@@ -463,7 +518,7 @@ const streamSelectColumns = `
 SELECT
 	stream_id, plugin_id, plugin_instance_id, method, effect, execution,
 	surface_instance_id, owner_session_hash, owner_user_hash,
-	session_channel_id_hash, bridge_channel_id, direction, status, content_type,
+	session_channel_id_hash, bridge_channel_id, execution_binding_json, direction, status, reason, content_type,
 	max_buffered_bytes, buffered_bytes, created_at, updated_at, closed_at`
 
 func getSQLiteStream(ctx context.Context, q sqliteQuerier, streamID string) (Record, bool, error) {
@@ -500,13 +555,17 @@ func listSQLiteStreamsByPluginInstance(ctx context.Context, q sqliteQuerier, plu
 }
 
 func upsertSQLiteStream(ctx context.Context, tx *sql.Tx, record Record) error {
-	_, err := tx.ExecContext(ctx, `
+	bindingJSON, err := json.Marshal(record.ExecutionBinding)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO plugin_streams (
 	stream_id, plugin_id, plugin_instance_id, method, effect, execution,
 	surface_instance_id, owner_session_hash, owner_user_hash,
-	session_channel_id_hash, bridge_channel_id, direction, status, content_type,
+	session_channel_id_hash, bridge_channel_id, execution_binding_json, direction, status, reason, content_type,
 	max_buffered_bytes, buffered_bytes, created_at, updated_at, closed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(stream_id) DO UPDATE SET
 	plugin_id = excluded.plugin_id,
 	plugin_instance_id = excluded.plugin_instance_id,
@@ -518,8 +577,10 @@ ON CONFLICT(stream_id) DO UPDATE SET
 	owner_user_hash = excluded.owner_user_hash,
 	session_channel_id_hash = excluded.session_channel_id_hash,
 	bridge_channel_id = excluded.bridge_channel_id,
+	execution_binding_json = excluded.execution_binding_json,
 	direction = excluded.direction,
 	status = excluded.status,
+	reason = excluded.reason,
 	content_type = excluded.content_type,
 	max_buffered_bytes = excluded.max_buffered_bytes,
 	buffered_bytes = excluded.buffered_bytes,
@@ -537,8 +598,10 @@ ON CONFLICT(stream_id) DO UPDATE SET
 		record.OwnerUserHash,
 		record.SessionChannelIDHash,
 		record.BridgeChannelID,
+		string(bindingJSON),
 		string(record.Direction),
 		string(record.Status),
+		record.Reason,
 		record.ContentType,
 		record.MaxBufferedBytes,
 		record.BufferedBytes,
@@ -611,6 +674,7 @@ type sqliteStreamScanner interface {
 
 func scanSQLiteStream(scanner sqliteStreamScanner) (Record, error) {
 	var record Record
+	var bindingJSON string
 	var direction string
 	var status string
 	var createdAt int64
@@ -628,8 +692,10 @@ func scanSQLiteStream(scanner sqliteStreamScanner) (Record, error) {
 		&record.OwnerUserHash,
 		&record.SessionChannelIDHash,
 		&record.BridgeChannelID,
+		&bindingJSON,
 		&direction,
 		&status,
+		&record.Reason,
 		&record.ContentType,
 		&record.MaxBufferedBytes,
 		&record.BufferedBytes,
@@ -638,6 +704,11 @@ func scanSQLiteStream(scanner sqliteStreamScanner) (Record, error) {
 		&closedAt,
 	); err != nil {
 		return Record{}, err
+	}
+	if strings.TrimSpace(bindingJSON) != "" && strings.TrimSpace(bindingJSON) != "{}" {
+		if err := json.Unmarshal([]byte(bindingJSON), &record.ExecutionBinding); err != nil {
+			return Record{}, err
+		}
 	}
 	record.Direction = Direction(direction)
 	record.Status = Status(status)

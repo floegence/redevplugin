@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.3.0
+
+### Added
+
+- Signed, exact-pinned external host capability contract artifacts with a
+  restricted JSON Schema, compatibility metadata, deterministic plugin-side
+  TypeScript client generation, and host-neutral Documents sample.
+- Closed machine schemas for the host-capability contract, pin, manifest,
+  compatibility document, signature envelope, and notices list, all included in
+  the generated compatibility registry and release bundle.
+- Typed capability invocation bindings that carry plugin, surface, session,
+  contract, permission, confirmation, quota, revision, target descriptor, and
+  audit correlation evidence into host business adapters.
+- Host-owned operation and stream sinks, route-local cancellation hooks,
+  execution leases, quota fencing, and stable negative audit/diagnostic events.
+- Shared Go/TypeScript restricted-schema conformance fixtures and generated
+  business-error unions bound to capability identity and details-schema digest.
+- A maintained [A3 TDD evidence record](docs/release/a3-tdd-evidence.md) and
+  release-bundle verification of the signed sample artifact.
+
+### Security
+
+- Capability bundle verification rejects arbitrary URL/file refs, traversal,
+  symlinks, hardlinks, file-set or digest drift, wrong publisher/key epochs,
+  signature mismatch, stale compatibility, redirects, and stale generated
+  clients before registry or dev-state mutation.
+- Confirmation dispatch re-resolves and hashes the trusted target descriptor;
+  changed targets, requests, sessions, methods, policy revisions, or revoke
+  epochs fail closed and consumed confirmations cannot be replayed.
+- Trusted-parent confirmation rejection is surface- and bridge-scoped, removes
+  the pending intent atomically, records `confirmation_rejected` audit and
+  diagnostic evidence, and never dispatches the business adapter.
+- Operation and stream ids are allocated before adapter dispatch and are never
+  bearer authorization. Sink writes revalidate the live execution lease and
+  are rejected after terminal state, timeout, disable, or revoke.
+- Runtime `http_stream` requests inherit the Host-owned subscription id from
+  the invocation; plugin-selected ids and invocations without a Host id fail
+  closed before broker execution.
+- Every process supervisor now creates an ephemeral Ed25519 signing key and
+  supplies a mandatory non-empty Rust keyring. Rust independently rejects
+  expired leases and any signed-lease mismatch with the worker invocation's
+  plugin, execution handles, audit, surface/session, or runtime audience before
+  replay consumption or artifact access.
+- Worker leases bind the exact invocation through `params_sha256` and a
+  fixed-order, length-prefixed invocation target hash. Rust recomputes both,
+  and the expiry-aware replay cache fails closed at a hard capacity.
+- Capability artifact resolution rejects RFC 6890 special-use IPv4/IPv6
+  ranges, including mapped IPv4, carrier-grade NAT, benchmark, documentation,
+  translation, reserved, and local networks.
+- Source security floors reject same-policy-epoch content replacement while
+  excluding assessment-only timestamps from the canonical security hash.
+- Stream reads serialize per stream and commit event consumption with the
+  single-use ticket decision. Failed reads preserve the current ticket and
+  events, open streams rotate exactly once, and drained terminal streams do not
+  reserve or expose a replacement credential.
+- Partial operation/stream terminal writes are durably reconciled in either
+  direction on Host construction and later execution, including SQLite reopen.
+- The first subscription terminal intent is latched before either store write;
+  conflicting concurrent callers fail closed. Host startup terminates durable
+  running/cancel-requested operations that have no live execution owner.
+- Negative method audit/diagnostic persistence failures are returned together
+  with the original rejection and never permit adapter dispatch.
+- Registry, operation, and stream stores deep-copy nested execution state and
+  returned event bytes so callers cannot mutate stored authority through shared
+  memory.
+
+### Changed
+
+- `redevplugin host-capability generate-client` now consumes a verified artifact
+  root, pin, and public key. `--check` compares the published generated client
+  without rewriting it.
+- `dev-install` validates packages and capability artifacts before creating an
+  isolated staging directory, then atomically promotes the complete state root.
+- Operation cancellation no longer performs a later global capability-registry
+  lookup. A live route captures its optional cancel hook; inactive persisted
+  operations keep durable `cancel_requested` state without redispatch.
+- Execution records now declare `route_kind`; only capability routes carry an
+  exact contract pin, while worker/core-action records carry explicit empty
+  permission arrays.
+- Generated operation clients expose `cancel()` only for cancelable contracts,
+  subscriptions must be cancelable, and numeric/boolean enums and constants
+  retain literal TypeScript types.
+- Trusted-parent stream reads preserve a renewable opaque handle after an
+  explicit Host rejection, but invalidate it after transport uncertainty,
+  credential revocation, or malformed success data.
+
 ## v0.2.2
 
 ### Fixed

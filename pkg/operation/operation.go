@@ -2,11 +2,14 @@ package operation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/capability"
 )
 
 type Status string
@@ -33,42 +36,34 @@ const (
 var (
 	ErrNotFound         = errors.New("operation not found")
 	ErrInvalidOperation = errors.New("operation is invalid")
+	ErrAlreadyExists    = errors.New("operation already exists")
 	ErrDeleteBlocked    = errors.New("operation blocks data deletion")
+	ErrNotCancelable    = errors.New("operation is not cancelable")
 )
 
 type Record struct {
-	OperationID          string     `json:"operation_id"`
-	PluginID             string     `json:"plugin_id"`
-	PluginInstanceID     string     `json:"plugin_instance_id"`
-	Method               string     `json:"method"`
-	Effect               string     `json:"effect,omitempty"`
-	Execution            string     `json:"execution"`
-	SurfaceInstanceID    string     `json:"surface_instance_id,omitempty"`
-	SessionChannelIDHash string     `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string     `json:"bridge_channel_id,omitempty"`
-	Status               Status     `json:"status"`
-	DisableBehavior      string     `json:"disable_behavior,omitempty"`
-	UninstallBehavior    string     `json:"uninstall_behavior,omitempty"`
-	Reason               string     `json:"reason,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	CancelRequestedAt    *time.Time `json:"cancel_requested_at,omitempty"`
-	OrphanedAt           *time.Time `json:"orphaned_at,omitempty"`
+	OperationID string `json:"operation_id"`
+	capability.ExecutionBinding
+	Status             Status     `json:"status"`
+	Cancelable         bool       `json:"cancelable"`
+	CancelAckTimeoutMS int        `json:"cancel_ack_timeout_ms,omitempty"`
+	DisableBehavior    string     `json:"disable_behavior,omitempty"`
+	UninstallBehavior  string     `json:"uninstall_behavior,omitempty"`
+	Reason             string     `json:"reason,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	CancelRequestedAt  *time.Time `json:"cancel_requested_at,omitempty"`
+	OrphanedAt         *time.Time `json:"orphaned_at,omitempty"`
 }
 
 type RegisterRequest struct {
-	OperationID          string    `json:"operation_id"`
-	PluginID             string    `json:"plugin_id"`
-	PluginInstanceID     string    `json:"plugin_instance_id"`
-	Method               string    `json:"method"`
-	Effect               string    `json:"effect,omitempty"`
-	Execution            string    `json:"execution"`
-	SurfaceInstanceID    string    `json:"surface_instance_id,omitempty"`
-	SessionChannelIDHash string    `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string    `json:"bridge_channel_id,omitempty"`
-	DisableBehavior      string    `json:"disable_behavior,omitempty"`
-	UninstallBehavior    string    `json:"uninstall_behavior,omitempty"`
-	Now                  time.Time `json:"now,omitempty"`
+	OperationID        string                      `json:"operation_id"`
+	ExecutionBinding   capability.ExecutionBinding `json:"execution_binding"`
+	Cancelable         *bool                       `json:"cancelable,omitempty"`
+	CancelAckTimeoutMS int                         `json:"cancel_ack_timeout_ms,omitempty"`
+	DisableBehavior    string                      `json:"disable_behavior,omitempty"`
+	UninstallBehavior  string                      `json:"uninstall_behavior,omitempty"`
+	Now                time.Time                   `json:"now,omitempty"`
 }
 
 type ListRequest struct {
@@ -122,9 +117,12 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 		return Record{}, errors.New("operation store is nil")
 	}
 	operationID := strings.TrimSpace(req.OperationID)
-	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
-	method := strings.TrimSpace(req.Method)
+	pluginInstanceID := strings.TrimSpace(req.ExecutionBinding.PluginInstanceID)
+	method := strings.TrimSpace(req.ExecutionBinding.Method)
 	if operationID == "" || pluginInstanceID == "" || method == "" {
+		return Record{}, ErrInvalidOperation
+	}
+	if req.CancelAckTimeoutMS < 0 || !registerCancelable(req.Cancelable) && req.CancelAckTimeoutMS != 0 {
 		return Record{}, ErrInvalidOperation
 	}
 	now := req.Now
@@ -134,27 +132,33 @@ func (s *MemoryStore) Register(_ context.Context, req RegisterRequest) (Record, 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, ok := s.records[operationID]; ok {
-		return existing, nil
+	if _, ok := s.records[operationID]; ok {
+		return Record{}, ErrAlreadyExists
+	}
+	binding, err := cloneExecutionBinding(req.ExecutionBinding)
+	if err != nil {
+		return Record{}, ErrInvalidOperation
 	}
 	record := Record{
-		OperationID:          operationID,
-		PluginID:             req.PluginID,
-		PluginInstanceID:     pluginInstanceID,
-		Method:               method,
-		Effect:               req.Effect,
-		Execution:            req.Execution,
-		SurfaceInstanceID:    req.SurfaceInstanceID,
-		SessionChannelIDHash: req.SessionChannelIDHash,
-		BridgeChannelID:      req.BridgeChannelID,
-		Status:               StatusRunning,
-		DisableBehavior:      normalizeDisableBehavior(req.DisableBehavior),
-		UninstallBehavior:    normalizeUninstallBehavior(req.UninstallBehavior),
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		OperationID:        operationID,
+		ExecutionBinding:   binding,
+		Status:             StatusRunning,
+		Cancelable:         registerCancelable(req.Cancelable),
+		CancelAckTimeoutMS: req.CancelAckTimeoutMS,
+		DisableBehavior:    normalizeDisableBehavior(req.DisableBehavior),
+		UninstallBehavior:  normalizeUninstallBehavior(req.UninstallBehavior),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 	s.records[operationID] = record
-	return record, nil
+	return cloneRecord(record), nil
+}
+
+func registerCancelable(value *bool) bool {
+	if value == nil {
+		return true
+	}
+	return *value
 }
 
 func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error) {
@@ -169,7 +173,7 @@ func (s *MemoryStore) List(_ context.Context, req ListRequest) ([]Record, error)
 		if req.PluginInstanceID != "" && record.PluginInstanceID != req.PluginInstanceID {
 			continue
 		}
-		records = append(records, record)
+		records = append(records, cloneRecord(record))
 	}
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
@@ -190,7 +194,7 @@ func (s *MemoryStore) Get(_ context.Context, operationID string) (Record, error)
 	if !ok {
 		return Record{}, ErrNotFound
 	}
-	return record, nil
+	return cloneRecord(record), nil
 }
 
 func (s *MemoryStore) RequestCancel(_ context.Context, req CancelRequest) (Record, error) {
@@ -207,9 +211,12 @@ func (s *MemoryStore) RequestCancel(_ context.Context, req CancelRequest) (Recor
 	if !ok {
 		return Record{}, ErrNotFound
 	}
+	if !terminal(record.Status) && !record.Cancelable {
+		return Record{}, ErrNotCancelable
+	}
 	record = requestCancel(record, now, req.Reason)
 	s.records[record.OperationID] = record
-	return record, nil
+	return cloneRecord(record), nil
 }
 
 func (s *MemoryStore) Finish(_ context.Context, req FinishRequest) (Record, error) {
@@ -230,13 +237,13 @@ func (s *MemoryStore) Finish(_ context.Context, req FinishRequest) (Record, erro
 		return Record{}, ErrNotFound
 	}
 	if terminal(record.Status) {
-		return record, nil
+		return cloneRecord(record), nil
 	}
 	record.Status = req.Status
 	record.Reason = req.Reason
 	record.UpdatedAt = now
 	s.records[record.OperationID] = record
-	return record, nil
+	return cloneRecord(record), nil
 }
 
 func (s *MemoryStore) MarkPluginDisabled(_ context.Context, req PluginTransitionRequest) ([]Record, error) {
@@ -263,7 +270,7 @@ func (s *MemoryStore) MarkPluginDisabled(_ context.Context, req PluginTransition
 			record = requestCancel(record, now, req.Reason)
 		}
 		s.records[id] = record
-		changed = append(changed, record)
+		changed = append(changed, cloneRecord(record))
 	}
 	return changed, nil
 }
@@ -289,7 +296,7 @@ func (s *MemoryStore) MarkPluginUninstalled(_ context.Context, req PluginTransit
 			record = requestCancel(record, now, req.Reason)
 		}
 		s.records[id] = record
-		changed = append(changed, record)
+		changed = append(changed, cloneRecord(record))
 	}
 	return changed, nil
 }
@@ -347,4 +354,32 @@ func normalizeUninstallBehavior(behavior string) string {
 	default:
 		return UninstallBehaviorCancelThenBlockDelete
 	}
+}
+
+func cloneExecutionBinding(binding capability.ExecutionBinding) (capability.ExecutionBinding, error) {
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return capability.ExecutionBinding{}, err
+	}
+	var cloned capability.ExecutionBinding
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return capability.ExecutionBinding{}, err
+	}
+	return cloned, nil
+}
+
+func cloneRecord(record Record) Record {
+	binding, err := cloneExecutionBinding(record.ExecutionBinding)
+	if err == nil {
+		record.ExecutionBinding = binding
+	}
+	if record.CancelRequestedAt != nil {
+		value := *record.CancelRequestedAt
+		record.CancelRequestedAt = &value
+	}
+	if record.OrphanedAt != nil {
+		value := *record.OrphanedAt
+		record.OrphanedAt = &value
+	}
+	return record
 }

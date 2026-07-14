@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
@@ -29,6 +29,7 @@ verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);
 verifyRuntimeHello(bundleDir, expectedVersion, structuralOnly);
 await verifyNpmTarball(bundleDir, expectedVersion, manifest);
 verifyNoticeEvidence(bundleDir);
+verifyHostCapabilitySample(bundleDir, manifest, structuralOnly);
 
 console.log(`release bundle verified: ${bundleDir}`);
 
@@ -93,6 +94,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "AGENTS.md",
     "CHANGELOG.md",
     "docs/release/a2-tdd-evidence.md",
+    "docs/release/a3-tdd-evidence.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
@@ -103,6 +105,12 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/bridge-v2.schema.json",
     "contracts/spec/plugin/compatibility-manifest-v2.schema.json",
     "contracts/spec/plugin/error-codes-v1.schema.json",
+    "contracts/spec/plugin/host-capability-contract-v1.schema.json",
+    "contracts/spec/plugin/host-capability-pin-v1.schema.json",
+    "contracts/spec/plugin/host-capability-manifest-v1.schema.json",
+    "contracts/spec/plugin/host-capability-compatibility-v1.schema.json",
+    "contracts/spec/plugin/host-capability-signature-v1.schema.json",
+    "contracts/spec/plugin/host-capability-notices-v1.schema.json",
     "contracts/spec/plugin/ipc-v1.schema.json",
     "contracts/spec/plugin/manifest-v2.schema.json",
     "contracts/spec/plugin/opaque-surface-document-v1.schema.json",
@@ -113,6 +121,15 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/source-revocations-v1.schema.json",
     "contracts/spec/plugin/token-ticket-v2.schema.json",
     "contracts/spec/plugin/worker-invocation-v1.schema.json",
+    "examples/host-capability/sample-documents-v1/example-documents.public.json",
+    "examples/host-capability/sample-documents-v1/host-capability.pin.json",
+    "examples/host-capability/sample-documents-v1/plugin-consumer.ts",
+    "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.client.ts",
+    "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.compatibility.json",
+    "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.manifest.json",
+    "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.notices.json",
+    "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.schema.json",
+    "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.sig",
     "notices/Cargo.lock",
     "notices/THIRD_PARTY_LICENSES.json",
     "notices/go.sum",
@@ -185,13 +202,27 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
     return;
   }
   const channelNonce = "release_bundle_nonce_1";
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const publicJWK = publicKey.export({ format: "jwk" });
+  if (typeof publicJWK.x !== "string") {
+    fail("release verifier could not export the runtime lease public key");
+  }
   const hello =
     JSON.stringify({
       ipc_version: "rust-ipc-v1",
       frame_type: "hello",
       request_id: "hello-1",
       runtime_generation_id: "gen-1",
-      payload: { channel_nonce: channelNonce },
+      payload: {
+        channel_nonce: channelNonce,
+        runtime_lease_public_keys: [
+          {
+            algorithm: "ed25519",
+            key_id: "release_verifier_ephemeral_1",
+            public_key_base64: Buffer.from(publicJWK.x, "base64url").toString("base64"),
+          },
+        ],
+      },
     }) + "\n";
   const output = execFileSync(join(bundleDir, "bin/redevplugin-runtime"), {
     input: hello,
@@ -309,7 +340,15 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
         for (const specifier of ${JSON.stringify(exportSpecifiers)}) await import(specifier);
         const plugin = await import("@floegence/redevplugin-ui/plugin");
         const pluginKeys = Object.keys(plugin).sort();
-        if (JSON.stringify(pluginKeys) !== JSON.stringify(["PluginBridgeClient"])) {
+        const expectedPluginKeys = [
+          "PluginBridgeClient",
+          "PluginBridgeError",
+          "callCapabilityOperation",
+          "callCapabilityStream",
+          "callCapabilitySync",
+          "isCapabilityBusinessError",
+        ];
+        if (JSON.stringify(pluginKeys) !== JSON.stringify(expectedPluginKeys)) {
           throw new Error("plugin entrypoint runtime exports are not closed: " + JSON.stringify(pluginKeys));
         }
         const trusted = await import("@floegence/redevplugin-ui/trusted-parent");
@@ -335,9 +374,123 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
         fail(`${entrypoint} exposes the internal opaque bootstrap HTML factory`);
       }
     }
+    verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+function verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp) {
+  const consumerRoot = join(tmp, "standalone-consumer");
+  const sourceRoot = join(consumerRoot, "src");
+  mkdirSync(consumerRoot, { recursive: true });
+  writeFileSync(join(consumerRoot, "package.json"), JSON.stringify({ private: true, type: "module" }) + "\n");
+  execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", npmPath], {
+    cwd: consumerRoot,
+    encoding: "utf8",
+  });
+  cpSync(join(bundleDir, "examples/host-capability/sample-documents-v1"), sourceRoot, { recursive: true });
+  writeFileSync(join(consumerRoot, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      strict: true,
+      skipLibCheck: false,
+      noEmit: true,
+    },
+    include: ["src/**/*.ts"],
+  }, null, 2) + "\n");
+  const tsc = resolve("node_modules/typescript/bin/tsc");
+  assertFile(tsc, "release verifier TypeScript compiler");
+  execFileSync(process.execPath, [tsc, "--project", join(consumerRoot, "tsconfig.json")], {
+    cwd: consumerRoot,
+    encoding: "utf8",
+  });
+}
+
+function verifyHostCapabilitySample(bundleDir, releaseManifest, skipExecution) {
+  const sampleRoot = join(bundleDir, "examples/host-capability/sample-documents-v1");
+  const pinPath = join(sampleRoot, "host-capability.pin.json");
+  const publicPath = join(sampleRoot, "example-documents.public.json");
+  const pin = readJSON(pinPath);
+  const publicDocument = readJSON(publicPath);
+  assertObject(pin, "host capability sample pin");
+  assertObject(publicDocument, "host capability sample public key");
+  assertEqual(pin.publisher_id, "example.publisher", "host capability sample publisher_id");
+  assertEqual(pin.contract_id, "example.documents.v1", "host capability sample contract_id");
+  assertEqual(pin.contract_version, "1.0.0", "host capability sample contract_version");
+  assertEqual(publicDocument.algorithm, "ed25519", "host capability sample public key algorithm");
+  assertEqual(publicDocument.key_id, pin.signature_key_id, "host capability sample public key key_id");
+
+  const entries = [
+    ["artifact_ref", "artifact_sha256"],
+    ["manifest_ref", "manifest_sha256"],
+    ["signature_ref", "signature_sha256"],
+    ["compatibility_ref", "compatibility_sha256"],
+    ["generated_client_ref", "generated_client_sha256"],
+    ["notices_ref", "notices_sha256"],
+  ];
+  for (const [refKey, hashKey] of entries) {
+    assertBundlePath(pin[refKey], `host capability sample ${refKey}`);
+    assertHexSHA256(pin[hashKey], `host capability sample ${hashKey}`);
+    const bytes = readFileSync(join(sampleRoot, pin[refKey]));
+    assertEqual(createHash("sha256").update(bytes).digest("hex"), pin[hashKey], `host capability sample ${refKey} hash`);
+  }
+
+  const manifestBytes = readFileSync(join(sampleRoot, pin.manifest_ref));
+  const sampleManifest = JSON.parse(manifestBytes.toString("utf8"));
+  assertEqual(sampleManifest.publisher_id, pin.publisher_id, "host capability sample manifest publisher_id");
+  assertEqual(sampleManifest.contract_id, pin.contract_id, "host capability sample manifest contract_id");
+  assertEqual(sampleManifest.contract_version, pin.contract_version, "host capability sample manifest contract_version");
+  assertEqual(sampleManifest.source_commit, releaseManifest.source_commit, "host capability sample source_commit");
+  assertEqual(sampleManifest.generated_at, releaseManifest.generated_at, "host capability sample generated_at");
+  if (!Array.isArray(sampleManifest.entries) || sampleManifest.entries.length !== 4) {
+    fail("host capability sample manifest must contain exactly four signed entries");
+  }
+
+  const compatibility = readJSON(join(sampleRoot, pin.compatibility_ref));
+  assertEqual(compatibility.min_redevplugin_version, releaseManifest.version, "host capability sample minimum ReDevPlugin version");
+
+  const signature = readJSON(join(sampleRoot, pin.signature_ref));
+  assertEqual(signature.algorithm, "ed25519", "host capability sample signature algorithm");
+  assertEqual(signature.key_id, pin.signature_key_id, "host capability sample signature key_id");
+  assertEqual(signature.manifest_sha256, pin.manifest_sha256, "host capability sample signature manifest hash");
+  const rawPublicKey = Buffer.from(publicDocument.public_key, "base64");
+  if (rawPublicKey.length !== 32) fail("host capability sample public key must contain 32 raw Ed25519 bytes");
+  const publicKey = createPublicKey({
+    key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), rawPublicKey]),
+    format: "der",
+    type: "spki",
+  });
+  if (!verifySignature(null, manifestBytes, publicKey, Buffer.from(signature.signature_base64, "base64"))) {
+    fail("host capability sample signature verification failed");
+  }
+
+  const sampleText = entries.map(([refKey]) => readFileSync(join(sampleRoot, pin[refKey]), "utf8")).join("\n").toLowerCase();
+  for (const forbidden of ["docker", "podman", "containers", "env app", "local ui", "desktop", "workbench"]) {
+    if (sampleText.includes(forbidden)) fail(`host capability sample contains forbidden host-product term ${forbidden}`);
+  }
+
+  const consumer = readFileSync(join(sampleRoot, "plugin-consumer.ts"), "utf8");
+  for (const required of ["ExampleDocumentsClient", "isExampleDocumentsBusinessError", "for await", "archive.cancel"]) {
+    if (!consumer.includes(required)) fail(`host capability sample consumer must demonstrate ${required}`);
+  }
+  for (const forbidden of ["trusted-parent", "PluginSurfaceHost", "/_redevplugin/api/", "stream_ticket", "gateway_token"]) {
+    if (consumer.includes(forbidden)) fail(`host capability sample consumer contains forbidden platform access ${forbidden}`);
+  }
+
+  if (skipExecution) return;
+  execFileSync(join(bundleDir, "bin/redevplugin"), ["host-capability", "verify", sampleRoot, pinPath, publicPath], { encoding: "utf8" });
+  execFileSync(join(bundleDir, "bin/redevplugin"), [
+    "host-capability",
+    "generate-client",
+    sampleRoot,
+    pinPath,
+    publicPath,
+    join(sampleRoot, pin.generated_client_ref),
+    "--check",
+  ], { encoding: "utf8" });
 }
 
 function verifyNoticeEvidence(bundleDir) {

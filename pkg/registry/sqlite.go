@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const sqliteSchemaVersion = 5
+const sqliteSchemaVersion = 6
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -115,7 +115,7 @@ func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 	SELECT
 		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
-		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, enable_state,
+		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, retained_data_state, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 	installed_at, enabled_at, updated_at, deleted_at, metadata_json
@@ -331,6 +331,7 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 		source_policy_snapshot_hash TEXT NOT NULL DEFAULT '',
 		source_policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
 		local_import_provenance_json TEXT NOT NULL DEFAULT '{}',
+		capability_contracts_json TEXT NOT NULL DEFAULT '[]',
 		enable_state TEXT NOT NULL,
 	disabled_reason TEXT NOT NULL,
 	retained_data_state TEXT NOT NULL,
@@ -398,6 +399,14 @@ CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 			return err
 		}
 	}
+	if userVersion < 6 {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN capability_contracts_json TEXT NOT NULL DEFAULT '[]'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 6, time.Now().UTC().UnixNano()); err != nil {
+			return err
+		}
+	}
 	if userVersion < 1 {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_registry_schema_migrations(version, applied_at) VALUES(?, ?)`, 1, time.Now().UTC().UnixNano()); err != nil {
 			return err
@@ -416,7 +425,7 @@ func getSQLitePlugin(ctx context.Context, q sqliteQuerier, pluginInstanceID stri
 SELECT
 		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
-		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, enable_state,
+		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, retained_data_state, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 	installed_at, enabled_at, updated_at, deleted_at, metadata_json
@@ -466,15 +475,19 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	if err != nil {
 		return err
 	}
+	capabilityContractsJSON, err := encodeRegistryJSON(record.CapabilityContracts)
+	if err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `
 	INSERT INTO plugin_records (
 		plugin_instance_id, publisher_id, plugin_id, version, active_fingerprint,
 		package_hash, manifest_hash, entries_hash, trust_state, trust_assessment_json,
-		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, enable_state,
+		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, retained_data_state, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
 		installed_at, enabled_at, updated_at, deleted_at, metadata_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
@@ -488,6 +501,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		source_policy_snapshot_hash = excluded.source_policy_snapshot_hash,
 		source_policy_snapshot_json = excluded.source_policy_snapshot_json,
 		local_import_provenance_json = excluded.local_import_provenance_json,
+		capability_contracts_json = excluded.capability_contracts_json,
 		enable_state = excluded.enable_state,
 	disabled_reason = excluded.disabled_reason,
 	retained_data_state = excluded.retained_data_state,
@@ -515,6 +529,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		record.SourcePolicySnapshotHash,
 		sourcePolicySnapshotJSON,
 		localImportProvenanceJSON,
+		capabilityContractsJSON,
 		string(record.EnableState),
 		record.DisabledReason,
 		string(record.RetainedDataState),
@@ -547,6 +562,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var trustAssessmentJSON string
 	var sourcePolicySnapshotJSON string
 	var localImportProvenanceJSON string
+	var capabilityContractsJSON string
 	var enableState string
 	var retainedDataState string
 	var manifestJSON string
@@ -571,6 +587,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&record.SourcePolicySnapshotHash,
 		&sourcePolicySnapshotJSON,
 		&localImportProvenanceJSON,
+		&capabilityContractsJSON,
 		&enableState,
 		&record.DisabledReason,
 		&retainedDataState,
@@ -619,6 +636,11 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 			return PluginRecord{}, err
 		}
 		record.LocalImportProvenance = &provenance
+	}
+	if strings.TrimSpace(capabilityContractsJSON) != "" && strings.TrimSpace(capabilityContractsJSON) != "[]" {
+		if err := decodeRegistryJSON(capabilityContractsJSON, &record.CapabilityContracts); err != nil {
+			return PluginRecord{}, err
+		}
 	}
 	record.InstalledAt = unixToTime(installedAt)
 	record.UpdatedAt = unixToTime(updatedAt)

@@ -193,6 +193,54 @@ func TestConfirmationIntentStoreRejectsExpiredAndInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestConfirmationIntentStoreRejectsOnlyMatchingScope(t *testing.T) {
+	for _, tc := range confirmationIntentStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := tc.open(t)
+			now := time.Date(2026, 7, 4, 10, 0, 0, 0, time.UTC)
+			record, err := store.PutConfirmationIntent(ctx, testPutConfirmationIntentRequest("confirmation_reject", "plugini_confirm", now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reject := RejectConfirmationIntentRequest{
+				ConfirmationID:       record.ConfirmationID,
+				PluginInstanceID:     record.PluginInstanceID,
+				SurfaceInstanceID:    record.SurfaceInstanceID,
+				BridgeChannelID:      record.BridgeChannelID,
+				ActiveFingerprint:    record.Scope.ActiveFingerprint,
+				OwnerSessionHash:     record.Scope.OwnerSessionHash,
+				OwnerUserHash:        record.Scope.OwnerUserHash,
+				SessionChannelIDHash: record.Scope.SessionChannelIDHash,
+				PolicyRevision:       record.Scope.PolicyRevision,
+				ManagementRevision:   record.Scope.ManagementRevision,
+				RevokeEpoch:          record.Scope.RevokeEpoch,
+				Now:                  now.Add(30 * time.Second),
+			}
+			mismatched := reject
+			mismatched.BridgeChannelID = "bridge_other"
+			if _, err := store.RejectConfirmationIntent(ctx, mismatched); !errors.Is(err, ErrConfirmationIntentScopeMismatch) {
+				t.Fatalf("RejectConfirmationIntent(scope mismatch) error = %v, want ErrConfirmationIntentScopeMismatch", err)
+			}
+			listed, err := store.ListConfirmationIntents(ctx, ListConfirmationIntentsRequest{PluginInstanceID: record.PluginInstanceID})
+			if err != nil || len(listed) != 1 {
+				t.Fatalf("scope mismatch consumed confirmation: listed=%#v err=%v", listed, err)
+			}
+
+			rejected, err := store.RejectConfirmationIntent(ctx, reject)
+			if err != nil {
+				t.Fatalf("RejectConfirmationIntent() error = %v", err)
+			}
+			if rejected.ConfirmationID != record.ConfirmationID || rejected.Method != record.Method {
+				t.Fatalf("rejected confirmation mismatch: %#v", rejected)
+			}
+			if _, err := store.RejectConfirmationIntent(ctx, reject); !errors.Is(err, ErrConfirmationIntentNotFound) {
+				t.Fatalf("RejectConfirmationIntent(replay) error = %v, want ErrConfirmationIntentNotFound", err)
+			}
+		})
+	}
+}
+
 func TestConfirmationIntentStoreCapsPendingIntentsPerPlugin(t *testing.T) {
 	for _, tc := range confirmationIntentStoreCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,9 +454,19 @@ func testPutConfirmationIntentRequest(confirmationID string, pluginInstanceID st
 		Method:              "danger.run",
 		RequestHash:         "sha256:request",
 		PlanHash:            "sha256:plan",
-		IssuedAt:            now,
-		ExpiresAt:           now.Add(time.Minute),
-		Now:                 now,
+		Scope: ConfirmationScope{
+			ActiveFingerprint:      "sha256:active",
+			OwnerSessionHash:       "sha256:session",
+			OwnerUserHash:          "sha256:user",
+			SessionChannelIDHash:   "sha256:channel",
+			PolicyRevision:         1,
+			ManagementRevision:     1,
+			RevokeEpoch:            1,
+			TargetDescriptorSHA256: "sha256:target",
+		},
+		IssuedAt:  now,
+		ExpiresAt: now.Add(time.Minute),
+		Now:       now,
 	}
 }
 

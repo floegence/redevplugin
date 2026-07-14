@@ -22,6 +22,11 @@ capabilities.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
   capability adapters, HTTP routes, session context, and web security.
+- Host capability contracts are published as signed exact-pin bundles containing
+  a restricted schema, compatibility metadata, generated plugin-side client,
+  notices, manifest, and signature. The Host verifies source-policy key usage,
+  every file digest, publisher identity, compatibility floor, and the complete
+  pin before a package can bind the capability.
 - Storage brokers include both an in-memory test broker and a filesystem-backed
   broker that creates per-plugin-instance namespace directories under a
   host-selected state root, enforces byte and file-count quota accounting,
@@ -122,11 +127,23 @@ capabilities.
   Development harnesses can then run
   `redevplugin install-verified <signed.redevplugin> <public.json>` to prove
   the Host trust-verifier path accepts the signed package.
+- Host capability producers use
+  `redevplugin host-capability build <config.json> <out-dir>`. Consumers verify
+  the published bundle with
+  `redevplugin host-capability verify <artifact-root> <pin.json> <public.json>`
+  and export its pinned client with
+  `redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check]`.
+  The generator never accepts an unsigned raw schema or a sibling checkout.
+  Contract, pin, manifest, compatibility, signature, and notices artifacts each
+  have a closed versioned JSON Schema. Verification regenerates the TypeScript
+  client from the signed contract and requires byte-for-byte identity before a
+  capability contract can enter the registry.
 - `testdata/generated_plugins/minimal`, `networked`, `storage`, and
   `method-contract` are positive generated-plugin fixtures that the platform
   gate validates and packages through the same CLI path. `method-contract`
-  covers dangerous confirmation, risk preflight, operation/subscription cancel
-  policy, and delete-effect metadata. `testdata/generated_plugins/malicious-build/*`
+  covers dangerous confirmation, atomic confirmation rejection, risk preflight,
+  operation/subscription cancel policy, and delete-effect metadata.
+  `testdata/generated_plugins/malicious-build/*`
   must fail packaging before any dependency install or build step can run.
 - Mountable HTTP routes call a host-provided `websecurity.Guard` for origin and
   CSRF policy. The guard returns the host-neutral `trusted_parent` or `deny`
@@ -152,6 +169,12 @@ capabilities.
   flight. Plugin code receives opaque surface and stream handles, never
   asset tickets, stream tickets, gateway credentials, parent origins, cookies,
   or host storage.
+- A trusted parent that rejects a dangerous-method confirmation first calls the
+  surface-scoped rejection route. The Host validates the current gateway token,
+  session, bridge channel, active fingerprint, policy/management revisions, and
+  revoke epoch, then atomically removes the pending intent and records stable
+  audit/diagnostic evidence before the plugin receives
+  `PLUGIN_CONFIRMATION_REJECTED`.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   generated render policy, TypeScript SDK route coverage, and package validator
   aligned.
@@ -189,23 +212,24 @@ capabilities.
   memory and SQLite stores that record only a hash of `lease_id + lease_nonce`;
   `ProcessSupervisor` consumes the ledger before sending worker IPC and emits a
   replay diagnostic without opening the artifact on duplicate use.
-- Runtime lease signatures can be verified by the Go supervisor before worker
-  IPC. `runtimeclient` exposes an Ed25519 verifier, static signing-key keyring,
-  canonical signing payload, and signing helper for Host-issued
-  `runtime_execution_lease` values. The canonical payload excludes
-  `lease_token` and `signature`, covers the display token ID, plugin metadata,
-  active package fingerprint, issued timestamp, method, effect, execution mode,
-  surface and owner context, descriptor hashes, quota limits, policy and
-  management revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and
-  runtime audience fields, and requires the lease audience to match the current
-  runtime instance, IPC channel, and handshake nonce when the supervisor verifier
-  is configured. Hosts can also pass the runtime lease public keys in the
-  startup `hello` frame; when Rust receives that keyring, it verifies the same
-  canonical payload and rejects unsigned, tampered, or unknown-key leases before
-  consuming the replay cache or opening worker artifacts. Worker-route dispatch
-  emits a `plugin.runtime.lease.issued` Host audit event with lease/token IDs,
-  runtime IDs, revision bindings, descriptor hashes, and expiry metadata, but not
-  the bearer `lease_token`.
+- `ProcessSupervisor` generates a fresh ephemeral Ed25519 keypair for every
+  supervisor instance, requires a non-empty public-key set in the startup
+  `hello` frame, binds every worker lease to the current runtime audience, and
+  signs every invocation. Callers cannot provide, disable, or override the
+  signature or public key. The canonical payload excludes `lease_token` and
+  `signature` and covers the display token ID, plugin metadata, active package
+  fingerprint, issued timestamp, method, effect, execution mode, Host-owned
+  operation and stream ids, audit correlation id, surface and owner context,
+  descriptor hashes, quota limits, policy and management revisions, revoke
+  epoch, expiry, `lease_nonce`, `key_id`, and runtime audience fields.
+  The Go supervisor verifies that exact audience and signature before IPC. Rust
+  independently rejects a missing keyring, invalid signature, expired lease, or
+  any mismatch between the signed lease and the worker invocation's plugin,
+  method/effect/execution, operation/stream, audit, surface/session, or runtime
+  binding before replay-cache consumption or artifact open. Worker-route
+  dispatch emits a `plugin.runtime.lease.issued` Host audit event with
+  lease/token IDs, runtime IDs, revision bindings, descriptor hashes, and expiry
+  metadata, but not the bearer `lease_token`.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and
@@ -240,16 +264,41 @@ capabilities.
 - The npm API boundary is split into four auditable entrypoints. The package
   root and `@floegence/redevplugin-ui/trusted-parent` expose the same
   trusted-parent allowlist for host shells. `@floegence/redevplugin-ui/plugin`
-  exposes only `PluginBridgeClient` to untrusted plugin worker bundles.
+  exposes exactly six runtime values to untrusted plugin worker bundles:
+  `PluginBridgeClient`, `PluginBridgeError`, `callCapabilitySync`,
+  `callCapabilityOperation`, `callCapabilityStream`, and
+  `isCapabilityBusinessError`. Stream decoding remains an internal detail of
+  the typed capability helpers and is not a plugin entrypoint export.
   `@floegence/redevplugin-ui/local-import` exposes the explicit dev/admin raw
   package client and must not be imported by official release-reference product
   paths. The opaque bootstrap HTML factory remains internal and is not exported
   by any public entrypoint.
-- Operation cancel requests are durable Host decisions: `CancelOperation` records
-  `cancel_requested`, emits audit evidence, and dispatches the optional
-  `OperationCanceler` adapter with plugin, method, surface, bridge-channel, and
-  reason context. If that dispatch fails, the cancel request remains recorded
-  while HTTP callers receive `PLUGIN_RUNTIME_UNAVAILABLE`.
+- Operation cancel requests are durable Host decisions: `CancelOperation`
+  records `cancel_requested`, emits audit evidence, and signals the live
+  execution lease. The lease captures an optional route-local cancellation hook
+  from the capability adapter, core action, or runtime supervisor when execution
+  starts. Persisted inactive operations are never redispatched through a global
+  registry lookup; their durable cancel request remains observable.
+- Capability operation methods return one Host-owned operation id.
+  Subscription methods return a paired Host-owned operation id and stream id;
+  stream tickets bind both, while plugin workers receive only an opaque stream
+  handle plus the operation id. Generated business-error guards also bind the
+  capability id, capability version, and published details-schema SHA-256.
+- Stream reads are serialized per stream. Long polling uses non-destructive
+  `Peek`, then the final store read and single-use ticket commit run under one
+  authorization boundary. A failed read preserves both events and the current
+  ticket; an open stream atomically rotates to the next ticket; a fully drained
+  terminal stream consumes the current ticket without reserving a replacement.
+  Plugin revision and surface-session bindings are revalidated after waiting and
+  before the final mutation.
+- Operation and stream terminal states are reconciled as one paired lifecycle.
+  The first terminal intent is latched before either durable store is written;
+  a conflicting retry fails closed. Host startup terminates running or
+  cancel-requested records that have no live execution owner, and refuses
+  contradictory terminal operation/stream pairs.
+  Either store may reach terminal state first; Host startup and subsequent
+  execution entrypoints repair the other side, including after a SQLite reopen,
+  before releasing the live execution lease.
 - Dangerous method confirmation uses server-held one-time intents. When a method
   declares a risk preflight method, the Host runs that read-only sync preflight
   during confirmation preparation, returns the redacted plan plus `plan_hash` to
@@ -276,8 +325,8 @@ capabilities.
   manifest, signature, release-metadata, source-policy, source-revocations,
   token/ticket, bridge, opaque-surface document and transport, compatibility,
   release-manifest, IPC, WASM,
-  network-grant, worker invocation, error-code, and
-  target-classifier contracts. Network grant schema, release manifest schema,
+  network-grant, worker invocation, all six host-capability artifact schemas,
+  error-code, and target-classifier contracts. Network grant schema, release manifest schema,
   and target-classifier fixture versions are tracked independently so hosts can
   distinguish grant envelope drift, bundle manifest drift, and classifier rule
   drift. The target-classifier fixture now carries executable allow/deny cases
@@ -334,15 +383,18 @@ capabilities.
   `redevplugin.network/execute(req_ptr, req_len, out_ptr, out_len) -> i32`.
   The worker writes bounded JSON broker requests into WASM memory, the Rust
   runtime injects Host-owned identity, surface/session stream audience, policy,
-  grant, and revoke context,
+  grant, revoke context, and the subscription invocation's Host-owned
+  `stream_id`,
   executes the requests through the `storage_file`, `storage_kv`,
   `storage_sqlite`, and `network_execute` IPC paths, and writes JSON responses
   back into worker-provided output buffers. `network_execute.operation =
   "http_stream"` is currently a Host stream-store bridge: the Go supervisor
   streams HTTP response chunks into `stream.Store` and returns response
-  metadata plus `stream_id`; this path is a Host-owned stream-store bridge rather
-  than a Rust-owned persistent stream transport. Before each broker dispatch the
-  runtime verifies control-channel freshness and fails closed with
+  metadata plus `stream_id`. Plugin request JSON cannot select that id; the Rust
+  runtime injects it from the Host invocation and rejects missing or
+  plugin-supplied values. This path is a Host-owned stream-store bridge rather
+  than a Rust-owned persistent stream transport. Before each broker dispatch
+  the runtime verifies control-channel freshness and fails closed with
   `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
   stale. Runtime revoke ACKs now return a structured result with closed
   actor/socket/stream/storage-handle counters. The Rust runtime now keeps an
@@ -430,6 +482,7 @@ provide a local sibling integration path for host products.
 - [Plugin surface SDK](docs/ui/plugin-surface-sdk.md)
 - [CI and release gates](docs/release/ci-and-release-gates.md)
 - [A2 TDD evidence](docs/release/a2-tdd-evidence.md)
+- [A3 TDD evidence](docs/release/a3-tdd-evidence.md)
 
 ## Release Integrity
 
@@ -444,7 +497,8 @@ all of them, and every covered artifact plus `SHA256SUMS` is signed with
 Sigstore keyless `cosign sign-blob`. Each signed artifact is uploaded with a
 detached `.sig` file and a `.bundle` transparency-log bundle. Host products
 should verify the checksum, stress counters, A2 opaque-origin/sandbox/CSP and
-credential-isolation assertions, and cosign bundle before consuming a
+credential-isolation assertions, the signed A3 host capability sample inside
+each runtime bundle, and the cosign bundle before consuming a
 ReDevPlugin runtime artifact. Use
 `scripts/verify_redevplugin_release_artifacts.sh --tag vX.Y.Z <artifact-dir>` after
 downloading a release artifact set. Release packing/publishing uses pinned
@@ -505,12 +559,12 @@ Go classifier, Rust crate, and JSON contract cannot drift.
 `check_redevplugin_stress.sh` always emits a JSON summary. The `stress_evidence`
 field records structured counters from `pkg/stress`, including stream
 backpressure denials plus stream close/cancel fail-closed checks, operation
-cancel dispatch success/failure persistence,
+cancel ownership and inactive-operation non-redispatch,
 connectivity grant/classifier denials, runtime revoke ACK p95 latency,
 redirect/DNS rebinding denials, HTTP proxy/CONNECT/header hardening, TCP mock
 database round trips, TCP size denials, TCP cancelled reads, UDP source-pin
 mismatch drops, UDP rate-limit denials, WebSocket round trips, WebSocket size
 denials, WebSocket cancelled reads, KV byte quota pressure, file-count quota,
 and SQLite sidecar/sparse bypass checks. CI uploads that summary as release evidence for host-neutral
-broker/backpressure and stream close/cancel, operation cancel dispatch,
+broker/backpressure and stream close/cancel, operation cancel ownership,
 runtime-control, storage, and sandbox telemetry behavior.

@@ -17,6 +17,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 
 	requireConst(t, defs, "call", "type", "redevplugin.bridge.call")
 	requireConst(t, defs, "cancel", "type", "redevplugin.bridge.cancel")
+	requireConst(t, defs, "operation_cancel", "type", "redevplugin.bridge.operation.cancel")
 	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
 	if _, ok := defs["handshake"]; ok {
 		t.Fatal("plugin-visible bridge schema must not expose the trusted-parent HTTP handshake")
@@ -29,12 +30,17 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|stream|render)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|stream|render|operation)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
 	if got := requireNestedObject(t, cancel, "properties", "id")["$ref"]; got != "#/$defs/request_id" {
 		t.Fatalf("cancel request id ref = %#v", got)
+	}
+	operationCancel := requireDef(t, defs, "operation_cancel")
+	assertStringSet(t, requireStringSlice(t, operationCancel["required"], "operation cancel required"), []string{"type", "id", "operation_id"}, "operation cancel required")
+	if got := requireNestedObject(t, operationCancel, "properties", "operation_id")["$ref"]; got != "#/$defs/opaque_handle" {
+		t.Fatalf("operation cancel handle ref = %#v", got)
 	}
 
 	lifecycle := requireDef(t, defs, "lifecycle")

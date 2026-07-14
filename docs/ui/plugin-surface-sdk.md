@@ -93,11 +93,23 @@ routes exposed by `pkg/httpadapter`, including:
 - audit and diagnostic event list.
 
 `cancelOperation` is a trusted host-page command. It records
-`cancel_requested` in the Host operation store and, when the host registered an
-`OperationCanceler`, dispatches the request to the runtime or capability adapter
-with the operation context and reason. Dispatch failures are surfaced to the
-host page, but the durable cancel request remains available through
-`getOperation` and `listOperations`.
+`cancel_requested` in the Host operation store and signals the live execution
+lease that created the operation. That lease may carry a route-local
+`OperationCanceler` captured from the capability adapter, core action, or
+runtime supervisor. Inactive persisted operations are not looked up through a
+global capability registry and are not redispatched; their durable cancel state
+remains available through `getOperation` and `listOperations`.
+
+Plugin workers import generated host capability clients from signed artifact
+bundles. A generated client wraps `PluginBridgeClient`; it contains typed
+request, response, operation, stream, and business-error validation, but no URL,
+route, session, ticket, lease token, or host-product type. The matching bundle
+pin and compatibility metadata are verified by the Host before installation.
+Operation calls expose one opaque operation id. Subscription calls expose that
+operation id plus one opaque stream handle; raw stream ids and tickets remain in
+the trusted parent. Business-error guards narrow only when capability id,
+capability version, details-schema SHA-256, error code, and details payload all
+match the signed contract.
 
 List helpers preserve the same data wrapper fields returned by the Go HTTP
 adapter, such as `operations`, `permissions`, `audit_events`, and
@@ -195,6 +207,14 @@ that the reloaded surface is healthy enough to treat the crash loop as cleared.
 parent through the configured `confirm` callback. The callback receives the
 server-issued confirmation id, request hash, plan hash, and host-redacted plan,
 but never receives the raw confirmation token capability.
+
+When the callback rejects, the SDK does not immediately synthesize a plugin
+error. It first calls the parent-only, surface-scoped confirmation rejection
+route with the current gateway and bridge binding. Only after the Host
+atomically consumes the matching pending intent and records audit/diagnostic
+evidence does the SDK return `PLUGIN_CONFIRMATION_REJECTED` to plugin code.
+Wrong-surface, wrong-session, stale-revision, and replayed rejections fail
+closed without dispatching the capability adapter.
 
 When a capability preflight returns the host-neutral typed risk plan contract,
 the SDK exposes it as `PluginRiskPlan` with `PluginRiskFlag` entries and the

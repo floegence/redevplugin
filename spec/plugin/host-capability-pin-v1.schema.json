@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/host-capability-pin-v1.schema.json",
+  "title": "ReDevPlugin host capability artifact pin v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "publisher_id",
+    "contract_id",
+    "contract_version",
+    "artifact_ref",
+    "artifact_sha256",
+    "manifest_ref",
+    "manifest_sha256",
+    "signature_ref",
+    "signature_sha256",
+    "signature_key_id",
+    "signature_policy_epoch",
+    "signature_revocation_epoch",
+    "compatibility_ref",
+    "compatibility_sha256",
+    "generated_client_ref",
+    "generated_client_sha256",
+    "notices_ref",
+    "notices_sha256"
+  ],
+  "properties": {
+    "publisher_id": { "$ref": "#/$defs/id" },
+    "contract_id": { "$ref": "#/$defs/id" },
+    "contract_version": { "$ref": "#/$defs/semver" },
+    "artifact_ref": { "$ref": "#/$defs/artifact_ref" },
+    "artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "manifest_ref": { "$ref": "#/$defs/artifact_ref" },
+    "manifest_sha256": { "$ref": "#/$defs/sha256" },
+    "signature_ref": { "$ref": "#/$defs/artifact_ref" },
+    "signature_sha256": { "$ref": "#/$defs/sha256" },
+    "signature_key_id": { "$ref": "#/$defs/id" },
+    "signature_policy_epoch": { "$ref": "#/$defs/decimal_epoch" },
+    "signature_revocation_epoch": { "$ref": "#/$defs/decimal_epoch" },
+    "compatibility_ref": { "$ref": "#/$defs/artifact_ref" },
+    "compatibility_sha256": { "$ref": "#/$defs/sha256" },
+    "generated_client_ref": { "$ref": "#/$defs/artifact_ref" },
+    "generated_client_sha256": { "$ref": "#/$defs/sha256" },
+    "notices_ref": { "$ref": "#/$defs/artifact_ref" },
+    "notices_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "artifact_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*$",
+      "not": { "pattern": "(^|/)\\.{1,2}($|/)" }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "decimal_epoch": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    }
+  }
+}

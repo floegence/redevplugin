@@ -117,6 +117,12 @@ function renderGo(matrix, contracts) {
     ["CompatibilitySchemaVersion", "compatibility_schema_version"],
     ["ReleaseManifestSchemaVersion", "release_manifest_schema_version"],
     ["WorkerInvocationSchemaVersion", "worker_invocation_schema_version"],
+    ["HostCapabilityContractSchemaVersion", "host_capability_contract_schema_version"],
+    ["HostCapabilityPinSchemaVersion", "host_capability_pin_schema_version"],
+    ["HostCapabilityManifestSchemaVersion", "host_capability_manifest_schema_version"],
+    ["HostCapabilityCompatibilitySchemaVersion", "host_capability_compatibility_schema_version"],
+    ["HostCapabilitySignatureSchemaVersion", "host_capability_signature_schema_version"],
+    ["HostCapabilityNoticesSchemaVersion", "host_capability_notices_schema_version"],
     ["ErrorCodesSchemaVersion", "error_codes_schema_version"],
     ["ContractRegistryVersion", "contract_registry_version"],
   ];

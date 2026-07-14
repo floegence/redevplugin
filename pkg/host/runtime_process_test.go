@@ -145,7 +145,7 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		StorageKV:       storageKVBroker(h.adapters.Storage),
 		Connectivity:    broker,
 		NetworkExecutor: executor,
-		Streams:         h.adapters.Streams,
+		StreamSink:      hostRuntimeStreamSink{executions: h.executions},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +216,97 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		executor.lastStreamHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
 		executor.lastStreamHTTP.Path != "/v1/worker" ||
 		executor.lastStreamHTTP.MaxChunkBytes != 4 {
+		t.Fatalf("stream executor call mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
+	}
+}
+
+func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t *testing.T) {
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo not found; skipping built Rust runtime integration")
+	}
+	repoRoot := findRepoRootForHostTest(t)
+	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
+	}
+	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
+	if runtime.GOOS == "windows" {
+		runtimePath += ".exe"
+	}
+
+	ctx := context.Background()
+	broker := connectivity.NewMemoryBroker()
+	executor := &recordingHostNetworkExecutor{
+		httpStatus:   http.StatusAccepted,
+		streamChunks: [][]byte{[]byte("line 1\n"), []byte("line 2\n")},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		storageBroker:      storage.NewMemoryBroker(),
+		connectivityBroker: broker,
+		networkExecutor:    executor,
+	})
+	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+		RuntimePath:      runtimePath,
+		Diagnostics:      h.adapters.Diagnostics,
+		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:     storageFilesBroker(h.adapters.Storage),
+		StorageKV:        storageKVBroker(h.adapters.Storage),
+		Connectivity:     broker,
+		NetworkExecutor:  executor,
+		StreamSink:       hostRuntimeStreamSink{executions: h.executions},
+		HandshakeTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.adapters.RuntimeSupervisor = supervisor
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := supervisor.Stop(stopCtx); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	})
+	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t), "worker.view")
+
+	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() with stream memory hostcall error = %v", err)
+	}
+	if result.StreamID == "" || result.StreamTicket == "" || result.StreamTicketID == "" {
+		t.Fatalf("stream result missing ticket/id: %#v", result)
+	}
+	streamResult, err := h.ReadStream(ctx, scopedReadStreamRequest(result.StreamID, result.StreamTicket))
+	if err != nil {
+		t.Fatalf("ReadStream() error = %v", err)
+	}
+	if streamResult.Record.Status != stream.StatusClosed {
+		t.Fatalf("stream status = %q, want %q", streamResult.Record.Status, stream.StatusClosed)
+	}
+	if len(streamResult.Events) != 2 ||
+		string(streamResult.Events[0].Data) != "line 1\n" ||
+		string(streamResult.Events[1].Data) != "line 2\n" {
+		t.Fatalf("stream events mismatch: %#v", streamResult.Events)
+	}
+	if executor.streamCalls != 1 || executor.lastStreamHTTP.Path != "/v1/worker" {
 		t.Fatalf("stream executor call mismatch: calls=%d req=%#v", executor.streamCalls, executor.lastStreamHTTP)
 	}
 }
@@ -1195,6 +1286,7 @@ type hostRuntimeNetworkExecuteRequest struct {
 	MaxRequestBytes      int64                  `json:"max_request_bytes,omitempty"`
 	MaxResponseBytes     int64                  `json:"max_response_bytes,omitempty"`
 	TimeoutMillis        int64                  `json:"timeout_ms,omitempty"`
+	StreamID             string                 `json:"stream_id,omitempty"`
 	StreamMethod         string                 `json:"stream_method,omitempty"`
 	StreamEffect         string                 `json:"stream_effect,omitempty"`
 	StreamExecution      string                 `json:"stream_execution,omitempty"`
@@ -1322,6 +1414,7 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		TimeoutMillis:       1000,
 	}
 	if operation == "http_stream" {
+		request.StreamID = invoke.Invocation.StreamID
 		request.MaxChunkBytes = 4
 		request.MaxBufferedBytes = 64 * 1024
 		request.StreamMethod = invoke.Invocation.Method

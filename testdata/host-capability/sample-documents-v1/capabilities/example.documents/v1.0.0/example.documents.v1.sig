@@ -1,0 +1,1 @@
+{"schema_version":"redevplugin.host_capability_signature.v1","algorithm":"ed25519","key_id":"example-contract-release-test","manifest_sha256":"1e2a735b35a50c1ed1c15af78d467f97e77d7e4e94b2ed5f98db450ba1a16ab5","signature_base64":"3cO9IzffMhOdDFvnlwztxMxYGjTjYeT4rBWc0Y9iDuLVpi66Kf8N9cpWkXtuoygGongYfanw3halPRx2wIDtDg=="}

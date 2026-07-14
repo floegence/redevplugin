@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
@@ -24,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
@@ -31,7 +35,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/operation"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
-	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
@@ -60,17 +63,6 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 
 	streams := stream.NewMemoryStore()
 	operations := operation.NewMemoryStore()
-	events := observability.NewMemoryStore()
-	pluginHost, err := host.New(host.Adapters{
-		SessionResolver: stressSessionResolver{},
-		Policy:          stressPolicy{},
-		Audit:           events,
-		Diagnostics:     events,
-		Streams:         streams,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	payload := make([]byte, 64)
 	var backpressure atomic.Int64
 
@@ -83,11 +75,13 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			defer wg.Done()
 			streamID := fmt.Sprintf("stream_%02d", worker)
 			if _, err := streams.Register(ctx, stream.RegisterRequest{
-				StreamID:         streamID,
-				PluginID:         "com.example.stress.logs",
-				PluginInstanceID: "plugini_stress_stream",
-				Method:           "stress.logs.tail",
-				Execution:        "stream",
+				StreamID: streamID,
+				ExecutionBinding: capability.ExecutionBinding{
+					PluginID:         "com.example.stress.logs",
+					PluginInstanceID: "plugini_stress_stream",
+					Method:           "stress.logs.tail",
+					Execution:        "subscription",
+				},
 				Direction:        stream.DirectionRead,
 				MaxBufferedBytes: 256,
 			}); err != nil {
@@ -122,10 +116,12 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			}
 			operationID := fmt.Sprintf("core_operation_%03d", i)
 			if _, err := operations.Register(ctx, operation.RegisterRequest{
-				OperationID:       operationID,
-				PluginInstanceID:  "plugini_core_control",
-				Method:            "core.diagnostics.ping",
-				Execution:         "sync",
+				OperationID: operationID,
+				ExecutionBinding: capability.ExecutionBinding{
+					PluginInstanceID: "plugini_core_control",
+					Method:           "core.diagnostics.ping",
+					Execution:        "operation",
+				},
 				DisableBehavior:   operation.DisableBehaviorCancel,
 				UninstallBehavior: operation.UninstallBehaviorForceCleanupAllowed,
 			}); err != nil {
@@ -164,13 +160,13 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 	var postCloseAppendDenials int
 	for worker := 0; worker < workerCount; worker++ {
 		streamID := fmt.Sprintf("stream_%02d", worker)
-		closed, err := pluginHost.CloseStream(ctx, host.CloseStreamRequest{
+		closed, err := streams.Close(ctx, stream.CloseRequest{
 			StreamID: streamID,
 			Status:   stream.StatusCanceled,
 			Reason:   "stress shutdown",
 		})
 		if err != nil {
-			t.Fatalf("CloseStream(%s) error = %v", streamID, err)
+			t.Fatalf("Streams.Close(%s) error = %v", streamID, err)
 		}
 		if closed.Status != stream.StatusCanceled || closed.ClosedAt == nil {
 			t.Fatalf("closed stream mismatch: %#v", closed)
@@ -182,17 +178,6 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			t.Fatalf("Append(%s) after close error = %v, want ErrStreamClosed", streamID, err)
 		}
 	}
-	auditEvents, err := events.ListPluginAudit(ctx, observability.ListAuditRequest{
-		PluginInstanceID: "plugini_stress_stream",
-		Type:             "plugin.stream.closed",
-		Limit:            workerCount + 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(auditEvents) != workerCount {
-		t.Fatalf("stream close audit events = %d, want %d", len(auditEvents), workerCount)
-	}
 	logStressSummary(t, stressSummary{
 		Category: "stream_backpressure",
 		Counters: map[string]int{
@@ -202,26 +187,30 @@ func TestStressGateStreamBackpressureKeepsOperationStoreResponsive(t *testing.T)
 			"stream_close_requests":       closedStreams,
 			"closed_streams":              closedStreams,
 			"post_close_append_denials":   postCloseAppendDenials,
-			"stream_close_audit_events":   len(auditEvents),
 			"stream_close_status_checked": 1,
 		},
 	})
 }
 
-func TestStressGateOperationCancelDispatchEvidence(t *testing.T) {
+func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	events := observability.NewMemoryStore()
 	operations := operation.NewMemoryStore()
-	operationCanceler := &stressOperationCanceler{failOperationID: "op_stress_cancel_fail"}
+	operationAdapter := &stressOperationAdapter{}
+	verified := stressVerifiedCapabilityContract(t)
+	capabilities := capability.NewRegistry()
+	if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: operationAdapter, Adapter: operationAdapter}); err != nil {
+		t.Fatal(err)
+	}
 	pluginHost, err := host.New(host.Adapters{
-		SessionResolver:   stressSessionResolver{},
-		Policy:            stressPolicy{},
-		Audit:             events,
-		Diagnostics:       events,
-		Operations:        operations,
-		OperationCanceler: operationCanceler,
+		SessionResolver: stressSessionResolver{},
+		Policy:          stressPolicy{},
+		Audit:           events,
+		Diagnostics:     events,
+		Operations:      operations,
+		Capabilities:    capabilities,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -230,18 +219,25 @@ func TestStressGateOperationCancelDispatchEvidence(t *testing.T) {
 	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	for _, operationID := range []string{"op_stress_cancel_success", "op_stress_cancel_fail"} {
 		if _, err := operations.Register(ctx, operation.RegisterRequest{
-			OperationID:          operationID,
-			PluginID:             "com.example.stress.containers",
-			PluginInstanceID:     "plugini_stress_containers",
-			Method:               "images.pull",
-			Effect:               "execute",
-			Execution:            "operation",
-			SurfaceInstanceID:    "surface_stress_operation",
-			SessionChannelIDHash: "channel_hash_stress",
-			BridgeChannelID:      "bridge_stress_operation",
-			DisableBehavior:      operation.DisableBehaviorCancel,
-			UninstallBehavior:    operation.UninstallBehaviorCancelThenBlockDelete,
-			Now:                  now,
+			OperationID: operationID,
+			ExecutionBinding: capability.ExecutionBinding{
+				PluginID:             "com.example.stress.documents",
+				PluginInstanceID:     "plugini_stress_documents",
+				RouteKind:            capability.RouteCapability,
+				CapabilityID:         verified.Contract.CapabilityID,
+				CapabilityVersion:    verified.Contract.CapabilityVersion,
+				Contract:             &verified.Pin,
+				Method:               "documents.archive",
+				Effect:               capability.EffectExecute,
+				Execution:            "operation",
+				SurfaceInstanceID:    "surface_stress_operation",
+				SessionChannelIDHash: "channel_hash_stress",
+				BridgeChannelID:      "bridge_stress_operation",
+				Permissions:          capability.PermissionEvidence{Required: []string{}, Granted: []string{}},
+			},
+			DisableBehavior:   operation.DisableBehaviorCancel,
+			UninstallBehavior: operation.UninstallBehaviorCancelThenBlockDelete,
+			Now:               now,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -258,28 +254,27 @@ func TestStressGateOperationCancelDispatchEvidence(t *testing.T) {
 	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
 		t.Fatalf("CancelOperation(success) mismatch: %#v", canceled)
 	}
-	if len(operationCanceler.requests) != 1 {
-		t.Fatalf("operation cancel dispatch calls = %d, want 1", len(operationCanceler.requests))
+	if len(operationAdapter.requests) != 0 {
+		t.Fatalf("inactive persisted operation unexpectedly dispatched through capability registry: %#v", operationAdapter.requests)
 	}
-	assertStressCancelRequest(t, operationCanceler.requests[0], "op_stress_cancel_success", now.Add(time.Second))
 
 	handler := httpadapter.Handler{Host: pluginHost, WebSecurity: stressWebSecurityGuard{}}
 	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/operations/op_stress_cancel_fail/cancel", strings.NewReader(`{"reason":"user"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("cancel dispatch failure status = %d body = %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("durable cancel status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	var envelope httpadapter.Envelope
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.OK || envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
-		t.Fatalf("cancel dispatch failure envelope mismatch: %#v", envelope)
+	if !envelope.OK || envelope.ErrorCode != "" {
+		t.Fatalf("durable cancel envelope mismatch: %#v", envelope)
 	}
 
-	records, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_stress_containers"})
+	records, err := operations.List(ctx, operation.ListRequest{PluginInstanceID: "plugini_stress_documents"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,13 +287,12 @@ func TestStressGateOperationCancelDispatchEvidence(t *testing.T) {
 	if cancelRequested != 2 {
 		t.Fatalf("cancel_requested records = %d, want 2: %#v", cancelRequested, records)
 	}
-	if len(operationCanceler.requests) != 2 || operationCanceler.failureCalls != 1 {
-		t.Fatalf("operation cancel dispatch counters mismatch: requests=%d failures=%d", len(operationCanceler.requests), operationCanceler.failureCalls)
+	if len(operationAdapter.requests) != 0 {
+		t.Fatalf("persisted operations must not rediscover an execution adapter by contract id: %#v", operationAdapter.requests)
 	}
-	assertStressCancelRequest(t, operationCanceler.requests[1], "op_stress_cancel_fail", operationCanceler.requests[1].RequestedAt)
 
 	auditEvents, err := events.ListPluginAudit(ctx, observability.ListAuditRequest{
-		PluginInstanceID: "plugini_stress_containers",
+		PluginInstanceID: "plugini_stress_documents",
 		Type:             "plugin.operation.cancel_requested",
 		Limit:            10,
 	})
@@ -310,16 +304,14 @@ func TestStressGateOperationCancelDispatchEvidence(t *testing.T) {
 	}
 
 	logStressSummary(t, stressSummary{
-		Category: "operation_cancel_dispatch",
+		Category: "operation_cancel_ownership",
 		Counters: map[string]int{
-			"operations_registered":          len(records),
-			"successful_dispatches":          1,
-			"failed_dispatches":              operationCanceler.failureCalls,
-			"cancel_requested_records":       cancelRequested,
-			"http_503_failures":              1,
-			"runtime_unavailable_errors":     1,
-			"audit_cancel_requested_events":  len(auditEvents),
-			"adapter_context_fields_checked": 8,
+			"operations_registered":                 len(records),
+			"cancel_requested_records":              cancelRequested,
+			"durable_requests_without_active_lease": 2,
+			"http_accepted_requests":                1,
+			"audit_cancel_requested_events":         len(auditEvents),
+			"registry_redispatches":                 len(operationAdapter.requests),
 		},
 	})
 }
@@ -1737,37 +1729,75 @@ func (stressSessionResolver) ResolveSession(context.Context, string) (sessionctx
 	return sessionctx.Context{}, nil
 }
 
-type stressOperationCanceler struct {
-	failOperationID string
-	failureCalls    int
-	requests        []host.OperationCancelAdapterRequest
+type stressOperationAdapter struct {
+	requests []capability.OperationCancellation
 }
 
-func (c *stressOperationCanceler) RequestOperationCancel(_ context.Context, req host.OperationCancelAdapterRequest) error {
+func (c *stressOperationAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	return capability.TargetDescriptor{Kind: "stress", Fields: req.TargetInput}, nil
+}
+
+func (c *stressOperationAdapter) Invoke(_ context.Context, _ capability.Invocation) (capability.Result, error) {
+	return capability.Result{}, nil
+}
+
+func (c *stressOperationAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
 	c.requests = append(c.requests, req)
-	if req.OperationID == c.failOperationID {
-		c.failureCalls++
-		return errors.New("stress runtime cancel dispatch failed")
-	}
 	return nil
 }
 
-func assertStressCancelRequest(t *testing.T, req host.OperationCancelAdapterRequest, operationID string, requestedAt time.Time) {
+func stressVerifiedCapabilityContract(t *testing.T) capabilitycontract.VerifiedContract {
 	t.Helper()
-	if req.OperationID != operationID ||
-		req.PluginID != "com.example.stress.containers" ||
-		req.PluginInstanceID != "plugini_stress_containers" ||
-		req.Method != "images.pull" ||
-		req.SurfaceInstanceID != "surface_stress_operation" ||
-		req.SessionChannelIDHash != "channel_hash_stress" ||
-		req.BridgeChannelID != "bridge_stress_operation" ||
-		req.Reason != "user" ||
-		req.RequestedAt.IsZero() {
-		t.Fatalf("operation cancel adapter request mismatch: %#v", req)
+	emptyObject := map[string]any{"type": "object", "additionalProperties": false}
+	contract := capabilitycontract.Contract{
+		SchemaVersion:     capabilitycontract.SchemaVersion,
+		ContractID:        "example.stress.documents.v1",
+		ContractVersion:   "1.0.0",
+		PublisherID:       "example.stress",
+		CapabilityID:      "example.capability.stress.documents",
+		CapabilityVersion: "1.0.0",
+		ClientName:        "StressDocumentsClient",
+		Methods: []capabilitycontract.Method{{
+			Name:             "documents.archive",
+			ClientMethod:     "archiveDocument",
+			Effect:           "execute",
+			Execution:        "operation",
+			TargetFields:     []string{},
+			TargetSchema:     emptyObject,
+			RequestTypeName:  "StressArchiveRequest",
+			ResponseTypeName: "StressArchiveResponse",
+			RequestSchema:    emptyObject,
+			ResponseSchema:   emptyObject,
+			CancelPolicy: &capabilitycontract.CancelPolicy{
+				Cancelable: true, DisableBehavior: "cancel", UninstallBehavior: "cancel_then_block_delete", AckTimeoutMS: 1000,
+			},
+		}},
 	}
-	if !requestedAt.IsZero() && !req.RequestedAt.Equal(requestedAt) {
-		t.Fatalf("operation cancel requested_at = %s, want %s", req.RequestedAt, requestedAt)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
+	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract: contract, PublisherID: contract.PublisherID,
+		ArtifactBaseRef: "capabilities/stress/1.0.0",
+		GeneratedAt:     time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC), SourceCommit: strings.Repeat("f", 40),
+		MinReDevPluginVersion: "0.3.0", SignatureKeyID: "stress-key", SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
+		PrivateKey: privateKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
+		Bundle: bundle, ExpectedPin: bundle.Pin,
+		TrustedKey: capabilitycontract.TrustedKey{
+			PublisherID: contract.PublisherID, KeyID: "stress-key", PublicKey: publicKey, PolicyEpoch: "1", RevocationEpoch: "1",
+		},
+		CurrentReDevPluginVersion: "0.3.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return verified
 }
 
 type stressPolicy struct{}

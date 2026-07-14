@@ -200,6 +200,12 @@ test("platform client reads compatibility manifest through host API", async () =
         compatibility_schema_version: "compatibility-manifest-v2",
         release_manifest_schema_version: "release-manifest-v2",
         worker_invocation_schema_version: "worker-invocation-v1",
+        host_capability_contract_schema_version: "host-capability-contract-v1",
+        host_capability_pin_schema_version: "host-capability-pin-v1",
+        host_capability_manifest_schema_version: "host-capability-manifest-v1",
+        host_capability_compatibility_schema_version: "host-capability-compatibility-v1",
+        host_capability_signature_schema_version: "host-capability-signature-v1",
+        host_capability_notices_schema_version: "host-capability-notices-v1",
         error_codes_schema_version: "error-codes-v1",
         contract_registry_version: "contract-registry-v1",
       },
@@ -231,6 +237,12 @@ test("platform client reads compatibility manifest through host API", async () =
   assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v2");
   assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
   assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
+  assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");
+  assert.equal(compatibility.matrix.host_capability_pin_schema_version, "host-capability-pin-v1");
+  assert.equal(compatibility.matrix.host_capability_manifest_schema_version, "host-capability-manifest-v1");
+  assert.equal(compatibility.matrix.host_capability_compatibility_schema_version, "host-capability-compatibility-v1");
+  assert.equal(compatibility.matrix.host_capability_signature_schema_version, "host-capability-signature-v1");
+  assert.equal(compatibility.matrix.host_capability_notices_schema_version, "host-capability-notices-v1");
   assert.deepEqual(compatibility.contracts.map((contract) => contract.id), ["plugin-platform-openapi", "rust-ipc-schema"]);
   assert.equal(compatibility.contracts[0]?.sha256, "sha256-openapi");
   assert.equal(fetch.calls.length, 1);
@@ -423,11 +435,15 @@ test("platform client covers operation and data lifecycle routes", async () => {
     ok: true,
     data: {
       operations: [{
+        invocation_id: "invoke_1",
+        audit_correlation_id: "audit_1",
         operation_id: "op 1",
         plugin_instance_id: "plugin_instance_1",
         method: "worker.long",
         execution: "operation",
         status: "running",
+        cancelable: true,
+        cancel_ack_timeout_ms: 5000,
         created_at: "2026-06-30T00:00:00Z",
         updated_at: "2026-06-30T00:00:00Z",
       }],
@@ -436,11 +452,15 @@ test("platform client covers operation and data lifecycle routes", async () => {
   fetch.push({
     ok: true,
     data: {
+      invocation_id: "invoke_1",
+      audit_correlation_id: "audit_1",
       operation_id: "op 1",
       plugin_instance_id: "plugin_instance_1",
       method: "worker.long",
       execution: "operation",
       status: "cancel_requested",
+      cancelable: true,
+      cancel_ack_timeout_ms: 5000,
       created_at: "2026-06-30T00:00:00Z",
       updated_at: "2026-06-30T00:00:02Z",
     },
@@ -468,6 +488,8 @@ test("platform client covers operation and data lifecycle routes", async () => {
   const cleanup = await client.cleanupExpiredRetainedData({ retry_failed: true, max_records: 10 });
 
   assert.equal(operations.operations?.[0]?.status, "running");
+  assert.equal(operations.operations?.[0]?.audit_correlation_id, "audit_1");
+  assert.equal(operations.operations?.[0]?.cancel_ack_timeout_ms, 5000);
   assert.equal(canceled.status, "cancel_requested");
   assert.equal(exported.archive_ref, "archive/plugin_instance_1.zip");
   assert.equal(exported.settings_archive_ref, "archive/plugin_instance_1.settings.json");

@@ -56,6 +56,12 @@ func TestCompatibilityManifestHashesMatchContractFiles(t *testing.T) {
 		"compatibility-manifest-schema",
 		"release-manifest-schema",
 		"worker-invocation-schema",
+		"host-capability-contract-schema",
+		"host-capability-pin-schema",
+		"host-capability-manifest-schema",
+		"host-capability-compatibility-schema",
+		"host-capability-signature-schema",
+		"host-capability-notices-schema",
 		"error-codes-schema",
 		"rust-ipc-schema",
 		"wasm-worker-schema",
@@ -84,6 +90,29 @@ func TestCompatibilityManifestUsesDedicatedNetworkGrantSchemaVersion(t *testing.
 		return
 	}
 	t.Fatal("compatibility manifest missing network-grant-schema")
+}
+
+func TestCompatibilityManifestIncludesHostCapabilityContractSchema(t *testing.T) {
+	manifest := CurrentCompatibilityManifest()
+	if manifest.Matrix.HostCapabilityContractVersion != HostCapabilityContractSchemaVersion {
+		t.Fatalf("host capability contract matrix version = %q, want %q", manifest.Matrix.HostCapabilityContractVersion, HostCapabilityContractSchemaVersion)
+	}
+	want := map[string]string{
+		"host-capability-contract-schema":      HostCapabilityContractSchemaVersion,
+		"host-capability-pin-schema":           HostCapabilityPinSchemaVersion,
+		"host-capability-manifest-schema":      HostCapabilityManifestSchemaVersion,
+		"host-capability-compatibility-schema": HostCapabilityCompatibilitySchemaVersion,
+		"host-capability-signature-schema":     HostCapabilitySignatureSchemaVersion,
+		"host-capability-notices-schema":       HostCapabilityNoticesSchemaVersion,
+	}
+	for _, contract := range manifest.Contracts {
+		if version, ok := want[contract.ID]; ok && contract.Version == version {
+			delete(want, contract.ID)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("compatibility manifest missing host capability schemas: %#v", want)
+	}
 }
 
 func TestVerifyCompatibilityManifestAcceptsCurrentContracts(t *testing.T) {

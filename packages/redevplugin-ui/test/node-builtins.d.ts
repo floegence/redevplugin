@@ -11,3 +11,7 @@ declare module "node:assert/strict" {
 declare module "node:test" {
   export function test(name: string, fn: () => unknown | Promise<unknown>): void;
 }
+
+declare module "node:fs" {
+  export function readFileSync(path: string | URL, encoding: "utf8"): string;
+}

@@ -87,6 +87,8 @@
         "ipc_channel_id": { "type": "string" },
         "connection_nonce": { "type": "string", "minLength": 16 },
         "stream_id": { "type": "string" },
+        "operation_id": { "type": "string" },
+        "audit_correlation_id": { "type": "string" },
         "stream_direction": { "enum": ["read", "write", "duplex"] },
         "handle_id": { "type": "string" },
         "confirmation_id": { "type": "string" },
@@ -241,7 +243,8 @@
               "runtime_generation_id",
               "ipc_channel_id",
               "connection_nonce",
-              "method"
+              "method",
+              "audit_correlation_id"
             ]
           }
         },
@@ -283,6 +286,7 @@
               "owner_session_hash",
               "session_channel_id_hash",
               "stream_id",
+              "operation_id",
               "stream_direction",
               "method"
             ],

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capability"
+	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/operation"
@@ -55,36 +57,37 @@ func mustPluginStateVersion(t testing.TB, h *host.Host, pluginInstanceID string)
 func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 	routes := RouteSet()
 	want := map[string]bool{
-		"POST /_redevplugin/api/plugins/install-release-ref":                         false,
-		"POST /_redevplugin/api/plugins/enable":                                      false,
-		"POST /_redevplugin/api/plugins/surfaces/open":                               false,
-		"POST /_redevplugin/api/plugins/surfaces/revoke-scope":                       false,
-		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare":      false,
-		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token": false,
-		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read":  false,
-		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read": false,
-		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose":      false,
-		"POST /_redevplugin/api/plugins/rpc":                                         false,
-		"POST /_redevplugin/api/plugins/data/export":                                 false,
-		"GET /_redevplugin/api/plugins/retained-data":                                false,
-		"POST /_redevplugin/api/plugins/retained-data/delete":                        false,
-		"POST /_redevplugin/api/plugins/retained-data/cleanup-expired":               false,
-		"GET /_redevplugin/api/plugins/intents":                                      false,
-		"POST /_redevplugin/api/plugins/intents/invoke":                              false,
-		"GET /_redevplugin/api/plugins/platform/compatibility":                       false,
-		"POST /_redevplugin/api/plugins/update-release-ref":                          false,
-		"GET /_redevplugin/api/plugins/permissions":                                  false,
-		"POST /_redevplugin/api/plugins/permissions/grant":                           false,
-		"POST /_redevplugin/api/plugins/permissions/revoke":                          false,
-		"GET /_redevplugin/api/plugins/audit":                                        false,
-		"GET /_redevplugin/api/plugins/diagnostics":                                  false,
-		"GET /_redevplugin/api/plugins/runtime/health":                               false,
-		"POST /_redevplugin/api/plugins/runtime/refresh-enabled":                     false,
-		"POST /_redevplugin/api/plugins/runtime/start":                               false,
-		"POST /_redevplugin/api/plugins/runtime/stop":                                false,
-		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":                false,
-		"PATCH /_redevplugin/api/plugins/{plugin_instance_id}/settings":              false,
-		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":         false,
+		"POST /_redevplugin/api/plugins/install-release-ref":                              false,
+		"POST /_redevplugin/api/plugins/enable":                                           false,
+		"POST /_redevplugin/api/plugins/surfaces/open":                                    false,
+		"POST /_redevplugin/api/plugins/surfaces/revoke-scope":                            false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/prepare":           false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/bridge-token":      false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/assets/read":       false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/streams/read":      false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/operations/cancel": false,
+		"POST /_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose":           false,
+		"POST /_redevplugin/api/plugins/rpc":                                              false,
+		"POST /_redevplugin/api/plugins/data/export":                                      false,
+		"GET /_redevplugin/api/plugins/retained-data":                                     false,
+		"POST /_redevplugin/api/plugins/retained-data/delete":                             false,
+		"POST /_redevplugin/api/plugins/retained-data/cleanup-expired":                    false,
+		"GET /_redevplugin/api/plugins/intents":                                           false,
+		"POST /_redevplugin/api/plugins/intents/invoke":                                   false,
+		"GET /_redevplugin/api/plugins/platform/compatibility":                            false,
+		"POST /_redevplugin/api/plugins/update-release-ref":                               false,
+		"GET /_redevplugin/api/plugins/permissions":                                       false,
+		"POST /_redevplugin/api/plugins/permissions/grant":                                false,
+		"POST /_redevplugin/api/plugins/permissions/revoke":                               false,
+		"GET /_redevplugin/api/plugins/audit":                                             false,
+		"GET /_redevplugin/api/plugins/diagnostics":                                       false,
+		"GET /_redevplugin/api/plugins/runtime/health":                                    false,
+		"POST /_redevplugin/api/plugins/runtime/refresh-enabled":                          false,
+		"POST /_redevplugin/api/plugins/runtime/start":                                    false,
+		"POST /_redevplugin/api/plugins/runtime/stop":                                     false,
+		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings":                     false,
+		"PATCH /_redevplugin/api/plugins/{plugin_instance_id}/settings":                   false,
+		"GET /_redevplugin/api/plugins/{plugin_instance_id}/settings/schema":              false,
 	}
 	for _, route := range routes {
 		key := route.Method + " " + route.Path
@@ -1151,7 +1154,7 @@ func TestHandlerRPCFlow(t *testing.T) {
 	if result.Data == nil {
 		t.Fatalf("rpc result missing data: %#v", result)
 	}
-	if adapter.last.PluginInstanceID != installed.PluginInstanceID || adapter.last.Method != "echo.ping" {
+	if adapter.last.Execution.PluginInstanceID != installed.PluginInstanceID || adapter.last.Execution.Method != "echo.ping" {
 		t.Fatalf("capability invocation mismatch: %#v", adapter.last)
 	}
 }
@@ -1384,6 +1387,33 @@ func TestRPCErrorCodeMapsGatewayTokenReplay(t *testing.T) {
 	}
 }
 
+func TestRPCErrorMapsValidatedCapabilityBusinessError(t *testing.T) {
+	err := &capability.BusinessError{
+		CapabilityID: "example.capability.documents", CapabilityVersion: "1.0.0", DetailSchemaSHA256: strings.Repeat("a", 64),
+		Code: "DOCUMENT_NOT_FOUND", Message: "Document not found", Details: map[string]any{"document_id": "doc-1"},
+	}
+	if got := errorCodeForRPCError(err); got != security.ErrCapabilityError {
+		t.Fatalf("errorCodeForRPCError() = %s, want %s", got, security.ErrCapabilityError)
+	}
+	if got := httpStatusForRPCError(err); got != http.StatusUnprocessableEntity {
+		t.Fatalf("httpStatusForRPCError() = %d, want %d", got, http.StatusUnprocessableEntity)
+	}
+	if got := publicPluginErrorMessage(security.ErrCapabilityError); got != "host capability request failed" {
+		t.Fatalf("publicPluginErrorMessage() = %q", got)
+	}
+	details := errorDetailsForRPCError(err)
+	if details["business_error_code"] != "DOCUMENT_NOT_FOUND" {
+		t.Fatalf("business error details = %#v", details)
+	}
+	if details["capability_id"] != "example.capability.documents" || details["capability_version"] != "1.0.0" || details["detail_schema_sha256"] != strings.Repeat("a", 64) {
+		t.Fatalf("business error contract identity = %#v", details)
+	}
+	payload, ok := details["business_error_details"].(map[string]any)
+	if !ok || payload["document_id"] != "doc-1" {
+		t.Fatalf("business error payload = %#v", details)
+	}
+}
+
 func TestBridgeTokenRenewalErrorsUseGatewayTokenCodes(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -1474,7 +1504,7 @@ func TestHandlerPermissionGrantRevokeFlow(t *testing.T) {
 	bridgeResp = openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_permissions", "bridge_http_permissions")
 	callBody["plugin_gateway_token"] = bridgeResp.GatewayToken
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", callBody)
-	if result.Data == nil || adapter.last.Method != "echo.ping" {
+	if result.Data == nil || adapter.last.Execution.Method != "echo.ping" {
 		t.Fatalf("rpc after grant mismatch: result=%#v invocation=%#v", result, adapter.last)
 	}
 
@@ -1564,7 +1594,7 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	if conflict.ErrorCode != string(security.ErrConfirmationRequired) {
 		t.Fatalf("danger rpc error code = %s body = %s", conflict.ErrorCode, rec.Body.String())
 	}
-	if adapter.last.Method != "" {
+	if adapter.last.Execution.Method != "" {
 		t.Fatalf("capability adapter should not be called before confirmation: %#v", adapter.last)
 	}
 
@@ -1574,8 +1604,53 @@ func TestHandlerRPCConfirmationFlow(t *testing.T) {
 	}
 	body["confirmation_id"] = confirmation.ConfirmationID
 	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", body)
-	if result.Data == nil || adapter.last.Method != "danger.run" {
+	if result.Data == nil || adapter.last.Execution.Method != "danger.run" {
 		t.Fatalf("confirmed rpc mismatch: result=%#v invocation=%#v", result, adapter.last)
+	}
+}
+
+func TestHandlerRPCConfirmationRejectionFlow(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"done": true}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPDangerousRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.danger.view", "surface_http_danger", "bridge_http_danger")
+	body := map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_danger",
+		"bridge_channel_id":    "bridge_http_danger",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "danger.run",
+		"params":               map[string]any{"target": "db"},
+	}
+	confirmation := postJSON[host.ConfirmMethodResult](t, handler, "/_redevplugin/api/plugins/confirm", body)
+
+	rejected := postJSON[host.RejectMethodConfirmationResult](t, handler, "/_redevplugin/api/plugins/surfaces/surface_http_danger/confirmations/reject", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"bridge_channel_id":    "bridge_http_danger",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"confirmation_id":      confirmation.ConfirmationID,
+	})
+	if !rejected.Rejected {
+		t.Fatalf("confirmation rejection response mismatch: %#v", rejected)
+	}
+	if adapter.last.Execution.Method != "" {
+		t.Fatalf("confirmation rejection dispatched adapter: %#v", adapter.last)
+	}
+	body["confirmation_id"] = confirmation.ConfirmationID
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", body, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrConfirmationInvalid) {
+		t.Fatalf("rejected confirmation replay error_code = %s body = %#v", envelope.ErrorCode, envelope)
 	}
 }
 
@@ -1607,7 +1682,7 @@ func TestHandlerIntentListAndInvokeFlow(t *testing.T) {
 		"intent_id":          "example.echo",
 		"params":             map[string]any{"message": "from http intent"},
 	})
-	if result.Data == nil || adapter.last.PluginInstanceID != installed.PluginInstanceID || adapter.last.Method != "echo.ping" || adapter.last.Arguments["message"] != "from http intent" {
+	if result.Data == nil || adapter.last.Execution.PluginInstanceID != installed.PluginInstanceID || adapter.last.Execution.Method != "echo.ping" || adapter.last.Arguments["message"] != "from http intent" {
 		t.Fatalf("intent invoke mismatch: result=%#v invocation=%#v", result, adapter.last)
 	}
 }
@@ -1648,7 +1723,7 @@ func TestHandlerIntentInvokeRequiresPermission(t *testing.T) {
 	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
 		t.Fatalf("intent without grant error_code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
-	if adapter.last.Method != "" {
+	if adapter.last.Execution.Method != "" {
 		t.Fatalf("capability adapter should not be called without grant: %#v", adapter.last)
 	}
 }
@@ -1691,18 +1766,16 @@ func TestHandlerIntentInvokeDangerousFailsClosed(t *testing.T) {
 	if envelope.ErrorCode != string(security.ErrConfirmationRequired) {
 		t.Fatalf("danger intent error code = %s body = %s", envelope.ErrorCode, rec.Body.String())
 	}
-	if adapter.last.Method != "" {
+	if adapter.last.Execution.Method != "" {
 		t.Fatalf("capability adapter should not be called for dangerous intent: %#v", adapter.last)
 	}
 }
 
 func TestHandlerOperationManagementFlow(t *testing.T) {
-	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_http_1"}}
-	operationCanceler := &httpRecordingOperationCanceler{}
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
-		operationCanceler: operationCanceler,
 	})
 	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
@@ -1720,47 +1793,45 @@ func TestHandlerOperationManagementFlow(t *testing.T) {
 		"surface_instance_id":  "surface_http_operation",
 		"bridge_channel_id":    "bridge_http_operation",
 		"plugin_gateway_token": bridgeResp.GatewayToken,
-		"method":               "images.pull",
+		"method":               "documents.archive",
 	})
-	if result.OperationID != "op_http_1" {
+	if result.OperationID == "" || adapter.last.Execution.Operation == nil || result.OperationID != adapter.last.Execution.Operation.ID() {
 		t.Fatalf("rpc operation result mismatch: %#v", result)
 	}
 
 	listed := getJSON[struct {
 		Operations []operation.Record `json:"operations"`
 	}](t, handler, "/_redevplugin/api/plugins/operations?plugin_instance_id="+installed.PluginInstanceID)
-	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != "op_http_1" {
+	if len(listed.Operations) != 1 || listed.Operations[0].OperationID != result.OperationID {
 		t.Fatalf("operation list mismatch: %#v", listed)
 	}
 
-	detail := getJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/op_http_1")
-	if detail.Method != "images.pull" || detail.Status != operation.StatusRunning {
+	detail := getJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID)
+	if detail.Method != "documents.archive" || detail.Status != operation.StatusRunning {
 		t.Fatalf("operation detail mismatch: %#v", detail)
 	}
 
-	canceled := postJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/op_http_1/cancel", map[string]any{
+	canceled := postJSON[operation.Record](t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID+"/cancel", map[string]any{
 		"reason": "user",
 	})
 	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
 		t.Fatalf("cancel response mismatch: %#v", canceled)
 	}
-	if operationCanceler.calls != 1 ||
-		operationCanceler.last.OperationID != "op_http_1" ||
-		operationCanceler.last.Method != "images.pull" ||
-		operationCanceler.last.SurfaceInstanceID != "surface_http_operation" ||
-		operationCanceler.last.BridgeChannelID != "bridge_http_operation" ||
-		operationCanceler.last.Reason != "user" {
-		t.Fatalf("operation canceler request mismatch: calls=%d req=%#v", operationCanceler.calls, operationCanceler.last)
+	if adapter.cancelCalls != 1 ||
+		adapter.lastCancellation.OperationID != result.OperationID ||
+		adapter.lastCancellation.Execution.Method != "documents.archive" ||
+		adapter.lastCancellation.Execution.SurfaceInstanceID != "surface_http_operation" ||
+		adapter.lastCancellation.Execution.BridgeChannelID != "bridge_http_operation" ||
+		adapter.lastCancellation.Reason != "user" {
+		t.Fatalf("operation canceler request mismatch: calls=%d req=%#v", adapter.cancelCalls, adapter.lastCancellation)
 	}
 }
 
 func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
-	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_http_cancel_fail"}}
-	operationCanceler := &httpRecordingOperationCanceler{err: errors.New("runtime is down")}
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}, cancellationError: errors.New("runtime is down")}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
-		operationCanceler: operationCanceler,
 	})
 	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
 	if err != nil {
@@ -1778,22 +1849,22 @@ func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
 		"surface_instance_id":  "surface_http_operation",
 		"bridge_channel_id":    "bridge_http_operation",
 		"plugin_gateway_token": bridgeResp.GatewayToken,
-		"method":               "images.pull",
+		"method":               "documents.archive",
 	})
-	if result.OperationID != "op_http_cancel_fail" {
+	if result.OperationID == "" {
 		t.Fatalf("rpc operation result mismatch: %#v", result)
 	}
 
-	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/operations/op_http_cancel_fail/cancel", map[string]any{
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/operations/"+result.OperationID+"/cancel", map[string]any{
 		"reason": "user",
 	}, http.StatusServiceUnavailable)
 	if envelope.ErrorCode != string(security.ErrRuntimeUnavailable) {
 		t.Fatalf("cancel dispatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
 	}
-	if operationCanceler.calls != 1 {
-		t.Fatalf("operation canceler calls = %d, want 1", operationCanceler.calls)
+	if adapter.cancelCalls != 1 {
+		t.Fatalf("operation canceler calls = %d, want 1", adapter.cancelCalls)
 	}
-	stored, err := h.GetOperation(context.Background(), "op_http_cancel_fail")
+	stored, err := h.GetOperation(context.Background(), result.OperationID)
 	if err != nil {
 		t.Fatalf("GetOperation() error = %v", err)
 	}
@@ -1802,8 +1873,64 @@ func TestHandlerOperationCancelDispatchFailure(t *testing.T) {
 	}
 }
 
+func TestHandlerSurfaceOperationCancelRequiresMatchingBridgeScope(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID:      "example.capability.echo",
+		capabilityAdapter: adapter,
+	})
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPOperationRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.operation.view", "surface_http_operation", "bridge_http_operation")
+
+	result := postJSON[host.CallMethodResult](t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_operation",
+		"bridge_channel_id":    "bridge_http_operation",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "documents.archive",
+	})
+	if result.OperationID == "" {
+		t.Fatalf("rpc operation result mismatch: %#v", result)
+	}
+
+	cancelPath := "/_redevplugin/api/plugins/surfaces/surface_http_operation/operations/cancel"
+	envelope := postJSONError(t, handler, cancelPath, map[string]any{
+		"operation_id":      result.OperationID,
+		"bridge_channel_id": "bridge_other",
+		"reason":            "user",
+	}, http.StatusForbidden)
+	if envelope.ErrorCode != string(security.ErrPermissionDenied) {
+		t.Fatalf("scope mismatch error_code = %s body = %#v", envelope.ErrorCode, envelope)
+	}
+	if adapter.cancelCalls != 0 {
+		t.Fatalf("scope mismatch reached operation canceler %d times", adapter.cancelCalls)
+	}
+
+	canceled := postJSON[operation.Record](t, handler, cancelPath, map[string]any{
+		"operation_id":      result.OperationID,
+		"bridge_channel_id": "bridge_http_operation",
+		"reason":            "user",
+	})
+	if canceled.Status != operation.StatusCancelRequested || canceled.Reason != "user" {
+		t.Fatalf("surface cancel response mismatch: %#v", canceled)
+	}
+	if adapter.cancelCalls != 1 || adapter.lastCancellation.OperationID != result.OperationID ||
+		adapter.lastCancellation.Execution.SurfaceInstanceID != "surface_http_operation" ||
+		adapter.lastCancellation.Execution.BridgeChannelID != "bridge_http_operation" {
+		t.Fatalf("surface operation canceler request mismatch: calls=%d req=%#v", adapter.cancelCalls, adapter.lastCancellation)
+	}
+}
+
 func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
-	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, StreamID: "stream_http_1"}}
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
@@ -1826,10 +1953,10 @@ func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 		"plugin_gateway_token": bridgeResp.GatewayToken,
 		"method":               "logs.tail",
 	})
-	if result.StreamID != "stream_http_1" || result.StreamTicket == "" {
+	if result.StreamID == "" || adapter.last.Execution.Stream == nil || result.StreamID != adapter.last.Execution.Stream.ID() || result.StreamTicket == "" {
 		t.Fatalf("rpc stream result mismatch: %#v", result)
 	}
-	if _, err := h.AppendStreamEvent(context.Background(), host.AppendStreamEventRequest{StreamID: result.StreamID, Data: []byte("line 1")}); err != nil {
+	if err := adapter.last.Execution.Stream.Append(context.Background(), map[string]any{"line": "line 1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1844,7 +1971,7 @@ func TestHandlerPrivateSurfaceStreamFlow(t *testing.T) {
 		"stream_id":     result.StreamID,
 		"stream_ticket": result.StreamTicket,
 	})
-	if len(read.Events) != 1 || read.Events[0].StreamID != result.StreamID || string(read.Events[0].Data) != "line 1" {
+	if len(read.Events) != 1 || read.Events[0].StreamID != result.StreamID || string(read.Events[0].Data) != `{"line":"line 1"}` {
 		t.Fatalf("stream response mismatch: %#v", read)
 	}
 
@@ -1909,7 +2036,7 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	if result.Data == nil {
 		t.Fatalf("core action rpc result missing data: %#v", result)
 	}
-	if coreAdapter.last.TargetMethod != "example.open_settings" || coreAdapter.last.Arguments["target"] != "settings" {
+	if coreAdapter.last.Execution.TargetMethod != "example.open_settings" || coreAdapter.last.Arguments["target"] != "settings" {
 		t.Fatalf("core action invocation mismatch: %#v", coreAdapter.last)
 	}
 }
@@ -2000,7 +2127,7 @@ func TestHandlerSettingsFlow(t *testing.T) {
 }
 
 func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
-	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}, OperationID: "op_block_delete"}}
+	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: adapter,
@@ -2020,7 +2147,7 @@ func TestHandlerUninstallDeleteDataBlockedByOperation(t *testing.T) {
 		"surface_instance_id":  "surface_http_block_delete",
 		"bridge_channel_id":    "bridge_http_block_delete",
 		"plugin_gateway_token": bridgeResp.GatewayToken,
-		"method":               "images.pull",
+		"method":               "documents.archive",
 	})
 
 	raw, err := json.Marshal(map[string]any{
@@ -2583,16 +2710,21 @@ type httpTestHostOptions struct {
 	releaseArtifactResolver host.ReleaseArtifactResolver
 	releaseMetadataVerifier host.ReleaseMetadataVerifier
 	capabilityID            string
-	capabilityAdapter       capability.Adapter
-	coreActions             host.CoreActionAdapter
-	operationCanceler       host.OperationCanceler
+	capabilityAdapter       interface {
+		capability.Adapter
+		capability.TargetProjector
+	}
+	coreActions host.CoreActionAdapter
 }
 
 func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Host {
 	t.Helper()
 	capabilities := capability.NewRegistry()
 	if opts.capabilityID != "" && opts.capabilityAdapter != nil {
-		capabilities.Register(opts.capabilityID, opts.capabilityAdapter)
+		verified := httpVerifiedCapabilityContract(t)
+		if err := capabilities.Register(capability.Registration{Contract: verified, TargetProjector: opts.capabilityAdapter, Adapter: opts.capabilityAdapter}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h, err := host.New(host.Adapters{
 		SessionResolver:         httpTestSessionResolver{},
@@ -2608,12 +2740,126 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 		RuntimeSupervisor:       opts.runtimeSupervisor,
 		Capabilities:            capabilities,
 		CoreActions:             opts.coreActions,
-		OperationCanceler:       opts.operationCanceler,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return h
+}
+
+func httpVerifiedCapabilityContract(t *testing.T) capabilitycontract.VerifiedContract {
+	t.Helper()
+	contract := httpCapabilityContract()
+	bundle, publicKey, err := httpCapabilityBundle(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := capabilitycontract.Verify(capabilitycontract.VerifyRequest{
+		Bundle: bundle, ExpectedPin: bundle.Pin,
+		TrustedKey: capabilitycontract.TrustedKey{
+			PublisherID: contract.PublisherID, KeyID: "fixture-key", PublicKey: publicKey, PolicyEpoch: "1", RevocationEpoch: "1",
+		},
+		CurrentReDevPluginVersion: "0.3.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return verified
+}
+
+func httpCapabilityContract() capabilitycontract.Contract {
+	empty := map[string]any{"type": "object", "additionalProperties": false}
+	request := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"message": map[string]any{"type": "string"}}}
+	response := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+		"pong": map[string]any{"type": "boolean"}, "ok": map[string]any{"type": "boolean"},
+		"containers": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+			"id": map[string]any{"type": "string"}, "image": map[string]any{"type": "string"},
+			"env":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"labels": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"com.example.owner": map[string]any{"type": "string"}, "secret_token": map[string]any{"type": "string"}}},
+			"mounts": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"source": map[string]any{"type": "string"}, "target": map[string]any{"type": "string"}}}},
+		}}},
+	}}
+	method := func(name, effect, execution string, permissions []string, requestSchema, responseSchema map[string]any) capabilitycontract.Method {
+		return capabilitycontract.Method{
+			Name: name, ClientMethod: httpFixtureIdentifier(name), Effect: effect, Execution: execution,
+			RequiredPermissions: permissions, TargetFields: []string{}, TargetSchema: empty,
+			RequestTypeName: httpFixtureTypeName(name) + "Request", ResponseTypeName: httpFixtureTypeName(name) + "Response",
+			RequestSchema: requestSchema, ResponseSchema: responseSchema,
+		}
+	}
+	methods := []capabilitycontract.Method{
+		method("echo.ping", "read", "sync", []string{"read"}, request, response),
+		method("danger.run", "execute", "sync", []string{"execute"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target"}, "properties": map[string]any{"target": map[string]any{"type": "string"}}}, map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"done": map[string]any{"type": "boolean"}}}),
+		method("documents.archive", "execute", "operation", []string{"execute"}, empty, empty),
+		method("logs.tail", "read", "subscription", []string{"read"}, empty, empty),
+	}
+	methods[1].TargetFields = []string{"target"}
+	methods[1].TargetSchema = methods[1].RequestSchema
+	methods[1].Confirmation = &capabilitycontract.Confirmation{Mode: "required", RequestHashFields: []string{"target"}}
+	methods[2].CancelPolicy = &capabilitycontract.CancelPolicy{Cancelable: true, DisableBehavior: "cancel", UninstallBehavior: "cancel_then_block_delete", AckTimeoutMS: 2000}
+	methods[3].EventTypeName = "HTTPLogEvent"
+	methods[3].EventSchema = map[string]any{"type": "object", "additionalProperties": false, "required": []string{"line"}, "properties": map[string]any{"line": map[string]any{"type": "string"}}}
+	methods[3].CancelPolicy = &capabilitycontract.CancelPolicy{Cancelable: true, DisableBehavior: "orphan", UninstallBehavior: "force_cleanup_allowed", AckTimeoutMS: 2000}
+	return capabilitycontract.Contract{
+		SchemaVersion: capabilitycontract.SchemaVersion, ContractID: "example.capability.echo.v1", ContractVersion: "1.0.0",
+		PublisherID: "example.contracts", CapabilityID: "example.capability.echo", CapabilityVersion: "1.0.0",
+		ClientName: "HTTPFixtureCapabilityClient", Methods: methods,
+	}
+}
+
+func httpCapabilityBundle(contract capabilitycontract.Contract) (capabilitycontract.Bundle, ed25519.PublicKey, error) {
+	raw, err := json.Marshal(contract)
+	if err != nil {
+		return capabilitycontract.Bundle{}, nil, err
+	}
+	seed := sha256.Sum256(raw)
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	bundle, err := capabilitycontract.Build(capabilitycontract.BuildRequest{
+		Contract: contract, PublisherID: contract.PublisherID,
+		ArtifactBaseRef: "capabilities/http-fixture/1.0.0",
+		GeneratedAt:     time.Date(2026, 7, 13, 8, 0, 0, 0, time.UTC), SourceCommit: strings.Repeat("f", 40),
+		MinReDevPluginVersion: "0.3.0", SignatureKeyID: "fixture-key", SignaturePolicyEpoch: "1", SignatureRevocationEpoch: "1",
+		PrivateKey: privateKey,
+	})
+	return bundle, publicKey, err
+}
+
+func httpCapabilityPinJSON() string {
+	bundle, _, err := httpCapabilityBundle(httpCapabilityContract())
+	if err != nil {
+		panic(err)
+	}
+	raw, err := json.Marshal(bundle.Pin)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+func httpCloneMap(value map[string]any) map[string]any {
+	raw, _ := json.Marshal(value)
+	var cloned map[string]any
+	_ = json.Unmarshal(raw, &cloned)
+	return cloned
+}
+
+func httpFixtureIdentifier(value string) string {
+	parts := strings.Split(value, ".")
+	return parts[0] + httpFixtureTypeName(strings.Join(parts[1:], "."))
+}
+
+func httpFixtureTypeName(value string) string {
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '.' || r == '-' || r == '_' })
+	var builder strings.Builder
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		builder.WriteString(strings.ToUpper(part[:1]))
+		builder.WriteString(part[1:])
+	}
+	return builder.String()
 }
 
 func buildHTTPFixturePackage(t *testing.T) []byte {
@@ -2915,40 +3161,11 @@ func httpRPCFixtureManifestJSON() string {
 			{"surface_id": "http.rpc.view", "kind": "view", "label": "HTTP RPC", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
 		],
 		"methods": [
 			{
 				"method": "echo.ping",
-				"effect": "read",
-				"execution": "sync",
-				"request_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"message": {"type": "string"}}
-				},
-				"response_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"pong": {"type": "boolean"},
-						"ok": {"type": "boolean"},
-							"containers": {
-								"type": "array",
-								"items": {
-									"type": "object",
-									"additionalProperties": false,
-									"properties": {
-										"id": {"type": "string"},
-										"image": {"type": "string"},
-										"env": {"type": "array", "items": {"type": "string"}},
-										"labels": {"type": "object", "additionalProperties": false, "properties": {"com.example.owner": {"type": "string"}, "secret_token": {"type": "string"}}},
-										"mounts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"source": {"type": "string"}, "target": {"type": "string"}}}}
-									}
-								}
-							}
-					}
-				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "echo.ping"}
 			}
 		]
@@ -2971,26 +3188,11 @@ func httpDangerousRPCFixtureManifestJSON() string {
 			{"surface_id": "http.danger.view", "kind": "view", "label": "HTTP Danger", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
 		],
 		"methods": [
 			{
 				"method": "danger.run",
-				"effect": "execute",
-				"execution": "sync",
-				"dangerous": true,
-				"confirmation": {"mode": "required", "request_hash_fields": ["target"]},
-				"request_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"required": ["target"],
-					"properties": {"target": {"type": "string"}}
-				},
-				"response_schema": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {"done": {"type": "boolean"}}
-				},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "danger.run"}
 			}
 		]
@@ -3013,22 +3215,12 @@ func httpOperationRPCFixtureManifestJSON() string {
 			{"surface_id": "http.operation.view", "kind": "view", "label": "HTTP Operation", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["execute"]}
+			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
 		],
 		"methods": [
 			{
-				"method": "images.pull",
-				"effect": "execute",
-				"execution": "operation",
-				"cancel_policy": {
-					"cancelable": true,
-					"disable_behavior": "cancel",
-					"uninstall_behavior": "cancel_then_block_delete",
-					"ack_timeout_ms": 2000
-				},
-				"request_schema": {"type": "object", "additionalProperties": false},
-				"response_schema": {"type": "object", "additionalProperties": false},
-				"route": {"kind": "capability", "binding_id": "echo", "target_method": "images.pull"}
+				"method": "documents.archive",
+				"route": {"kind": "capability", "binding_id": "echo", "target_method": "documents.archive"}
 			}
 		]
 	}`
@@ -3050,21 +3242,11 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 			{"surface_id": "http.subscription.view", "kind": "view", "label": "HTTP Subscription", "entry": "ui/index.html"}
 		],
 		"capability_bindings": [
-			{"binding_id": "echo", "capability_id": "example.capability.echo", "min_capability_version": "1.0.0", "required_permissions": ["read"]}
+			{"binding_id": "echo", "contract": ` + httpCapabilityPinJSON() + `}
 		],
 		"methods": [
 			{
 				"method": "logs.tail",
-				"effect": "read",
-				"execution": "subscription",
-				"cancel_policy": {
-					"cancelable": true,
-					"disable_behavior": "orphan",
-					"uninstall_behavior": "force_cleanup_allowed",
-					"ack_timeout_ms": 2000
-				},
-				"request_schema": {"type": "object", "additionalProperties": false},
-				"response_schema": {"type": "object", "additionalProperties": false},
 				"route": {"kind": "capability", "binding_id": "echo", "target_method": "logs.tail"}
 			}
 		]
@@ -3545,20 +3727,18 @@ func httpSourcePolicyForRelease(ref host.PluginReleaseRef) host.SourcePolicySnap
 }
 
 type httpRecordingCapabilityAdapter struct {
-	last   capability.Invocation
-	result capability.Result
-	err    error
+	last              capability.Invocation
+	lastTarget        capability.TargetResolutionRequest
+	result            capability.Result
+	err               error
+	cancelCalls       int
+	lastCancellation  capability.OperationCancellation
+	cancellationError error
 }
 
 type httpRecordingCoreActionAdapter struct {
 	last   capability.Invocation
 	result capability.Result
-}
-
-type httpRecordingOperationCanceler struct {
-	calls int
-	last  host.OperationCancelAdapterRequest
-	err   error
 }
 
 type httpRecordingSecretStore struct {
@@ -3673,28 +3853,45 @@ func grantHTTPDeclaredPermissions(t *testing.T, h *host.Host, record registry.Pl
 	t.Helper()
 	seen := map[string]struct{}{}
 	for _, binding := range record.Manifest.CapabilityBindings {
-		for _, permissionID := range binding.RequiredPermissions {
-			if permissionID == "" {
-				continue
-			}
-			if _, ok := seen[permissionID]; ok {
-				continue
-			}
-			seen[permissionID] = struct{}{}
-			if _, err := h.GrantPermission(context.Background(), host.GrantPermissionRequest{
-				PluginInstanceID: record.PluginInstanceID,
-				PermissionID:     permissionID,
-				GrantedBy:        "test",
-			}); err != nil {
-				t.Fatalf("GrantPermission(%s) error = %v", permissionID, err)
+		verified, err := h.Capabilities().RequireContract(binding.Contract)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, method := range verified.Contract.Methods {
+			for _, permissionID := range method.RequiredPermissions {
+				if permissionID == "" {
+					continue
+				}
+				if _, ok := seen[permissionID]; ok {
+					continue
+				}
+				seen[permissionID] = struct{}{}
+				if _, err := h.GrantPermission(context.Background(), host.GrantPermissionRequest{
+					PluginInstanceID: record.PluginInstanceID,
+					PermissionID:     permissionID,
+					GrantedBy:        "test",
+				}); err != nil {
+					t.Fatalf("GrantPermission(%s) error = %v", permissionID, err)
+				}
 			}
 		}
 	}
 }
 
-func (a *httpRecordingCapabilityAdapter) InvokeCapability(_ context.Context, req capability.Invocation) (capability.Result, error) {
+func (a *httpRecordingCapabilityAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	a.lastTarget = req
+	return capability.TargetDescriptor{Kind: "http_fixture", Fields: httpCloneMap(req.TargetInput)}, nil
+}
+
+func (a *httpRecordingCapabilityAdapter) Invoke(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	a.last = req
 	return a.result, a.err
+}
+
+func (a *httpRecordingCapabilityAdapter) CancelOperation(_ context.Context, req capability.OperationCancellation) error {
+	a.cancelCalls++
+	a.lastCancellation = req
+	return a.cancellationError
 }
 
 func (a *httpRecordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req capability.Invocation) (capability.Result, error) {
@@ -3702,10 +3899,8 @@ func (a *httpRecordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req
 	return a.result, nil
 }
 
-func (c *httpRecordingOperationCanceler) RequestOperationCancel(_ context.Context, req host.OperationCancelAdapterRequest) error {
-	c.calls++
-	c.last = req
-	return c.err
+func (a *httpRecordingCoreActionAdapter) ResolveCoreActionTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
+	return capability.TargetDescriptor{Kind: "core_action", Fields: httpCloneMap(req.TargetInput)}, nil
 }
 
 func (s *httpRecordingSecretStore) BindSecretRef(_ context.Context, req host.SecretBindRequest) error {

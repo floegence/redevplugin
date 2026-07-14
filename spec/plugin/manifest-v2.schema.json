@@ -63,16 +63,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["binding_id", "capability_id", "min_capability_version"],
+        "required": ["binding_id", "contract"],
         "properties": {
           "binding_id": { "type": "string", "minLength": 1 },
-          "capability_id": { "type": "string", "minLength": 1 },
-          "min_capability_version": { "type": "string", "minLength": 1 },
-          "required_permissions": {
-            "type": "array",
-            "items": { "enum": ["read", "write", "delete", "execute", "admin"] },
-            "uniqueItems": true
-          }
+          "contract": { "$ref": "host-capability-pin-v1.schema.json" }
         }
       }
     },
@@ -81,7 +75,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["method", "effect", "execution", "route", "request_schema", "response_schema"],
+        "required": ["method", "route"],
         "properties": {
           "method": { "type": "string", "minLength": 1 },
           "effect": { "enum": ["read", "write", "delete", "execute", "admin"] },
@@ -163,7 +157,22 @@
               "disable_behavior": { "enum": ["cancel", "orphan", "wait"] },
               "uninstall_behavior": { "enum": ["cancel_then_block_delete", "force_cleanup_allowed"] },
               "ack_timeout_ms": { "type": "integer", "minimum": 0 }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "cancelable": { "const": true } }, "required": ["cancelable"] },
+                "then": {
+                  "required": ["ack_timeout_ms"],
+                  "properties": { "ack_timeout_ms": { "type": "integer", "minimum": 1 } }
+                }
+              },
+              {
+                "if": { "properties": { "cancelable": { "const": false } }, "required": ["cancelable"] },
+                "then": {
+                  "properties": { "ack_timeout_ms": { "const": 0 } }
+                }
+              }
+            ]
           },
           "request_schema": {
             "allOf": [
@@ -204,6 +213,34 @@
                   }
                 }
               }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "route": {
+                  "properties": { "kind": { "const": "capability" } },
+                  "required": ["kind"]
+                }
+              },
+              "required": ["route"]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  { "required": ["effect"] },
+                  { "required": ["execution"] },
+                  { "required": ["dangerous"] },
+                  { "required": ["preflight_only"] },
+                  { "required": ["confirmation"] },
+                  { "required": ["cancel_policy"] },
+                  { "required": ["request_schema"] },
+                  { "required": ["response_schema"] }
+                ]
+              }
+            },
+            "else": {
+              "required": ["effect", "execution", "request_schema", "response_schema"]
             }
           },
           {
