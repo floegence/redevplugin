@@ -3401,6 +3401,9 @@ func TestCallPluginMethodRegistersStream(t *testing.T) {
 	if !audits.hasEvent("plugin.stream.started") {
 		t.Fatalf("missing stream audit event: %#v", audits.events)
 	}
+	if !audits.hasEvent("plugin.stream.closed") {
+		t.Fatalf("missing closed stream audit event: %#v", audits.events)
+	}
 }
 
 func TestReadStreamFailureKeepsCurrentTicketAndEvents(t *testing.T) {

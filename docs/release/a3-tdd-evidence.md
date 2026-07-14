@@ -1,10 +1,16 @@
 # A3 Host Capability Contract TDD Evidence
 
-This document records the test-driven evidence for the A3 host capability
-contract release in ReDevPlugin v0.3.0. A3 owns external host capability
+This document records the test-driven evidence for the first complete A3 host
+capability contract release in ReDevPlugin v0.3.1. A3 owns external host capability
 artifact verification, exact contract pins, generated plugin-side clients,
 typed invocation bindings, Host-owned operation and stream handles, execution
 leases, cancellation ownership, and negative audit/diagnostic behavior.
+
+The `v0.3.0` tag published the immutable npm package, but its GitHub Release was
+blocked because the release verifier still required an audit counter from the
+removed public `Host.CloseStream` path. No GitHub Release was created for that
+tag. v0.3.1 validates the exact generated stress summary before signing and is
+the complete cross-artifact coordinate intended for host consumption.
 
 A3 is host-neutral. Its published sample uses an `example.documents.v1`
 contract and contains no Redeven, container-engine, product-shell, or local
@@ -32,9 +38,10 @@ completed, and the same focused commands now pass.
 | Stream ticket commit | A drained terminal stream still performed next-ticket capacity checks and failed with `ErrTokenCapacity`; byte-only drain detection also dropped a next ticket while zero-payload events remained | `GOWORK=off go test ./pkg/bridge ./pkg/host -run 'TestCommitSingleUseDoesNotReserveReplacementCapacity|TestReadTerminalStreamDoesNotRequireNextTicketCapacity|TestReadTerminalStreamKeepsTicketUntilZeroPayloadEventsAreDrained|TestReadStreamFailureKeepsCurrentTicketAndEvents|TestReadStreamSerializesConcurrentUseOfOneTicket|TestReadStreamLongPollRevalidatesPluginRevision' -count=1` proves terminal commit does not reserve a replacement, event-count pagination retains a next ticket, failed reads remain retryable, concurrent reads serialize, and post-wait authorization is current |
 | Durable terminal reconciliation | Operation and stream terminal states could be written independently, leaving a partial pair after a store failure or process restart | `GOWORK=off go test ./pkg/host ./pkg/operation ./pkg/stream -run 'Terminal|Reconcile|SQLite' -count=1` proves either terminal side repairs the other on construction and before later execution, including after closing and reopening SQLite stores |
 | Runtime lease self-defense | Rust verified the Ed25519 signature but did not bind the actual worker parameters or complete invocation target, and its replay cache was unbounded | `cargo test -p redevplugin-ipc validates_worker_runtime_lease_expiry_and_execution_binding` and `cargo test -p redevplugin-runtime 'worker_invocation_rejects_|runtime_lease_replay_cache_'` prove exact `params_sha256`, fixed-order invocation target binding, expiry-aware replay pruning, hard capacity, and audience mismatches fail before artifact open |
-| npm release surface | The release verifier checked runtime imports but did not compile a standalone consumer against the packed declarations | `./scripts/build_redevplugin_release.sh --version 0.3.0` proves the immutable npm tarball exposes exactly `PluginBridgeClient`, `PluginBridgeError`, the three typed capability calls, and the business-error guard, then installs that tarball and compiles the published sample without source aliases |
-| Release provenance timestamp | The first dynamic signed sample used the release manifest's millisecond timestamp while capability artifact canonicalization emitted second precision | `./scripts/build_redevplugin_release.sh --version 0.3.0` and `node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release 0.3.0 "$(git rev-parse HEAD)"` prove the outer manifest and signed sample share one canonical `generated_at` and that provenance mismatch mutations fail closed |
-| Release smoke identity | Ordinary CI reused the formal `0.3.0` identity even though no tag was being released | The CI bundle smoke builds `0.0.0-ci.<run-number>` while tagged release jobs alone own `0.3.0`; both keep signed sample compatibility and full bundle verification enabled |
+| npm release surface | The release verifier checked runtime imports but did not compile a standalone consumer against the packed declarations | `./scripts/build_redevplugin_release.sh --version 0.3.1` proves the immutable npm tarball exposes exactly `PluginBridgeClient`, `PluginBridgeError`, the three typed capability calls, and the business-error guard, then installs that tarball and compiles the published sample without source aliases |
+| Release provenance timestamp | The first dynamic signed sample used the release manifest's millisecond timestamp while capability artifact canonicalization emitted second precision | `./scripts/build_redevplugin_release.sh --version 0.3.1` and `node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release 0.3.1 "$(git rev-parse HEAD)"` prove the outer manifest and signed sample share one canonical `generated_at` and that provenance mismatch mutations fail closed |
+| Release smoke identity | Ordinary CI reused a formal release identity even though no tag was being released | The CI bundle smoke builds `0.0.0-ci.<run-number>` while tagged release jobs alone own the tag-derived immutable identity; both keep signed sample compatibility and full bundle verification enabled |
+| Release evidence contract | The `v0.3.0` workflow signed an actual stress summary that omitted the obsolete direct-store `stream_close_audit_events` counter, while a hand-written verifier fixture still included it | `./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json` now validates its exact output through `scripts/verify_redevplugin_release_stress.mjs`, and `GOWORK=off go test ./pkg/host -run TestCallPluginMethodRegistersStream -count=1` proves the scoped Host stream sink emits `plugin.stream.closed` |
 | Confirmation TOCTOU | Confirmation did not have a focused test for a trusted target descriptor changing after approval | `GOWORK=off go test ./pkg/host -run 'TestConfirmationIntentRejectsChangedResolvedTargetAndCannotReplay' -count=1` proves the re-resolved descriptor hash must match and the consumed confirmation cannot be replayed |
 | Confirmation rejection | Parent UI rejection only returned `PLUGIN_CONFIRMATION_REJECTED` to plugin code; the Host did not atomically consume the pending intent or record the negative decision | `GOWORK=off go test ./pkg/security ./pkg/host ./pkg/httpadapter -run 'TestConfirmationIntentStoreRejectsOnlyMatchingScope|TestRejectMethodConfirmationConsumesIntentWithoutDispatch|TestHandlerRPCConfirmationRejectionFlow' -count=1` plus `npm --prefix packages/redevplugin-ui test` prove wrong-scope rejection preserves the intent, valid rejection consumes it once, records `confirmation_rejected`, and reaches no business adapter |
 | Quota and ticket cleanup | Concurrent quota and stream-ticket mint failure did not have handle-closure regressions | `GOWORK=off go test ./pkg/host -run 'TestCapabilityExecutionEnforcesConcurrentAndDurationQuota|TestCallPluginMethodClosesStreamWhenTicketMintFails' -count=1` proves adapter zero-call on concurrency denial, timeout fencing, and deterministic stream failure when ticket minting fails |
@@ -49,7 +56,7 @@ completed, and the same focused commands now pass.
 
 ## Published Contract And Sample
 
-The v0.3.0 compatibility manifest includes the complete machine contract set
+The v0.3.1 compatibility manifest includes the complete machine contract set
 under the generated contract registry:
 
 - `host-capability-contract-v1.schema.json`;
@@ -132,9 +139,9 @@ cargo deny check
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci
 ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
-./scripts/build_redevplugin_release.sh --version 0.3.0
+./scripts/build_redevplugin_release.sh --version 0.3.1
 ```
 
 The tagged workflow repeats the complete quality, audit, stress, native runtime
 matrix, npm provenance, signed GitHub Release, Go module, and public readback
-gates before v0.3.0 is consumable by a host product.
+gates before v0.3.1 is consumable by a host product.

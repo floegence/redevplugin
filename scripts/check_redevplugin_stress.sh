@@ -15,7 +15,7 @@ Runs the host-neutral ReDevPlugin stress gate.
 Modes:
   --fast      Race-sensitive broker/lifecycle packages plus pkg/stress tests.
   --full      Fast gate plus platform/browser/runtime-contract/release-bundle smoke.
-  --release   Alias for --full; intended for release-blocking local use.
+  --release   Full gate plus validation of the exact release stress summary.
 
 The script always writes a JSON summary with structured stress_evidence counters
 to stdout. When --summary is provided, the same JSON summary is also written to
@@ -98,7 +98,7 @@ run_step() {
   return "$status"
 }
 
-write_summary() {
+render_summary() {
   local completed_at
   local ok
   local categories
@@ -116,8 +116,7 @@ write_summary() {
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)
-  local summary
-  summary=$(cat <<JSON
+  cat <<JSON
 {
   "ok": $ok,
   "mode": "$MODE",
@@ -128,12 +127,24 @@ write_summary() {
   "steps": [$steps_json]
 }
 JSON
-)
+}
+
+publish_summary() {
+  local summary=$1
   echo "$summary"
   if [[ -n "$SUMMARY_PATH" ]]; then
     mkdir -p "$(dirname -- "$SUMMARY_PATH")"
     printf '%s\n' "$summary" >"$SUMMARY_PATH"
   fi
+}
+
+write_summary() {
+  publish_summary "$(render_summary)"
+}
+
+write_summary_file() {
+  local path=$1
+  publish_summary "$(cat "$path")"
 }
 
 stress_evidence_json() {
@@ -196,14 +207,31 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  run_step release_bundle ./scripts/build_redevplugin_release.sh --version 0.3.0 --out-dir "$TMP_DIR/release" || {
+  run_step release_bundle ./scripts/build_redevplugin_release.sh --version 0.3.1 --out-dir "$TMP_DIR/release" || {
     write_summary
     exit "$STATUS"
   }
-  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" 0.3.0 "$(git rev-parse HEAD)" || {
+  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" 0.3.1 "$(git rev-parse HEAD)" || {
     write_summary
     exit "$STATUS"
   }
+fi
+
+if [[ "$MODE" == "release" ]]; then
+  release_summary="$TMP_DIR/release-summary.json"
+  render_summary >"$release_summary"
+  set +e
+  node scripts/verify_redevplugin_release_stress.mjs "$release_summary"
+  release_summary_status=$?
+  set -e
+  if [[ "$release_summary_status" -ne 0 ]]; then
+    STATUS=$release_summary_status
+    render_summary >"$release_summary"
+    write_summary_file "$release_summary"
+    exit "$STATUS"
+  fi
+  write_summary_file "$release_summary"
+  exit "$STATUS"
 fi
 
 write_summary

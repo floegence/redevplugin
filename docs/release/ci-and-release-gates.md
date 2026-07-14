@@ -106,15 +106,19 @@ and `--summary PATH`.
 - `--fast` runs race-sensitive Go packages and `pkg/stress`.
 - `--full` adds browser demo, runtime contract, release bundle smoke, and a
   four-target published-release verifier fixture.
-- `--release` aliases full mode for release-blocking use.
+- `--release` adds validation of the exact generated release summary through
+  the same structured validator used for downloaded GitHub Release assets.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
-counters for stream backpressure, stream close/cancel fail-closed checks,
+counters for stream backpressure and direct-store close fail-closed checks,
 operation cancel ownership and inactive-operation non-redispatch, connectivity
 classifier/grant denials, runtime revoke ACK p95 latency, KV and SQLite storage
 quota pressure, and SQLite sidecar/sparse bypass checks. CI uploads summaries as artifacts, and tagged release workflows
 include release-mode stress evidence in the published checksum and signature
 evidence chain.
+
+Host-owned stream terminal audit behavior is verified separately at the scoped
+adapter sink boundary. Direct stream stores do not emit Host audit events.
 
 ## Release Bundle
 
@@ -179,7 +183,8 @@ packed tarball into a standalone temporary consumer and runs `tsc --noEmit` on
 the released host-capability sample without source aliases.
 
 Ordinary branch CI builds a synthetic `0.0.0-ci.<run-number>` bundle. Only the
-tagged release workflow builds and publishes the immutable `0.3.0` identity.
+tagged release workflow builds and publishes the immutable tag-derived identity;
+v0.3.1 is the first complete A3 release coordinate.
 
 Tagged release workflows also publish `@floegence/redevplugin-ui` to the npm
 registry with the same version as the Git tag. The publish job downloads the

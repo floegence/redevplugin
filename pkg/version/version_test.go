@@ -241,6 +241,27 @@ func TestCurrentMatrixFallsBackToDevVersionWhenUnstamped(t *testing.T) {
 	}
 }
 
+func TestCurrentCompatibilityVersionUsesReleaseOrDevelopmentFloor(t *testing.T) {
+	t.Run("release", func(t *testing.T) {
+		restore := replaceReleaseVersions("1.2.3", devVersion, devVersion)
+		defer restore()
+		restoreDetector := replaceBuildInfoDetector("")
+		defer restoreDetector()
+		if got := CurrentCompatibilityVersion(); got != "1.2.3" {
+			t.Fatalf("CurrentCompatibilityVersion() = %q, want 1.2.3", got)
+		}
+	})
+	t.Run("development", func(t *testing.T) {
+		restore := replaceReleaseVersions(devVersion, devVersion, devVersion)
+		defer restore()
+		restoreDetector := replaceBuildInfoDetector("")
+		defer restoreDetector()
+		if got := CurrentCompatibilityVersion(); got != developmentCompatibilityVersion {
+			t.Fatalf("CurrentCompatibilityVersion() = %q, want %q", got, developmentCompatibilityVersion)
+		}
+	})
+}
+
 func TestNormalizeModuleVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name string

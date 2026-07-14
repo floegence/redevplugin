@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.1
+
+### Fixed
+
+- Release stress validation now runs against the exact summary produced by
+  `check_redevplugin_stress.sh --release` before signing or publication, using
+  the same validator as downloaded GitHub Release assets.
+- Stream backpressure evidence no longer expects direct stream-store closure to
+  emit a Host audit event after terminal ownership moved to scoped adapter
+  sinks. The Host subscription regression now explicitly proves that sink
+  closure records `plugin.stream.closed`.
+- ZIP fixtures sort map-backed paths before writing entries, eliminating the
+  case-fold collision diagnostic flake seen in the first A3 main CI run.
+- The `v0.3.0` tag published the npm package but did not produce a GitHub
+  Release because its verifier retained the obsolete direct-store close-audit
+  counter. `v0.3.1` is the first complete A3 release coordinate.
+
 ## v0.3.0
 
 ### Added

@@ -105,6 +105,7 @@ jobs:
           node --check scripts/verify_published_release.mjs
           node --check scripts/verify_npm_registry_release.mjs
           node --check scripts/verify_go_module_readback.mjs
+          node --check scripts/verify_redevplugin_release_stress.mjs
           node --check scripts/test_published_release_verifier.mjs
           node --check scripts/test_npm_registry_release_verifier.mjs
       - run: ./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
