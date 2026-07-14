@@ -104,10 +104,14 @@ the same command shape.
 and `--summary PATH`.
 
 - `--fast` runs race-sensitive Go packages and `pkg/stress`.
-- `--full` adds browser demo, runtime contract, release bundle smoke, and a
-  four-target published-release verifier fixture.
+- `--full` starts from a clean `npm ci`, then adds browser demo, runtime
+  contract, release bundle smoke, and a four-target published-release verifier
+  fixture.
 - `--release` adds validation of the exact generated release summary through
-  the same structured validator used for downloaded GitHub Release assets.
+  the same structured validator used for downloaded GitHub Release assets. The
+  validator requires the exact release category and step sets, including a
+  successful `published_release_verifier`; omission, duplication, unexpected
+  entries, or a non-zero required step fail closed.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
 counters for stream backpressure and direct-store close fail-closed checks,
@@ -156,7 +160,14 @@ redistributed legal text fails the build. Each runtime matrix runner executes
 its own Go and Rust binaries. The post-publication aggregate runner uses structural-only
 verification for foreign targets: it validates ELF/Mach-O architecture, every
 manifest and contract hash, npm identity, and compatibility content without
-attempting to execute another operating system's binary.
+attempting to execute another operating system's binary. Standalone TypeScript
+consumer verification reads the exact compiler version, registry URL, and SRI
+from each bundle's `notices/package-lock.json`, verifies the temporary
+consumer's generated lock identity, and never depends on checkout-root
+`node_modules` state. Ordinary branch release-bundle CI runs the complete
+four-target isolation regression from a copied verifier root with an invalid
+ambient npm registry, so the tag workflow is not the first place that detects
+an accidental checkout dependency.
 
 ## npm Package Publishing
 
@@ -184,7 +195,9 @@ the released host-capability sample without source aliases.
 
 Ordinary branch CI builds a synthetic `0.0.0-ci.<run-number>` bundle. Only the
 tagged release workflow builds and publishes the immutable tag-derived identity;
-v0.3.1 is the first complete A3 release coordinate.
+v0.3.2 is intended to be the first A3 release coordinate whose signed artifacts
+and complete public-readback workflow are independent of ambient checkout
+dependencies.
 
 Tagged release workflows also publish `@floegence/redevplugin-ui` to the npm
 registry with the same version as the Git tag. The publish job downloads the

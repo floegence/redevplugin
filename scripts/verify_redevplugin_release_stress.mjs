@@ -69,17 +69,30 @@ if (summary.mode !== "release") {
 }
 
 const requiredCategories = [
+  "go_race",
   "stream_backpressure",
   "operation_cancel_ownership",
   "connectivity_classifier",
   "runtime_revoke_ack",
   "storage_quota",
+  "browser_demo",
+  "runtime_contract",
+  "release_bundle",
+  "published_release_verifier",
 ];
-const stressCategories = new Set(array(summary.stress_categories, "stress_categories"));
+const stressCategoryList = array(summary.stress_categories, "stress_categories");
+const stressCategories = new Set(stressCategoryList);
+if (stressCategories.size !== stressCategoryList.length) {
+  fail("stress_categories must not contain duplicates");
+}
 for (const category of requiredCategories) {
   if (!stressCategories.has(category)) {
     fail(`stress_categories missing ${category}`);
   }
+}
+const unexpectedCategories = [...stressCategories].filter((category) => !requiredCategories.includes(category));
+if (unexpectedCategories.length > 0) {
+  fail(`stress_categories contain unexpected values: ${unexpectedCategories.join(", ")}`);
 }
 
 const evidenceByCategory = new Map();
@@ -94,15 +107,44 @@ for (const evidence of array(summary.stress_evidence, "stress_evidence")) {
   evidenceByCategory.set(evidence.category, evidence);
 }
 
-const steps = array(summary.steps, "steps");
-for (const stepName of ["stress_evidence", "release_bundle"]) {
-  const step = steps.find((candidate) => object(candidate, "step").name === stepName);
+const requiredSteps = [
+  "npm_ci",
+  "go_race_core",
+  "stress_evidence",
+  "go_all",
+  "browser_demo",
+  "runtime_contract",
+  "release_bundle",
+  "published_release_verifier",
+];
+const stepsByName = new Map();
+const stepNames = [];
+for (const candidate of array(summary.steps, "steps")) {
+  const step = object(candidate, "step");
+  if (typeof step.name !== "string" || step.name.length === 0) {
+    fail("step name must be a non-empty string");
+  }
+  if (stepsByName.has(step.name)) {
+    fail(`duplicate step ${step.name}`);
+  }
+  integer(step.duration_ms, `step ${step.name} duration_ms`);
+  if (step.duration_ms < 0) {
+    fail(`step ${step.name} duration_ms must be non-negative`);
+  }
+  stepNames.push(step.name);
+  stepsByName.set(step.name, step);
+}
+for (const stepName of requiredSteps) {
+  const step = stepsByName.get(stepName);
   if (!step) {
     fail(`steps missing ${stepName}`);
   }
   if (step.status !== 0) {
     fail(`step ${stepName} status = ${step.status}, want 0`);
   }
+}
+if (JSON.stringify(stepNames) !== JSON.stringify(requiredSteps)) {
+  fail(`step order mismatch: got ${JSON.stringify(stepNames)}, want ${JSON.stringify(requiredSteps)}`);
 }
 
 const streamWorkers = requireAtLeast(evidenceByCategory, "stream_backpressure", "workers", 1);

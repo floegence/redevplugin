@@ -152,6 +152,8 @@ export GOWORK=off
   grep -q 'node --check scripts/verify_go_module_readback.mjs' .github/workflows/ci.yml
   grep -q 'node --check scripts/verify_redevplugin_release_stress.mjs' .github/workflows/ci.yml
   grep -q 'node --check scripts/test_published_release_verifier.mjs' .github/workflows/ci.yml
+  grep -q 'Verify standalone published-release toolchain isolation' .github/workflows/ci.yml
+  grep -q 'node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release' .github/workflows/ci.yml
   grep -q 'node --check scripts/verify_npm_registry_release.mjs' .github/workflows/ci.yml
   grep -q 'node --check scripts/test_npm_registry_release_verifier.mjs' .github/workflows/ci.yml
   test "$(grep -c 'scripts/verify_npm_registry_release.mjs' .github/workflows/release.yml)" -eq 2
@@ -179,7 +181,7 @@ export GOWORK=off
 {
   "ok": true,
   "mode": "release",
-  "stress_categories": ["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle"],
+  "stress_categories": ["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle","published_release_verifier"],
   "stress_evidence": [
     {"category":"stream_backpressure","counters":{"workers":1,"backpressure_denials":1,"core_operation_checks":1,"stream_close_requests":1,"closed_streams":1,"post_close_append_denials":1,"stream_close_status_checked":1}},
     {"category":"operation_cancel_ownership","counters":{"operations_registered":2,"cancel_requested_records":2,"durable_requests_without_active_lease":2,"http_accepted_requests":1,"audit_cancel_requested_events":2,"registry_redispatches":0}},
@@ -187,7 +189,7 @@ export GOWORK=off
     {"category":"runtime_revoke_ack","counters":{"attempts":1,"p95_ms":1,"max_ms":1,"threshold_ms":500,"hard_timeout_ms":2000,"closed_actor":1,"closed_socket":1,"closed_stream":1,"closed_storage":1}},
     {"category":"storage_quota","counters":{"writes":1,"quota_denials":1,"imported":1,"usage_bytes":1,"file_quota_denials":1,"file_usage_files":1,"file_quota_files":1,"sqlite_quota_denials":2,"sqlite_rollback_checks":1,"sqlite_page_count":1,"sqlite_sidecar_files":4,"sqlite_sidecar_bytes":1,"sqlite_sparse_logical_bytes":1}}
   ],
-  "steps": [{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1}]
+  "steps": [{"name":"npm_ci","status":0,"duration_ms":1},{"name":"go_race_core","status":0,"duration_ms":1},{"name":"stress_evidence","status":0,"duration_ms":1},{"name":"go_all","status":0,"duration_ms":1},{"name":"browser_demo","status":0,"duration_ms":1},{"name":"runtime_contract","status":0,"duration_ms":1},{"name":"release_bundle","status":0,"duration_ms":1},{"name":"published_release_verifier","status":0,"duration_ms":1}]
 }
 JSON
   cat >"$verify_artifact_fixture/redevplugin-a2-acceptance.json" <<'JSON'
@@ -277,6 +279,32 @@ JSON
   )
   ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"
   cp "$verify_artifact_fixture/redevplugin-release-stress.json" "$stress_valid_fixture"
+  node - "$stress_valid_fixture" "$verify_artifact_fixture/redevplugin-release-stress.json" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const [source, destination] = process.argv.slice(2);
+const summary = JSON.parse(readFileSync(source, "utf8"));
+summary.stress_categories = summary.stress_categories.filter((category) => category !== "published_release_verifier");
+summary.steps = summary.steps.filter((step) => step.name !== "published_release_verifier");
+writeFileSync(destination, JSON.stringify(summary, null, 2) + "\n");
+NODE
+  refresh_release_fixture_sums
+  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"; then
+    echo "release artifact verifier accepted stress evidence without the published release verifier" >&2
+    exit 1
+  fi
+  node - "$stress_valid_fixture" "$verify_artifact_fixture/redevplugin-release-stress.json" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const [source, destination] = process.argv.slice(2);
+const summary = JSON.parse(readFileSync(source, "utf8"));
+summary.steps.find((step) => step.name === "published_release_verifier").status = 1;
+writeFileSync(destination, JSON.stringify(summary, null, 2) + "\n");
+NODE
+  refresh_release_fixture_sums
+  if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"; then
+    echo "release artifact verifier accepted a failed published release verifier step" >&2
+    exit 1
+  fi
+  cp "$stress_valid_fixture" "$verify_artifact_fixture/redevplugin-release-stress.json"
   sed 's/"p95_ms":1/"p95_ms":501/' "$stress_valid_fixture" >"$verify_artifact_fixture/redevplugin-release-stress.json"
   refresh_release_fixture_sums
   if ./scripts/verify_redevplugin_release_artifacts.sh --skip-cosign --tag v0.0.0-test "$verify_artifact_fixture"; then
@@ -303,7 +331,14 @@ JSON
   grep -q '"access": "public"' packages/redevplugin-ui/package.json
   grep -q 'verifyRuntimeHello' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyExecutableTargets' scripts/verify_redevplugin_release_bundle.mjs
+  grep -q 'readBundledTypeScriptToolchain' scripts/verify_redevplugin_release_bundle.mjs
+  grep -Fq '"--registry=https://registry.npmjs.org"' scripts/verify_redevplugin_release_bundle.mjs
+  grep -Fq 'join(consumerRoot, "node_modules/typescript/bin/tsc")' scripts/verify_redevplugin_release_bundle.mjs
+  ! grep -Fq 'resolve("node_modules/typescript/bin/tsc")' scripts/verify_redevplugin_release_bundle.mjs
+  grep -q 'isolated-verifier' scripts/test_published_release_verifier.mjs
   grep -q 'test_published_release_verifier.mjs' scripts/check_redevplugin_stress.sh
+  grep -Fq './pkg/operation ./pkg/registry ./pkg/runtimeclient ./pkg/storage' scripts/check_redevplugin_stress.sh
+  grep -q '"published_release_verifier"' scripts/verify_redevplugin_release_stress.mjs
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyHostCapabilitySample' scripts/verify_redevplugin_release_bundle.mjs
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v2"'

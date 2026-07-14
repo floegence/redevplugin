@@ -9,6 +9,7 @@ const args = process.argv.slice(2);
 const structuralOnly = args.includes("--structural-only");
 const positional = args.filter((arg) => arg !== "--structural-only");
 const [rawBundleDir, rawExpectedVersion] = positional;
+const exactStableSemanticVersionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 if (!rawBundleDir || positional.length > 2) {
   console.error("usage: verify_redevplugin_release_bundle.mjs [--structural-only] <bundle-dir> [expected-version]");
@@ -383,12 +384,22 @@ async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
 function verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp) {
   const consumerRoot = join(tmp, "standalone-consumer");
   const sourceRoot = join(consumerRoot, "src");
+  const typescriptToolchain = readBundledTypeScriptToolchain(bundleDir);
   mkdirSync(consumerRoot, { recursive: true });
   writeFileSync(join(consumerRoot, "package.json"), JSON.stringify({ private: true, type: "module" }) + "\n");
-  execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", npmPath], {
-    cwd: consumerRoot,
-    encoding: "utf8",
-  });
+  execFileSync(
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--registry=https://registry.npmjs.org",
+      npmPath,
+      `typescript@${typescriptToolchain.version}`,
+    ],
+    { cwd: consumerRoot, encoding: "utf8" },
+  );
   cpSync(join(bundleDir, "examples/host-capability/sample-documents-v1"), sourceRoot, { recursive: true });
   writeFileSync(join(consumerRoot, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -401,12 +412,52 @@ function verifyPackedTypeScriptConsumer(bundleDir, npmPath, tmp) {
     },
     include: ["src/**/*.ts"],
   }, null, 2) + "\n");
-  const tsc = resolve("node_modules/typescript/bin/tsc");
+  const consumerLock = readJSON(join(consumerRoot, "package-lock.json"));
+  assertObject(consumerLock.packages, "standalone consumer package-lock packages");
+  const installedToolchain = consumerLock.packages["node_modules/typescript"];
+  assertObject(installedToolchain, "standalone consumer TypeScript lock entry");
+  for (const key of ["version", "resolved", "integrity"]) {
+    assertEqual(installedToolchain[key], typescriptToolchain[key], `standalone consumer TypeScript ${key}`);
+  }
+  const installedTypeScript = readJSON(join(consumerRoot, "node_modules/typescript/package.json"));
+  assertEqual(installedTypeScript.version, typescriptToolchain.version, "standalone consumer TypeScript package version");
+  const tsc = join(consumerRoot, "node_modules/typescript/bin/tsc");
   assertFile(tsc, "release verifier TypeScript compiler");
   execFileSync(process.execPath, [tsc, "--project", join(consumerRoot, "tsconfig.json")], {
     cwd: consumerRoot,
     encoding: "utf8",
   });
+}
+
+function readBundledTypeScriptToolchain(bundleDir) {
+  const lock = readJSON(join(bundleDir, "notices/package-lock.json"));
+  assertObject(lock.packages, "bundled package-lock packages");
+  const typescript = lock.packages["node_modules/typescript"];
+  assertObject(typescript, "bundled package-lock TypeScript entry");
+  if (typeof typescript.version !== "string" || !exactStableSemanticVersionPattern.test(typescript.version)) {
+    fail("bundled package-lock TypeScript version must be exact stable semantic version text");
+  }
+  const expectedResolved = `https://registry.npmjs.org/typescript/-/typescript-${typescript.version}.tgz`;
+  if (typescript.resolved !== expectedResolved) {
+    fail(`bundled package-lock TypeScript resolved URL must be ${expectedResolved}`);
+  }
+  if (!isCanonicalSHA512SRI(typescript.integrity)) {
+    fail("bundled package-lock TypeScript integrity must be sha512 SRI");
+  }
+  return {
+    version: typescript.version,
+    resolved: typescript.resolved,
+    integrity: typescript.integrity,
+  };
+}
+
+function isCanonicalSHA512SRI(value) {
+  if (typeof value !== "string" || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    return false;
+  }
+  const encoded = value.slice("sha512-".length);
+  const decoded = Buffer.from(encoded, "base64");
+  return decoded.length === 64 && decoded.toString("base64") === encoded;
 }
 
 function verifyHostCapabilitySample(bundleDir, releaseManifest, skipExecution) {

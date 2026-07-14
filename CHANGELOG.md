@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.3.2
+
+### Fixed
+
+- Published-release verification now reads the exact TypeScript version,
+  registry URL, and SRI from each bundle's `notices/package-lock.json`, installs
+  that compiler inside the standalone temporary consumer, verifies the
+  consumer lock identity, and invokes only the consumer-local `tsc`.
+  Verification no longer depends on checkout-root `node_modules` state.
+- The published-release verifier regression runs copied verifier scripts from
+  an isolated temporary root with no repository dependencies. Normal branch CI
+  runs that matrix, and mutation coverage rejects non-exact or malformed
+  versions, non-official registry URLs, invalid or mismatched SRI, and missing
+  TypeScript lock entries.
+- Full and release stress gates start from `npm ci`; signed release stress
+  evidence fails closed unless the standalone published-release verifier is
+  present and successful alongside every other required release step.
+- `v0.3.1` produced the signed GitHub Release, npm package, and four runtime
+  bundles, but its final workflow stopped before registry readback because the
+  verifier job had no checkout-root TypeScript installation. `v0.3.2` is the
+  first A3 release coordinate whose complete Actions and public-readback train
+  is designed to finish independently of ambient repository dependencies.
+
 ## v0.3.1
 
 ### Fixed
@@ -15,7 +38,8 @@
   case-fold collision diagnostic flake seen in the first A3 main CI run.
 - The `v0.3.0` tag published the npm package but did not produce a GitHub
   Release because its verifier retained the obsolete direct-store close-audit
-  counter. `v0.3.1` is the first complete A3 release coordinate.
+  counter. `v0.3.1` produced the complete signed artifact set, but its final
+  published-release verifier still depended on checkout-root TypeScript state.
 
 ## v0.3.0
 

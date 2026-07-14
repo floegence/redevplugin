@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,6 +16,10 @@ const root = resolve(import.meta.dirname, "..");
 const sourceBundle = resolve(rawSourceBundle);
 const tempRoot = mkdtempSync(join(tmpdir(), "redevplugin-published-verifier-"));
 const artifactDir = join(tempRoot, "artifacts");
+const verifierRoot = join(tempRoot, "isolated-verifier");
+const verifierScripts = join(verifierRoot, "scripts");
+const publishedVerifier = join(verifierScripts, "verify_published_release.mjs");
+const bundleVerifier = join(verifierScripts, "verify_redevplugin_release_bundle.mjs");
 const targets = [
   { id: "x86_64-unknown-linux-gnu", format: "elf", machine: 62 },
   { id: "aarch64-unknown-linux-gnu", format: "elf", machine: 183 },
@@ -25,6 +29,9 @@ const targets = [
 
 try {
   mkdirSync(artifactDir, { recursive: true });
+  mkdirSync(verifierScripts, { recursive: true });
+  cpSync(join(root, "scripts", "verify_published_release.mjs"), publishedVerifier);
+  cpSync(join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), bundleVerifier);
   const bundles = [];
   for (const target of targets) {
     const bundleRoot = join(tempRoot, `redevplugin-v${version}-${target.id}`);
@@ -37,21 +44,79 @@ try {
 
   run(
     "node",
-    [join(root, "scripts", "verify_published_release.mjs"), artifactDir, version, sourceCommit],
+    [publishedVerifier, artifactDir, version, sourceCommit],
     "verify structural runtime matrix",
+    {
+      cwd: verifierRoot,
+      env: { ...process.env, NPM_CONFIG_REGISTRY: "https://registry.invalid" },
+    },
   );
+  if (existsSync(join(verifierRoot, "node_modules"))) {
+    throw new Error("published verifier installed or reused dependencies outside its standalone consumer");
+  }
+
+  const toolchainNegative = bundles[2];
+  const toolchainLockPath = join(toolchainNegative.bundleRoot, "notices/package-lock.json");
+  const originalToolchainLock = JSON.parse(readFileSync(toolchainLockPath, "utf8"));
+  const originalTypeScript = originalToolchainLock.packages["node_modules/typescript"];
+  const toolchainCases = [
+    {
+      label: "version range",
+      expected: "TypeScript version must be exact stable semantic version text",
+      mutate(lock) {
+        lock.packages["node_modules/typescript"].version = `^${originalTypeScript.version}`;
+      },
+    },
+    {
+      label: "malformed semantic version",
+      expected: "TypeScript version must be exact stable semantic version text",
+      mutate(lock) {
+        lock.packages["node_modules/typescript"].version = `${originalTypeScript.version}-alpha..1`;
+      },
+    },
+    {
+      label: "non-official registry URL",
+      expected: "TypeScript resolved URL must be",
+      mutate(lock) {
+        lock.packages["node_modules/typescript"].resolved = "https://registry.example.invalid/typescript.tgz";
+      },
+    },
+    {
+      label: "non-SHA-512 integrity",
+      expected: "TypeScript integrity must be sha512 SRI",
+      mutate(lock) {
+        lock.packages["node_modules/typescript"].integrity = "sha256-AA==";
+      },
+    },
+    {
+      label: "different SHA-512 integrity",
+      expected: "standalone consumer TypeScript integrity mismatch",
+      mutate(lock) {
+        lock.packages["node_modules/typescript"].integrity = `sha512-${Buffer.alloc(64).toString("base64")}`;
+      },
+    },
+    {
+      label: "missing TypeScript entry",
+      expected: "bundled package-lock TypeScript entry must be an object",
+      mutate(lock) {
+        delete lock.packages["node_modules/typescript"];
+      },
+    },
+  ];
+  for (const testCase of toolchainCases) {
+    const lock = JSON.parse(JSON.stringify(originalToolchainLock));
+    testCase.mutate(lock);
+    writeFileSync(toolchainLockPath, JSON.stringify(lock, null, 2) + "\n");
+    refreshReleaseManifest(toolchainNegative.bundleRoot, toolchainNegative.target.id);
+    assertBundleVerifierRejects(toolchainNegative.bundleRoot, testCase.expected, testCase.label);
+  }
+  writeFileSync(toolchainLockPath, JSON.stringify(originalToolchainLock, null, 2) + "\n");
+  refreshReleaseManifest(toolchainNegative.bundleRoot, toolchainNegative.target.id);
 
   const negative = bundles[0];
   patchExecutable(join(negative.bundleRoot, "bin", "redevplugin-runtime"), targets[1]);
   refreshReleaseManifest(negative.bundleRoot, negative.target.id);
-  const rejected = spawnSync(
-    "node",
-    [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--structural-only", negative.bundleRoot, version],
-    { encoding: "utf8" },
-  );
-  if (rejected.status === 0) {
-    throw new Error("structural verifier accepted a runtime binary for the wrong target");
-  }
+  assertBundleVerifierRejects(negative.bundleRoot, "ELF machine mismatch", "wrong runtime target");
 
   const provenanceNegative = bundles[1];
   const provenanceManifestPath = join(provenanceNegative.bundleRoot, "release-manifest.json");
@@ -60,14 +125,11 @@ try {
     ? "cccccccccccccccccccccccccccccccccccccccc"
     : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   writeFileSync(provenanceManifestPath, JSON.stringify(provenanceManifest, null, 2) + "\n");
-  const provenanceRejected = spawnSync(
-    "node",
-    [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--structural-only", provenanceNegative.bundleRoot, version],
-    { encoding: "utf8" },
+  assertBundleVerifierRejects(
+    provenanceNegative.bundleRoot,
+    "host capability sample source_commit",
+    "host capability sample from another source commit",
   );
-  if (provenanceRejected.status === 0 || !`${provenanceRejected.stderr}${provenanceRejected.stdout}`.includes("host capability sample source_commit")) {
-    throw new Error("structural verifier accepted a host capability sample from another source commit");
-  }
   console.log("published release structural verifier matrix passed");
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
@@ -110,8 +172,25 @@ function refreshReleaseManifest(bundleRoot, runtimeTarget) {
   writeFileSync(join(bundleRoot, "SHA256SUMS"), manifest.files.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\n");
 }
 
-function run(command, args, label) {
-  const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+function assertBundleVerifierRejects(bundleRoot, expectedMessage, label) {
+  const result = spawnSync(
+    "node",
+    [bundleVerifier, "--structural-only", bundleRoot, version],
+    {
+      cwd: verifierRoot,
+      encoding: "utf8",
+      env: { ...process.env, NPM_CONFIG_REGISTRY: "https://registry.invalid" },
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+  const output = `${result.stderr ?? ""}${result.stdout ?? ""}`;
+  if (result.status === 0 || !output.includes(expectedMessage)) {
+    throw new Error(`structural verifier accepted ${label} or returned the wrong diagnostic: ${output || result.error}`);
+  }
+}
+
+function run(command, args, label, options = {}) {
+  const result = spawnSync(command, args, { ...options, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   if (result.status !== 0) {
     throw new Error(`${label} failed: ${result.stderr || result.stdout || result.error}`);
   }

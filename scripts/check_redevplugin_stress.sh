@@ -5,6 +5,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
 MODE="fast"
 SUMMARY_PATH=""
+RELEASE_TEST_VERSION="0.3.2"
 
 usage() {
   cat <<'USAGE'
@@ -178,7 +179,14 @@ trap cleanup EXIT
 
 cd "$ROOT_DIR"
 
-run_step go_race_core env GOWORK=off go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/storage ./pkg/stream ./pkg/stress || {
+if [[ "$MODE" != "fast" ]]; then
+  run_step npm_ci npm ci || {
+    write_summary
+    exit "$STATUS"
+  }
+fi
+
+run_step go_race_core env GOWORK=off go test -race ./pkg/bridge ./pkg/connectivity ./pkg/host ./pkg/httpadapter ./pkg/operation ./pkg/registry ./pkg/runtimeclient ./pkg/storage ./pkg/stream ./pkg/stress || {
   write_summary
   exit "$STATUS"
 }
@@ -189,12 +197,6 @@ run_step stress_evidence env GOWORK=off REDEVPLUGIN_STRESS_EVIDENCE_PATH="$STRES
 }
 
 if [[ "$MODE" != "fast" ]]; then
-  if [[ ! -x node_modules/.bin/tsc || ! -d node_modules/playwright ]]; then
-    run_step npm_ci npm ci || {
-      write_summary
-      exit "$STATUS"
-    }
-  fi
   run_step go_all env GOWORK=off go test ./... || {
     write_summary
     exit "$STATUS"
@@ -207,11 +209,11 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  run_step release_bundle ./scripts/build_redevplugin_release.sh --version 0.3.1 --out-dir "$TMP_DIR/release" || {
+  run_step release_bundle ./scripts/build_redevplugin_release.sh --version "$RELEASE_TEST_VERSION" --out-dir "$TMP_DIR/release" || {
     write_summary
     exit "$STATUS"
   }
-  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" 0.3.1 "$(git rev-parse HEAD)" || {
+  run_step published_release_verifier node scripts/test_published_release_verifier.mjs "$TMP_DIR/release" "$RELEASE_TEST_VERSION" "$(git rev-parse HEAD)" || {
     write_summary
     exit "$STATUS"
   }
