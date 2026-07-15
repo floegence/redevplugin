@@ -61,10 +61,16 @@
   changelog release, Go compatibility floor, or canonical Worker SDK Cargo
   version disagree. The SDK package runner also compiles the extracted crate
   for `wasm32-unknown-unknown` before publication.
-- Example worker generation now emits canonical Linux/amd64 WASM on every host
-  and records closed source/artifact hashes, so macOS LLVM output cannot make
-  Ubuntu generation gates fail while stale source or binary edits still fail
-  closed.
+- Example and scaffold worker generation now emit canonical Linux/amd64 WASM
+  through one path-remapped builder with a pinned compiler, clean target,
+  isolated Cargo home, environment allowlist, immutable Docker image digest,
+  recursive Cargo source snapshots, and native/Docker CI parity. External Cargo
+  configuration, host-specific checkout, registry, cache, flags, or LLVM output
+  cannot change accepted bytes, while stale or concurrently edited source and
+  binary inputs still fail closed.
+- Release SDK packaging installs the WASM target before checking scaffold
+  assets, and every runtime bundle verifies the embedded scaffold even when it
+  consumes a prebuilt npm tarball.
 
 ### Security
 

@@ -78,6 +78,8 @@ jobs:
         run: npm run check
         env:
           REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-quality
+      - name: Canonical WASM native and Docker parity
+        run: npm run examples:check:canonical && npm run scaffold:check:canonical
       - name: Bridge boundary checks
         run: ./scripts/check_redevplugin_ui_bridge.sh
       - run: cargo fmt --check
@@ -159,11 +161,11 @@ jobs:
       - name: Pin npm used for immutable packing
         run: npm i -g npm@11.18.0
       - run: npm ci
+      - run: rustup show
+      - run: rustup target add wasm32-unknown-unknown
       - run: npm run build
       - name: Build immutable npm tarball
         run: node scripts/build_redevplugin_ui_package.mjs "${{ needs.preflight.outputs.version }}" dist/npm-package
-      - run: rustup show
-      - run: rustup target add wasm32-unknown-unknown
       - name: Build immutable Rust worker SDK crate
         run: node scripts/build_redevplugin_worker_sdk_package.mjs "${{ needs.preflight.outputs.version }}" dist/worker-sdk-package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

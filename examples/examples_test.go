@@ -2,7 +2,9 @@ package examples_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +25,7 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 		"examples/showcase/styles.css",
 		"examples/showcase/app.js",
 		"examples/plugins/worker-artifacts.lock.json",
+		"scripts/canonical_wasm_builder.mjs",
 		"internal/browserharness/opaque-surface-contract.test.mjs",
 		"internal/browserharness/opaque-surface-server.mjs",
 		"internal/browserharness/opaque-surface-smoke.mjs",
@@ -31,6 +34,7 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 		"testdata/browser-harness/opaque-surface/generated/plugin-worker.js",
 		"internal/scaffoldtemplate/plugin-worker.ts",
 		"cmd/redevplugin/scaffold_assets/plugin-worker.js",
+		"cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json",
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 			t.Fatalf("required consolidated path %s is unavailable: %v", path, err)
@@ -44,20 +48,27 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(scriptRaw)
+	helperRaw, err := os.ReadFile(filepath.Join(root, "scripts", "canonical_wasm_builder.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(scriptRaw) + string(helperRaw)
 	for _, required := range []string{
-		`const forceCanonical = args.includes("--canonical");`,
+		`parseCanonicalWasmGeneratorArgs`,
 		`const workerArtifactLockPath = "examples/plugins/worker-artifacts.lock.json";`,
 		`process.platform === "linux" && process.arch === "x64"`,
 		`"--platform", "linux/amd64"`,
-		`rust:${rustVersion}-bookworm`,
+		`docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0`,
 		`CARGO_ENCODED_RUSTFLAGS`,
 		`--remap-path-prefix=${root}=/workspace`,
 		`--remap-path-prefix=${cargoHome}=/cargo`,
 		`--remap-path-prefix=/repo=/workspace`,
 		`--remap-path-prefix=/usr/local/cargo=/cargo`,
+		`snapshotCanonicalCargoSources`,
+		`assertSourceSnapshotUnchanged`,
 		`schema_version: "redevplugin.example_worker_artifacts.v1"`,
-		`source_files: sourceHashes`,
+		`canonical_image: canonicalRustImage(rustVersion)`,
+		`source_files: sourceSnapshotBefore.hashes`,
 		`artifacts: artifactHashes`,
 	} {
 		if !strings.Contains(script, required) {
@@ -93,10 +104,11 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 		t.Fatal(err)
 	}
 	var lock struct {
-		SchemaVersion string            `json:"schema_version"`
-		RustVersion   string            `json:"rust_version"`
-		SourceFiles   map[string]string `json:"source_files"`
-		Artifacts     map[string]string `json:"artifacts"`
+		SchemaVersion  string            `json:"schema_version"`
+		RustVersion    string            `json:"rust_version"`
+		SourceFiles    map[string]string `json:"source_files"`
+		Artifacts      map[string]string `json:"artifacts"`
+		CanonicalImage string            `json:"canonical_image"`
 	}
 	if err := json.Unmarshal(lockRaw, &lock); err != nil {
 		t.Fatal(err)
@@ -104,11 +116,17 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	if lock.SchemaVersion != "redevplugin.example_worker_artifacts.v1" || lock.RustVersion != "1.88.0" {
 		t.Fatalf("worker artifact lock identity = %q/%q", lock.SchemaVersion, lock.RustVersion)
 	}
+	if lock.CanonicalImage != "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0" {
+		t.Fatalf("worker artifact canonical image = %q", lock.CanonicalImage)
+	}
 	if len(lock.SourceFiles) < 10 {
 		t.Fatalf("worker artifact source lock has only %d inputs", len(lock.SourceFiles))
 	}
 	if digest := lock.SourceFiles["scripts/build_example_plugins.mjs"]; len(digest) != 64 {
 		t.Fatalf("worker artifact builder digest = %q", digest)
+	}
+	if digest := lock.SourceFiles["scripts/canonical_wasm_builder.mjs"]; len(digest) != 64 {
+		t.Fatalf("canonical WASM builder digest = %q", digest)
 	}
 	wantArtifacts := []string{
 		"examples/plugins/memos/workers/memos.wasm",
@@ -121,6 +139,89 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	for _, path := range wantArtifacts {
 		if digest := lock.Artifacts[path]; len(digest) != 64 {
 			t.Fatalf("worker artifact %s digest = %q", path, digest)
+		}
+	}
+	assertLockedDigests(t, root, lock.SourceFiles)
+	assertLockedDigests(t, root, lock.Artifacts)
+}
+
+func TestScaffoldWorkerArtifactsUseCanonicalBuilderAndSourceLock(t *testing.T) {
+	root := repositoryRoot(t)
+	scriptRaw, err := os.ReadFile(filepath.Join(root, "scripts", "build_scaffold_assets.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(scriptRaw)
+	for _, required := range []string{
+		`parseCanonicalWasmGeneratorArgs`,
+		`const workerArtifactLockPath = "cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json";`,
+		`buildCanonicalWasmArtifacts`,
+		`snapshotCanonicalCargoSources`,
+		`assertSourceSnapshotUnchanged`,
+		`schema_version: "redevplugin.scaffold_worker_artifacts.v1"`,
+		`canonical_image: canonicalRustImage(rustVersion)`,
+		`source_files: sourceSnapshotBefore.hashes`,
+		`artifacts: artifactHashes`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("scaffold builder missing canonical artifact contract %q", required)
+		}
+	}
+
+	packageRaw, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageSource := string(packageRaw)
+	if !strings.Contains(packageSource, `"scaffold:check:canonical": "node scripts/build_scaffold_assets.mjs --check --canonical"`) {
+		t.Fatal("package scripts must expose the canonical scaffold worker check")
+	}
+	if !strings.Contains(packageSource, `"build": "tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check"`) {
+		t.Fatal("normal package build must verify, not regenerate, committed scaffold assets")
+	}
+
+	lockRaw, err := os.ReadFile(filepath.Join(root, "cmd", "redevplugin", "scaffold_assets", "worker-artifacts.lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		SchemaVersion  string            `json:"schema_version"`
+		RustVersion    string            `json:"rust_version"`
+		SourceFiles    map[string]string `json:"source_files"`
+		Artifacts      map[string]string `json:"artifacts"`
+		CanonicalImage string            `json:"canonical_image"`
+	}
+	if err := json.Unmarshal(lockRaw, &lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.SchemaVersion != "redevplugin.scaffold_worker_artifacts.v1" || lock.RustVersion != "1.88.0" {
+		t.Fatalf("scaffold worker lock identity = %q/%q", lock.SchemaVersion, lock.RustVersion)
+	}
+	if lock.CanonicalImage != "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0" {
+		t.Fatalf("scaffold worker canonical image = %q", lock.CanonicalImage)
+	}
+	for _, path := range []string{"scripts/build_scaffold_assets.mjs", "scripts/canonical_wasm_builder.mjs", "internal/scaffoldworker/src/lib.rs"} {
+		if digest := lock.SourceFiles[path]; len(digest) != 64 {
+			t.Fatalf("scaffold source %s digest = %q", path, digest)
+		}
+	}
+	if digest := lock.Artifacts["cmd/redevplugin/scaffold_assets/backend.wasm"]; len(lock.Artifacts) != 1 || len(digest) != 64 {
+		t.Fatalf("scaffold artifact lock = %v", lock.Artifacts)
+	}
+	assertLockedDigests(t, root, lock.SourceFiles)
+	assertLockedDigests(t, root, lock.Artifacts)
+}
+
+func assertLockedDigests(t *testing.T, root string, locked map[string]string) {
+	t.Helper()
+	for path, expected := range locked {
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			t.Fatalf("read locked artifact %s: %v", path, err)
+		}
+		actual := fmt.Sprintf("%x", sha256.Sum256(content))
+		if actual != expected {
+			t.Fatalf("locked digest %s = %q, want %q", path, actual, expected)
 		}
 	}
 }

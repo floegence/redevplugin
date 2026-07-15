@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import {
+  assertSourceSnapshotUnchanged,
+  buildCanonicalWasmArtifacts,
+  canonicalRustImage,
+  hashPaths,
+  isCanonicalBuildHost,
+  parseCanonicalWasmGeneratorArgs,
+  readPinnedRustVersion,
+  snapshotCanonicalCargoSources,
+} from "./canonical_wasm_builder.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const checkOnly = process.argv.slice(2).includes("--check");
-
+const { checkOnly, forceCanonical } = parseCanonicalWasmGeneratorArgs(process.argv.slice(2));
+const workerArtifactLockPath = "cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json";
+const workerOutputPath = "cmd/redevplugin/scaffold_assets/backend.wasm";
 const result = await build({
   entryPoints: [resolve(root, "internal/scaffoldtemplate/plugin-worker.ts")],
   alias: {
@@ -38,28 +47,45 @@ await verifyOrWrite(
   await readFile(resolve(root, "internal/scaffoldworker/src/lib.rs")),
 );
 
-const cargo = await cargoPath();
-const cargoBuild = spawnSync(cargo, [
-  "build",
-  "--release",
-  "--target",
-  "wasm32-unknown-unknown",
-  "-p",
-  "redevplugin-scaffold-worker",
-], {
-  cwd: root,
-  env: process.env,
-  encoding: "utf8",
-});
-if (cargoBuild.status !== 0) {
-  process.stderr.write(cargoBuild.stdout || "");
-  process.stderr.write(cargoBuild.stderr || "");
-  throw new Error("failed to build the scaffold WASM worker");
+const rustVersion = await readPinnedRustVersion(root);
+const sourceSnapshotOptions = {
+  root,
+  rustVersion,
+  packageNames: ["redevplugin-scaffold-worker"],
+  additionalPaths: [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "scripts/build_scaffold_assets.mjs",
+    "scripts/canonical_wasm_builder.mjs",
+  ],
+  optionalPaths: [".cargo"],
+};
+const sourceSnapshotBefore = await snapshotCanonicalCargoSources(sourceSnapshotOptions);
+if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
+  const artifact = "redevplugin_scaffold_worker.wasm";
+  const builtArtifacts = await buildCanonicalWasmArtifacts({
+    root,
+    rustVersion,
+    targets: [{ packageName: "redevplugin-scaffold-worker", artifact }],
+    forceDocker: forceCanonical,
+  });
+  await verifyOrWrite(workerOutputPath, builtArtifacts.get(artifact));
 }
-await verifyOrWrite(
-  "cmd/redevplugin/scaffold_assets/backend.wasm",
-  await readFile(resolve(root, "target/wasm32-unknown-unknown/release/redevplugin_scaffold_worker.wasm")),
-);
+
+const sourceSnapshotAfter = await snapshotCanonicalCargoSources(sourceSnapshotOptions);
+assertSourceSnapshotUnchanged(sourceSnapshotBefore, sourceSnapshotAfter);
+const artifactHashes = await hashPaths(root, [workerOutputPath]);
+const workerArtifactLock = Buffer.from(`${JSON.stringify({
+  schema_version: "redevplugin.scaffold_worker_artifacts.v1",
+  rust_version: rustVersion,
+  canonical_target: "wasm32-unknown-unknown",
+  canonical_builder: "linux/amd64",
+  canonical_image: canonicalRustImage(rustVersion),
+  source_files: sourceSnapshotBefore.hashes,
+  artifacts: artifactHashes,
+}, null, 2)}\n`);
+await verifyOrWrite(workerArtifactLockPath, workerArtifactLock);
 
 async function verifyOrWrite(relativePath, content) {
   const outputPath = resolve(root, relativePath);
@@ -72,14 +98,4 @@ async function verifyOrWrite(relativePath, content) {
   }
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, content);
-}
-
-async function cargoPath() {
-  const bundled = resolve(homedir(), ".cargo/bin/cargo");
-  try {
-    await access(bundled);
-    return bundled;
-  } catch {
-    return "cargo";
-  }
 }

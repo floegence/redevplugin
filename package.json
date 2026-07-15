@@ -12,6 +12,8 @@
     "browser-harness:typecheck": "tsc -p testdata/browser-harness/tsconfig.json --noEmit",
     "scaffold:generate": "node scripts/build_scaffold_assets.mjs",
     "scaffold:check": "node scripts/build_scaffold_assets.mjs --check",
+    "scaffold:check:canonical": "node scripts/build_scaffold_assets.mjs --check --canonical",
+    "canonical-wasm:test": "node --test scripts/canonical_wasm_builder.test.mjs",
     "scaffold:typecheck": "tsc -p internal/scaffoldtemplate/tsconfig.json --noEmit",
     "lint": "eslint packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/opaque-surface/*.ts",
     "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
@@ -19,12 +21,12 @@
     "examples:check": "node scripts/build_example_plugins.mjs --check",
     "examples:check:canonical": "node scripts/build_example_plugins.mjs --check --canonical",
     "examples:typecheck": "tsc -p examples/tsconfig.json --noEmit && tsc -p examples/host-capability/tsconfig.json --noEmit",
-    "build": "tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:generate",
+    "build": "tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:check",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",
     "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
     "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run contracts:check && npm run release-metadata:check && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
+    "check": "npm run contracts:check && npm run release-metadata:check && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",

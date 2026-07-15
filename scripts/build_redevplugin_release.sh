@@ -95,6 +95,7 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
   cd "$ROOT_DIR"
   rustup target add wasm32-unknown-unknown >/dev/null
   npm run examples:check
+  npm run scaffold:check
   GOWORK=off go build -trimpath -ldflags "$ldflags" -o "$OUT_DIR/bin/redevplugin" ./cmd/redevplugin
   "$OUT_DIR/bin/redevplugin" version >"$OUT_DIR/compatibility.json"
   if [[ -n "$NPM_PACKAGE" ]]; then

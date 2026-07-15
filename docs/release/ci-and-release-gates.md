@@ -19,15 +19,27 @@ the pinned `golangci-lint` version. The TypeScript job runs ESLint, typecheck,
 build, UI unit tests, Examples generation checks, browser harness tests, plus
 the bridge replay/cancellation gate.
 
-Example worker binaries use Linux/amd64 as the canonical Rust build host. The
-committed `examples/plugins/worker-artifacts.lock.json` binds the exact WASM
-bytes to the root workspace, pinned Rust toolchain, Worker SDK, and all three
-worker source trees. `npm run examples:check` performs the exact rebuild on the
-canonical CI host and verifies the source/artifact lock on every host.
-`npm run examples:generate` uses the pinned `rust:<version>-bookworm` image when
-run elsewhere, and `npm run examples:check:canonical` forces that same Docker
+Example and scaffold worker binaries use Linux/amd64 as the canonical Rust
+build host. The committed `examples/plugins/worker-artifacts.lock.json` and
+`cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json` bind the exact WASM
+bytes to the root workspace, pinned Rust toolchain, Worker SDK, generation
+scripts, and the recursive local Cargo dependency source trees discovered from
+Cargo metadata. Both generators share `scripts/canonical_wasm_builder.mjs`,
+which remaps checkout and Cargo registry paths, pins the exact Rust release,
+uses a clean native target directory, isolated Cargo home, and environment
+allowlist, rejects Cargo configuration inherited from outside the repository,
+and rejects any source snapshot change observed across compilation. Normal
+`examples:check` and `scaffold:check` perform the native rebuild on the
+canonical CI host and verify their source/artifact lock on every host. The explicit
+`examples:generate` and `scaffold:generate` commands use a platform-specific
+immutable Rust image digest when run elsewhere;
+`examples:check:canonical` and `scaffold:check:canonical` force that same Docker
 path for a full local reproduction of CI without accepting host-specific LLVM
-output.
+output. CI runs both paths and requires byte parity. Normal package builds only
+verify committed scaffold assets and never rewrite them implicitly. Release
+packaging also verifies the scaffold before building the CLI, including runtime
+matrix jobs that consume a prebuilt npm tarball, and the package job installs
+the pinned WASM target before that check.
 
 Core local checks:
 
@@ -38,7 +50,9 @@ GOWORK=off golangci-lint run ./...
 npm ci
 npx playwright install chromium
 npm run check
+npm run canonical-wasm:test
 npm run examples:check:canonical
+npm run scaffold:check:canonical
 node scripts/check_redevplugin_release_metadata.mjs --source
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci

@@ -102,6 +102,8 @@ export GOWORK=off
   grep -q 'GOWORK=off go list ./...' .github/workflows/release.yml
   grep -q 'GOWORK=off golangci-lint run ./...' .github/workflows/release.yml
   grep -q 'TypeScript, Examples, and browser-harness checks' .github/workflows/release.yml
+  grep -q 'Canonical WASM native and Docker parity' .github/workflows/release.yml
+  grep -q 'npm run examples:check:canonical && npm run scaffold:check:canonical' .github/workflows/release.yml
   grep -q './scripts/check_redevplugin_ui_bridge.sh' .github/workflows/release.yml
   grep -q 'cargo clippy --workspace --all-targets -- -D warnings' .github/workflows/release.yml
   grep -q 'cargo deny check' .github/workflows/release.yml
@@ -117,6 +119,8 @@ export GOWORK=off
   grep -q 'GOWORK=off go list ./...' .github/workflows/ci.yml
   grep -q 'go list ./...' scripts/check_redevplugin_platform.sh
   grep -q 'npm run check' .github/workflows/ci.yml
+  grep -q 'Canonical WASM native and Docker parity' .github/workflows/ci.yml
+  grep -q 'npm run examples:check:canonical && npm run scaffold:check:canonical' .github/workflows/ci.yml
   grep -q 'Bridge replay and cancellation gate' .github/workflows/ci.yml
   ! grep -Eq 'uses: [^ ]+@v[0-9]+' .github/workflows/ci.yml .github/workflows/stress.yml
   grep -q 'bash -n scripts/check_redevplugin_release_audit.sh' .github/workflows/ci.yml
@@ -125,6 +129,10 @@ export GOWORK=off
   grep -q 'package-ui:' .github/workflows/release.yml
   grep -q 'Build immutable npm tarball' .github/workflows/release.yml
   grep -q 'Build immutable Rust worker SDK crate' .github/workflows/release.yml
+  package_ui_job=$(awk '/^  package-ui:$/ { capture=1 } /^  runtime:$/ { capture=0 } capture' .github/workflows/release.yml)
+  package_ui_wasm_target_line=$(printf '%s\n' "$package_ui_job" | grep -n 'rustup target add wasm32-unknown-unknown' | head -n 1 | cut -d: -f1)
+  package_ui_build_line=$(printf '%s\n' "$package_ui_job" | grep -n 'npm run build' | head -n 1 | cut -d: -f1)
+  test "$package_ui_wasm_target_line" -lt "$package_ui_build_line"
   grep -q 'redevplugin-worker-sdk-package' .github/workflows/release.yml
   grep -q -- '--npm-package "$npm_package"' .github/workflows/release.yml
   grep -q -- '--worker-sdk-package "$worker_sdk_package"' .github/workflows/release.yml
@@ -347,6 +355,7 @@ NODE
   grep -q '"published_release_verifier"' scripts/verify_redevplugin_release_stress.mjs
   grep -q 'verifyNoticeEvidence' scripts/verify_redevplugin_release_bundle.mjs
   grep -q 'verifyHostCapabilitySample' scripts/verify_redevplugin_release_bundle.mjs
+  grep -q 'npm run scaffold:check' scripts/build_redevplugin_release.sh
   go run ./cmd/redevplugin version | grep -q '"schema_version": "redevplugin.compatibility.v3"'
   go run ./cmd/redevplugin version | grep -q '"id": "compatibility-manifest-schema"'
   go run ./cmd/redevplugin version | grep -q '"id": "release-manifest-schema"'

@@ -43,6 +43,8 @@ jobs:
       - run: npm run check
         env:
           REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-evidence
+      - name: Canonical WASM native and Docker parity
+        run: npm run examples:check:canonical && npm run scaffold:check:canonical
       - name: Bridge replay and cancellation gate
         run: ./scripts/check_redevplugin_ui_bridge.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

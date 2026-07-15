@@ -504,10 +504,17 @@ capabilities.
   hard maximum of 30 rows; a compiled-WASM regression proves a 61-item pinned
   library returns 24, 24, and 13 items without an unbounded response. Committed
   example workers are canonical Linux/amd64 `wasm32-unknown-unknown` artifacts
-  tied to every Rust source input by
+  tied to the recursive local Cargo dependency source snapshot by
   `examples/plugins/worker-artifacts.lock.json`; `npm run examples:generate`
-  uses the pinned Rust Docker image on non-canonical hosts, while
-  `npm run examples:check:canonical` reproduces the exact CI byte check.
+  uses an immutable Rust Docker image digest on non-canonical hosts, while
+  `npm run examples:check:canonical` reproduces the exact CI byte check. The
+  CLI scaffold uses the same shared builder and records its backend worker in
+  `cmd/redevplugin/scaffold_assets/worker-artifacts.lock.json`; use
+  `npm run scaffold:generate` and `npm run scaffold:check:canonical` for that
+  artifact. Linux native checks use the exact pinned Rust release, a clean
+  target directory, isolated Cargo home, and an environment allowlist; external
+  ancestor Cargo configuration is rejected. CI compares those bytes with the
+  immutable Docker build and rejects source changes during compilation.
 - Host-mediated plugin intents are exposed end to end through the Go Host
   library, HTTP adapter, OpenAPI route contract, and `PluginPlatformClient`.
   Host products can list enabled runnable intents and invoke a chosen intent
@@ -581,7 +588,9 @@ GOWORK=off go test ./...
 npm ci
 npx playwright install chromium
 npm run check
+npm run canonical-wasm:test
 npm run examples:check:canonical
+npm run scaffold:check:canonical
 npm run examples
 npm run test:browser-harness
 npm run test:browser-harness:smoke
