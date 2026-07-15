@@ -51,6 +51,9 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 		`process.platform === "linux" && process.arch === "x64"`,
 		`"--platform", "linux/amd64"`,
 		`rust:${rustVersion}-bookworm`,
+		`CARGO_ENCODED_RUSTFLAGS`,
+		`--remap-path-prefix=${root}=/workspace`,
+		`--remap-path-prefix=/repo=/workspace`,
 		`schema_version: "redevplugin.example_worker_artifacts.v1"`,
 		`source_files: sourceHashes`,
 		`artifacts: artifactHashes`,
@@ -101,6 +104,9 @@ func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T)
 	}
 	if len(lock.SourceFiles) < 10 {
 		t.Fatalf("worker artifact source lock has only %d inputs", len(lock.SourceFiles))
+	}
+	if digest := lock.SourceFiles["scripts/build_example_plugins.mjs"]; len(digest) != 64 {
+		t.Fatalf("worker artifact builder digest = %q", digest)
 	}
 	wantArtifacts := []string{
 		"examples/plugins/memos/workers/memos.wasm",

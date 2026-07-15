@@ -37,6 +37,7 @@ const workerSourcePaths = [
   "examples/workers/weather/src/lib.rs",
   "examples/workers/sky-strike/Cargo.toml",
   "examples/workers/sky-strike/src/lib.rs",
+  "scripts/build_example_plugins.mjs",
 ];
 
 for (const [source, output] of javascriptTargets) {
@@ -84,6 +85,10 @@ function isCanonicalBuildHost() {
 
 async function buildNativeWorkerArtifacts() {
   const cargo = await cargoPath();
+  const encodedRustFlags = [
+    process.env.CARGO_ENCODED_RUSTFLAGS,
+    `--remap-path-prefix=${root}=/workspace`,
+  ].filter(Boolean).join("\u001f");
   run(cargo, [
     "build",
     "--locked",
@@ -91,7 +96,10 @@ async function buildNativeWorkerArtifacts() {
     "--target",
     "wasm32-unknown-unknown",
     ...wasmTargets.flatMap(([packageName]) => ["-p", packageName]),
-  ], `build canonical example workers with ${cargo}`);
+  ], `build canonical example workers with ${cargo}`, {
+    ...process.env,
+    CARGO_ENCODED_RUSTFLAGS: encodedRustFlags,
+  });
   return readWorkerArtifacts(resolve(root, "target/wasm32-unknown-unknown/release"));
 }
 
@@ -104,6 +112,7 @@ async function buildDockerWorkerArtifacts(rustVersion) {
     "set -euo pipefail",
     "rustup target add wasm32-unknown-unknown",
     "export CARGO_TARGET_DIR=/tmp/redevplugin-target",
+    "export CARGO_ENCODED_RUSTFLAGS='--remap-path-prefix=/repo=/workspace'",
     `cargo build --locked --release --target wasm32-unknown-unknown ${wasmTargets.map(([packageName]) => `-p ${packageName}`).join(" ")}`,
     ...wasmTargets.map(([, artifact]) => `cp /tmp/redevplugin-target/wasm32-unknown-unknown/release/${artifact} /out/${artifact}`),
   ].join("\n");
@@ -146,10 +155,10 @@ async function hashPaths(paths) {
   return result;
 }
 
-function run(command, commandArgs, description) {
+function run(command, commandArgs, description, env = process.env) {
   const result = spawnSync(command, commandArgs, {
     cwd: root,
-    env: process.env,
+    env,
     encoding: "utf8",
   });
   if (result.status === 0) return;
