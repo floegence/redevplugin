@@ -330,10 +330,17 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 func assertReleaseWorkflowContract(t *testing.T, path string) {
 	t.Helper()
 	source := readTextFile(t, path)
+	stressReleaseStart := strings.Index(source, "  stress-release:\n")
 	packageUIStart := strings.Index(source, "  package-ui:\n")
 	runtimeStart := strings.Index(source, "  runtime:\n")
-	if packageUIStart < 0 || runtimeStart <= packageUIStart {
+	if stressReleaseStart < 0 || packageUIStart <= stressReleaseStart || runtimeStart <= packageUIStart {
 		t.Fatalf("%s missing package-ui workflow job boundaries", path)
+	}
+	stressRelease := source[stressReleaseStart:packageUIStart]
+	stressTarget := strings.Index(stressRelease, "rustup target add wasm32-unknown-unknown")
+	stressCommand := strings.Index(stressRelease, "./scripts/check_redevplugin_stress.sh --release")
+	if stressTarget < 0 || stressCommand < 0 || stressTarget >= stressCommand {
+		t.Fatalf("%s stress-release job must install wasm32-unknown-unknown before running release stress", path)
 	}
 	packageUI := source[packageUIStart:runtimeStart]
 	if !strings.Contains(packageUI, "rustup target add wasm32-unknown-unknown") {

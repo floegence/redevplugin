@@ -128,6 +128,7 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: rustup show
+      - run: rustup target add wasm32-unknown-unknown
       - run: ./scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json
         env:
           REDEVPLUGIN_A2_EVIDENCE_DIR: dist

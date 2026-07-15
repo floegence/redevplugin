@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.1
+
+### Fixed
+
+- The release stress job now installs the pinned Rust toolchain's
+  `wasm32-unknown-unknown` target before the browser harness builds canonical
+  example and scaffold workers. Release workflow contract tests enforce this
+  ordering so a clean GitHub runner cannot reach the WASM build without its
+  required target.
+
 ## v0.4.0
 
 ### Added

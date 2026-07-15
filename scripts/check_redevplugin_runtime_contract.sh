@@ -126,6 +126,10 @@ export GOWORK=off
   grep -q 'bash -n scripts/check_redevplugin_release_audit.sh' .github/workflows/ci.yml
   grep -q 'stress-release:' .github/workflows/release.yml
   grep -q './scripts/check_redevplugin_stress.sh --release --summary dist/redevplugin-release-stress.json' .github/workflows/release.yml
+  stress_release_job=$(awk '/^  stress-release:$/ { capture=1 } /^  package-ui:$/ { capture=0 } capture' .github/workflows/release.yml)
+  stress_release_wasm_target_line=$(printf '%s\n' "$stress_release_job" | grep -n 'rustup target add wasm32-unknown-unknown' | head -n 1 | cut -d: -f1)
+  stress_release_command_line=$(printf '%s\n' "$stress_release_job" | grep -n './scripts/check_redevplugin_stress.sh --release' | head -n 1 | cut -d: -f1)
+  test "$stress_release_wasm_target_line" -lt "$stress_release_command_line"
   grep -q 'package-ui:' .github/workflows/release.yml
   grep -q 'Build immutable npm tarball' .github/workflows/release.yml
   grep -q 'Build immutable Rust worker SDK crate' .github/workflows/release.yml

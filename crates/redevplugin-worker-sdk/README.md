@@ -11,13 +11,13 @@ Pin the SDK to the same immutable ReDevPlugin release used by the host:
 
 ```toml
 [dependencies]
-redevplugin-worker-sdk = { git = "https://github.com/floegence/redevplugin", tag = "v0.4.0" }
+redevplugin-worker-sdk = { git = "https://github.com/floegence/redevplugin", tag = "v0.4.1" }
 serde_json = "1.0"
 ```
 
 Every ReDevPlugin GitHub Release also includes a signed runtime bundle for each
 supported target. Each bundle contains the exact
-`sdk/redevplugin-worker-sdk-0.4.0.crate` source artifact and records its SHA-256
+`sdk/redevplugin-worker-sdk-0.4.1.crate` source artifact and records its SHA-256
 in `release-manifest.json` for offline audit and vendoring.
 
 ## Worker Entry Point
