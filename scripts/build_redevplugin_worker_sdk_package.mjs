@@ -79,15 +79,18 @@ try {
   }
   writeFileSync(lockPath, sourceLock.replace(sourceLockEntry, `[[package]]\nname = "redevplugin-worker-sdk"\nversion = "${version}"`));
 
+  const packageCargoEnvironment = {
+    ...cargoEnvironment,
+    CARGO_HOME: join(tempDirectory, "cargo-home"),
+  };
   const packageOptions = {
     cwd: packageDirectory,
-    env: { ...cargoEnvironment, CARGO_TARGET_DIR: targetDirectory },
+    env: { ...packageCargoEnvironment, CARGO_TARGET_DIR: targetDirectory },
   };
   runCargo([
     "update",
     "--manifest-path",
     manifestPath,
-    "--offline",
     "--package",
     `redevplugin-worker-sdk@${version}`,
     "--precise",
@@ -134,7 +137,7 @@ try {
     "wasm32-unknown-unknown",
   ], {
     cwd: join(unpackDirectory, `redevplugin-worker-sdk-${version}`),
-    env: { ...cargoEnvironment, CARGO_TARGET_DIR: join(tempDirectory, "unpacked-target") },
+    env: { ...packageCargoEnvironment, CARGO_TARGET_DIR: join(tempDirectory, "unpacked-target") },
   });
 
   mkdirSync(outputDirectory, { recursive: true });

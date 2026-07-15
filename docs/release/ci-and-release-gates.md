@@ -214,8 +214,10 @@ artifact identity dependency.
 
 The SDK package job installs `wasm32-unknown-unknown` before packing. The
 package builder extracts the final `.crate` into a clean directory and runs
-`cargo check --locked --target wasm32-unknown-unknown`, so publication cannot
-ship a source artifact that only compiles inside the repository workspace.
+`cargo check --locked --target wasm32-unknown-unknown`, using one temporary
+Cargo home for dependency resolution, packaging, and verification. Publication
+cannot depend on a previous job step's Cargo cache or ship a source artifact
+that only compiles inside the repository workspace.
 
 ## npm Package Publishing
 

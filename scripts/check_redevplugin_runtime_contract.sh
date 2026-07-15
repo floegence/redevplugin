@@ -162,6 +162,8 @@ export GOWORK=off
   grep -q 'bash -n scripts/verify_github_release_identity.sh' .github/workflows/ci.yml
   grep -q 'node --check scripts/verify_published_release.mjs' .github/workflows/ci.yml
   grep -q 'node --check scripts/build_redevplugin_worker_sdk_package.mjs' .github/workflows/ci.yml
+  grep -Fq 'CARGO_HOME: join(tempDirectory, "cargo-home")' scripts/build_redevplugin_worker_sdk_package.mjs
+  ! grep -Fq '"--offline"' scripts/build_redevplugin_worker_sdk_package.mjs
   grep -q 'node --check scripts/verify_redevplugin_release_bundle.mjs' .github/workflows/ci.yml
   grep -q 'node --check scripts/verify_go_module_readback.mjs' .github/workflows/ci.yml
   grep -q 'node --check scripts/verify_redevplugin_release_stress.mjs' .github/workflows/ci.yml

@@ -70,7 +70,9 @@
   binary inputs still fail closed.
 - Release SDK packaging installs the WASM target before checking scaffold
   assets, and every runtime bundle verifies the embedded scaffold even when it
-  consumes a prebuilt npm tarball.
+  consumes a prebuilt npm tarball. Worker SDK packaging resolves and verifies
+  dependencies in its own temporary Cargo home instead of relying on cache
+  state left by an earlier build step.
 
 ### Security
 
