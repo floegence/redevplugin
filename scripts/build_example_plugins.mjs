@@ -85,9 +85,11 @@ function isCanonicalBuildHost() {
 
 async function buildNativeWorkerArtifacts() {
   const cargo = await cargoPath();
+  const cargoHome = resolve(process.env.CARGO_HOME || resolve(homedir(), ".cargo"));
   const encodedRustFlags = [
     process.env.CARGO_ENCODED_RUSTFLAGS,
     `--remap-path-prefix=${root}=/workspace`,
+    `--remap-path-prefix=${cargoHome}=/cargo`,
   ].filter(Boolean).join("\u001f");
   run(cargo, [
     "build",
@@ -112,7 +114,7 @@ async function buildDockerWorkerArtifacts(rustVersion) {
     "set -euo pipefail",
     "rustup target add wasm32-unknown-unknown",
     "export CARGO_TARGET_DIR=/tmp/redevplugin-target",
-    "export CARGO_ENCODED_RUSTFLAGS='--remap-path-prefix=/repo=/workspace'",
+    "export CARGO_ENCODED_RUSTFLAGS=$'--remap-path-prefix=/repo=/workspace\\x1f--remap-path-prefix=/usr/local/cargo=/cargo'",
     `cargo build --locked --release --target wasm32-unknown-unknown ${wasmTargets.map(([packageName]) => `-p ${packageName}`).join(" ")}`,
     ...wasmTargets.map(([, artifact]) => `cp /tmp/redevplugin-target/wasm32-unknown-unknown/release/${artifact} /out/${artifact}`),
   ].join("\n");
