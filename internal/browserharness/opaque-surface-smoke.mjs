@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
+import { validateA2Evidence } from "../../scripts/verify_redevplugin_a2_evidence.mjs";
 import { createBrowserHarnessServer } from "./opaque-surface-server.mjs";
 
 const harness = createBrowserHarnessServer();
@@ -17,10 +18,20 @@ try {
     await verifyScenario("supported"),
     await verifyScenario("unsupported"),
   ];
-  writeFileSync(join(evidenceDir, "redevplugin-a2-acceptance.json"), JSON.stringify({
+  const report = {
     schema_version: "redevplugin.a2_acceptance.v1",
+    evidence_source: "go-host-http-adapter-rust-runtime-chromium",
     scenarios,
-  }, null, 2) + "\n");
+  };
+  const reportPath = join(evidenceDir, "redevplugin-a2-acceptance.json");
+  const supportedScreenshotPath = join(evidenceDir, "redevplugin-a2-supported.png");
+  const unsupportedScreenshotPath = join(evidenceDir, "redevplugin-a2-unsupported.png");
+  writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n");
+  validateA2Evidence({
+    report,
+    supportedScreenshot: readFileSync(supportedScreenshotPath),
+    unsupportedScreenshot: readFileSync(unsupportedScreenshotPath),
+  });
   console.log("opaque browser harness smoke passed");
 } finally {
   await browser.close();
@@ -34,9 +45,11 @@ async function verifyScenario(credentiallessScenario) {
       Reflect.deleteProperty(HTMLIFrameElement.prototype, "credentialless");
     });
   }
-  const requestedURLs = [];
+  const requests = [];
+  const webSockets = [];
   const consoleLines = [];
-  page.on("request", (request) => requestedURLs.push(request.url()));
+  page.on("request", (request) => requests.push({ method: request.method(), url: request.url() }));
+  page.on("websocket", (webSocket) => webSockets.push(webSocket.url()));
   page.on("console", (message) => consoleLines.push(message.text()));
   await page.goto(`${baseURL}/testdata/browser-harness/opaque-surface/index.html?credentialless=${credentiallessScenario}`, { waitUntil: "domcontentloaded" });
   try {
@@ -144,6 +157,7 @@ async function verifyScenario(credentiallessScenario) {
   await frame.getByRole("button", { name: "Read stream" }).click();
   await frame.waitForFunction(() => document.querySelector("#plugin-result")?.textContent?.includes("opaque log line 2"));
   const streamResult = await frame.locator("#plugin-result").textContent();
+  const realStreamRedeemed = streamResult.includes("opaque log line 1") && streamResult.includes("opaque log line 2");
   assert.equal(streamResult.includes("stream_ticket"), false);
   assert.equal(streamResult.includes("parent_stream_ticket"), false);
   assert.equal(streamResult.includes('"parent_stream_credential_visible": false'), true);
@@ -159,11 +173,30 @@ async function verifyScenario(credentiallessScenario) {
     return value.asset_completed_at > 0;
   }, 5_000, "lazy asset completion");
   const diagnostics = await (await fetch(`${baseURL}/__browser_harness/diagnostics`)).json();
+  const currentSurfaceID = diagnostics.latest_surface_id;
   assert.equal(snapshot.openedAt > 0, true);
   assert.equal(snapshot.openedAt < diagnostics.asset_completed_at, true, "first paint must precede delayed lazy asset completion");
 
+  await page.screenshot({
+    path: join(evidenceDir, `redevplugin-a2-${credentiallessScenario}.png`),
+    fullPage: true,
+  });
+
+  await frame.getByRole("button", { name: "Dangerous action" }).click();
+  await page.locator("#confirmation-panel").waitFor({ state: "visible" });
+  await page.locator("#dispose-surface").click();
+  await page.waitForFunction(() => window.__redevpluginHarness.snapshot().status === "disposed");
+  await page.waitForFunction(() => document.querySelector("#event-log")?.textContent?.includes("confirmation-aborted"));
+  await waitFor(() => page.workers().length === 0, 5_000, "dedicated worker disposal");
+  await waitFor(async () => {
+    const response = await fetch(`${baseURL}/__browser_harness/diagnostics`);
+    const value = await response.json();
+    return value.dispose_completed_at > 0;
+  }, 5_000, "server surface disposal");
+  const disposed = await page.evaluate(() => window.__redevpluginHarness.snapshot());
+  const finalDiagnostics = await (await fetch(`${baseURL}/__browser_harness/diagnostics`)).json();
   const eventLog = await page.locator("#event-log").textContent();
-  const serializedEvidence = JSON.stringify({ requestedURLs, consoleLines, eventLog, diagnostics });
+  const serializedEvidence = JSON.stringify({ requests, webSockets, consoleLines, eventLog, diagnostics: finalDiagnostics });
   for (const forbidden of [
     "parent_asset_ticket_",
     "parent_asset_session_",
@@ -174,23 +207,23 @@ async function verifyScenario(credentiallessScenario) {
   ]) {
     assert.equal(serializedEvidence.includes(forbidden), false, `${credentiallessScenario} evidence leaked ${forbidden}`);
   }
+  const requestedURLs = requests.map((request) => request.url);
+  const unexpectedRequests = requests.filter((request) => !requestAllowed(request, credentiallessScenario));
+  const strictRequestAllowlist = unexpectedRequests.length === 0;
+  assert.deepEqual(unexpectedRequests, [], `${credentiallessScenario} request allowlist`);
   assert.equal(requestedURLs.some((url) => /[?&](ticket|token|asset_session|stream_ticket)=/i.test(url)), false);
   assert.equal(requestedURLs.some((url) => url.includes("worker-network-probe") || url.includes("worker-prototype-fetch")), false);
-
-  await page.screenshot({
-    path: join(evidenceDir, `redevplugin-a2-${credentiallessScenario}.png`),
-    fullPage: true,
-  });
-
-  await page.locator("#dispose-surface").click();
-  await page.waitForFunction(() => window.__redevpluginHarness.snapshot().status === "disposed");
-  await waitFor(() => page.workers().length === 0, 5_000, "dedicated worker disposal");
-  const disposed = await page.evaluate(() => window.__redevpluginHarness.snapshot());
+  assert.deepEqual(webSockets, [], `${credentiallessScenario} websocket creation`);
+  assert.deepEqual(page.context().serviceWorkers(), [], `${credentiallessScenario} service worker creation`);
+  assert.equal(eventLog.includes("confirmation-aborted"), true);
+  assert.equal(finalDiagnostics.dispose_completed_at > 0, true);
   assert.equal(disposed.iframeSrcdocEmpty, true);
   assert.equal(await iframe.getAttribute("srcdoc"), "");
+  assert.equal(disposed.errors.length, 0, `${credentiallessScenario} disposed surface errors`);
   await page.close();
   return {
     credentialless_scenario: credentiallessScenario,
+    credentialless,
     sandbox,
     allow,
     referrer_policy: referrerPolicy,
@@ -203,8 +236,46 @@ async function verifyScenario(credentiallessScenario) {
     parent_credentials_absent: forbiddenEvidenceAbsent(serializedEvidence),
     credential_query_absent: !requestedURLs.some((url) => /[?&](ticket|token|asset_session|stream_ticket)=/i.test(url)),
     direct_worker_network_absent: !requestedURLs.some((url) => url.includes("worker-network-probe") || url.includes("worker-prototype-fetch")),
+    strict_request_allowlist: strictRequestAllowlist,
+    websocket_absent: webSockets.length === 0 && workerProbe.websocket_blocked === true,
+    service_worker_absent: page.context().serviceWorkers().length === 0 && isolation.service_worker_blocked === true,
+    opening_progress: snapshot.progressEvents.length >= 1 && snapshot.progressEvents[0] >= 300,
+    first_paint_before_lazy_asset: snapshot.openedAt > 0 && snapshot.openedAt < diagnostics.asset_completed_at,
+    real_stream_redeemed: realStreamRedeemed && finalDiagnostics.requests.filter((request) => request.includes(`/surfaces/${currentSurfaceID}/streams/read`)).length === 2,
+    confirmation_disposal_aborted: eventLog.includes("confirmation-aborted"),
+    server_disposed: finalDiagnostics.dispose_completed_at > 0,
     disposed: disposed.iframeSrcdocEmpty === true,
   };
+}
+
+function requestAllowed(request, credentiallessScenario) {
+  if (request.method === "GET" && /^blob:null\/[0-9a-f-]{36}$/.test(request.url)) return true;
+  const url = new URL(request.url);
+  if (url.origin !== baseURL || url.username || url.password || url.hash) return false;
+  const staticRequests = new Map([
+    ["/testdata/browser-harness/opaque-surface/index.html", "GET"],
+    ["/testdata/browser-harness/opaque-surface/styles.css", "GET"],
+    ["/testdata/browser-harness/opaque-surface/host.mjs", "GET"],
+    ["/packages/redevplugin-ui/dist/trusted-parent.js", "GET"],
+    ["/packages/redevplugin-ui/dist/contracts.gen.js", "GET"],
+    ["/packages/redevplugin-ui/dist/errors.js", "GET"],
+    ["/packages/redevplugin-ui/dist/platform.js", "GET"],
+    ["/packages/redevplugin-ui/dist/surface-scope.js", "GET"],
+    ["/packages/redevplugin-ui/dist/surface.js", "GET"],
+    ["/packages/redevplugin-ui/dist/http.js", "GET"],
+    ["/packages/redevplugin-ui/dist/opaque-surface-policy.gen.js", "GET"],
+    ["/__browser_harness/diagnostics", "GET"],
+    ["/_redevplugin/api/plugins/surfaces/open", "POST"],
+    ["/_redevplugin/api/plugins/rpc", "POST"],
+    ["/_redevplugin/api/plugins/confirm", "POST"],
+  ]);
+  const expectedMethod = staticRequests.get(url.pathname);
+  if (expectedMethod) {
+    const expectedSearch = url.pathname.endsWith("/index.html") ? `?credentialless=${credentiallessScenario}` : "";
+    return request.method === expectedMethod && url.search === expectedSearch;
+  }
+  return request.method === "POST" && url.search === "" &&
+    /^\/_redevplugin\/api\/plugins\/surfaces\/surface_browser_[0-9]{4}\/(prepare|bridge-token|assets\/read|streams\/read|dispose)$/.test(url.pathname);
 }
 
 function normalizeCSP(srcdoc) {

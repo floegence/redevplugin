@@ -5,10 +5,10 @@
   "canonical_builder": "linux/amd64",
   "canonical_image": "docker.io/library/rust:1.88.0-bookworm@sha256:4727898c104ecd2e22d780925832502faee9fe4e70581b8572af081370b315a0",
   "source_files": {
-    "Cargo.lock": "ab591ea86944b34619fb097b4b34ecc3aa1715df5c62bd7b176495b33550f464",
+    "Cargo.lock": "1c73351918dda8c5cdd4cded89c1ca0805aa6129f8d1994ee895aed449e65b8c",
     "Cargo.toml": "2ad58291b16c85494c3804a599df8c16ceca24af70b654f806d68ed421be39b1",
-    "crates/redevplugin-worker-sdk/Cargo.toml": "76e3d61f8ae55ba03aeff301e7c84f15dc1ef918c785a9f2de517eb82ed6b1ee",
-    "crates/redevplugin-worker-sdk/README.md": "529c112eb9e20cb86fb54b264ef8eada7222cc895e164c74163de176b0ac70eb",
+    "crates/redevplugin-worker-sdk/Cargo.toml": "04d02d89066267db408b40327f20272d24adfb2171fc31d59f71e6da1b057bdc",
+    "crates/redevplugin-worker-sdk/README.md": "2c592297d14f27c8091bb6e8a4198a6d9e7f53ff087072411ed1cc37f77cd3a2",
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "534e6c557fa43813d58f092c047bab00df1683c6408e8f0b5786cf9f5bbe314b",
     "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
     "examples/workers/memos/Cargo.toml": "d15b519944df9fddd426e5e29f8ae8470286a3f6dadf2d733cb67e1816c26708",
@@ -22,8 +22,8 @@
     "scripts/canonical_wasm_builder.mjs": "b97d8802d0c192a17dcdcd30a704380b89af313f73b12c6eed9174236c908d1d"
   },
   "artifacts": {
-    "examples/plugins/memos/workers/memos.wasm": "dfe721ef9a0dc149d4e888e79b2f7154c5a490c4dfa344e7656174a6d4793712",
-    "examples/plugins/sky-strike/workers/sky-strike.wasm": "18a87ccf11ac61f6721cf13932744e69a02fb86725ceeec8ff2c903a4651a765",
-    "examples/plugins/weather/workers/weather.wasm": "96f94eeaeeb85afe7c745ddc7bce1ab416c7a4c09254037a1b6b3b14dd7bbfeb"
+    "examples/plugins/memos/workers/memos.wasm": "c7a6516ef80f6d3dfd0c94d16dc2b6e909ce3c230e8eb623b3f483bf156b1877",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm": "b23ec93327fdcc92cc4f0fe292050e69c6f1f9b94998de0699901ac704417901",
+    "examples/plugins/weather/workers/weather.wasm": "512e01f37237c9b19ff97c99c07ffcd515d846d70a8c8dd7636a1aef145be025"
   }
 }

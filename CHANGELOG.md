@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.2
+
+### Fixed
+
+- A2 browser acceptance evidence is now generated and release-validated through
+  one shared contract. The live Chromium harness records the credentialless
+  mode, strict request allowlist, absent WebSocket and Service Worker activity,
+  opening and lazy-asset timing, real stream redemption, confirmation abort on
+  surface disposal, and completed server-side disposal before release signing.
+
 ## v0.4.1
 
 ### Fixed
