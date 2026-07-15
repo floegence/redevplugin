@@ -17,6 +17,7 @@
     "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
     "examples:generate": "node scripts/build_example_plugins.mjs",
     "examples:check": "node scripts/build_example_plugins.mjs --check",
+    "examples:check:canonical": "node scripts/build_example_plugins.mjs --check --canonical",
     "examples:typecheck": "tsc -p examples/tsconfig.json --noEmit && tsc -p examples/host-capability/tsconfig.json --noEmit",
     "build": "tsc -p packages/redevplugin-ui/tsconfig.json && npm run browser-harness:generate && npm run scaffold:generate",
     "test:ui": "npm --prefix packages/redevplugin-ui run test",

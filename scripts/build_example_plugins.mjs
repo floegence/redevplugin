@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const checkOnly = process.argv.slice(2).includes("--check");
+const args = process.argv.slice(2);
+const checkOnly = args.includes("--check");
+const forceCanonical = args.includes("--canonical");
+const workerArtifactLockPath = "examples/plugins/worker-artifacts.lock.json";
 const javascriptTargets = [
   ["examples/showcase/app.ts", "examples/showcase/app.js"],
   ["examples/plugin-ui/memos.ts", "examples/plugins/memos/ui/assets/app.js"],
@@ -19,6 +23,20 @@ const wasmTargets = [
   ["redevplugin-example-memos-worker", "redevplugin_example_memos_worker.wasm", "examples/plugins/memos/workers/memos.wasm"],
   ["redevplugin-example-weather-worker", "redevplugin_example_weather_worker.wasm", "examples/plugins/weather/workers/weather.wasm"],
   ["redevplugin-example-sky-strike-worker", "redevplugin_example_sky_strike_worker.wasm", "examples/plugins/sky-strike/workers/sky-strike.wasm"],
+];
+const workerSourcePaths = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "crates/redevplugin-worker-sdk/Cargo.toml",
+  "crates/redevplugin-worker-sdk/src/hostcalls.rs",
+  "crates/redevplugin-worker-sdk/src/lib.rs",
+  "examples/workers/memos/Cargo.toml",
+  "examples/workers/memos/src/lib.rs",
+  "examples/workers/weather/Cargo.toml",
+  "examples/workers/weather/src/lib.rs",
+  "examples/workers/sky-strike/Cargo.toml",
+  "examples/workers/sky-strike/src/lib.rs",
 ];
 
 for (const [source, output] of javascriptTargets) {
@@ -38,22 +56,107 @@ for (const [source, output] of javascriptTargets) {
   await verifyOrWrite(output, Buffer.from(content));
 }
 
-const cargo = await cargoPath();
-for (const [packageName] of wasmTargets) {
-  const result = spawnSync(cargo, ["build", "--release", "--target", "wasm32-unknown-unknown", "-p", packageName], {
+const rustVersion = await readRustVersion();
+if (!checkOnly || forceCanonical || isCanonicalBuildHost()) {
+  const builtArtifacts = isCanonicalBuildHost()
+    ? await buildNativeWorkerArtifacts()
+    : await buildDockerWorkerArtifacts(rustVersion);
+  for (const [, , output] of wasmTargets) {
+    await verifyOrWrite(output, builtArtifacts.get(output));
+  }
+}
+
+const sourceHashes = await hashPaths(workerSourcePaths);
+const artifactHashes = await hashPaths(wasmTargets.map(([, , output]) => output));
+const workerArtifactLock = Buffer.from(`${JSON.stringify({
+  schema_version: "redevplugin.example_worker_artifacts.v1",
+  rust_version: rustVersion,
+  canonical_target: "wasm32-unknown-unknown",
+  canonical_builder: "linux/amd64",
+  source_files: sourceHashes,
+  artifacts: artifactHashes,
+}, null, 2)}\n`);
+await verifyOrWrite(workerArtifactLockPath, workerArtifactLock);
+
+function isCanonicalBuildHost() {
+  return process.platform === "linux" && process.arch === "x64";
+}
+
+async function buildNativeWorkerArtifacts() {
+  const cargo = await cargoPath();
+  run(cargo, [
+    "build",
+    "--locked",
+    "--release",
+    "--target",
+    "wasm32-unknown-unknown",
+    ...wasmTargets.flatMap(([packageName]) => ["-p", packageName]),
+  ], `build canonical example workers with ${cargo}`);
+  return readWorkerArtifacts(resolve(root, "target/wasm32-unknown-unknown/release"));
+}
+
+async function buildDockerWorkerArtifacts(rustVersion) {
+  const distRoot = resolve(root, "dist");
+  await mkdir(distRoot, { recursive: true });
+  const outputRoot = await mkdtemp(resolve(distRoot, "example-worker-canonical-"));
+  const image = `rust:${rustVersion}-bookworm`;
+  const script = [
+    "set -euo pipefail",
+    "rustup target add wasm32-unknown-unknown",
+    "export CARGO_TARGET_DIR=/tmp/redevplugin-target",
+    `cargo build --locked --release --target wasm32-unknown-unknown ${wasmTargets.map(([packageName]) => `-p ${packageName}`).join(" ")}`,
+    ...wasmTargets.map(([, artifact]) => `cp /tmp/redevplugin-target/wasm32-unknown-unknown/release/${artifact} /out/${artifact}`),
+  ].join("\n");
+  try {
+    run("docker", [
+      "run", "--rm",
+      "--platform", "linux/amd64",
+      "-v", `${root}:/repo:ro`,
+      "-v", `${outputRoot}:/out`,
+      "-w", "/repo",
+      image,
+      "bash", "-c", script,
+    ], `build canonical example workers with ${image}`);
+    return await readWorkerArtifacts(outputRoot);
+  } finally {
+    await rm(outputRoot, { recursive: true, force: true });
+  }
+}
+
+async function readWorkerArtifacts(directory) {
+  const artifacts = new Map();
+  for (const [, artifact, output] of wasmTargets) {
+    artifacts.set(output, await readFile(resolve(directory, basename(artifact))));
+  }
+  return artifacts;
+}
+
+async function readRustVersion() {
+  const source = await readFile(resolve(root, "rust-toolchain.toml"), "utf8");
+  const match = source.match(/^channel\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"$/m);
+  if (!match) throw new Error("rust-toolchain.toml must pin an exact stable Rust version");
+  return match[1];
+}
+
+async function hashPaths(paths) {
+  const result = {};
+  for (const relativePath of [...paths].sort()) {
+    result[relativePath] = createHash("sha256").update(await readFile(resolve(root, relativePath))).digest("hex");
+  }
+  return result;
+}
+
+function run(command, commandArgs, description) {
+  const result = spawnSync(command, commandArgs, {
     cwd: root,
     env: process.env,
     encoding: "utf8",
   });
-  if (result.status !== 0) {
-    process.stderr.write(result.stdout || "");
-    process.stderr.write(result.stderr || "");
-    throw new Error(`failed to build ${packageName}`);
-  }
-}
-for (const [, artifact, output] of wasmTargets) {
-  const content = await readFile(resolve(root, "target/wasm32-unknown-unknown/release", artifact));
-  await verifyOrWrite(output, content);
+  if (result.status === 0) return;
+  process.stderr.write(result.stdout || "");
+  process.stderr.write(result.stderr || "");
+  if (result.error) throw new Error(`${description}: ${result.error.message}`);
+  throw new Error(`${description} failed with status ${result.status}`);
 }
 
 async function verifyOrWrite(relativePath, content) {

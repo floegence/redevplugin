@@ -502,7 +502,12 @@ capabilities.
   Rust runtime storage and network calls, and deterministic worker/iframe
   disposal. Memos requests 24 summaries per UI page while its worker enforces a
   hard maximum of 30 rows; a compiled-WASM regression proves a 61-item pinned
-  library returns 24, 24, and 13 items without an unbounded response.
+  library returns 24, 24, and 13 items without an unbounded response. Committed
+  example workers are canonical Linux/amd64 `wasm32-unknown-unknown` artifacts
+  tied to every Rust source input by
+  `examples/plugins/worker-artifacts.lock.json`; `npm run examples:generate`
+  uses the pinned Rust Docker image on non-canonical hosts, while
+  `npm run examples:check:canonical` reproduces the exact CI byte check.
 - Host-mediated plugin intents are exposed end to end through the Go Host
   library, HTTP adapter, OpenAPI route contract, and `PluginPlatformClient`.
   Host products can list enabled runnable intents and invoke a chosen intent
@@ -576,6 +581,7 @@ GOWORK=off go test ./...
 npm ci
 npx playwright install chromium
 npm run check
+npm run examples:check:canonical
 npm run examples
 npm run test:browser-harness
 npm run test:browser-harness:smoke

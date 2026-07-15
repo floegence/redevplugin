@@ -22,6 +22,7 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 		"examples/showcase/index.html",
 		"examples/showcase/styles.css",
 		"examples/showcase/app.js",
+		"examples/plugins/worker-artifacts.lock.json",
 		"internal/browserharness/opaque-surface-contract.test.mjs",
 		"internal/browserharness/opaque-surface-server.mjs",
 		"internal/browserharness/opaque-surface-smoke.mjs",
@@ -33,6 +34,85 @@ func TestExamplesAreTheOnlyUserFacingPluginShowcase(t *testing.T) {
 	} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
 			t.Fatalf("required consolidated path %s is unavailable: %v", path, err)
+		}
+	}
+}
+
+func TestExampleWorkerArtifactsUseCanonicalLinuxBuildAndSourceLock(t *testing.T) {
+	root := repositoryRoot(t)
+	scriptRaw, err := os.ReadFile(filepath.Join(root, "scripts", "build_example_plugins.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(scriptRaw)
+	for _, required := range []string{
+		`const forceCanonical = args.includes("--canonical");`,
+		`const workerArtifactLockPath = "examples/plugins/worker-artifacts.lock.json";`,
+		`process.platform === "linux" && process.arch === "x64"`,
+		`"--platform", "linux/amd64"`,
+		`rust:${rustVersion}-bookworm`,
+		`schema_version: "redevplugin.example_worker_artifacts.v1"`,
+		`source_files: sourceHashes`,
+		`artifacts: artifactHashes`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("example worker builder missing canonical artifact contract %q", required)
+		}
+	}
+
+	packageRaw, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(packageRaw), `"examples:check:canonical": "node scripts/build_example_plugins.mjs --check --canonical"`) {
+		t.Fatal("package scripts must expose the canonical example worker check")
+	}
+
+	ciRaw, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := string(ciRaw)
+	contractsStart := strings.Index(ci, "  contracts:\n")
+	releaseSmokeStart := strings.Index(ci, "  release-bundle-smoke:\n")
+	if contractsStart < 0 || releaseSmokeStart <= contractsStart {
+		t.Fatal("CI workflow is missing the Platform Contracts job boundary")
+	}
+	contractsJob := ci[contractsStart:releaseSmokeStart]
+	if !strings.Contains(contractsJob, "rustup target add wasm32-unknown-unknown") {
+		t.Fatal("Platform Contracts must install wasm32-unknown-unknown before platform checks")
+	}
+
+	lockRaw, err := os.ReadFile(filepath.Join(root, "examples", "plugins", "worker-artifacts.lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		SchemaVersion string            `json:"schema_version"`
+		RustVersion   string            `json:"rust_version"`
+		SourceFiles   map[string]string `json:"source_files"`
+		Artifacts     map[string]string `json:"artifacts"`
+	}
+	if err := json.Unmarshal(lockRaw, &lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.SchemaVersion != "redevplugin.example_worker_artifacts.v1" || lock.RustVersion != "1.88.0" {
+		t.Fatalf("worker artifact lock identity = %q/%q", lock.SchemaVersion, lock.RustVersion)
+	}
+	if len(lock.SourceFiles) < 10 {
+		t.Fatalf("worker artifact source lock has only %d inputs", len(lock.SourceFiles))
+	}
+	wantArtifacts := []string{
+		"examples/plugins/memos/workers/memos.wasm",
+		"examples/plugins/sky-strike/workers/sky-strike.wasm",
+		"examples/plugins/weather/workers/weather.wasm",
+	}
+	if len(lock.Artifacts) != len(wantArtifacts) {
+		t.Fatalf("worker artifact lock entries = %v", lock.Artifacts)
+	}
+	for _, path := range wantArtifacts {
+		if digest := lock.Artifacts[path]; len(digest) != 64 {
+			t.Fatalf("worker artifact %s digest = %q", path, digest)
 		}
 	}
 }

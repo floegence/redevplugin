@@ -61,6 +61,10 @@
   changelog release, Go compatibility floor, or canonical Worker SDK Cargo
   version disagree. The SDK package runner also compiles the extracted crate
   for `wasm32-unknown-unknown` before publication.
+- Example worker generation now emits canonical Linux/amd64 WASM on every host
+  and records closed source/artifact hashes, so macOS LLVM output cannot make
+  Ubuntu generation gates fail while stale source or binary edits still fail
+  closed.
 
 ### Security
 

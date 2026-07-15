@@ -1,0 +1,25 @@
+{
+  "schema_version": "redevplugin.example_worker_artifacts.v1",
+  "rust_version": "1.88.0",
+  "canonical_target": "wasm32-unknown-unknown",
+  "canonical_builder": "linux/amd64",
+  "source_files": {
+    "Cargo.lock": "0e638b49f0ca4f57b6f20cee0fc858635fbf278642ffd3d1e4ed13863836241b",
+    "Cargo.toml": "2ad58291b16c85494c3804a599df8c16ceca24af70b654f806d68ed421be39b1",
+    "crates/redevplugin-worker-sdk/Cargo.toml": "c6ee15618f61d959d6e0eb648847b6e9f693a48fe0c7b9356755e3f00672e259",
+    "crates/redevplugin-worker-sdk/src/hostcalls.rs": "534e6c557fa43813d58f092c047bab00df1683c6408e8f0b5786cf9f5bbe314b",
+    "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
+    "examples/workers/memos/Cargo.toml": "d15b519944df9fddd426e5e29f8ae8470286a3f6dadf2d733cb67e1816c26708",
+    "examples/workers/memos/src/lib.rs": "bd27ab0e9048eed9abadc53c1f17b7c482e3a1ca5fa754ac1af6919edeeda6b7",
+    "examples/workers/sky-strike/Cargo.toml": "03e64084c4890bc314f4de87572328d6ecc4905d939f163724d662f0279e921b",
+    "examples/workers/sky-strike/src/lib.rs": "44203dcc92a8785137a0c1697743003f19f208e61c56ada7e7a34035aaf4e010",
+    "examples/workers/weather/Cargo.toml": "4866cc437436390ad89782df0b12f9ffa66baec767c11c35af1e9d3399c97272",
+    "examples/workers/weather/src/lib.rs": "d7840b62e8e561888bf273ebf0e98d79126966d898ecd0bea79d07f8607a3083",
+    "rust-toolchain.toml": "2b2d5de36669ccf5256c33c9c1af12c0c38e1d697e1b55bb82b3c8b39cdaaf96"
+  },
+  "artifacts": {
+    "examples/plugins/memos/workers/memos.wasm": "a9a3dc65a66487cddbd9476f4ae1099740d67fe7450c5e8c2d307d3254930db4",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm": "5876ff287a714ca6f4a20a0e67f0c367810a030fbe1250ba0f9848739c85f176",
+    "examples/plugins/weather/workers/weather.wasm": "06a754a1f3a9f252bbc9e78817b63e4e2b4efd3adcaa86f56c62a6813ffae6d8"
+  }
+}

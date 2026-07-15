@@ -19,6 +19,16 @@ the pinned `golangci-lint` version. The TypeScript job runs ESLint, typecheck,
 build, UI unit tests, Examples generation checks, browser harness tests, plus
 the bridge replay/cancellation gate.
 
+Example worker binaries use Linux/amd64 as the canonical Rust build host. The
+committed `examples/plugins/worker-artifacts.lock.json` binds the exact WASM
+bytes to the root workspace, pinned Rust toolchain, Worker SDK, and all three
+worker source trees. `npm run examples:check` performs the exact rebuild on the
+canonical CI host and verifies the source/artifact lock on every host.
+`npm run examples:generate` uses the pinned `rust:<version>-bookworm` image when
+run elsewhere, and `npm run examples:check:canonical` forces that same Docker
+path for a full local reproduction of CI without accepting host-specific LLVM
+output.
+
 Core local checks:
 
 ```bash
@@ -28,6 +38,7 @@ GOWORK=off golangci-lint run ./...
 npm ci
 npx playwright install chromium
 npm run check
+npm run examples:check:canonical
 node scripts/check_redevplugin_release_metadata.mjs --source
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci
