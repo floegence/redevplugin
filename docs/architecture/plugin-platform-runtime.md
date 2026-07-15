@@ -92,15 +92,28 @@ business resource, desktop shell, or UI surface.
 
 ## Rust Runtime
 
-The Rust workspace contains `redevplugin-runtime` and support crates for IPC,
-target classification, and WASM ABI validation. The runtime is launched by the
-Go Host through `pkg/runtimeclient`.
+The Rust workspace contains `redevplugin-runtime`, the public
+`redevplugin-worker-sdk`, and support crates for IPC, target classification, and
+WASM ABI validation. The runtime is launched by the Go Host through
+`pkg/runtimeclient`. Worker authors pin the SDK to the same immutable Git tag as
+the Host/runtime release. Every native runtime bundle embeds the exact same
+versioned `.crate` source artifact and records its SHA-256 in release manifest
+v3.
 
 The current IPC model is supervised stdin/stdout newline JSON. The Host remains
 the authority for identity, policy, grants, quotas, revocation, storage, and
 network access. The runtime validates WASM worker shape, executes the exported
 worker entrypoint with Wasmi, and performs brokered hostcalls through Host-owned
 IPC request/response frames.
+
+WASM validation is intentionally independent on both sides of the process
+boundary. Go package validation compiles the complete module with Wazero before
+accepting memory/export metadata. The Rust ABI crate runs
+`wasmparser::Validator::validate_all` before export inspection or Wasmi
+execution. The signed invocation memory budget is then applied to the Wasmi
+store so a valid module still cannot use `memory.grow` beyond its grant. The
+manifest contract rejects worker budgets above the 256 MiB platform ceiling;
+host package trust policy may impose a smaller product limit.
 
 The Go supervisor derives a bounded context for runtime-origin hostcalls before
 entering host adapters. Storage SQLite and network execution use request
@@ -153,12 +166,11 @@ mismatched leases use `RUNTIME_LEASE_INVALID`.
 
 Revocation uses `revoke_epoch` control frames. Successful `revoke_epoch_ack`
 payloads return a structured result containing the plugin instance, revoke
-epoch, and closed actor/socket/stream/storage-handle counters. The Rust runtime
-maintains an in-process registry for worker actor entries, brokered storage
-handles, network socket leases, and Host stream-store bridge stream IDs. A
+epoch, and closed socket/stream/storage-handle counters. The Rust runtime
+maintains an in-process registry for brokered storage handles, network socket
+leases, and Host stream-store bridge stream IDs. A
 revoke epoch removes the matching plugin resources from that registry and
-  reports the actual close counts. Counters remain zero for resource classes
-  that are purely Host-owned and therefore have no Rust-side handle to close.
+reports the actual close counts.
 
 The runtime contract is versioned by:
 
@@ -205,6 +217,25 @@ surface and stream handles. Asset tickets, sessions, gateway credentials,
 stream tickets, confirmation tokens, plugin identity bindings, and owner/session
 hashes remain in the trusted parent.
 
+The renderer owns a private liveness channel to the plugin worker. It sends a
+ping every 10 seconds and requires the matching pong within 5 seconds; timeout
+fails the surface closed. During disposal the parent sends a unique quiesce id,
+the plugin bridge awaits all async lifecycle observers, and the renderer returns
+an acknowledgement before teardown. The parent bounds that persistence window
+to 1.5 seconds before continuing revocation.
+
+Canvas and decoded-image resources are governed by the generated bridge render
+policy shared with Go package validation. A surface may transfer at most four
+canvases, each dimension is at most 4096 pixels, aggregate canvas area is at
+most 16,777,216 pixels, and pointer movement is capped at 120 events per second.
+PNG, JPEG, GIF, and WebP are identified from their bytes, independent of the
+package filename or declared MIME, and dimensions are read before decode. At
+most 32 images and 33,554,432 decoded pixels are allowed. The hardened worker
+cannot construct additional `OffscreenCanvas` values or call
+`createImageBitmap`. Form actions prevent native sandbox submission and emit
+one bounded typed payload even when a submit button contains nested visual
+elements.
+
 Lazy assets are addressed across the worker boundary by opaque `binding_id`
 values derived by the package builder and carried in the prepared surface
 document. The parent-side HTTP request contains that binding rather than a
@@ -217,21 +248,21 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v2.yaml`;
-- `spec/plugin/manifest-v2.schema.json`;
+- `spec/openapi/plugin-platform-v3.yaml`;
+- `spec/plugin/manifest-v3.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v2.schema.json`;
+- `spec/plugin/release-metadata-v3.schema.json`;
 - `spec/plugin/source-policy-v1.schema.json`;
 - `spec/plugin/source-revocations-v1.schema.json`;
 - `spec/plugin/token-ticket-v2.schema.json`;
-- `spec/plugin/bridge-v2.schema.json`;
-- `spec/plugin/opaque-surface-document-v1.schema.json`;
-- `spec/plugin/opaque-surface-transport-v1.schema.json`;
-- `spec/plugin/compatibility-manifest-v2.schema.json`;
-- `spec/plugin/release-manifest-v2.schema.json`;
-- `spec/plugin/ipc-v1.schema.json`;
-- `spec/plugin/wasm-worker-v1.schema.json`;
-- `spec/plugin/worker-invocation-v1.schema.json`;
+- `spec/plugin/bridge-v3.schema.json`;
+- `spec/plugin/opaque-surface-document-v2.schema.json`;
+- `spec/plugin/opaque-surface-transport-v2.schema.json`;
+- `spec/plugin/compatibility-manifest-v3.schema.json`;
+- `spec/plugin/release-manifest-v3.schema.json`;
+- `spec/plugin/ipc-v2.schema.json`;
+- `spec/plugin/wasm-worker-v2.schema.json`;
+- `spec/plugin/worker-invocation-v2.schema.json`;
 - `spec/plugin/network-grant-v1.schema.json`;
 - `spec/plugin/error-codes-v1.schema.json`;
 - `spec/plugin/target-classifier-v1.json`;

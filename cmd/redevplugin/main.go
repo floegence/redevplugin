@@ -72,11 +72,17 @@ type scaffoldSummary struct {
 	VersionInfo version.Matrix `json:"version_matrix"`
 }
 
-//go:embed demo_assets/scaffold-plugin-worker.js
+//go:embed scaffold_assets/plugin-worker.js
 var scaffoldPluginWorkerJS []byte
 
-//go:embed demo_assets/real-plugin-worker.js
-var realDemoPluginWorkerJS []byte
+//go:embed scaffold_assets/plugin-worker.ts
+var scaffoldPluginWorkerTS []byte
+
+//go:embed scaffold_assets/backend.wasm
+var scaffoldWorkerWASM []byte
+
+//go:embed scaffold_assets/worker-lib.rs
+var scaffoldWorkerRust []byte
 
 type compatibilityVerifySummary struct {
 	OK            bool   `json:"ok"`
@@ -298,11 +304,11 @@ func run(ctx context.Context, args []string) error {
 			return usage()
 		}
 		return devStatus(args[1])
-	case "demo-real-server":
+	case "examples-server":
 		if len(args) != 3 {
 			return usage()
 		}
-		return demoRealServer(ctx, args[1], args[2])
+		return examplesServer(ctx, args[1], args[2])
 	case "enable":
 		if len(args) != 2 {
 			return usage()
@@ -472,7 +478,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
 	manifestDoc := manifest.Manifest{
-		SchemaVersion: "redevplugin.manifest.v2",
+		SchemaVersion: "redevplugin.manifest.v3",
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
@@ -483,7 +489,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Version:           "0.1.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v2",
+			UIProtocolVersion: "plugin-ui-v3",
 		},
 		Surfaces: []manifest.SurfaceSpec{{
 			SurfaceID: pluginID + ".view",
@@ -495,14 +501,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		Workers: []manifest.WorkerSpec{{
 			WorkerID:         "backend",
 			Artifact:         "workers/backend.wasm",
-			ABI:              "redevplugin-wasm-worker-v1",
-			Mode:             manifest.WorkerModeJob,
-			Scope:            "user",
-			MemoryLimitBytes: 16 << 20,
-		}, {
-			WorkerID:         "broker_backend",
-			Artifact:         "workers/broker.wasm",
-			ABI:              "redevplugin-wasm-worker-v1",
+			ABI:              "redevplugin-wasm-worker-v2",
 			Mode:             manifest.WorkerModeJob,
 			Scope:            "user",
 			MemoryLimitBytes: 16 << 20,
@@ -512,112 +511,35 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Effect:    manifest.MethodEffectRead,
 			Execution: manifest.MethodExecutionSync,
 			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "backend", Export: "redevplugin_worker_invoke"},
-			RequestSchema: closedMethodObjectSchema(map[string]any{
+			RequestSchema: closedRequiredMethodObjectSchema(map[string]any{
 				"message": map[string]any{"type": "string"},
-			}),
-			ResponseSchema: generatedWorkerResponseSchema(),
-		}, {
-			Method:    "worker.brokerDemo",
-			Effect:    manifest.MethodEffectWrite,
-			Execution: manifest.MethodExecutionSync,
-			Route:     manifest.MethodRouteSpec{Kind: manifest.MethodRouteWorker, WorkerID: "broker_backend", Export: "redevplugin_worker_invoke"},
-			RequestSchema: closedMethodObjectSchema(map[string]any{
-				"note":                              map[string]any{"type": "string"},
-				"storage_handle_grant_token":        map[string]any{"type": "string"},
-				"storage_kv_handle_grant_token":     map[string]any{"type": "string"},
-				"storage_sqlite_handle_grant_token": map[string]any{"type": "string"},
-			}),
-			ResponseSchema: generatedWorkerResponseSchema(),
+			}, []string{"message"}),
+			ResponseSchema: scaffoldEchoResponseSchema(),
 		}},
-		Storage: &manifest.StorageSpec{
-			Stores: []manifest.StoreSpec{{
-				StoreID:       "workspace",
-				Kind:          string(storage.StoreFiles),
-				Scope:         "user",
-				QuotaBytes:    1 << 20,
-				SchemaVersion: 1,
-				Migration: manifest.MigrationSpec{
-					FromVersion:    0,
-					ToVersion:      1,
-					Reversible:     true,
-					RequiresWorker: false,
-					EstimatedBytes: 0,
-					MaxDurationMS:  1000,
-					DataLossRisk:   false,
-					StepsHash:      "sha256:generated-workspace-v1",
-				},
-			}, {
-				StoreID:       "settings",
-				Kind:          string(storage.StoreKV),
-				Scope:         "user",
-				QuotaBytes:    256 << 10,
-				SchemaVersion: 1,
-				Migration: manifest.MigrationSpec{
-					FromVersion:    0,
-					ToVersion:      1,
-					Reversible:     true,
-					RequiresWorker: false,
-					EstimatedBytes: 0,
-					MaxDurationMS:  1000,
-					DataLossRisk:   false,
-					StepsHash:      "sha256:generated-settings-v1",
-				},
-			}, {
-				StoreID:       "db",
-				Kind:          string(storage.StoreSQLite),
-				Scope:         "user",
-				QuotaBytes:    1 << 20,
-				SchemaVersion: 1,
-				Migration: manifest.MigrationSpec{
-					FromVersion:    0,
-					ToVersion:      1,
-					Reversible:     true,
-					RequiresWorker: false,
-					EstimatedBytes: 0,
-					MaxDurationMS:  1000,
-					DataLossRisk:   false,
-					StepsHash:      "sha256:generated-sqlite-v1",
-				},
-			}},
-		},
-		NetworkAccess: &manifest.NetworkAccessSpec{
-			Connectors: []manifest.NetworkConnectorSpec{{
-				ConnectorID:  "api",
-				Transport:    "http",
-				Scope:        "user",
-				Destinations: []string{"https://api.example.com"},
-			}, {
-				ConnectorID:  "stream",
-				Transport:    "websocket",
-				Scope:        "user",
-				Destinations: []string{"wss://stream.example.com"},
-			}, {
-				ConnectorID:  "mysql",
-				Transport:    "tcp",
-				Scope:        "user",
-				Destinations: []string{"db.example.com:3306"},
-			}, {
-				ConnectorID:  "metrics",
-				Transport:    "udp",
-				Scope:        "user",
-				Destinations: []string{"metrics.example.com:8125"},
-			}},
-		},
 	}
 	rawManifest, err := json.MarshalIndent(manifestDoc, "", "  ")
 	if err != nil {
 		return scaffoldSummary{}, err
 	}
+	platformVersion := version.CurrentCompatibilityVersion()
+	manifestBytes := append(append([]byte(nil), rawManifest...), '\n')
 	files := map[string][]byte{
-		"manifest.json":        append(rawManifest, '\n'),
-		"ui/index.html":        []byte(scaffoldIndexHTML(pluginID, displayName)),
-		"ui/assets/app.js":     append([]byte(nil), scaffoldPluginWorkerJS...),
-		"ui/assets/styles.css": []byte(scaffoldStylesCSS()),
-		"workers/backend.wat":  []byte(scaffoldWorkerWAT()),
-		"workers/backend.wasm": minimalWorkerWASM(),
-		"workers/broker.wat":   []byte(scaffoldBrokerWorkerWAT()),
-		"workers/broker.wasm":  scaffoldBrokerWorkerWASM(),
-		"workers/abi.json":     []byte(scaffoldWorkerABIJSON()),
+		"README.md":                 []byte(scaffoldReadme(displayName, platformVersion)),
+		"manifest.json":             append([]byte(nil), manifestBytes...),
+		"package.json":              []byte(scaffoldPackageJSON(platformVersion)),
+		"scripts/build.mjs":         []byte(scaffoldBuildScript()),
+		"ui/index.html":             []byte(scaffoldIndexHTML(pluginID, displayName)),
+		"ui/styles.css":             []byte(scaffoldStylesCSS()),
+		"ui/src/app.ts":             scaffoldSource(scaffoldPluginWorkerTS, displayName),
+		"worker/Cargo.toml":         []byte(scaffoldCargoTOML(platformVersion)),
+		"worker/abi.json":           []byte(scaffoldWorkerABIJSON()),
+		"worker/src/lib.rs":         append([]byte(nil), scaffoldWorkerRust...),
+		"dist/manifest.json":        append([]byte(nil), manifestBytes...),
+		"dist/ui/index.html":        []byte(scaffoldIndexHTML(pluginID, displayName)),
+		"dist/ui/assets/app.js":     scaffoldSource(scaffoldPluginWorkerJS, displayName),
+		"dist/ui/assets/styles.css": []byte(scaffoldStylesCSS()),
+		"dist/workers/backend.wasm": append([]byte(nil), scaffoldWorkerWASM...),
+		"dist/workers/abi.json":     []byte(scaffoldWorkerABIJSON()),
 	}
 	if _, err := os.Stat(outDir); err == nil {
 		entries, err := os.ReadDir(outDir)
@@ -661,116 +583,130 @@ func closedMethodObjectSchema(properties map[string]any) map[string]any {
 	}
 }
 
-func generatedWorkerResponseSchema() map[string]any {
-	storageUsage := closedMethodObjectSchema(map[string]any{
-		"plugin_instance_id": map[string]any{"type": "string"},
-		"store_id":           map[string]any{"type": "string"},
-		"usage_bytes":        map[string]any{"type": "integer", "minimum": 0},
-		"quota_bytes":        map[string]any{"type": "integer", "minimum": 0},
-		"usage_files":        map[string]any{"type": "integer", "minimum": 0},
-		"quota_files":        map[string]any{"type": "integer", "minimum": 0},
-	})
-	fileEntry := closedMethodObjectSchema(map[string]any{
-		"path":       map[string]any{"type": "string"},
-		"dir":        map[string]any{"type": "boolean"},
-		"size_bytes": map[string]any{"type": "integer", "minimum": 0},
-		"updated_at": map[string]any{"type": "string"},
-	})
-	kvEntry := closedMethodObjectSchema(map[string]any{
-		"key":        map[string]any{"type": "string"},
-		"size_bytes": map[string]any{"type": "integer", "minimum": 0},
-		"updated_at": map[string]any{"type": "string"},
-	})
-	sqliteValue := closedMethodObjectSchema(map[string]any{
-		"null":        map[string]any{"type": "boolean"},
-		"int":         map[string]any{"type": "integer"},
-		"float":       map[string]any{"type": "number"},
-		"text":        map[string]any{"type": "string"},
-		"blob_base64": map[string]any{"type": "string"},
-	})
-	storageFile := closedMethodObjectSchema(map[string]any{
-		"ok":          map[string]any{"type": "boolean"},
-		"path":        map[string]any{"type": "string"},
-		"data_base64": map[string]any{"type": "string"},
-		"size_bytes":  map[string]any{"type": "integer", "minimum": 0},
-		"entries":     map[string]any{"type": "array", "items": fileEntry},
-		"usage":       storageUsage,
-		"code":        map[string]any{"type": "string"},
-		"message":     map[string]any{"type": "string"},
-	})
-	storageKV := closedMethodObjectSchema(map[string]any{
-		"ok":           map[string]any{"type": "boolean"},
-		"key":          map[string]any{"type": "string"},
-		"value_base64": map[string]any{"type": "string"},
-		"size_bytes":   map[string]any{"type": "integer", "minimum": 0},
-		"prefix":       map[string]any{"type": "string"},
-		"entries":      map[string]any{"type": "array", "items": kvEntry},
-		"usage":        storageUsage,
-		"code":         map[string]any{"type": "string"},
-		"message":      map[string]any{"type": "string"},
-	})
-	storageSQLite := closedMethodObjectSchema(map[string]any{
-		"ok":             map[string]any{"type": "boolean"},
-		"database":       map[string]any{"type": "string"},
-		"rows_affected":  map[string]any{"type": "integer", "minimum": 0},
-		"last_insert_id": map[string]any{"type": "integer", "minimum": 0},
-		"columns":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		"rows":           map[string]any{"type": "array", "items": map[string]any{"type": "array", "items": sqliteValue}},
-		"usage":          storageUsage,
-		"code":           map[string]any{"type": "string"},
-		"message":        map[string]any{"type": "string"},
-	})
-	networkDestination := closedMethodObjectSchema(map[string]any{
+func closedRequiredMethodObjectSchema(properties map[string]any, required []string) map[string]any {
+	schema := closedMethodObjectSchema(properties)
+	schema["required"] = append([]string(nil), required...)
+	return schema
+}
+
+func scaffoldEchoResponseSchema() map[string]any {
+	return closedRequiredMethodObjectSchema(map[string]any{
+		"backend":   map[string]any{"type": "string"},
 		"transport": map[string]any{"type": "string"},
-		"scheme":    map[string]any{"type": "string"},
-		"host":      map[string]any{"type": "string"},
-		"port":      map[string]any{"type": "integer", "minimum": 0},
-	})
-	networkHeaders := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"patternProperties": map[string]any{
-			"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$": map[string]any{
-				"type":  "array",
-				"items": map[string]any{"type": "string"},
-			},
-		},
-	}
-	networkExecute := closedMethodObjectSchema(map[string]any{
-		"ok":                    map[string]any{"type": "boolean"},
-		"transport":             map[string]any{"type": "string"},
-		"destination":           networkDestination,
-		"status_code":           map[string]any{"type": "integer"},
-		"headers":               networkHeaders,
-		"message_type":          map[string]any{"type": "string"},
-		"body_base64":           map[string]any{"type": "string"},
-		"payload_base64":        map[string]any{"type": "string"},
-		"stream_id":             map[string]any{"type": "string"},
-		"bytes_read":            map[string]any{"type": "integer", "minimum": 0},
-		"chunk_count":           map[string]any{"type": "integer", "minimum": 0},
-		"grant_id":              map[string]any{"type": "string"},
-		"connector_id":          map[string]any{"type": "string"},
-		"runtime_generation_id": map[string]any{"type": "string"},
-		"code":                  map[string]any{"type": "string"},
-		"message":               map[string]any{"type": "string"},
-	})
-	return closedMethodObjectSchema(map[string]any{
-		"backend":                   map[string]any{"type": "string"},
-		"transport":                 map[string]any{"type": "string"},
-		"method":                    map[string]any{"type": "string"},
-		"worker_id":                 map[string]any{"type": "string"},
-		"wasm_abi":                  map[string]any{"type": "string"},
-		"wasm_byte_len":             map[string]any{"type": "integer", "minimum": 0},
-		"storage_file":              storageFile,
-		"storage_kv":                storageKV,
-		"storage_sqlite":            storageSQLite,
-		"network_execute":           networkExecute,
-		"network_execute_http":      networkExecute,
-		"network_execute_websocket": networkExecute,
-		"network_execute_tcp":       networkExecute,
-		"network_execute_udp":       networkExecute,
-		"stream_id":                 map[string]any{"type": "string"},
-	})
+		"method":    map[string]any{"type": "string", "const": "worker.echo"},
+		"worker_id": map[string]any{"type": "string", "const": "backend"},
+		"wasm_abi":  map[string]any{"type": "string", "const": version.WASMABIVersion},
+		"message":   map[string]any{"type": "string"},
+	}, []string{"backend", "transport", "method", "worker_id", "wasm_abi", "message"})
+}
+
+func scaffoldSource(source []byte, displayName string) []byte {
+	encodedName, _ := json.Marshal(displayName)
+	return []byte(strings.ReplaceAll(string(source), `"__REDEVPLUGIN_DISPLAY_NAME__"`, string(encodedName)))
+}
+
+func scaffoldPackageJSON(platformVersion string) string {
+	return fmt.Sprintf(`{
+  "name": "redevplugin-generated-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:ui": "esbuild ui/src/app.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=dist/ui/assets/app.js",
+    "typecheck": "tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext ui/src/app.ts"
+  },
+  "dependencies": {
+    "@floegence/redevplugin-ui": %q
+  },
+  "devDependencies": {
+    "esbuild": "0.25.5",
+    "typescript": "5.9.3"
+  }
+}
+`, platformVersion)
+}
+
+func scaffoldCargoTOML(platformVersion string) string {
+	return fmt.Sprintf(`[package]
+name = "redevplugin-generated-worker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+redevplugin-worker-sdk = { git = "https://github.com/floegence/redevplugin", tag = "v%s" }
+serde_json = "1.0"
+`, platformVersion)
+}
+
+func scaffoldBuildScript() string {
+	return `import { access, copyFile, mkdir } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
+
+run(npm, ["run", "build:ui"]);
+try {
+  await access(resolve(root, "worker/Cargo.lock"));
+} catch {
+  run(cargo, ["generate-lockfile", "--manifest-path", "worker/Cargo.toml"]);
+}
+run(cargo, ["build", "--locked", "--release", "--target", "wasm32-unknown-unknown", "--manifest-path", "worker/Cargo.toml"]);
+await mkdir(resolve(root, "dist/ui/assets"), { recursive: true });
+await mkdir(resolve(root, "dist/workers"), { recursive: true });
+await copyFile(resolve(root, "manifest.json"), resolve(root, "dist/manifest.json"));
+await copyFile(resolve(root, "ui/index.html"), resolve(root, "dist/ui/index.html"));
+await copyFile(resolve(root, "ui/styles.css"), resolve(root, "dist/ui/assets/styles.css"));
+await copyFile(resolve(root, "worker/abi.json"), resolve(root, "dist/workers/abi.json"));
+await copyFile(
+  resolve(root, "worker/target/wasm32-unknown-unknown/release/redevplugin_generated_worker.wasm"),
+  resolve(root, "dist/workers/backend.wasm"),
+);
+
+function run(command, args) {
+  const result = spawnSync(command, args, { cwd: root, stdio: "inherit" });
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+`
+}
+
+func scaffoldReadme(displayName string, platformVersion string) string {
+	return fmt.Sprintf(`# %s
+
+This scaffold is a minimal ReDevPlugin application with an editable TypeScript
+surface and Rust WASM worker. It requests no storage or network permissions.
+
+The generated dist directory already contains compiled ui/assets/app.js and
+workers/backend.wasm, so it can be validated and packaged immediately.
+
+## Build
+
+Requirements: Node.js 24, npm, Rust, and the wasm32-unknown-unknown target.
+
+    npm install
+    rustup target add wasm32-unknown-unknown
+    npm run typecheck
+    npm run build
+
+The source dependencies are pinned to ReDevPlugin %s. After rebuilding, validate
+and package the plugin from this directory:
+
+    redevplugin validate dist/manifest.json
+    redevplugin package dist %s.redevplugin
+
+Edit ui/src/app.ts for the surface and worker/src/lib.rs for the WASM backend.
+Add permissions to manifest.json only when the plugin
+actually needs them.
+`, displayName, platformVersion, strings.ReplaceAll(strings.ToLower(displayName), " ", "-"))
 }
 
 func keygen(keyID string, privateFile string, publicFile string) error {
@@ -966,7 +902,7 @@ func writeBytesFile(filename string, data []byte, perm os.FileMode) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> [granted-by] | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> [--include-secrets] | redevplugin dev-import-data <state-root> [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin demo-real-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
+	return fmt.Errorf("usage: redevplugin validate <manifest.json|package.redevplugin> | redevplugin scaffold <plugin-id> <display-name> <out-dir> | redevplugin package <dir> <out.redevplugin> | redevplugin keygen <key-id> <private.json> <public.json> | redevplugin sign <package.redevplugin> <private.json> <out.redevplugin> | redevplugin host-capability build <config.json> <out-dir> | redevplugin host-capability verify <artifact-root> <pin.json> <public.json> | redevplugin host-capability generate-client <artifact-root> <pin.json> <public.json> <out.ts> [--check] | redevplugin inspect-storage <storage-root> [plugin-instance-id] | redevplugin install-local <package> | redevplugin install-verified <signed-package> <public.json> | redevplugin dev-install <state-root> <package> [--capability <artifact-root> <pin.json> <public.json>]... | redevplugin dev-enable <state-root> | redevplugin dev-open <state-root> <surface-id> | redevplugin dev-secret-bind <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-test <state-root> <secret-ref> [user|environment] | redevplugin dev-secret-delete <state-root> <secret-ref> [user|environment] | redevplugin dev-permission-grant <state-root> <permission-id> [granted-by] | redevplugin dev-permission-revoke <state-root> <permission-id> [reason] | redevplugin dev-permission-list <state-root> [--active-only] | redevplugin dev-export-data <state-root> [--include-secrets] | redevplugin dev-import-data <state-root> [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge] | redevplugin dev-disable <state-root> | redevplugin dev-uninstall <state-root> [--delete-data|--keep-data] | redevplugin dev-status <state-root> | redevplugin examples-server <state-root> <runtime-path> | redevplugin enable <package> | redevplugin disable <package> | redevplugin uninstall <package> | redevplugin version | redevplugin verify-compatibility <compatibility.json> <artifact-root>")
 }
 
 func lifecycleHarness(ctx context.Context, action string, packageFile string) error {
@@ -974,10 +910,19 @@ func lifecycleHarness(ctx context.Context, action string, packageFile string) er
 	if err != nil {
 		return err
 	}
+	storageRoot, err := os.MkdirTemp("", "redevplugin-lifecycle-storage-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(storageRoot)
+	storageBroker, err := storage.NewFileBroker(storageRoot)
+	if err != nil {
+		return err
+	}
 	h, err := host.New(host.Adapters{
 		SessionResolver: staticSessionResolver{},
 		Policy:          staticPolicyAdapter{},
-		Storage:         storage.NewMemoryBroker(),
+		Storage:         storageBroker,
 	})
 	if err != nil {
 		return err
@@ -1202,209 +1147,12 @@ func scaffoldStylesCSS() string {
 		"}\n"
 }
 
-func scaffoldWorkerWAT() string {
-	return "(module\n" +
-		"  ;; Minimal ReDevPlugin worker scaffold. Replace this module with a\n" +
-		"  ;; generated worker that implements redevplugin-wasm-worker-v1.\n" +
-		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
-		"    nop)\n" +
-		")\n"
-}
-
-func scaffoldBrokerWorkerWAT() string {
-	var b strings.Builder
-	b.WriteString("(module\n" +
-		"  ;; Broker worker scaffold. Generated plugins use the real\n" +
-		"  ;; linear-memory storage/network ABI; Host injects identity,\n" +
-		"  ;; handle grants, policy revisions, and network grants at runtime.\n" +
-		"  (import \"redevplugin.storage\" \"files\" (func $storage_files (param i32 i32 i32 i32) (result i32)))\n" +
-		"  (import \"redevplugin.storage\" \"kv\" (func $storage_kv (param i32 i32 i32 i32) (result i32)))\n" +
-		"  (import \"redevplugin.storage\" \"sqlite\" (func $storage_sqlite (param i32 i32 i32 i32) (result i32)))\n" +
-		"  (import \"redevplugin.network\" \"execute\" (func $network_execute (param i32 i32 i32 i32) (result i32)))\n" +
-		"  (memory (export \"memory\") 1)\n" +
-		"  (func $redevplugin_worker_invoke (export \"redevplugin_worker_invoke\")\n" +
-		"    ;; Each call passes request_ptr, request_len, response_ptr, response_len.\n")
-	requestOffset := uint32(0)
-	responseOffset := uint32(4096)
-	for _, call := range scaffoldBrokerHostcalls() {
-		fmt.Fprintf(&b, "    i32.const %d\n", requestOffset)
-		fmt.Fprintf(&b, "    i32.const %d\n", len(call.Request))
-		fmt.Fprintf(&b, "    i32.const %d\n", responseOffset)
-		fmt.Fprintf(&b, "    i32.const %d\n", call.OutLen)
-		fmt.Fprintf(&b, "    call $%s_%s\n", strings.ReplaceAll(call.Module, "redevplugin.", ""), call.Name)
-		b.WriteString("    drop\n")
-		requestOffset += uint32(len(call.Request)) + 16
-		responseOffset += call.OutLen
-	}
-	b.WriteString("  )\n")
-	requestOffset = 0
-	for _, call := range scaffoldBrokerHostcalls() {
-		fmt.Fprintf(&b, "  (data (i32.const %d) %q)\n", requestOffset, string(call.Request))
-		requestOffset += uint32(len(call.Request)) + 16
-	}
-	b.WriteString(")\n")
-	return b.String()
-}
-
 func scaffoldWorkerABIJSON() string {
 	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
 		"  \"exports\": [\"redevplugin_worker_invoke\"],\n" +
-		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
+		"  \"imports\": []\n" +
 		"}\n"
-}
-
-func minimalWorkerWASM() []byte {
-	return []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-		0x03, 0x02, 0x01, 0x00,
-		0x07, 0x1d, 0x01, 0x19,
-		0x72, 0x65, 0x64, 0x65, 0x76, 0x70, 0x6c, 0x75,
-		0x67, 0x69, 0x6e, 0x5f, 0x77, 0x6f, 0x72, 0x6b,
-		0x65, 0x72, 0x5f, 0x69, 0x6e, 0x76, 0x6f, 0x6b,
-		0x65,
-		0x00, 0x00,
-		0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
-	}
-}
-
-func scaffoldBrokerWorkerWASM() []byte {
-	return importedMemoryHostcallSequenceWorkerWASM("redevplugin_worker_invoke", scaffoldBrokerHostcalls())
-}
-
-func scaffoldBrokerHostcalls() []memoryHostcallSpec {
-	return []memoryHostcallSpec{
-		{
-			Module:  "redevplugin.storage",
-			Name:    "files",
-			Request: mustJSONBytes(map[string]any{"store_id": "workspace", "operation": "write", "path": "notes/generated-broker-demo.txt", "data_base64": "Z2VuZXJhdGVkIHBsdWdpbiBzdG9yYWdlIHNhbXBsZQ==", "max_bytes": 0, "max_entries": 0, "recursive": false}),
-			OutLen:  4096,
-		},
-		{
-			Module:  "redevplugin.storage",
-			Name:    "kv",
-			Request: mustJSONBytes(map[string]any{"store_id": "settings", "operation": "put", "key": "demo/last_broker_run", "value_base64": "Z2VuZXJhdGVkIGJhY2tlbmQga3Ygc2FtcGxl", "prefix": "", "max_bytes": 0, "max_entries": 0}),
-			OutLen:  4096,
-		},
-		{
-			Module:  "redevplugin.storage",
-			Name:    "sqlite",
-			Request: mustJSONBytes(map[string]any{"store_id": "db", "operation": "exec", "database": "plugin.sqlite", "sql": "CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)", "args": []any{}, "max_rows": 0, "max_response_bytes": 0, "timeout_ms": 1000}),
-			OutLen:  4096,
-		},
-		{
-			Module:  "redevplugin.network",
-			Name:    "execute",
-			Request: mustJSONBytes(map[string]any{"connector_id": "api", "transport": "http", "destination": "https://api.example.com", "operation": "http", "method": "POST", "path": "/v1/worker", "headers": map[string]any{"Content-Type": []string{"text/plain"}}, "body_base64": "Z2VuZXJhdGVkIGJyb2tlcmVkIGh0dHAgcmVxdWVzdA==", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
-			OutLen:  8192,
-		},
-		{
-			Module:  "redevplugin.network",
-			Name:    "execute",
-			Request: mustJSONBytes(map[string]any{"connector_id": "stream", "transport": "websocket", "destination": "wss://stream.example.com", "operation": "websocket_round_trip", "message_type": "text", "payload_base64": "Z2VuZXJhdGVkIHdlYnNvY2tldCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
-			OutLen:  8192,
-		},
-		{
-			Module:  "redevplugin.network",
-			Name:    "execute",
-			Request: mustJSONBytes(map[string]any{"connector_id": "mysql", "transport": "tcp", "destination": "db.example.com:3306", "operation": "tcp_round_trip", "payload_base64": "Z2VuZXJhdGVkIHRjcCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
-			OutLen:  8192,
-		},
-		{
-			Module:  "redevplugin.network",
-			Name:    "execute",
-			Request: mustJSONBytes(map[string]any{"connector_id": "metrics", "transport": "udp", "destination": "metrics.example.com:8125", "operation": "udp_round_trip", "payload_base64": "Z2VuZXJhdGVkIHVkcCByb3VuZCB0cmlw", "max_request_bytes": 1024, "max_response_bytes": 4096, "timeout_ms": 1000}),
-			OutLen:  8192,
-		},
-	}
-}
-
-type memoryHostcallSpec struct {
-	Module  string
-	Name    string
-	Request []byte
-	OutLen  uint32
-}
-
-func mustJSONBytes(value any) []byte {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return raw
-}
-
-func importedMemoryHostcallSequenceWorkerWASM(exportName string, calls []memoryHostcallSpec) []byte {
-	exportNameBytes := []byte(exportName)
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0c, 0x02,
-		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
-		0x60, 0x00, 0x00,
-		0x02,
-	}
-	importPayload := []byte{byte(len(calls))}
-	for _, call := range calls {
-		importModule := []byte(call.Module)
-		importName := []byte(call.Name)
-		importPayload = append(importPayload, byte(len(importModule)))
-		importPayload = append(importPayload, importModule...)
-		importPayload = append(importPayload, byte(len(importName)))
-		importPayload = append(importPayload, importName...)
-		importPayload = append(importPayload, 0x00, 0x00)
-	}
-	module = appendLEBUint32(module, uint32(len(importPayload)))
-	module = append(module, importPayload...)
-	module = append(module,
-		0x03, 0x02, 0x01, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07,
-	)
-	exportPayload := []byte{0x02, 0x06}
-	exportPayload = append(exportPayload, []byte("memory")...)
-	exportPayload = append(exportPayload, 0x02, 0x00, byte(len(exportNameBytes)))
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, byte(len(calls)))
-	module = appendLEBUint32(module, uint32(len(exportPayload)))
-	module = append(module, exportPayload...)
-	module = append(module, 0x0a)
-	codePayload := []byte{0x01}
-	body := []byte{0x00}
-	dataPayload := []byte{byte(len(calls))}
-	requestOffset := uint32(0)
-	responseOffset := uint32(4096)
-	for index, call := range calls {
-		body = append(body, 0x41)
-		body = appendLEBInt32(body, int32(requestOffset))
-		body = append(body, 0x41)
-		body = appendLEBInt32(body, int32(len(call.Request)))
-		body = append(body, 0x41)
-		body = appendLEBInt32(body, int32(responseOffset))
-		body = append(body, 0x41)
-		body = appendLEBInt32(body, int32(call.OutLen))
-		body = append(body, 0x10, byte(index), 0x1a)
-
-		dataPayload = append(dataPayload, 0x00, 0x41)
-		dataPayload = appendLEBInt32(dataPayload, int32(requestOffset))
-		dataPayload = append(dataPayload, 0x0b)
-		dataPayload = appendLEBUint32(dataPayload, uint32(len(call.Request)))
-		dataPayload = append(dataPayload, call.Request...)
-
-		requestOffset += uint32(len(call.Request)) + 16
-		responseOffset += call.OutLen
-	}
-	body = append(body, 0x0b)
-	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
-	codePayload = append(codePayload, body...)
-	module = appendLEBUint32(module, uint32(len(codePayload)))
-	module = append(module, codePayload...)
-	module = append(module, 0x0b)
-	module = appendLEBUint32(module, uint32(len(dataPayload)))
-	module = append(module, dataPayload...)
-	return module
 }
 
 func htmlEscape(value string) string {

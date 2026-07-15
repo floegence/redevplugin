@@ -1,0 +1,44 @@
+{
+  "schema_version": "redevplugin.manifest.v3",
+  "publisher": { "publisher_id": "dev.redevplugin.examples", "display_name": "ReDevPlugin Examples" },
+  "plugin": {
+    "plugin_id": "dev.redevplugin.examples.sky-strike", "display_name": "Sky Strike", "version": "1.0.0",
+    "api_version": "plugin-v1", "min_runtime_version": "0.4.0", "ui_protocol_version": "plugin-ui-v3"
+  },
+  "surfaces": [{
+    "surface_id": "sky-strike.view", "kind": "view", "intent": "primary", "label": "Sky Strike",
+    "entry": "ui/index.html", "default_size": { "width": 1100, "height": 760 }
+  }],
+  "workers": [{
+    "worker_id": "score_backend", "artifact": "workers/sky-strike.wasm", "abi": "redevplugin-wasm-worker-v2",
+    "mode": "job", "scope": "user", "memory_limit_bytes": 16777216
+  }],
+  "methods": [
+    {
+      "method": "game.initialize", "effect": "write", "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "score_backend", "export": "redevplugin_worker_invoke" },
+      "broker_access": { "storage": [{ "store_id": "game", "operations": ["exec"] }] },
+      "request_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "response_schema": { "type": "object", "additionalProperties": false, "required": ["ready"], "properties": { "ready": { "type": "boolean", "const": true } } }
+    },
+    {
+      "method": "game.highScore.load", "effect": "read", "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "score_backend", "export": "redevplugin_worker_invoke" },
+      "broker_access": { "storage": [{ "store_id": "game", "operations": ["query"] }] },
+      "request_schema": { "type": "object", "additionalProperties": false, "properties": {} },
+      "response_schema": { "type": "object", "additionalProperties": false, "required": ["score"], "properties": { "score": { "type": "integer", "minimum": 0, "maximum": 100000000 } } }
+    },
+    {
+      "method": "game.highScore.save", "effect": "write", "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "score_backend", "export": "redevplugin_worker_invoke" },
+      "broker_access": { "storage": [{ "store_id": "game", "operations": ["exec", "query"] }] },
+      "request_schema": { "type": "object", "additionalProperties": false, "required": ["score"], "properties": { "score": { "type": "integer", "minimum": 0, "maximum": 100000000 } } },
+      "response_schema": { "type": "object", "additionalProperties": false, "required": ["score"], "properties": { "score": { "type": "integer", "minimum": 0, "maximum": 100000000 } } }
+    }
+  ],
+  "storage": { "stores": [{
+    "store_id": "game", "kind": "sqlite", "scope": "user", "quota_bytes": 1048576, "quota_files": 4,
+    "schema_version": 1,
+    "migration": { "from_version": 0, "to_version": 1, "reversible": true, "requires_worker": true, "estimated_bytes": 0, "max_duration_ms": 1000, "data_loss_risk": false, "steps_hash": "sha256:redevplugin-example-sky-strike-worker-migration-v1" }
+  }] }
+}

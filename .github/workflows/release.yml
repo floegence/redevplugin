@@ -42,6 +42,9 @@ jobs:
             version="0.0.0-manual.${GITHUB_RUN_NUMBER:-0}"
             label="manual-${GITHUB_RUN_NUMBER:-0}"
           fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            node scripts/check_redevplugin_release_metadata.mjs "$version"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "label=$label" >> "$GITHUB_OUTPUT"
 
@@ -62,6 +65,7 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: rustup show
+      - run: rustup target add wasm32-unknown-unknown
       - name: Go formatting
         run: test -z "$(gofmt -l .)"
       - run: GOWORK=off go list ./...
@@ -70,7 +74,7 @@ jobs:
         run: GOWORK=off go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
       - name: Go lint
         run: GOWORK=off golangci-lint run ./...
-      - name: TypeScript, unit, demo, and browser checks
+      - name: TypeScript, Examples, and browser-harness checks
         run: npm run check
         env:
           REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-quality
@@ -137,7 +141,7 @@ jobs:
           if-no-files-found: error
 
   package-ui:
-    name: Build npm Package Once
+    name: Build SDK Packages Once
     needs:
       - preflight
       - quality-release
@@ -158,10 +162,19 @@ jobs:
       - run: npm run build
       - name: Build immutable npm tarball
         run: node scripts/build_redevplugin_ui_package.mjs "${{ needs.preflight.outputs.version }}" dist/npm-package
+      - run: rustup show
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Build immutable Rust worker SDK crate
+        run: node scripts/build_redevplugin_worker_sdk_package.mjs "${{ needs.preflight.outputs.version }}" dist/worker-sdk-package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: redevplugin-ui-package
           path: dist/npm-package/*.tgz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redevplugin-worker-sdk-package
+          path: dist/worker-sdk-package/*.crate
           if-no-files-found: error
 
   runtime:
@@ -199,15 +212,22 @@ jobs:
         with:
           name: redevplugin-ui-package
           path: dist/npm-package
-      - name: Build release bundle from the immutable npm tarball
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: redevplugin-worker-sdk-package
+          path: dist/worker-sdk-package
+      - name: Build release bundle from immutable SDK artifacts
         run: |
           set -euo pipefail
           npm_package=$(find dist/npm-package -maxdepth 1 -type f -name '*.tgz' -print -quit)
+          worker_sdk_package=$(find dist/worker-sdk-package -maxdepth 1 -type f -name '*.crate' -print -quit)
           test -n "$npm_package"
+          test -n "$worker_sdk_package"
           ./scripts/build_redevplugin_release.sh \
             --version "${{ needs.preflight.outputs.version }}" \
             --runtime-target "${{ matrix.target }}" \
             --npm-package "$npm_package" \
+            --worker-sdk-package "$worker_sdk_package" \
             --source-commit "$GITHUB_SHA" \
             --out-dir "dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}"
       - name: Archive release bundle
@@ -388,6 +408,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - run: rustup target add wasm32-unknown-unknown
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         with:
           cosign-release: v2.4.3

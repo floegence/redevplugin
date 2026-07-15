@@ -1,0 +1,542 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/bridge-v3.schema.json",
+  "title": "ReDevPlugin plugin worker bridge v3",
+  "description": "Plugin-visible MessagePort contract. Plugin identity, owner/session bindings, gateway tokens, asset sessions, stream tickets, and confirmation tokens remain in the trusted parent and are intentionally absent from worker-visible messages.",
+  "x-redevplugin-render-policy": {
+    "max_message_bytes": 262144,
+    "max_in_flight_requests": 256,
+    "max_renders_per_second": 30,
+    "max_render_depth": 32,
+    "max_render_nodes": 4096,
+    "max_attributes_per_element": 64,
+    "max_text_length": 65536,
+    "max_attribute_value_length": 4096,
+    "max_form_fields": 128,
+    "max_canvas_count": 4,
+    "max_canvas_dimension": 4096,
+    "max_canvas_total_pixels": 16777216,
+    "max_canvas_pointer_events_per_second": 120,
+    "max_image_count": 32,
+    "max_image_dimension": 4096,
+    "max_image_total_pixels": 33554432,
+    "worker_heartbeat_interval_ms": 10000,
+    "worker_heartbeat_timeout_ms": 5000,
+    "global_attributes": [
+      "id",
+      "class",
+      "role",
+      "title",
+      "hidden",
+      "tabindex",
+      "autofocus",
+      "lang",
+      "dir",
+      "data-redevplugin-action",
+      "data-redevplugin-escape-action",
+      "data-redevplugin-asset-binding",
+      "data-redevplugin-asset-attr"
+    ],
+    "tag_attributes": {
+      "button": ["type", "name", "value", "disabled", "aria-pressed", "aria-expanded"],
+      "input": ["type", "name", "value", "checked", "disabled", "readonly", "required", "placeholder", "min", "max", "step", "autocomplete"],
+      "textarea": ["name", "disabled", "readonly", "required", "placeholder", "rows", "cols", "maxlength"],
+      "select": ["name", "disabled", "required", "multiple", "size"],
+      "option": ["value", "selected", "disabled", "label"],
+      "label": ["for"],
+      "form": ["name", "autocomplete"],
+      "th": ["scope", "colspan", "rowspan"],
+      "td": ["colspan", "rowspan"],
+      "progress": ["value", "max"],
+      "meter": ["value", "min", "max", "low", "high", "optimum"],
+      "img": ["alt", "width", "height", "loading", "decoding"],
+      "audio": ["controls", "autoplay", "muted", "loop", "preload"],
+      "video": ["controls", "autoplay", "muted", "loop", "preload", "width", "height", "playsinline"],
+      "source": ["type", "media"],
+      "track": ["kind", "srclang", "label", "default"],
+      "time": ["datetime"],
+      "canvas": ["width", "height", "data-redevplugin-canvas"]
+    },
+    "safe_input_types": ["text", "search", "number", "checkbox", "radio", "button", "submit", "reset"]
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/call" },
+    { "$ref": "#/$defs/stream_read" },
+    { "$ref": "#/$defs/operation_cancel" },
+    { "$ref": "#/$defs/render" },
+    { "$ref": "#/$defs/canvas_open" },
+    { "$ref": "#/$defs/canvas_accessibility" },
+    { "$ref": "#/$defs/canvas_ready" },
+    { "$ref": "#/$defs/canvas_input" },
+    { "$ref": "#/$defs/image_open" },
+    { "$ref": "#/$defs/image_ready" },
+    { "$ref": "#/$defs/cancel" },
+    { "$ref": "#/$defs/action" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/lifecycle" },
+    { "$ref": "#/$defs/lifecycle_ack" }
+  ],
+  "$defs": {
+    "opaque_handle": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{7,159}$"
+    },
+    "capability_business_error_details": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "capability_version",
+        "detail_schema_sha256",
+        "business_error_code"
+      ],
+      "properties": {
+        "capability_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+        "capability_version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "detail_schema_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "business_error_code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "business_error_details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "worker_error_details": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker_error_code", "worker_error_message", "worker_error_origin"],
+      "properties": {
+        "worker_error_code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "worker_error_message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "worker_error_origin": { "enum": ["runtime", "hostcall", "plugin"] }
+      }
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^(rpc|stream|render|operation|canvas|asset)_[1-9][0-9]{0,15}$"
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "request"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.call" },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "method"],
+          "properties": {
+            "id": { "$ref": "#/$defs/request_id" },
+            "method": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            },
+            "params": {
+              "type": "object",
+              "description": "Optional JSON object. Arrays are rejected so worker calls match the Host RPC map contract."
+            }
+          }
+        }
+      }
+    },
+    "stream_read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "stream_handle"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.stream.read" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "stream_handle": { "$ref": "#/$defs/opaque_handle" }
+      }
+    },
+    "operation_cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "operation_id"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.operation.cancel" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "operation_id": { "$ref": "#/$defs/opaque_handle" },
+        "reason": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "tree"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.render" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "tree": {
+          "oneOf": [
+            { "$ref": "#/$defs/vnode" },
+            {
+              "type": "array",
+              "maxItems": 4096,
+              "items": { "$ref": "#/$defs/vnode" }
+            }
+          ]
+        }
+      }
+    },
+    "cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.cancel" },
+        "id": { "$ref": "#/$defs/request_id" }
+      }
+    },
+    "vnode": {
+      "oneOf": [
+        { "type": "string", "maxLength": 65536 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "tag"],
+          "properties": {
+            "type": { "const": "element" },
+            "tag": {
+              "enum": [
+                "main", "section", "header", "footer", "nav", "aside", "article", "div", "span", "p",
+                "h1", "h2", "h3", "h4", "h5", "h6", "button", "input", "textarea", "select", "option",
+                "label", "fieldset", "legend", "form", "ul", "ol", "li", "dl", "dt", "dd", "table",
+                "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "details", "summary", "pre", "code",
+                "kbd", "samp", "strong", "em", "small", "mark", "time", "progress", "meter", "img", "picture",
+                "source", "audio", "video", "track", "canvas"
+              ]
+            },
+            "attributes": {
+              "type": "object",
+              "maxProperties": 64,
+              "additionalProperties": {
+                "type": ["string", "number", "boolean"]
+              }
+            },
+            "children": {
+              "type": "array",
+              "maxItems": 4096,
+              "items": { "$ref": "#/$defs/vnode" }
+            }
+          }
+        }
+      ]
+    },
+    "canvas_open": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "canvas_id"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.canvas.open" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "canvas_id": { "$ref": "#/$defs/ui_identifier" }
+      }
+    },
+    "canvas_accessibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "canvas_id", "label", "description"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.canvas.accessibility" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "canvas_id": { "$ref": "#/$defs/ui_identifier" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "description": { "type": "string", "maxLength": 1024 }
+      }
+    },
+    "canvas_ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "canvas_id", "canvas", "css_width", "css_height", "device_pixel_ratio"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.canvas.ready" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "canvas_id": { "$ref": "#/$defs/ui_identifier" },
+        "canvas": {
+          "description": "One transferred OffscreenCanvas. The runtime validates the structured-clone object outside JSON Schema."
+        },
+        "css_width": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
+        "css_height": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
+        "device_pixel_ratio": { "type": "number", "minimum": 0.5, "maximum": 4 }
+      },
+      "x-redevplugin-transfer": ["canvas"]
+    },
+    "canvas_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "canvas_id", "event"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.canvas.input" },
+        "canvas_id": { "$ref": "#/$defs/ui_identifier" },
+        "event": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "enum": ["focus", "blur"] } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "css_width", "css_height", "device_pixel_ratio"],
+              "properties": {
+                "type": { "const": "resize" },
+                "css_width": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
+                "css_height": { "type": "number", "exclusiveMinimum": 0, "maximum": 4096 },
+                "device_pixel_ratio": { "type": "number", "minimum": 0.5, "maximum": 4 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key"],
+              "properties": {
+                "type": { "const": "key" },
+                "event": { "enum": ["keydown", "keyup"] },
+                "code": { "type": "string", "maxLength": 64 },
+                "key": { "type": "string", "maxLength": 64 },
+                "repeat": { "type": "boolean" },
+                "alt_key": { "type": "boolean" },
+                "ctrl_key": { "type": "boolean" },
+                "meta_key": { "type": "boolean" },
+                "shift_key": { "type": "boolean" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "event", "pointer_id", "pointer_type", "buttons", "button", "x", "y", "pressure"],
+              "properties": {
+                "type": { "const": "pointer" },
+                "event": { "enum": ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
+                "pointer_id": { "type": "integer", "minimum": 0 },
+                "pointer_type": { "enum": ["mouse", "pen", "touch", "unknown"] },
+                "buttons": { "type": "integer", "minimum": 0, "maximum": 31 },
+                "button": { "type": "integer", "minimum": -1, "maximum": 4 },
+                "x": { "type": "number", "minimum": -16384, "maximum": 32768 },
+                "y": { "type": "number", "minimum": -16384, "maximum": 32768 },
+                "pressure": { "type": "number", "minimum": 0, "maximum": 1 }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "image_open": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "asset_id"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.asset.image.open" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "asset_id": { "$ref": "#/$defs/ui_identifier" }
+      }
+    },
+    "image_ready": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "asset_id", "image", "width", "height"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.asset.image.ready" },
+        "id": { "$ref": "#/$defs/request_id" },
+        "asset_id": { "$ref": "#/$defs/ui_identifier" },
+        "image": {
+          "description": "One transferred ImageBitmap decoded from Host-verified package bytes."
+        },
+        "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      },
+      "x-redevplugin-transfer": ["image"]
+    },
+    "ui_identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "action", "event"],
+      "properties": {
+        "type": { "const": "redevplugin.ui.action" },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "event": { "enum": ["click", "input", "change", "submit", "escape"] },
+        "value": { "type": "string", "maxLength": 65536 },
+        "checked": { "type": "boolean" },
+        "form_data": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": { "type": "string", "maxLength": 65536 }
+        }
+      }
+    },
+    "response": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "ok"],
+          "properties": {
+            "type": { "const": "redevplugin.bridge.response" },
+            "id": { "$ref": "#/$defs/request_id" },
+            "ok": { "const": true },
+            "data": true
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "ok", "error_code", "error"],
+          "properties": {
+            "type": { "const": "redevplugin.bridge.response" },
+            "id": { "$ref": "#/$defs/request_id" },
+            "ok": { "const": false },
+            "error_code": {
+              "enum": [
+                "PLUGIN_INVALID_REQUEST",
+                "PLUGIN_MANIFEST_INVALID",
+                "PLUGIN_PACKAGE_INVALID",
+                "PLUGIN_PACKAGE_TOO_LARGE",
+                "PLUGIN_PACKAGE_PATH_FORBIDDEN",
+                "PLUGIN_SIGNATURE_INVALID",
+                "PLUGIN_TRUST_STATE_DENIED",
+                "PLUGIN_TRUST_VERIFICATION_REQUIRED",
+                "PLUGIN_TRUST_VERIFICATION_INVALID",
+                "PLUGIN_RELEASE_REF_VERIFICATION_FAILED",
+                "PLUGIN_RELEASE_REF_POLICY_DENIED",
+                "PLUGIN_DISABLED",
+                "PLUGIN_DISABLED_BY_POLICY",
+                "PLUGIN_PERMISSION_DENIED",
+                "PLUGIN_CONFIRMATION_REQUIRED",
+                "PLUGIN_CONFIRMATION_INVALID",
+                "PLUGIN_TOKEN_EXPIRED",
+                "PLUGIN_TOKEN_REPLAY",
+                "PLUGIN_GATEWAY_TOKEN_INVALID",
+                "PLUGIN_GATEWAY_TOKEN_REPLAYED",
+                "PLUGIN_GATEWAY_TOKEN_CHANNEL_MISMATCH",
+                "PLUGIN_ASSET_TICKET_INVALID",
+                "PLUGIN_ASSET_SESSION_INVALID",
+                "PLUGIN_STREAM_TICKET_INVALID",
+                "PLUGIN_STREAM_CANCELLED",
+                "PLUGIN_LEASE_INVALID",
+                "PLUGIN_LEASE_REPLAYED",
+                "PLUGIN_GRANT_INVALID",
+                "PLUGIN_STORAGE_QUOTA_EXCEEDED",
+                "PLUGIN_OPERATION_BLOCKED",
+                "PLUGIN_OPERATION_NOT_FOUND",
+                "PLUGIN_OPERATION_NOT_CANCELABLE",
+                "PLUGIN_NETWORK_TARGET_DENIED",
+                "PLUGIN_NETWORK_RATE_LIMITED",
+                "PLUGIN_RUNTIME_UNAVAILABLE",
+                "PLUGIN_RUNTIME_VERSION_MISMATCH",
+                "PLUGIN_JSON_LIMIT_EXCEEDED",
+                "PLUGIN_CAPABILITY_ERROR",
+                "PLUGIN_WORKER_ERROR",
+                "PLUGIN_CONTRACT_MISMATCH",
+                "PLUGIN_STATE_VERSION_MISMATCH",
+                "PLUGIN_CSRF_REQUIRED",
+                "PLUGIN_RETAINED_DATA_CLEANUP_FAILED",
+                "PLUGIN_RETAINED_DATA_BIND_FAILED",
+                "PLUGIN_CONFIRMATION_REJECTED",
+                "PLUGIN_BRIDGE_TIMEOUT",
+                "PLUGIN_BRIDGE_DISPOSED",
+                "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
+                "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"
+              ]
+            },
+            "error": { "type": "string", "maxLength": 4096 },
+            "error_details": {
+              "type": "object",
+              "maxProperties": 8,
+              "additionalProperties": true
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "error_code": { "const": "PLUGIN_CAPABILITY_ERROR" } },
+                "required": ["error_code"]
+              },
+              "then": {
+                "required": ["error_details"],
+                "properties": {
+                  "error_details": { "$ref": "#/$defs/capability_business_error_details" }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": { "error_code": { "const": "PLUGIN_WORKER_ERROR" } },
+                "required": ["error_code"]
+              },
+              "then": {
+                "required": ["error_details"],
+                "properties": {
+                  "error_details": { "$ref": "#/$defs/worker_error_details" }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "event"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.lifecycle" },
+        "quiesce_id": { "type": "string", "pattern": "^quiesce_[A-Za-z0-9_-]{8,151}$" },
+        "event": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "enum": ["ready", "visible", "hidden", "dispose"] }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["quiesce_id"] },
+          "then": {
+            "properties": {
+              "event": {
+                "properties": { "type": { "const": "dispose" } }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "lifecycle_ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "quiesce_id"],
+      "properties": {
+        "type": { "const": "redevplugin.bridge.lifecycle_ack" },
+        "quiesce_id": { "type": "string", "pattern": "^quiesce_[A-Za-z0-9_-]{8,151}$" }
+      }
+    }
+  }
+}

@@ -1,13 +1,8 @@
-pub const WASM_WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
+pub const WASM_WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const EXPORT_WORKER_INVOKE: &str = "redevplugin_worker_invoke";
 pub const REQUIRED_EXPORT_INVOKE: &str = "redevplugin_worker_invoke";
-pub const EXPORT_ACTOR_START: &str = "redevplugin_actor_start";
-pub const EXPORT_ACTOR_STOP: &str = "redevplugin_actor_stop";
-pub const IMPORT_LOG: &str = "redevplugin.log";
 pub const IMPORT_STORAGE: &str = "redevplugin.storage";
 pub const IMPORT_NETWORK: &str = "redevplugin.network";
-pub const IMPORT_OPERATION: &str = "redevplugin.operation";
-pub const IMPORT_CLOCK: &str = "redevplugin.clock";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedWorkerModule {
@@ -19,6 +14,9 @@ pub fn validate_worker_module(
     bytes: &[u8],
     required_export: &str,
 ) -> Result<ValidatedWorkerModule, String> {
+    wasmparser::Validator::new()
+        .validate_all(bytes)
+        .map_err(|err| format!("wasm validation failed: {err}"))?;
     if bytes.len() < 8 {
         return Err("wasm module is too small".to_string());
     }
@@ -140,6 +138,28 @@ mod tests {
         let err =
             validate_worker_module(b"not wasm", REQUIRED_EXPORT_INVOKE).expect_err("invalid magic");
         assert!(err.contains("magic"));
+    }
+
+    #[test]
+    fn rejects_shared_invalid_opcode_fixture() {
+        let module = decode_hex(include_str!(
+            "../../../testdata/contracts/wasm/invalid-final-opcode.hex"
+        ));
+        let err = validate_worker_module(&module, REQUIRED_EXPORT_INVOKE)
+            .expect_err("invalid function opcode must fail validation");
+        assert!(err.contains("validation"), "{err}");
+    }
+
+    fn decode_hex(input: &str) -> Vec<u8> {
+        let input = input.trim().as_bytes();
+        assert_eq!(input.len() % 2, 0);
+        input
+            .chunks_exact(2)
+            .map(|pair| {
+                let text = std::str::from_utf8(pair).expect("hex fixture is UTF-8");
+                u8::from_str_radix(text, 16).expect("hex fixture byte")
+            })
+            .collect()
     }
 
     fn minimal_worker_wasm(export_name: &str) -> Vec<u8> {

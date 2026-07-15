@@ -5,7 +5,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
 MODE="fast"
 SUMMARY_PATH=""
-RELEASE_TEST_VERSION="0.3.2"
+RELEASE_TEST_VERSION="0.4.0"
 
 usage() {
   cat <<'USAGE'
@@ -113,7 +113,7 @@ render_summary() {
   fi
   categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota"]'
   if [[ "$MODE" != "fast" ]]; then
-    categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_demo","runtime_contract","release_bundle","published_release_verifier"]'
+    categories='["go_race","stream_backpressure","operation_cancel_ownership","connectivity_classifier","runtime_revoke_ack","storage_quota","browser_harness","runtime_contract","release_bundle","published_release_verifier"]'
   fi
   steps_json=$(IFS=,; echo "${STEPS[*]}")
   evidence_json=$(stress_evidence_json)
@@ -201,7 +201,7 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  run_step browser_demo npm run test:demo:browser || {
+  run_step browser_harness npm run test:browser-harness:smoke || {
     write_summary
     exit "$STATUS"
   }

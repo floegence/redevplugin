@@ -111,6 +111,9 @@ func opaqueSurfaceDocumentBytes(document pluginpkg.OpaqueSurfaceDocument) int64 
 	}
 	for _, asset := range document.Assets {
 		bytes += int64(len(asset.BindingID) + len(asset.Path) + len(asset.SHA256) + len(asset.ContentType))
+		for _, logicalID := range asset.LogicalIDs {
+			bytes += int64(len(logicalID))
+		}
 	}
 	if document.CriticalBytes > bytes {
 		return document.CriticalBytes
@@ -119,7 +122,10 @@ func opaqueSurfaceDocumentBytes(document pluginpkg.OpaqueSurfaceDocument) int64 
 }
 
 func cloneOpaqueSurfaceDocument(document pluginpkg.OpaqueSurfaceDocument) pluginpkg.OpaqueSurfaceDocument {
-	document.Styles = append([]pluginpkg.OpaqueSurfaceStyle(nil), document.Styles...)
-	document.Assets = append([]pluginpkg.OpaqueSurfaceAsset(nil), document.Assets...)
+	document.Styles = append([]pluginpkg.OpaqueSurfaceStyle{}, document.Styles...)
+	document.Assets = append([]pluginpkg.OpaqueSurfaceAsset{}, document.Assets...)
+	for index := range document.Assets {
+		document.Assets[index].LogicalIDs = append([]string{}, document.Assets[index].LogicalIDs...)
+	}
 	return document
 }

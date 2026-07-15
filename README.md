@@ -12,7 +12,8 @@ capabilities.
 
 - Go module: `github.com/floegence/redevplugin`
 - TypeScript package: `@floegence/redevplugin-ui`
-- Rust workspace: `redevplugin-runtime` and support crates
+- Rust workspace: `redevplugin-runtime`, the public
+  `redevplugin-worker-sdk`, and support crates
 - Contracts: OpenAPI, manifest schema, package-signature schema,
   release-metadata schema, source-policy schema, source-revocations schema,
   token/ticket schema, iframe bridge and render policy, opaque surface document
@@ -120,8 +121,7 @@ capabilities.
 - The CLI can generate local Ed25519 signing keys and produce signed package
   artifacts without placing private keys in shell arguments. Start with
   `redevplugin scaffold <plugin-id> <display-name> <out-dir>`, package the
-  generated UI plus WASM backend worker skeleton, including a second brokered
-  worker that demonstrates Host-owned storage and network access, then sign it:
+  generated UI plus one ABI v2 WASM backend worker, then sign it:
   `redevplugin keygen <key-id> <private.json> <public.json>` followed by
   `redevplugin sign <unsigned.redevplugin> <private.json> <signed.redevplugin>`.
   Development harnesses can then run
@@ -192,16 +192,27 @@ capabilities.
   codes, bridge response codes, TypeScript client-side transport codes, and Rust
   IPC codes so product shells can branch on stable values without scraping
   localized messages.
-- WASM worker ABI schema tests keep `wasm-worker-v1.schema.json` aligned with
+- WASM worker ABI schema tests keep `wasm-worker-v2.schema.json` aligned with
   the Go package validator, Go compatibility version, Rust ABI crate constants,
   Rust IPC worker export validation, Rust runtime linked hostcall modules, and
   the worker invocation schema export enum.
+- Go package validation compiles the complete WASM module with Wazero before it
+  accepts memory and export metadata. The Rust ABI crate independently runs
+  `wasmparser::Validator::validate_all` before runtime execution, and the Wasmi
+  store enforces the signed memory budget even when a worker calls
+  `memory.grow`. The manifest platform ceiling is 256 MiB per worker; a Host
+  may reject a lower value through its package trust policy.
+- Plugin backend authors use `redevplugin-worker-sdk` from the immutable release
+  tag. Each runtime bundle contains the identical
+  `sdk/redevplugin-worker-sdk-<version>.crate` source artifact, and release
+  manifest v3 records its version, SHA-256, and size for audit or offline
+  vendoring.
 - Rust IPC schema tests keep startup `hello` / `hello_ack` frames bound to the
   Host-issued channel nonce, runtime generation, IPC version, and WASM ABI
   version, keep worker invocation leases bound to `lease_nonce` for runtime
   replay rejection, require structured heartbeat ACK results for control-channel
   liveness, and require `revoke_epoch_ack` results to report the plugin
-  instance, revoke epoch, and closed actor/socket/stream/storage-handle counters.
+  instance, revoke epoch, and closed socket/stream/storage-handle counters.
   IPC golden fixtures under `testdata/contracts/ipc/` are read by Go Host tests
   and Rust IPC crate tests. They cover the current handshake/response shape plus
   Host/Rust IPC version mismatch, WASM ABI mismatch, missing required fields,
@@ -256,11 +267,27 @@ capabilities.
   route sets. List helpers preserve the same data wrapper fields returned by the
   Go HTTP adapter, such as `operations`, `permissions`, `audit_events`, and
   `diagnostic_events`, so host products can consume the SDK and raw HTTP contract
-  consistently. The browser demo uses the platform client from the host page to
+  consistently. The browser harness uses the platform client from the host page to
   exercise settings management without exposing management
   credentials to the sandboxed iframe. Host pages can also use
   `PluginSurfaceReloadLimiter` to cap consecutive automatic iframe reloads
   after crashes or load failures before showing a host-owned error state.
+- Dispose uses a private quiesce/ack lifecycle. The SDK waits up to 1.5 seconds
+  for async plugin lifecycle observers to flush state before revoking the
+  surface, while a renderer-worker ping/pong heartbeat detects a stalled worker
+  on a 10-second interval with a 5-second response deadline.
+- Generated render policy limits a surface to four canvases, 4096 pixels per
+  dimension, 16,777,216 total canvas pixels, and 120 pointer events per second.
+  Raster type is detected from PNG, JPEG, GIF, or WebP bytes rather than the
+  filename or declared MIME. Images are dimension-checked before decode and
+  limited to 32 images and 33,554,432 decoded pixels. Plugin workers cannot
+  allocate additional `OffscreenCanvas` instances or call `createImageBitmap`
+  directly. Canvas apps use `updateCanvasAccessibility(...)` to bind concise
+  live phase, score, lives, FPS, and control descriptions to the declared
+  canvas without gaining general DOM mutation access.
+- Typed form actions prevent sandbox navigation and serialize at most 128
+  bounded string fields. Submit buttons work consistently when the click lands
+  on nested icons or labels.
 - The npm API boundary is split into four auditable entrypoints. The package
   root and `@floegence/redevplugin-ui/trusted-parent` expose the same
   trusted-parent allowlist for host shells. `@floegence/redevplugin-ui/plugin`
@@ -336,11 +363,12 @@ capabilities.
 - `spec/plugin/contract-registry-v1.json` is the generated complete inventory of
   those public contract IDs, paths, versions, and SHA-256 identities; Go and
   TypeScript registries are generated from the same source set.
-- Release-manifest schema tests keep `release-manifest-v2.schema.json` aligned
+- Release-manifest schema tests keep `release-manifest-v3.schema.json` aligned
   with the release bundle build script and verifier: `release-manifest.json`
   records the source commit, compatibility digest, exact npm tarball identity,
-  sorted file list, lowercase SHA-256 hashes and byte sizes, excludes itself and
-  `SHA256SUMS`, rejects unsafe paths, and drives generated checksums.
+  exact Rust worker SDK crate identity, sorted file list, lowercase SHA-256
+  hashes and byte sizes, excludes itself and `SHA256SUMS`, rejects unsafe paths,
+  and drives generated checksums.
 - Mounted hosts can also expose the same compatibility manifest through
   `GET /_redevplugin/api/plugins/platform/compatibility`, allowing a product to
   verify the loaded platform artifact set without shelling out to the CLI; the
@@ -397,14 +425,14 @@ capabilities.
   the runtime verifies control-channel freshness and fails closed with
   `RUNTIME_CONTROL_CHANNEL_STALE` when the Host heartbeat/revocation window is
   stale. Runtime revoke ACKs now return a structured result with closed
-  actor/socket/stream/storage-handle counters. The Rust runtime now keeps an
-  in-process registry for worker actor entries, brokered storage handles,
-  network socket leases, and Host stream-store bridge stream IDs; revoke epochs
+  socket/stream/storage-handle counters. The Rust runtime keeps an in-process
+  registry for brokered storage handles, network socket leases, and Host
+  stream-store bridge stream IDs; revoke epochs
   clear matching registry entries and report the actual closed counts. Resource
   classes that are purely Host-owned report zero because Rust has no matching
-  handle to close. The earlier fixed
-  `*_demo` imports and `redevplugin.network/http_request` alias remain covered only as legacy runtime compatibility fixtures,
-  not as the scaffolded plugin backend contract. Host integration tests build
+  handle to close. The earlier fixed `*_demo` imports and
+  `redevplugin.network/http_request` alias are removed; ABI v2 workers import
+  only the closed storage and `redevplugin.network/execute` hostcalls. Host integration tests build
   and exercise the real Rust runtime whenever a local Cargo toolchain is
   available, including FileBroker file writes, KV writes, SQLite DDL through the
   filesystem-backed broker, generated scaffold broker workers using the memory
@@ -453,19 +481,28 @@ capabilities.
   dev secret-ref state for the local developer profile. Permission grants are
   removed on every uninstall, including `--keep-data`, because authorization is
   tied to the installed plugin lifecycle rather than retained user data.
-- The browser demo under `demo/browser/` is a single-host reference integration.
-  `npm run demo:browser` serves a fake Host transport, while
-  `npm run demo:browser:real` starts the Go Host, HTTP adapter, and real Rust
-  runtime. Both paths ask `PluginSurfaceHost.create(...)` to create a fresh
+- `redevplugin examples-server <state-root> <runtime-path>` starts the
+  user-facing Examples Showcase with Memos, Weather, and Sky Strike. Every
+  example uses the Go Host, HTTP adapter, real Rust runtime, installable plugin
+  package, and persisted plugin storage. The Showcase asks
+  `PluginSurfaceHost.create(...)` to create a fresh
   opaque `srcdoc` iframe and mount only its `element`; no caller-provided
   iframe, plugin server, subdomain, cookie bootstrap, GET asset
   route, or query credential exists. The trusted renderer loads a static
   validated document, starts one classic Dedicated Worker, and connects it to
-  the parent through typed `MessagePort` channels. `npm run test:demo:browser`
+  the parent through typed `MessagePort` channels. The separate
+  `internal/browserharness` and `testdata/browser-harness` trees contain only
+  platform conformance fixtures. `npm run test:browser-harness:smoke`
   proves opaque origin isolation, parent DOM/cookie/storage denial, blocked
   direct network and browser persistence APIs, first paint before lazy assets,
-  RPC, parent-owned stream redemption, confirmation, Rust runtime storage and
-  network calls, and deterministic worker/iframe disposal.
+  RPC, parent-owned stream redemption, confirmation, Memos persistence, Weather
+  network and saved-location behavior, atomic forecast replacement, Memos
+  failed-save navigation protection, Sky Strike canvas/FPS/input and semantic
+  accessibility behavior,
+  Rust runtime storage and network calls, and deterministic worker/iframe
+  disposal. Memos requests 24 summaries per UI page while its worker enforces a
+  hard maximum of 30 rows; a compiled-WASM regression proves a 61-item pinned
+  library returns 24, 24, and 13 items without an unbounded response.
 - Host-mediated plugin intents are exposed end to end through the Go Host
   library, HTTP adapter, OpenAPI route contract, and `PluginPlatformClient`.
   Host products can list enabled runnable intents and invoke a chosen intent
@@ -488,8 +525,9 @@ provide a local sibling integration path for host products.
 
 Tagged GitHub releases build a platform-specific release bundle for each
 supported runtime target only after release audit and stress gates pass. The UI
-package is packed once, and the exact same npm tarball bytes are embedded in
-every runtime bundle and published to npm. The
+package and Rust worker SDK crate are each packed once. The exact same npm
+tarball and `.crate` bytes are embedded in every runtime bundle, and the npm
+tarball is published to npm. The
 published evidence includes `redevplugin-release-stress.json`, the structured
 `redevplugin-a2-acceptance.json` report, supported/unsupported browser
 screenshots, `SHA256SUMS`, and the runtime `.tar.gz` bundles. `SHA256SUMS` covers
@@ -526,6 +564,9 @@ Tagged releases also publish the matching `@floegence/redevplugin-ui` npm
 package version. The release bundle still includes the npm tarball as checksum
 evidence, but host products should consume the UI SDK from the npm registry by
 semver instead of copying the bundled tarball or using a local checkout.
+Worker authors should pin `redevplugin-worker-sdk` to the same immutable Git tag;
+the bundled `.crate` is the signed source artifact for audit and offline
+vendoring, not an instruction to wire a sibling checkout.
 
 ## Local Checks
 
@@ -535,9 +576,9 @@ GOWORK=off go test ./...
 npm ci
 npx playwright install chromium
 npm run check
-npm run demo:browser
-npm run demo:browser:real
-npm run test:demo:browser
+npm run examples
+npm run test:browser-harness
+npm run test:browser-harness:smoke
 ./scripts/check_redevplugin_runtime_contract.sh
 ./scripts/check_redevplugin_platform.sh
 REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
@@ -550,6 +591,7 @@ Rust checks require a local Rust toolchain:
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo deny check
 ```
 
 `check_redevplugin_runtime_contract.sh` also runs connectivity and runtimeclient

@@ -838,33 +838,36 @@ type InvokeIntentRequest struct {
 	Now                  time.Time      `json:"now,omitempty"`
 }
 
-type WorkerInvocationPayload struct {
-	PluginID             string         `json:"plugin_id"`
-	PluginInstanceID     string         `json:"plugin_instance_id"`
-	ActiveFingerprint    string         `json:"active_fingerprint"`
-	RuntimeInstanceID    string         `json:"runtime_instance_id"`
-	RuntimeGenerationID  string         `json:"runtime_generation_id"`
-	PackageHash          string         `json:"package_hash"`
-	WorkerID             string         `json:"worker_id"`
-	WorkerMode           string         `json:"worker_mode"`
-	WorkerScope          string         `json:"worker_scope"`
-	Artifact             string         `json:"artifact"`
-	ArtifactSHA256       string         `json:"artifact_sha256"`
-	ABI                  string         `json:"abi"`
-	Method               string         `json:"method"`
-	Export               string         `json:"export"`
-	Effect               string         `json:"effect"`
-	Execution            string         `json:"execution"`
-	SurfaceInstanceID    string         `json:"surface_instance_id,omitempty"`
-	OwnerSessionHash     string         `json:"owner_session_hash,omitempty"`
-	OwnerUserHash        string         `json:"owner_user_hash,omitempty"`
-	SessionChannelIDHash string         `json:"session_channel_id_hash,omitempty"`
-	BridgeChannelID      string         `json:"bridge_channel_id,omitempty"`
-	OperationID          string         `json:"operation_id,omitempty"`
-	StreamID             string         `json:"stream_id,omitempty"`
-	AuditCorrelationID   string         `json:"audit_correlation_id"`
-	ParamsSHA256         string         `json:"params_sha256"`
-	Params               map[string]any `json:"params"`
+type workerInvocationPayload struct {
+	PluginID             string                          `json:"plugin_id"`
+	PluginInstanceID     string                          `json:"plugin_instance_id"`
+	ActiveFingerprint    string                          `json:"active_fingerprint"`
+	RuntimeInstanceID    string                          `json:"runtime_instance_id"`
+	RuntimeGenerationID  string                          `json:"runtime_generation_id"`
+	PackageHash          string                          `json:"package_hash"`
+	WorkerID             string                          `json:"worker_id"`
+	WorkerMode           string                          `json:"worker_mode"`
+	WorkerScope          string                          `json:"worker_scope"`
+	Artifact             string                          `json:"artifact"`
+	ArtifactSHA256       string                          `json:"artifact_sha256"`
+	ABI                  string                          `json:"abi"`
+	Method               string                          `json:"method"`
+	Export               string                          `json:"export"`
+	Effect               string                          `json:"effect"`
+	Execution            string                          `json:"execution"`
+	SurfaceInstanceID    string                          `json:"surface_instance_id,omitempty"`
+	OwnerSessionHash     string                          `json:"owner_session_hash,omitempty"`
+	OwnerUserHash        string                          `json:"owner_user_hash,omitempty"`
+	SessionChannelIDHash string                          `json:"session_channel_id_hash,omitempty"`
+	BridgeChannelID      string                          `json:"bridge_channel_id,omitempty"`
+	OperationID          string                          `json:"operation_id,omitempty"`
+	StreamID             string                          `json:"stream_id,omitempty"`
+	AuditCorrelationID   string                          `json:"audit_correlation_id"`
+	ParamsSHA256         string                          `json:"params_sha256"`
+	Params               map[string]any                  `json:"params"`
+	StorageHandleGrants  map[string]string               `json:"storage_handle_grants,omitempty"`
+	BrokerAccess         manifest.MethodBrokerAccessSpec `json:"broker_access"`
+	BrokerAccessSHA256   string                          `json:"broker_access_sha256"`
 }
 
 type ConfirmMethodRequest = CallMethodRequest
@@ -2322,7 +2325,7 @@ func parseSignedReleaseMetadata(ref PluginReleaseRef, metadataBytes []byte) (Plu
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata must contain exactly one JSON document", ErrReleaseRefVerificationFailed)
 	}
-	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v2" {
+	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v3" {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata schema_version is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if envelope.ReleaseMetadataRef != ref.ReleaseMetadataRef {
@@ -5761,7 +5764,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return capability.Result{}, operationID, streamID, nil, finish, err
 	}
-	payload := WorkerInvocationPayload{
+	payload := workerInvocationPayload{
 		PluginID:             record.PluginID,
 		PluginInstanceID:     record.PluginInstanceID,
 		ActiveFingerprint:    record.ActiveFingerprint,
@@ -5787,6 +5790,15 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		StreamID:             streamID,
 		AuditCorrelationID:   binding.AuditCorrelationID,
 		Params:               params,
+		BrokerAccess:         normalizedWorkerBrokerAccess(method.BrokerAccess),
+	}
+	payload.BrokerAccessSHA256, err = workerBrokerAccessHash(payload.BrokerAccess)
+	if err != nil {
+		return capability.Result{}, operationID, streamID, streamTicket, finish, err
+	}
+	payload.StorageHandleGrants, err = h.mintWorkerStorageHandleGrants(ctx, record, method, health, now)
+	if err != nil {
+		return capability.Result{}, operationID, streamID, streamTicket, finish, err
 	}
 	paramsBytes, err := json.Marshal(payload.Params)
 	if err != nil {
@@ -5907,7 +5919,67 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	return result, operationID, streamID, streamTicket, finish, nil
 }
 
-func workerInvocationTargetHash(payload WorkerInvocationPayload) (string, error) {
+func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, health runtimeclient.Health, now time.Time) (map[string]string, error) {
+	if method.BrokerAccess == nil || len(method.BrokerAccess.Storage) == 0 {
+		return nil, nil
+	}
+	grants := make(map[string]string, len(method.BrokerAccess.Storage))
+	for _, access := range method.BrokerAccess.Storage {
+		result, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
+			PluginInstanceID:    record.PluginInstanceID,
+			StoreID:             access.StoreID,
+			RuntimeInstanceID:   health.RuntimeInstanceID,
+			RuntimeGenerationID: health.RuntimeGenerationID,
+			Now:                 now,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("mint worker storage grant for %q: %w", access.StoreID, err)
+		}
+		grants[access.StoreID] = result.HandleGrant.HandleGrantToken
+	}
+	return grants, nil
+}
+
+func normalizedWorkerBrokerAccess(access *manifest.MethodBrokerAccessSpec) manifest.MethodBrokerAccessSpec {
+	if access == nil {
+		return manifest.MethodBrokerAccessSpec{}
+	}
+	normalized := manifest.MethodBrokerAccessSpec{
+		Storage: make([]manifest.StorageBrokerAccessSpec, len(access.Storage)),
+		Network: make([]manifest.NetworkBrokerAccessSpec, len(access.Network)),
+	}
+	for i, item := range access.Storage {
+		normalized.Storage[i] = manifest.StorageBrokerAccessSpec{
+			StoreID:    item.StoreID,
+			Operations: append([]string(nil), item.Operations...),
+		}
+		sort.Strings(normalized.Storage[i].Operations)
+	}
+	for i, item := range access.Network {
+		normalized.Network[i] = manifest.NetworkBrokerAccessSpec{
+			ConnectorID: item.ConnectorID,
+			Transport:   item.Transport,
+			Operations:  append([]string(nil), item.Operations...),
+			HTTPMethods: append([]string(nil), item.HTTPMethods...),
+		}
+		sort.Strings(normalized.Network[i].Operations)
+		sort.Strings(normalized.Network[i].HTTPMethods)
+	}
+	sort.Slice(normalized.Storage, func(i, j int) bool { return normalized.Storage[i].StoreID < normalized.Storage[j].StoreID })
+	sort.Slice(normalized.Network, func(i, j int) bool { return normalized.Network[i].ConnectorID < normalized.Network[j].ConnectorID })
+	return normalized
+}
+
+func workerBrokerAccessHash(access manifest.MethodBrokerAccessSpec) (string, error) {
+	raw, err := json.Marshal(access)
+	if err != nil {
+		return "", fmt.Errorf("marshal worker broker access: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func workerInvocationTargetHash(payload workerInvocationPayload) (string, error) {
 	fields := []string{
 		"redevplugin.worker_invocation_target.v1",
 		payload.PluginID,
@@ -5935,6 +6007,7 @@ func workerInvocationTargetHash(payload WorkerInvocationPayload) (string, error)
 		payload.StreamID,
 		payload.AuditCorrelationID,
 		payload.ParamsSHA256,
+		payload.BrokerAccessSHA256,
 	}
 	var canonical bytes.Buffer
 	for _, field := range fields {
@@ -6473,7 +6546,6 @@ func (h *Host) revokePluginRuntimeCapabilitiesWithMode(ctx context.Context, reco
 			"execution_count":    revokedExecutions,
 		}
 		if runtimeRevoked {
-			details["closed_actor_count"] = runtimeRevokeResult.ClosedActorCount
 			details["closed_socket_count"] = runtimeRevokeResult.ClosedSocketCount
 			details["closed_stream_count"] = runtimeRevokeResult.ClosedStreamCount
 			details["closed_storage_handle_count"] = runtimeRevokeResult.ClosedStorageHandleCount
@@ -7172,7 +7244,7 @@ func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Name
 
 func storageQuotaFilesFromManifest(quotaFiles *int64) int64 {
 	if quotaFiles == nil {
-		return 0
+		return manifest.DefaultStoreQuotaFiles
 	}
 	return *quotaFiles
 }

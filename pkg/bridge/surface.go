@@ -1832,7 +1832,7 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		handshake.AssetSessionNonce != s.AssetSessionNonce ||
 		handshake.PluginStateVersion != s.ManagementRevision ||
 		handshake.RevokeEpoch != s.RevokeEpoch ||
-		handshake.UIProtocolVersion != "plugin-ui-v2" {
+		handshake.UIProtocolVersion != "plugin-ui-v3" {
 		return ErrHandshakeMismatch
 	}
 	return nil

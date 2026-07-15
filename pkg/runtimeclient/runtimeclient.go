@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -90,7 +91,6 @@ type Health struct {
 type RevokeResult struct {
 	PluginInstanceID         string `json:"plugin_instance_id"`
 	RevokeEpoch              uint64 `json:"revoke_epoch"`
-	ClosedActorCount         int    `json:"closed_actor_count"`
 	ClosedSocketCount        int    `json:"closed_socket_count"`
 	ClosedStreamCount        int    `json:"closed_stream_count"`
 	ClosedStorageHandleCount int    `json:"closed_storage_handle_count"`
@@ -131,6 +131,28 @@ type ArtifactResult struct {
 	SHA256  string `json:"sha256"`
 }
 
+type workerInvocationContext struct {
+	Artifact     ArtifactRequest
+	BrokerAccess workerBrokerAccess
+}
+
+type workerBrokerAccess struct {
+	Storage []workerStorageBrokerAccess `json:"storage,omitempty"`
+	Network []workerNetworkBrokerAccess `json:"network,omitempty"`
+}
+
+type workerStorageBrokerAccess struct {
+	StoreID    string   `json:"store_id"`
+	Operations []string `json:"operations"`
+}
+
+type workerNetworkBrokerAccess struct {
+	ConnectorID string   `json:"connector_id"`
+	Transport   string   `json:"transport"`
+	Operations  []string `json:"operations"`
+	HTTPMethods []string `json:"http_methods,omitempty"`
+}
+
 type HandleGrantValidationRequest struct {
 	HandleGrantToken    string `json:"handle_grant_token"`
 	PluginInstanceID    string `json:"plugin_instance_id"`
@@ -162,6 +184,38 @@ var (
 	ErrRuntimeRequestFailed  = errors.New("runtime ipc request failed")
 )
 
+type WorkerExecutionError struct {
+	Code    string
+	Message string
+	Origin  WorkerErrorOrigin
+}
+
+type WorkerErrorOrigin string
+
+const (
+	WorkerErrorOriginRuntime  WorkerErrorOrigin = "runtime"
+	WorkerErrorOriginHostcall WorkerErrorOrigin = "hostcall"
+	WorkerErrorOriginPlugin   WorkerErrorOrigin = "plugin"
+)
+
+func (origin WorkerErrorOrigin) valid() bool {
+	return origin == WorkerErrorOriginRuntime || origin == WorkerErrorOriginHostcall || origin == WorkerErrorOriginPlugin
+}
+
+func (e *WorkerExecutionError) Error() string {
+	if e == nil {
+		return ErrRuntimeRequestFailed.Error()
+	}
+	if e.Code == "" {
+		return fmt.Sprintf("%s: %s", ErrRuntimeRequestFailed, e.Message)
+	}
+	return fmt.Sprintf("%s: %s: %s", ErrRuntimeRequestFailed, e.Code, e.Message)
+}
+
+func (e *WorkerExecutionError) Unwrap() error {
+	return ErrRuntimeRequestFailed
+}
+
 type ProcessSupervisorOptions struct {
 	RuntimePath           string
 	Args                  []string
@@ -192,6 +246,7 @@ type RuntimeStreamSink interface {
 type ProcessSupervisor struct {
 	startMu                sync.Mutex
 	ipcMu                  sync.Mutex
+	controlMu              sync.Mutex
 	mu                     sync.Mutex
 	path                   string
 	args                   []string
@@ -218,13 +273,16 @@ type ProcessSupervisor struct {
 	seq                    uint64
 	requestSeq             uint64
 
-	cmd       *exec.Cmd
-	cancel    context.CancelFunc
-	done      chan error
-	ipcIn     io.WriteCloser
-	ipcOut    *bufio.Reader
-	health    Health
-	exitError error
+	cmd              *exec.Cmd
+	cancel           context.CancelFunc
+	done             chan error
+	ipcIn            io.WriteCloser
+	ipcOut           *bufio.Reader
+	controlIn        io.WriteCloser
+	controlOut       *bufio.Reader
+	controlOutCloser io.Closer
+	health           Health
+	exitError        error
 }
 
 func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor, error) {
@@ -310,36 +368,69 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	generationID := fmt.Sprintf("runtime_gen_%d_%d", s.now().UnixNano(), s.seq)
 	runtimeCtx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(runtimeCtx, s.path, s.args...)
-	if len(s.env) > 0 {
-		cmd.Env = append([]string(nil), s.env...)
+	controlRuntimeRead, controlHostWrite, err := os.Pipe()
+	if err != nil {
+		cancel()
+		s.mu.Unlock()
+		return err
 	}
+	controlHostRead, controlRuntimeWrite, err := os.Pipe()
+	if err != nil {
+		_ = controlRuntimeRead.Close()
+		_ = controlHostWrite.Close()
+		cancel()
+		s.mu.Unlock()
+		return err
+	}
+	closeControlPipes := func() {
+		_ = controlRuntimeRead.Close()
+		_ = controlHostWrite.Close()
+		_ = controlHostRead.Close()
+		_ = controlRuntimeWrite.Close()
+	}
+	commandEnv := append([]string(nil), s.env...)
+	if len(commandEnv) == 0 {
+		commandEnv = os.Environ()
+	}
+	cmd.Env = append(commandEnv,
+		"REDEVPLUGIN_CONTROL_READ_FD=3",
+		"REDEVPLUGIN_CONTROL_WRITE_FD=4",
+	)
+	cmd.ExtraFiles = []*os.File{controlRuntimeRead, controlRuntimeWrite}
 	if s.dir != "" {
 		cmd.Dir = s.dir
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		closeControlPipes()
 		cancel()
 		s.mu.Unlock()
 		return err
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		closeControlPipes()
 		cancel()
 		s.mu.Unlock()
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		closeControlPipes()
 		cancel()
 		s.mu.Unlock()
 		return err
 	}
 	if err := cmd.Start(); err != nil {
+		closeControlPipes()
 		cancel()
 		s.mu.Unlock()
 		return err
 	}
+	_ = controlRuntimeRead.Close()
+	_ = controlRuntimeWrite.Close()
 	stdoutReader := bufio.NewReader(stdout)
+	controlReader := bufio.NewReader(controlHostRead)
 	health := Health{
 		RuntimeInstanceID:   fmt.Sprintf("runtime_%d", cmd.Process.Pid),
 		RuntimeGenerationID: generationID,
@@ -351,6 +442,9 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	s.done = done
 	s.ipcIn = stdin
 	s.ipcOut = stdoutReader
+	s.controlIn = controlHostWrite
+	s.controlOut = controlReader
+	s.controlOutCloser = controlHostRead
 	s.health = health
 	s.exitError = nil
 	s.mu.Unlock()
@@ -451,23 +545,35 @@ func (s *ProcessSupervisor) Health(context.Context) (Health, error) {
 }
 
 func (s *ProcessSupervisor) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
-	if err := ctx.Err(); err != nil {
+	rawPayload, err := s.heartbeatRequest(ctx)
+	if err != nil {
 		return HeartbeatResult{}, err
 	}
+	frame, err := s.callControlIPC(ctx, ipcFrameTypeHeartbeat, ipcFrameTypeHeartbeat, rawPayload)
+	if err != nil {
+		return HeartbeatResult{}, err
+	}
+	return decodeHeartbeatResponse(frame)
+}
+
+func (s *ProcessSupervisor) heartbeatRequest(ctx context.Context) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s == nil || !s.isReady() {
-		return HeartbeatResult{}, ErrRuntimeNotReady
+		return nil, ErrRuntimeNotReady
 	}
 	rawPayload, err := json.Marshal(heartbeatRequestPayload{
 		SentUnixNano:       s.now().UnixNano(),
 		MaxStalenessMillis: int64(s.maxHeartbeatStaleness / time.Millisecond),
 	})
 	if err != nil {
-		return HeartbeatResult{}, err
+		return nil, err
 	}
-	frame, err := s.callIPC(ctx, ipcFrameTypeHeartbeat, ipcFrameTypeHeartbeat, rawPayload, nil)
-	if err != nil {
-		return HeartbeatResult{}, err
-	}
+	return rawPayload, nil
+}
+
+func decodeHeartbeatResponse(frame ipcFrame) (HeartbeatResult, error) {
 	response, err := decodeRuntimeResponse(frame)
 	if err != nil {
 		return HeartbeatResult{}, err
@@ -532,7 +638,7 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if len(invocation) == 0 {
 		invocation = json.RawMessage("null")
 	}
-	allowedArtifact, err := artifactRequestFromInvocation(invocation)
+	allowedInvocation, err := workerInvocationContextFromInvocation(invocation)
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +653,7 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 	if err := s.consumeRuntimeLease(ctx, lease, method); err != nil {
 		return nil, err
 	}
-	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload, &allowedArtifact)
+	frame, err := s.callIPC(ctx, ipcFrameTypeInvokeWorker, ipcFrameTypeInvokeWorkerResult, rawPayload, &allowedInvocation)
 	if err != nil {
 		return nil, err
 	}
@@ -556,7 +662,7 @@ func (s *ProcessSupervisor) InvokeWorker(ctx context.Context, lease Lease, metho
 		return nil, err
 	}
 	if !response.OK {
-		return nil, response.err()
+		return nil, response.workerExecutionError()
 	}
 	if len(response.Result) == 0 {
 		return []byte("{}"), nil
@@ -616,7 +722,7 @@ func (s *ProcessSupervisor) Revoke(ctx context.Context, pluginInstanceID string,
 	if err != nil {
 		return RevokeResult{}, err
 	}
-	frame, err := s.callIPC(ctx, ipcFrameTypeRevokeEpoch, ipcFrameTypeRevokeEpochAck, rawPayload, nil)
+	frame, err := s.callControlIPC(ctx, ipcFrameTypeRevokeEpoch, ipcFrameTypeRevokeEpochAck, rawPayload)
 	if err != nil {
 		return RevokeResult{}, err
 	}
@@ -726,7 +832,6 @@ func validateRuntimeLeaseAudience(lease Lease, health Health) error {
 type revokeResultPayload struct {
 	PluginInstanceID         string  `json:"plugin_instance_id"`
 	RevokeEpoch              *uint64 `json:"revoke_epoch"`
-	ClosedActorCount         *int    `json:"closed_actor_count"`
 	ClosedSocketCount        *int    `json:"closed_socket_count"`
 	ClosedStreamCount        *int    `json:"closed_stream_count"`
 	ClosedStorageHandleCount *int    `json:"closed_storage_handle_count"`
@@ -741,7 +846,6 @@ func decodeRevokeResult(raw json.RawMessage, pluginInstanceID string, revokeEpoc
 	}
 	if payload.PluginInstanceID == "" ||
 		payload.RevokeEpoch == nil ||
-		payload.ClosedActorCount == nil ||
 		payload.ClosedSocketCount == nil ||
 		payload.ClosedStreamCount == nil ||
 		payload.ClosedStorageHandleCount == nil {
@@ -750,7 +854,6 @@ func decodeRevokeResult(raw json.RawMessage, pluginInstanceID string, revokeEpoc
 	result := RevokeResult{
 		PluginInstanceID:         payload.PluginInstanceID,
 		RevokeEpoch:              *payload.RevokeEpoch,
-		ClosedActorCount:         *payload.ClosedActorCount,
 		ClosedSocketCount:        *payload.ClosedSocketCount,
 		ClosedStreamCount:        *payload.ClosedStreamCount,
 		ClosedStorageHandleCount: *payload.ClosedStorageHandleCount,
@@ -768,7 +871,7 @@ func validateRevokeResult(result RevokeResult, pluginInstanceID string, revokeEp
 	if result.RevokeEpoch != revokeEpoch {
 		return fmt.Errorf("%w: revoke ack revoke_epoch mismatch", ErrRuntimeRequestFailed)
 	}
-	if result.ClosedActorCount < 0 || result.ClosedSocketCount < 0 || result.ClosedStreamCount < 0 || result.ClosedStorageHandleCount < 0 {
+	if result.ClosedSocketCount < 0 || result.ClosedStreamCount < 0 || result.ClosedStorageHandleCount < 0 {
 		return fmt.Errorf("%w: revoke ack close counters must be non-negative", ErrRuntimeRequestFailed)
 	}
 	return nil
@@ -787,6 +890,8 @@ func (s *ProcessSupervisor) readyLocked() bool {
 func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel context.CancelFunc, health Health) {
 	err := cmd.Wait()
 	cancel()
+	var controlIn io.WriteCloser
+	var controlOut io.Closer
 	s.mu.Lock()
 	if s.cmd == cmd {
 		s.health.Ready = false
@@ -796,8 +901,19 @@ func (s *ProcessSupervisor) wait(cmd *exec.Cmd, done chan<- error, cancel contex
 		s.cmd = nil
 		s.ipcIn = nil
 		s.ipcOut = nil
+		controlIn = s.controlIn
+		controlOut = s.controlOutCloser
+		s.controlIn = nil
+		s.controlOut = nil
+		s.controlOutCloser = nil
 	}
 	s.mu.Unlock()
+	if controlIn != nil {
+		_ = controlIn.Close()
+	}
+	if controlOut != nil {
+		_ = controlOut.Close()
+	}
 	severity := "info"
 	message := "runtime process exited"
 	details := map[string]any{
@@ -900,8 +1016,12 @@ const (
 const (
 	defaultRuntimeHostcallTimeout       = 30 * time.Second
 	maxRuntimeHostcallTimeout           = 30 * time.Second
+	defaultRuntimeIPCDrainTimeout       = maxRuntimeHostcallTimeout + 5*time.Second
 	defaultRuntimeHeartbeatInterval     = 2 * time.Second
 	defaultRuntimeHeartbeatMaxStaleness = 5 * time.Second
+	maxIPCFrameBytes                    = 64 << 20
+	maxWASMHostcallResponseBytes        = 512 << 10
+	maxSynchronousBrokerPayloadBytes    = 384 << 10
 )
 
 type ipcFrame struct {
@@ -953,11 +1073,12 @@ type revokeEpochRequestPayload struct {
 }
 
 type runtimeResponsePayload struct {
-	OK      bool            `json:"ok"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   string          `json:"error,omitempty"`
-	Code    string          `json:"code,omitempty"`
-	Message string          `json:"message,omitempty"`
+	OK          bool              `json:"ok"`
+	Result      json.RawMessage   `json:"result,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	Code        string            `json:"code,omitempty"`
+	Message     string            `json:"message,omitempty"`
+	ErrorOrigin WorkerErrorOrigin `json:"error_origin,omitempty"`
 }
 
 type artifactHandleRequestPayload struct {
@@ -967,25 +1088,27 @@ type artifactHandleRequestPayload struct {
 }
 
 type artifactHandleResultPayload struct {
-	OK            bool   `json:"ok"`
-	PackageHash   string `json:"package_hash,omitempty"`
-	Artifact      string `json:"artifact,omitempty"`
-	SHA256        string `json:"sha256,omitempty"`
-	ContentBase64 string `json:"content_base64,omitempty"`
-	Code          string `json:"code,omitempty"`
-	Message       string `json:"message,omitempty"`
+	OK            bool              `json:"ok"`
+	PackageHash   string            `json:"package_hash,omitempty"`
+	Artifact      string            `json:"artifact,omitempty"`
+	SHA256        string            `json:"sha256,omitempty"`
+	ContentBase64 string            `json:"content_base64,omitempty"`
+	Code          string            `json:"code,omitempty"`
+	Message       string            `json:"message,omitempty"`
+	ErrorOrigin   WorkerErrorOrigin `json:"error_origin,omitempty"`
 }
 
 type handleGrantValidationResultPayload struct {
-	OK                  bool   `json:"ok"`
-	HandleGrantID       string `json:"handle_grant_id,omitempty"`
-	HandleID            string `json:"handle_id,omitempty"`
-	Method              string `json:"method,omitempty"`
-	RuntimeGenerationID string `json:"runtime_generation_id,omitempty"`
-	MaxBytesPerSecond   int64  `json:"max_bytes_per_second,omitempty"`
-	MaxTotalBytes       int64  `json:"max_total_bytes,omitempty"`
-	Code                string `json:"code,omitempty"`
-	Message             string `json:"message,omitempty"`
+	OK                  bool              `json:"ok"`
+	HandleGrantID       string            `json:"handle_grant_id,omitempty"`
+	HandleID            string            `json:"handle_id,omitempty"`
+	Method              string            `json:"method,omitempty"`
+	RuntimeGenerationID string            `json:"runtime_generation_id,omitempty"`
+	MaxBytesPerSecond   int64             `json:"max_bytes_per_second,omitempty"`
+	MaxTotalBytes       int64             `json:"max_total_bytes,omitempty"`
+	Code                string            `json:"code,omitempty"`
+	Message             string            `json:"message,omitempty"`
+	ErrorOrigin         WorkerErrorOrigin `json:"error_origin,omitempty"`
 }
 
 type storageFileRequestPayload struct {
@@ -1010,14 +1133,15 @@ type storageFileRequestPayload struct {
 }
 
 type storageFileResponsePayload struct {
-	OK         bool                `json:"ok"`
-	Path       string              `json:"path,omitempty"`
-	DataBase64 string              `json:"data_base64,omitempty"`
-	SizeBytes  int64               `json:"size_bytes,omitempty"`
-	Entries    []storage.FileEntry `json:"entries,omitempty"`
-	Usage      *storage.Usage      `json:"usage,omitempty"`
-	Code       string              `json:"code,omitempty"`
-	Message    string              `json:"message,omitempty"`
+	OK          bool                `json:"ok"`
+	Path        string              `json:"path,omitempty"`
+	DataBase64  string              `json:"data_base64,omitempty"`
+	SizeBytes   int64               `json:"size_bytes,omitempty"`
+	Entries     []storage.FileEntry `json:"entries,omitempty"`
+	Usage       *storage.Usage      `json:"usage,omitempty"`
+	Code        string              `json:"code,omitempty"`
+	Message     string              `json:"message,omitempty"`
+	ErrorOrigin WorkerErrorOrigin   `json:"error_origin,omitempty"`
 }
 
 type storageKVRequestPayload struct {
@@ -1051,6 +1175,7 @@ type storageKVResponsePayload struct {
 	Usage       *storage.Usage    `json:"usage,omitempty"`
 	Code        string            `json:"code,omitempty"`
 	Message     string            `json:"message,omitempty"`
+	ErrorOrigin WorkerErrorOrigin `json:"error_origin,omitempty"`
 }
 
 type storageSQLiteRequestPayload struct {
@@ -1076,15 +1201,16 @@ type storageSQLiteRequestPayload struct {
 }
 
 type storageSQLiteResponsePayload struct {
-	OK           bool                      `json:"ok"`
-	Database     string                    `json:"database,omitempty"`
-	RowsAffected int64                     `json:"rows_affected,omitempty"`
-	LastInsertID int64                     `json:"last_insert_id,omitempty"`
-	Columns      []string                  `json:"columns,omitempty"`
-	Rows         [][]storageSQLiteValueIPC `json:"rows,omitempty"`
-	Usage        *storage.Usage            `json:"usage,omitempty"`
-	Code         string                    `json:"code,omitempty"`
-	Message      string                    `json:"message,omitempty"`
+	OK           bool                       `json:"ok"`
+	Database     string                     `json:"database,omitempty"`
+	RowsAffected *int64                     `json:"rows_affected,omitempty"`
+	LastInsertID int64                      `json:"last_insert_id,omitempty"`
+	Columns      *[]string                  `json:"columns,omitempty"`
+	Rows         *[][]storageSQLiteValueIPC `json:"rows,omitempty"`
+	Usage        *storage.Usage             `json:"usage,omitempty"`
+	Code         string                     `json:"code,omitempty"`
+	Message      string                     `json:"message,omitempty"`
+	ErrorOrigin  WorkerErrorOrigin          `json:"error_origin,omitempty"`
 }
 
 type storageSQLiteValueIPC struct {
@@ -1126,6 +1252,7 @@ type networkGrantResponsePayload struct {
 	ExpiresAt               time.Time                `json:"expires_at,omitempty"`
 	Code                    string                   `json:"code,omitempty"`
 	Message                 string                   `json:"message,omitempty"`
+	ErrorOrigin             WorkerErrorOrigin        `json:"error_origin,omitempty"`
 }
 
 type networkExecuteRequestPayload struct {
@@ -1145,6 +1272,7 @@ type networkExecuteRequestPayload struct {
 	Operation            string                 `json:"operation,omitempty"`
 	Method               string                 `json:"method,omitempty"`
 	Path                 string                 `json:"path,omitempty"`
+	Query                url.Values             `json:"query,omitempty"`
 	Headers              http.Header            `json:"headers,omitempty"`
 	MessageType          string                 `json:"message_type,omitempty"`
 	BodyBase64           string                 `json:"body_base64,omitempty"`
@@ -1183,6 +1311,7 @@ type networkExecuteResponsePayload struct {
 	RuntimeGeneration string                   `json:"runtime_generation_id,omitempty"`
 	Code              string                   `json:"code,omitempty"`
 	Message           string                   `json:"message,omitempty"`
+	ErrorOrigin       WorkerErrorOrigin        `json:"error_origin,omitempty"`
 }
 
 func (p runtimeResponsePayload) err() error {
@@ -1198,6 +1327,24 @@ func (p runtimeResponsePayload) err() error {
 		return fmt.Errorf("%w: %s", ErrRuntimeRequestFailed, message)
 	}
 	return fmt.Errorf("%w: %s: %s", ErrRuntimeRequestFailed, code, message)
+}
+
+func (p runtimeResponsePayload) workerExecutionError() error {
+	message := strings.TrimSpace(p.Message)
+	if message == "" {
+		message = strings.TrimSpace(p.Error)
+	}
+	if message == "" {
+		message = "worker execution failed"
+	}
+	code := strings.TrimSpace(p.Code)
+	if code == "" {
+		return fmt.Errorf("%w: %s", ErrRuntimeRequestFailed, message)
+	}
+	if !p.ErrorOrigin.valid() {
+		return fmt.Errorf("%w: worker response error_origin is missing or invalid", ErrRuntimeIPCUnavailable)
+	}
+	return &WorkerExecutionError{Code: code, Message: message, Origin: p.ErrorOrigin}
 }
 
 func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Writer, stdout *bufio.Reader, health Health, target Target) (helloAckPayload, error) {
@@ -1261,7 +1408,7 @@ func randomIPCChannelNonce() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(nonce[:]), nil
 }
 
-func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedArtifact *ArtifactRequest) (ipcFrame, error) {
+func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedInvocation *workerInvocationContext) (ipcFrame, error) {
 	if err := ctx.Err(); err != nil {
 		return ipcFrame{}, err
 	}
@@ -1270,13 +1417,71 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 		s.mu.Unlock()
 		return ipcFrame{}, ErrRuntimeNotReady
 	}
-	preLockHealth := s.health
 	s.mu.Unlock()
 	if err := s.lockIPC(ctx); err != nil {
-		s.invalidateRuntimeAfterIPCFailure(preLockHealth, "runtime ipc lock context canceled", err)
 		return ipcFrame{}, err
 	}
 	defer s.ipcMu.Unlock()
+	return s.callIPCLocked(ctx, frameType, responseFrameType, payload, allowedInvocation)
+}
+
+func (s *ProcessSupervisor) callControlIPC(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage) (ipcFrame, error) {
+	if err := ctx.Err(); err != nil {
+		return ipcFrame{}, err
+	}
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+
+	s.mu.Lock()
+	if !s.readyLocked() || s.controlIn == nil || s.controlOut == nil {
+		s.mu.Unlock()
+		return ipcFrame{}, ErrRuntimeNotReady
+	}
+	s.requestSeq++
+	health := s.health
+	requestID := fmt.Sprintf("%s:%s:%d", health.RuntimeGenerationID, frameType, s.requestSeq)
+	stdin := s.controlIn
+	stdout := s.controlOut
+	s.mu.Unlock()
+
+	if len(payload) == 0 {
+		payload = json.RawMessage("null")
+	}
+	if err := json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           frameType,
+		RequestID:           requestID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		Payload:             payload,
+	}); err != nil {
+		return ipcFrame{}, fmt.Errorf("%w: write control %s: %v", ErrRuntimeIPCUnavailable, frameType, err)
+	}
+
+	type readResult struct {
+		frame ipcFrame
+		err   error
+	}
+	result := make(chan readResult, 1)
+	go func() {
+		frame, err := readIPCFrame(stdout)
+		result <- readResult{frame: frame, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		s.invalidateRuntimeAfterIPCFailure(health, "runtime control request context canceled", ctx.Err())
+		return ipcFrame{}, ctx.Err()
+	case got := <-result:
+		if got.err != nil {
+			return ipcFrame{}, fmt.Errorf("%w: read control %s: %v", ErrRuntimeIPCUnavailable, responseFrameType, got.err)
+		}
+		if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
+			return ipcFrame{}, fmt.Errorf("%w: invalid control response: %v", ErrRuntimeRequestFailed, err)
+		}
+		return got.frame, nil
+	}
+}
+
+func (s *ProcessSupervisor) callIPCLocked(ctx context.Context, frameType string, responseFrameType string, payload json.RawMessage, allowedInvocation *workerInvocationContext) (ipcFrame, error) {
 	s.mu.Lock()
 	if !s.readyLocked() || s.ipcIn == nil || s.ipcOut == nil {
 		s.mu.Unlock()
@@ -1302,74 +1507,107 @@ func (s *ProcessSupervisor) callIPC(ctx context.Context, frameType string, respo
 		return ipcFrame{}, fmt.Errorf("%w: write %s: %v", ErrRuntimeIPCUnavailable, frameType, err)
 	}
 
+	type readResult struct {
+		frame ipcFrame
+		err   error
+	}
+	callerDone := ctx.Done()
+	var callerErr error
+	var drainTimer *time.Timer
+	var drainDone <-chan time.Time
+	defer func() {
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+	}()
 	for {
-		result := make(chan struct {
-			frame ipcFrame
-			err   error
-		}, 1)
+		result := make(chan readResult, 1)
 		go func() {
 			frame, err := readIPCFrame(stdout)
-			result <- struct {
-				frame ipcFrame
-				err   error
-			}{frame: frame, err: err}
+			result <- readResult{frame: frame, err: err}
 		}()
 
-		select {
-		case <-ctx.Done():
-			s.invalidateRuntimeAfterIPCFailure(health, "runtime ipc request context canceled", ctx.Err())
-			return ipcFrame{}, ctx.Err()
-		case got := <-result:
-			if got.err != nil {
-				return ipcFrame{}, fmt.Errorf("%w: read %s: %v", ErrRuntimeIPCUnavailable, responseFrameType, got.err)
-			}
-			if got.frame.FrameType == ipcFrameTypeOpenHandle {
-				if err := s.respondToOpenHandle(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
+		var got readResult
+		waiting := true
+		for waiting {
+			select {
+			case <-callerDone:
+				if frameType != ipcFrameTypeInvokeWorker {
+					s.invalidateRuntimeAfterIPCFailure(health, "runtime ipc request context canceled", ctx.Err())
+					return ipcFrame{}, ctx.Err()
 				}
-				continue
+				callerErr = ctx.Err()
+				callerDone = nil
+				drainTimer = time.NewTimer(defaultRuntimeIPCDrainTimeout)
+				drainDone = drainTimer.C
+			case <-drainDone:
+				drainErr := fmt.Errorf("canceled runtime invocation did not drain within %s", defaultRuntimeIPCDrainTimeout)
+				s.invalidateRuntimeAfterIPCFailure(health, "runtime canceled invocation drain failed", drainErr)
+				return ipcFrame{}, callerErr
+			case got = <-result:
+				waiting = false
 			}
-			if got.frame.FrameType == ipcFrameTypeValidateHandleGrant {
-				if err := s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
-				}
-				continue
-			}
-			if got.frame.FrameType == ipcFrameTypeStorageFile {
-				if err := s.respondToStorageFile(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
-				}
-				continue
-			}
-			if got.frame.FrameType == ipcFrameTypeStorageKV {
-				if err := s.respondToStorageKV(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
-				}
-				continue
-			}
-			if got.frame.FrameType == ipcFrameTypeStorageSQLite {
-				if err := s.respondToStorageSQLite(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
-				}
-				continue
-			}
-			if got.frame.FrameType == ipcFrameTypeNetworkGrant {
-				if err := s.respondToNetworkGrant(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
-				}
-				continue
-			}
-			if got.frame.FrameType == ipcFrameTypeNetworkExecute {
-				if err := s.respondToNetworkExecute(ctx, stdin, health, got.frame, allowedArtifact); err != nil {
-					return ipcFrame{}, err
-				}
-				continue
-			}
-			if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
+		}
+		if got.err != nil {
+			return ipcFrame{}, fmt.Errorf("%w: read %s: %v", ErrRuntimeIPCUnavailable, responseFrameType, got.err)
+		}
+		if got.frame.FrameType == ipcFrameTypeOpenHandle {
+			if err := s.respondToOpenHandle(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifactRequest(allowedInvocation)); err != nil {
 				return ipcFrame{}, err
 			}
-			return got.frame, nil
+			continue
 		}
+		if got.frame.FrameType == ipcFrameTypeValidateHandleGrant {
+			if err := s.respondToValidateHandleGrant(ctx, stdin, health.RuntimeGenerationID, got.frame, allowedArtifactRequest(allowedInvocation)); err != nil {
+				return ipcFrame{}, err
+			}
+			continue
+		}
+		if got.frame.FrameType == ipcFrameTypeStorageFile {
+			if err := s.respondToStorageFile(ctx, stdin, health, got.frame, allowedInvocation); err != nil {
+				return ipcFrame{}, err
+			}
+			continue
+		}
+		if got.frame.FrameType == ipcFrameTypeStorageKV {
+			if err := s.respondToStorageKV(ctx, stdin, health, got.frame, allowedInvocation); err != nil {
+				return ipcFrame{}, err
+			}
+			continue
+		}
+		if got.frame.FrameType == ipcFrameTypeStorageSQLite {
+			if err := s.respondToStorageSQLite(ctx, stdin, health, got.frame, allowedInvocation); err != nil {
+				return ipcFrame{}, err
+			}
+			continue
+		}
+		if got.frame.FrameType == ipcFrameTypeNetworkGrant {
+			if err := s.respondToNetworkGrant(ctx, stdin, health, got.frame, allowedInvocation); err != nil {
+				return ipcFrame{}, err
+			}
+			continue
+		}
+		if got.frame.FrameType == ipcFrameTypeNetworkExecute {
+			if err := s.respondToNetworkExecute(ctx, stdin, health, got.frame, allowedInvocation); err != nil {
+				return ipcFrame{}, err
+			}
+			continue
+		}
+		if err := validateIPCResponse(requestID, health.RuntimeGenerationID, responseFrameType, got.frame); err != nil {
+			return ipcFrame{}, err
+		}
+		if callerErr == nil {
+			callerErr = ctx.Err()
+		}
+		if callerErr != nil {
+			s.emit("plugin.runtime.ipc.canceled_request_drained", "info", "canceled runtime invocation drained without invalidating ipc", map[string]any{
+				"runtime_instance_id":   health.RuntimeInstanceID,
+				"runtime_generation_id": health.RuntimeGenerationID,
+				"frame_type":            frameType,
+			})
+			return ipcFrame{}, callerErr
+		}
+		return got.frame, nil
 	}
 }
 
@@ -1485,6 +1723,9 @@ func (s *ProcessSupervisor) respondToOpenHandle(ctx context.Context, stdin io.Wr
 }
 
 func (s *ProcessSupervisor) writeOpenHandleResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload artifactHandleResultPayload) error {
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -1571,6 +1812,9 @@ func (s *ProcessSupervisor) respondToValidateHandleGrant(ctx context.Context, st
 }
 
 func (s *ProcessSupervisor) writeHandleGrantValidationResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload handleGrantValidationResultPayload) error {
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -1587,8 +1831,8 @@ func (s *ProcessSupervisor) writeHandleGrantValidationResponse(stdin io.Writer, 
 	return nil
 }
 
-func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
-	if allowedArtifact == nil {
+func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
+	if allowedInvocation == nil {
 		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_FILE_REQUEST_DENIED",
@@ -1615,6 +1859,11 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 			OK:      false,
 			Code:    "STORAGE_FILE_REQUEST_INVALID",
 			Message: err.Error(),
+		})
+	}
+	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
+		return s.writeStorageFileResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageFileResponsePayload{
+			OK: false, Code: "STORAGE_FILE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
 		})
 	}
 	if s.storageFiles == nil {
@@ -1665,17 +1914,16 @@ func (s *ProcessSupervisor) respondToStorageFile(ctx context.Context, stdin io.W
 }
 
 func (s *ProcessSupervisor) writeStorageFileResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageFileResponsePayload) error {
-	raw, err := json.Marshal(payload)
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
+	raw, err := marshalBoundedBrokerPayload(payload, storageFileResponsePayload{
+		OK: false, Code: "STORAGE_FILE_TOO_LARGE", Message: "storage file response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
+	})
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeStorageFile,
-		RequestID:           requestID,
-		RuntimeGenerationID: runtimeGenerationID,
-		Payload:             raw,
-	}); err != nil {
+	if err := writeIPCResponseFrame(stdin, ipcFrameTypeStorageFile, runtimeGenerationID, requestID, raw); err != nil {
 		return fmt.Errorf("%w: write storage_file response: %v", ErrRuntimeIPCUnavailable, err)
 	}
 	return nil
@@ -1701,7 +1949,10 @@ func validateStorageFileRequest(req storageFileRequestPayload, runtimeGeneration
 		return errors.New("storage handle id must match store id")
 	}
 	switch req.Operation {
-	case "read", "write", "delete", "list":
+	case "read":
+		_, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
+		return err
+	case "write", "delete", "list":
 		return nil
 	default:
 		return errors.New("storage file operation is not supported")
@@ -1711,11 +1962,15 @@ func validateStorageFileRequest(req storageFileRequestPayload, runtimeGeneration
 func dispatchStorageFileRequest(ctx context.Context, broker storage.FilesBroker, req storageFileRequestPayload) storageFileResponsePayload {
 	switch req.Operation {
 	case "read":
+		maxBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
+		if err != nil {
+			return storageFileResponsePayload{OK: false, Code: "STORAGE_FILE_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := broker.ReadFile(ctx, storage.FileReadRequest{
 			PluginInstanceID: req.PluginInstanceID,
 			StoreID:          req.StoreID,
 			Path:             req.Path,
-			MaxBytes:         req.MaxBytes,
+			MaxBytes:         maxBytes,
 		})
 		if err != nil {
 			return storageFileErrorResponse(err)
@@ -1786,8 +2041,8 @@ func storageFileErrorResponse(err error) storageFileResponsePayload {
 	}
 }
 
-func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
-	if allowedArtifact == nil {
+func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
+	if allowedInvocation == nil {
 		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_KV_REQUEST_DENIED",
@@ -1814,6 +2069,11 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 			OK:      false,
 			Code:    "STORAGE_KV_REQUEST_INVALID",
 			Message: err.Error(),
+		})
+	}
+	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
+		return s.writeStorageKVResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageKVResponsePayload{
+			OK: false, Code: "STORAGE_KV_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
 		})
 	}
 	if s.storageKV == nil {
@@ -1864,17 +2124,16 @@ func (s *ProcessSupervisor) respondToStorageKV(ctx context.Context, stdin io.Wri
 }
 
 func (s *ProcessSupervisor) writeStorageKVResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageKVResponsePayload) error {
-	raw, err := json.Marshal(payload)
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
+	raw, err := marshalBoundedBrokerPayload(payload, storageKVResponsePayload{
+		OK: false, Code: "STORAGE_KV_VALUE_TOO_LARGE", Message: "storage KV response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
+	})
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeStorageKV,
-		RequestID:           requestID,
-		RuntimeGenerationID: runtimeGenerationID,
-		Payload:             raw,
-	}); err != nil {
+	if err := writeIPCResponseFrame(stdin, ipcFrameTypeStorageKV, runtimeGenerationID, requestID, raw); err != nil {
 		return fmt.Errorf("%w: write storage_kv response: %v", ErrRuntimeIPCUnavailable, err)
 	}
 	return nil
@@ -1900,7 +2159,13 @@ func validateStorageKVRequest(req storageKVRequestPayload, runtimeGenerationID s
 		return errors.New("storage handle id must match store id")
 	}
 	switch req.Operation {
-	case "get", "put", "delete":
+	case "get":
+		if strings.TrimSpace(req.Key) == "" {
+			return errors.New("storage kv key is required")
+		}
+		_, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
+		return err
+	case "put", "delete":
 		if strings.TrimSpace(req.Key) == "" {
 			return errors.New("storage kv key is required")
 		}
@@ -1915,11 +2180,15 @@ func validateStorageKVRequest(req storageKVRequestPayload, runtimeGenerationID s
 func dispatchStorageKVRequest(ctx context.Context, broker storage.KVBroker, req storageKVRequestPayload) storageKVResponsePayload {
 	switch req.Operation {
 	case "get":
+		maxBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxBytes)
+		if err != nil {
+			return storageKVResponsePayload{OK: false, Code: "STORAGE_KV_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := broker.GetKV(ctx, storage.KVGetRequest{
 			PluginInstanceID: req.PluginInstanceID,
 			StoreID:          req.StoreID,
 			Key:              req.Key,
-			MaxBytes:         req.MaxBytes,
+			MaxBytes:         maxBytes,
 		})
 		if err != nil {
 			return storageKVErrorResponse(err)
@@ -1989,8 +2258,8 @@ func storageKVErrorResponse(err error) storageKVResponsePayload {
 	}
 }
 
-func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
-	if allowedArtifact == nil {
+func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
+	if allowedInvocation == nil {
 		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
 			OK:      false,
 			Code:    "STORAGE_SQLITE_REQUEST_DENIED",
@@ -2017,6 +2286,11 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 			OK:      false,
 			Code:    "STORAGE_SQLITE_REQUEST_INVALID",
 			Message: err.Error(),
+		})
+	}
+	if !allowedInvocation.BrokerAccess.allowsStorage(req.StoreID, req.Operation) {
+		return s.writeStorageSQLiteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, storageSQLiteResponsePayload{
+			OK: false, Code: "STORAGE_SQLITE_REQUEST_DENIED", Message: "worker method is not allowed to perform this storage operation",
 		})
 	}
 	if s.storageSQLite == nil {
@@ -2067,17 +2341,16 @@ func (s *ProcessSupervisor) respondToStorageSQLite(ctx context.Context, stdin io
 }
 
 func (s *ProcessSupervisor) writeStorageSQLiteResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload storageSQLiteResponsePayload) error {
-	raw, err := json.Marshal(payload)
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
+	raw, err := marshalBoundedBrokerPayload(payload, storageSQLiteResponsePayload{
+		OK: false, Code: "STORAGE_SQLITE_RESULT_TOO_LARGE", Message: "storage SQLite response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
+	})
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeStorageSQLite,
-		RequestID:           requestID,
-		RuntimeGenerationID: runtimeGenerationID,
-		Payload:             raw,
-	}); err != nil {
+	if err := writeIPCResponseFrame(stdin, ipcFrameTypeStorageSQLite, runtimeGenerationID, requestID, raw); err != nil {
 		return fmt.Errorf("%w: write storage_sqlite response: %v", ErrRuntimeIPCUnavailable, err)
 	}
 	return nil
@@ -2107,8 +2380,11 @@ func validateStorageSQLiteRequest(req storageSQLiteRequestPayload, runtimeGenera
 		return errors.New("timeout_ms must not be negative")
 	}
 	switch req.Operation {
-	case "exec", "query":
+	case "exec":
 		return nil
+	case "query":
+		_, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
+		return err
 	default:
 		return errors.New("storage sqlite operation is not supported")
 	}
@@ -2134,14 +2410,19 @@ func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBrok
 			return storageSQLiteErrorResponse(err)
 		}
 		usage := result.Usage
+		rowsAffected := result.RowsAffected
 		return storageSQLiteResponsePayload{
 			OK:           true,
 			Database:     result.Database,
-			RowsAffected: result.RowsAffected,
+			RowsAffected: &rowsAffected,
 			LastInsertID: result.LastInsertID,
 			Usage:        &usage,
 		}
 	case "query":
+		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
+		if err != nil {
+			return storageSQLiteResponsePayload{OK: false, Code: "STORAGE_SQLITE_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
 			PluginInstanceID: req.PluginInstanceID,
 			StoreID:          req.StoreID,
@@ -2149,18 +2430,23 @@ func dispatchStorageSQLiteRequest(ctx context.Context, broker storage.SQLiteBrok
 			SQL:              req.SQL,
 			Args:             args,
 			MaxRows:          req.MaxRows,
-			MaxResponseBytes: req.MaxResponseBytes,
+			MaxResponseBytes: maxResponseBytes,
 			Timeout:          timeout,
 		})
 		if err != nil {
 			return storageSQLiteErrorResponse(err)
 		}
 		usage := result.Usage
+		columns := append([]string{}, result.Columns...)
+		rows := storageSQLiteRowsToIPC(result.Rows)
+		if rows == nil {
+			rows = [][]storageSQLiteValueIPC{}
+		}
 		return storageSQLiteResponsePayload{
 			OK:       true,
 			Database: result.Database,
-			Columns:  append([]string(nil), result.Columns...),
-			Rows:     storageSQLiteRowsToIPC(result.Rows),
+			Columns:  &columns,
+			Rows:     &rows,
 			Usage:    &usage,
 		}
 	default:
@@ -2241,8 +2527,8 @@ func storageSQLiteErrorResponse(err error) storageSQLiteResponsePayload {
 	}
 }
 
-func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
-	if allowedArtifact == nil {
+func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
+	if allowedInvocation == nil {
 		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_GRANT_REQUEST_DENIED",
@@ -2269,6 +2555,11 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 			OK:      false,
 			Code:    "NETWORK_GRANT_REQUEST_INVALID",
 			Message: err.Error(),
+		})
+	}
+	if !allowedInvocation.BrokerAccess.allowsNetworkConnector(req.ConnectorID, string(req.Transport)) {
+		return s.writeNetworkGrantResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkGrantResponsePayload{
+			OK: false, Code: "NETWORK_GRANT_REQUEST_DENIED", Message: "worker method is not allowed to use this network connector",
 		})
 	}
 	if s.connectivity == nil {
@@ -2322,6 +2613,9 @@ func (s *ProcessSupervisor) respondToNetworkGrant(ctx context.Context, stdin io.
 }
 
 func (s *ProcessSupervisor) writeNetworkGrantResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload networkGrantResponsePayload) error {
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -2338,8 +2632,8 @@ func (s *ProcessSupervisor) writeNetworkGrantResponse(stdin io.Writer, runtimeGe
 	return nil
 }
 
-func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedArtifact *ArtifactRequest) error {
-	if allowedArtifact == nil {
+func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin io.Writer, health Health, frame ipcFrame, allowedInvocation *workerInvocationContext) error {
+	if allowedInvocation == nil {
 		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
 			OK:      false,
 			Code:    "NETWORK_EXECUTE_REQUEST_DENIED",
@@ -2366,6 +2660,11 @@ func (s *ProcessSupervisor) respondToNetworkExecute(ctx context.Context, stdin i
 			OK:      false,
 			Code:    "NETWORK_EXECUTE_REQUEST_INVALID",
 			Message: err.Error(),
+		})
+	}
+	if !allowedInvocation.BrokerAccess.allowsNetwork(req.ConnectorID, string(req.Transport), req.Operation, req.Method) {
+		return s.writeNetworkExecuteResponse(stdin, health.RuntimeGenerationID, frame.RequestID, networkExecuteResponsePayload{
+			OK: false, Code: "NETWORK_EXECUTE_REQUEST_DENIED", Message: "worker method is not allowed to perform this network operation",
 		})
 	}
 	if s.connectivity == nil {
@@ -2435,17 +2734,16 @@ func (s *ProcessSupervisor) mintGrantForNetworkExecute(ctx context.Context, req 
 }
 
 func (s *ProcessSupervisor) writeNetworkExecuteResponse(stdin io.Writer, runtimeGenerationID string, requestID string, payload networkExecuteResponsePayload) error {
-	raw, err := json.Marshal(payload)
+	if !payload.OK {
+		payload.ErrorOrigin = WorkerErrorOriginHostcall
+	}
+	raw, err := marshalBoundedBrokerPayload(payload, networkExecuteResponsePayload{
+		OK: false, Code: "NETWORK_RESPONSE_TOO_LARGE", Message: "network response exceeds the WASM hostcall limit", ErrorOrigin: WorkerErrorOriginHostcall,
+	})
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(stdin).Encode(ipcFrame{
-		IPCVersion:          version.RustIPCVersion,
-		FrameType:           ipcFrameTypeNetworkExecute,
-		RequestID:           requestID,
-		RuntimeGenerationID: runtimeGenerationID,
-		Payload:             raw,
-	}); err != nil {
+	if err := writeIPCResponseFrame(stdin, ipcFrameTypeNetworkExecute, runtimeGenerationID, requestID, raw); err != nil {
 		return fmt.Errorf("%w: write network_execute response: %v", ErrRuntimeIPCUnavailable, err)
 	}
 	return nil
@@ -2551,6 +2849,11 @@ func validateNetworkExecuteRequest(req networkExecuteRequestPayload, runtimeGene
 			return errors.New("udp network execution operation must be udp_round_trip")
 		}
 	}
+	if operation != "http_stream" {
+		if _, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2568,14 +2871,19 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 			}
 			return dispatchHTTPStreamExecute(ctx, executor, streamSink, grant, req, body, timeout, now)
 		}
+		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := executor.DoHTTP(ctx, connectivity.HTTPRequest{
 			Grant:            grant,
 			Method:           req.Method,
 			Path:             req.Path,
+			Query:            req.Query,
 			Headers:          req.Headers,
 			Body:             body,
 			MaxRequestBytes:  req.MaxRequestBytes,
-			MaxResponseBytes: req.MaxResponseBytes,
+			MaxResponseBytes: maxResponseBytes,
 			Timeout:          timeout,
 			Now:              now,
 		})
@@ -2588,6 +2896,10 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 		if err != nil {
 			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
 		}
+		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := executor.WebSocketRoundTrip(ctx, connectivity.WebSocketRoundTripRequest{
 			Grant:            grant,
 			Path:             req.Path,
@@ -2595,7 +2907,7 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 			MessageType:      connectivity.WebSocketMessageType(strings.TrimSpace(req.MessageType)),
 			Payload:          payload,
 			MaxRequestBytes:  req.MaxRequestBytes,
-			MaxResponseBytes: req.MaxResponseBytes,
+			MaxResponseBytes: maxResponseBytes,
 			Timeout:          timeout,
 			Now:              now,
 		})
@@ -2608,11 +2920,15 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 		if err != nil {
 			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
 		}
+		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := executor.TCPRoundTrip(ctx, connectivity.TCPRoundTripRequest{
 			Grant:           grant,
 			Payload:         payload,
 			MaxRequestBytes: req.MaxRequestBytes,
-			MaxReadBytes:    req.MaxResponseBytes,
+			MaxReadBytes:    maxResponseBytes,
 			Timeout:         timeout,
 			Now:             now,
 		})
@@ -2625,10 +2941,14 @@ func dispatchNetworkExecute(ctx context.Context, executor connectivity.NetworkEx
 		if err != nil {
 			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
 		}
+		maxResponseBytes, err := boundedSynchronousBrokerPayloadBytes(req.MaxResponseBytes)
+		if err != nil {
+			return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_REQUEST_INVALID", Message: err.Error()}
+		}
 		result, err := executor.UDPRoundTrip(ctx, connectivity.UDPRoundTripRequest{
 			Grant:        grant,
 			Payload:      payload,
-			MaxReadBytes: req.MaxResponseBytes,
+			MaxReadBytes: maxResponseBytes,
 			Timeout:      timeout,
 			Now:          now,
 		})
@@ -2650,6 +2970,7 @@ func dispatchHTTPStreamExecute(ctx context.Context, executor connectivity.Networ
 		Grant:            grant,
 		Method:           req.Method,
 		Path:             req.Path,
+		Query:            req.Query,
 		Headers:          req.Headers,
 		Body:             body,
 		MaxRequestBytes:  req.MaxRequestBytes,
@@ -2686,6 +3007,19 @@ func runtimeHostcallContext(parent context.Context, requested time.Duration) (co
 		timeout = maxRuntimeHostcallTimeout
 	}
 	return context.WithTimeout(parent, timeout)
+}
+
+func boundedSynchronousBrokerPayloadBytes(requested int64) (int64, error) {
+	if requested < 0 {
+		return 0, errors.New("response byte limit must not be negative")
+	}
+	if requested == 0 {
+		return maxSynchronousBrokerPayloadBytes, nil
+	}
+	if requested > maxSynchronousBrokerPayloadBytes {
+		return 0, fmt.Errorf("response byte limit must not exceed %d", maxSynchronousBrokerPayloadBytes)
+	}
+	return requested, nil
 }
 
 func decodeOptionalBase64(value string) ([]byte, error) {
@@ -2743,6 +3077,90 @@ func networkExecuteErrorResponse(err error) networkExecuteResponsePayload {
 	default:
 		return networkExecuteResponsePayload{OK: false, Code: "NETWORK_EXECUTE_FAILED", Message: err.Error()}
 	}
+}
+
+func allowedArtifactRequest(invocation *workerInvocationContext) *ArtifactRequest {
+	if invocation == nil {
+		return nil
+	}
+	return &invocation.Artifact
+}
+
+func workerInvocationContextFromInvocation(invocation json.RawMessage) (workerInvocationContext, error) {
+	artifact, err := artifactRequestFromInvocation(invocation)
+	if err != nil {
+		return workerInvocationContext{}, err
+	}
+	var envelope struct {
+		BrokerAccess       json.RawMessage `json:"broker_access"`
+		BrokerAccessSHA256 string          `json:"broker_access_sha256"`
+	}
+	if err := json.Unmarshal(invocation, &envelope); err != nil {
+		return workerInvocationContext{}, fmt.Errorf("%w: decode worker broker access: %v", ErrRuntimeRequestFailed, err)
+	}
+	if len(envelope.BrokerAccess) == 0 || !isSHA256Ref(envelope.BrokerAccessSHA256) {
+		return workerInvocationContext{}, fmt.Errorf("%w: worker invocation must include broker_access and broker_access_sha256", ErrRuntimeRequestFailed)
+	}
+	var access workerBrokerAccess
+	decoder := json.NewDecoder(bytes.NewReader(envelope.BrokerAccess))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&access); err != nil {
+		return workerInvocationContext{}, fmt.Errorf("%w: decode worker broker access contract: %v", ErrRuntimeRequestFailed, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return workerInvocationContext{}, fmt.Errorf("%w: worker broker access contains trailing JSON", ErrRuntimeRequestFailed)
+	}
+	canonical, err := json.Marshal(access)
+	if err != nil {
+		return workerInvocationContext{}, fmt.Errorf("%w: encode worker broker access contract: %v", ErrRuntimeRequestFailed, err)
+	}
+	sum := sha256.Sum256(canonical)
+	wantHash := "sha256:" + hex.EncodeToString(sum[:])
+	if envelope.BrokerAccessSHA256 != wantHash {
+		return workerInvocationContext{}, fmt.Errorf("%w: worker broker access hash mismatch", ErrRuntimeRequestFailed)
+	}
+	return workerInvocationContext{Artifact: artifact, BrokerAccess: access}, nil
+}
+
+func (access workerBrokerAccess) allowsStorage(storeID string, operation string) bool {
+	for _, item := range access.Storage {
+		if item.StoreID == storeID && stringSliceContains(item.Operations, operation) {
+			return true
+		}
+	}
+	return false
+}
+
+func (access workerBrokerAccess) allowsNetworkConnector(connectorID string, transport string) bool {
+	for _, item := range access.Network {
+		if item.ConnectorID == connectorID && item.Transport == transport {
+			return true
+		}
+	}
+	return false
+}
+
+func (access workerBrokerAccess) allowsNetwork(connectorID string, transport string, operation string, httpMethod string) bool {
+	for _, item := range access.Network {
+		if item.ConnectorID != connectorID || item.Transport != transport || !stringSliceContains(item.Operations, operation) {
+			continue
+		}
+		if transport == string(connectivity.TransportHTTP) && !stringSliceContains(item.HTTPMethods, httpMethod) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func stringSliceContains(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func artifactRequestFromInvocation(invocation json.RawMessage) (ArtifactRequest, error) {
@@ -2809,7 +3227,7 @@ func isWorkerArtifactPath(value string) bool {
 }
 
 func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
-	line, err := reader.ReadBytes('\n')
+	line, err := readBoundedIPCLine(reader, maxIPCFrameBytes)
 	if err != nil {
 		return ipcFrame{}, err
 	}
@@ -2818,6 +3236,56 @@ func readIPCFrame(reader *bufio.Reader) (ipcFrame, error) {
 		return ipcFrame{}, err
 	}
 	return frame, nil
+}
+
+func readBoundedIPCLine(reader *bufio.Reader, maxBytes int) ([]byte, error) {
+	if reader == nil || maxBytes <= 0 {
+		return nil, errors.New("IPC frame reader and positive size limit are required")
+	}
+	line := make([]byte, 0, min(maxBytes, 4096))
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > maxBytes-len(line) {
+			return nil, fmt.Errorf("IPC frame exceeds %d bytes", maxBytes)
+		}
+		line = append(line, fragment...)
+		switch {
+		case err == nil:
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return nil, err
+		}
+	}
+}
+
+func marshalBoundedBrokerPayload(payload any, oversizedPayload any) ([]byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) <= maxWASMHostcallResponseBytes {
+		return raw, nil
+	}
+	raw, err = json.Marshal(oversizedPayload)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxWASMHostcallResponseBytes {
+		return nil, errors.New("bounded broker error payload exceeds the WASM hostcall limit")
+	}
+	return raw, nil
+}
+
+func writeIPCResponseFrame(stdin io.Writer, frameType string, runtimeGenerationID string, requestID string, payload []byte) error {
+	return json.NewEncoder(stdin).Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           frameType,
+		RequestID:           requestID,
+		RuntimeGenerationID: runtimeGenerationID,
+		Payload:             payload,
+	})
 }
 
 func validateIPCResponse(requestID string, runtimeGenerationID string, responseFrameType string, frame ipcFrame) error {

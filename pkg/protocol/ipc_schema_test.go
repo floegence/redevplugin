@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/floegence/redevplugin/pkg/manifest"
 )
 
 func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +41,7 @@ func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if invocation["$ref"] != "https://schemas.redevplugin.dev/plugin/worker-invocation-v1.schema.json" {
+		if invocation["$ref"] != "https://schemas.redevplugin.dev/plugin/worker-invocation-v2.schema.json" {
 			t.Fatalf("invoke_worker invocation ref = %#v", invocation["$ref"])
 		}
 		return
@@ -49,7 +51,7 @@ func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
 
 func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +117,7 @@ func TestIPCSchemaBindsHelloChannelNonce(t *testing.T) {
 
 func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 	}
 	response := requireNestedObject(t, defs, "heartbeat_response_payload")
 	responseProps := requireNestedObject(t, response, "properties")
-	for _, name := range []string{"ok", "result", "code", "message"} {
+	for _, name := range []string{"ok", "result", "code", "message", "error_origin"} {
 		if _, ok := responseProps[name].(map[string]any); !ok {
 			t.Fatalf("heartbeat response missing %s", name)
 		}
@@ -156,9 +158,101 @@ func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 	}
 }
 
+func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	frameType := requireNestedObject(t, schema, "properties", "frame_type")
+	assertStringEnum(t, frameType["enum"], "ipc frame types", []string{
+		"hello",
+		"hello_ack",
+		"heartbeat",
+		"invoke_worker",
+		"invoke_worker_result",
+		"open_handle",
+		"validate_handle_grant",
+		"storage_file",
+		"storage_kv",
+		"storage_sqlite",
+		"network_grant",
+		"network_execute",
+		"revoke_epoch",
+		"revoke_epoch_ack",
+		"diagnostic",
+	})
+
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	for _, item := range allOf {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ifBlock := requireNestedObject(t, block, "if", "properties", "frame_type")
+		if ifBlock["const"] != "diagnostic" {
+			continue
+		}
+		thenBlock := requireNestedObject(t, block, "then")
+		if thenBlock["$ref"] != "#/$defs/runtime_response_frame" {
+			t.Fatalf("diagnostic response ref = %#v", thenBlock["$ref"])
+		}
+		return
+	}
+	t.Fatal("ipc schema missing diagnostic response block")
+}
+
+func TestIPCSchemaAttestsClosedErrorOrigins(t *testing.T) {
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	defs := requireNestedObject(t, schema, "$defs")
+	for _, name := range []string{
+		"heartbeat_response_payload",
+		"revoke_epoch_ack_response_payload",
+		"runtime_response_frame",
+	} {
+		definition := requireNestedObject(t, defs, name)
+		properties := definition
+		if name == "runtime_response_frame" {
+			properties = requireNestedObject(t, definition, "properties", "payload")
+		}
+		origin := requireNestedObject(t, properties, "properties", "error_origin")
+		assertStringEnum(t, origin["enum"], name+" error origin", []string{"runtime", "hostcall", "plugin"})
+	}
+	for _, name := range []string{
+		"open_handle_response_payload",
+		"validate_handle_grant_response_payload",
+		"storage_file_response_payload",
+		"storage_kv_response_payload",
+		"storage_sqlite_response_payload",
+		"network_grant_response_payload",
+		"network_execute_response_payload",
+	} {
+		definition := requireNestedObject(t, defs, name)
+		origin := requireNestedObject(t, definition, "properties", "error_origin")
+		if origin["const"] != "hostcall" {
+			t.Fatalf("%s error origin = %#v, want hostcall", name, origin)
+		}
+	}
+}
+
 func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,11 +352,17 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 			t.Fatalf("invoke_worker lease signature schema = %#v", signature)
 		}
 		limits := requireNestedObject(t, lease, "properties", "limits", "properties")
-		for _, name := range []string{"timeout_ms", "memory_bytes", "max_payload_bytes", "max_stream_bytes_per_sec"} {
+		for _, name := range []string{"timeout_ms", "max_payload_bytes", "max_stream_bytes_per_sec"} {
 			field := requireNestedObject(t, limits, name)
 			if field["type"] != "integer" || field["minimum"] != float64(0) {
 				t.Fatalf("invoke_worker lease limits %s schema = %#v", name, field)
 			}
+		}
+		memory := requireNestedObject(t, limits, "memory_bytes")
+		if memory["type"] != "integer" ||
+			memory["minimum"] != float64(1) ||
+			memory["maximum"] != float64(manifest.MaxWorkerMemoryLimitBytes) {
+			t.Fatalf("invoke_worker lease memory_bytes schema = %#v", memory)
 		}
 		return
 	}
@@ -271,7 +371,7 @@ func TestIPCSchemaRequiresWorkerLeaseContract(t *testing.T) {
 
 func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +402,7 @@ func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +429,7 @@ func TestIPCSchemaDefinesHandleGrantValidationPayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +460,7 @@ func TestIPCSchemaDefinesStorageFilePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageKVPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +496,7 @@ func TestIPCSchemaDefinesStorageKVPayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageSQLitePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +539,7 @@ func TestIPCSchemaDefinesStorageSQLitePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesStorageUsageFileQuotaFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +558,7 @@ func TestIPCSchemaDefinesStorageUsageFileQuotaFields(t *testing.T) {
 
 func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +597,7 @@ func TestIPCSchemaDefinesNetworkGrantPayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +633,7 @@ func TestIPCSchemaDefinesNetworkExecutePayloads(t *testing.T) {
 
 func TestIPCSchemaDefinesRevokeEpochAckResult(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "ipc-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,13 +653,16 @@ func TestIPCSchemaDefinesRevokeEpochAckResult(t *testing.T) {
 	}
 	result := requireNestedObject(t, defs, "revoke_epoch_ack_result")
 	required := requireStringSlice(t, result["required"], "revoke_epoch_ack result required")
-	for _, name := range []string{"plugin_instance_id", "revoke_epoch", "closed_actor_count", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
+	for _, name := range []string{"plugin_instance_id", "revoke_epoch", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
 		if !containsRequiredString(required, name) {
 			t.Fatalf("revoke_epoch_ack result required missing %s: %#v", name, required)
 		}
 	}
 	resultProps := requireNestedObject(t, result, "properties")
-	for _, name := range []string{"revoke_epoch", "closed_actor_count", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
+	if _, ok := resultProps["closed_actor_count"]; ok {
+		t.Fatal("revoke_epoch_ack must not retain the removed actor counter")
+	}
+	for _, name := range []string{"revoke_epoch", "closed_socket_count", "closed_stream_count", "closed_storage_handle_count"} {
 		field := requireNestedObject(t, resultProps, name)
 		if field["type"] != "integer" || field["minimum"] != float64(0) {
 			t.Fatalf("revoke_epoch_ack result %s schema = %#v", name, field)

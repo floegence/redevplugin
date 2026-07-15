@@ -472,6 +472,7 @@ type HTTPRequest struct {
 	Grant            ConnectionGrant `json:"grant"`
 	Method           string          `json:"method"`
 	Path             string          `json:"path,omitempty"`
+	Query            url.Values      `json:"query,omitempty"`
 	Headers          http.Header     `json:"headers,omitempty"`
 	Body             []byte          `json:"-"`
 	MaxRequestBytes  int64           `json:"max_request_bytes,omitempty"`
@@ -867,9 +868,10 @@ func (e *Executor) openHTTP(ctx context.Context, req HTTPRequest) (*http.Respons
 		return nil, nil, err
 	}
 	target := url.URL{
-		Scheme: req.Grant.Destination.Scheme,
-		Host:   net.JoinHostPort(req.Grant.Destination.Host, strconv.Itoa(req.Grant.Destination.Port)),
-		Path:   path,
+		Scheme:   req.Grant.Destination.Scheme,
+		Host:     net.JoinHostPort(req.Grant.Destination.Host, strconv.Itoa(req.Grant.Destination.Port)),
+		Path:     path,
+		RawQuery: req.Query.Encode(),
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutOrDefault(req.Timeout, e.defaultTimeout))
 	httpReq, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(req.Body))
@@ -1078,7 +1080,7 @@ func cleanHTTPPath(path string) (string, error) {
 	if !strings.HasPrefix(path, "/") {
 		return "", fmt.Errorf("%w: http path must start with /", ErrInvalidConnector)
 	}
-	if strings.Contains(path, "://") || strings.ContainsAny(path, "\r\n") {
+	if strings.Contains(path, "://") || strings.ContainsAny(path, "?#\r\n") {
 		return "", fmt.Errorf("%w: http path is invalid", ErrInvalidConnector)
 	}
 	return path, nil
@@ -1173,6 +1175,7 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 		if len(addresses) == 0 {
 			return nil, fmt.Errorf("%w: host %q resolved to no addresses", ErrTargetDenied, host)
 		}
+		resolvedAddresses := make([]netip.Addr, 0, len(addresses))
 		for _, resolved := range addresses {
 			addr, ok := netip.AddrFromSlice(resolved.IP)
 			if !ok {
@@ -1182,8 +1185,20 @@ func guardedDialContext(dialer *net.Dialer, lookupIPAddr func(context.Context, s
 			if err := classifier.EvaluateResolvedAddress(destination, addr); err != nil {
 				return nil, err
 			}
+			resolvedAddresses = append(resolvedAddresses, addr)
 		}
-		return dialer.DialContext(ctx, network, address)
+		var dialErrors []error
+		for _, addr := range resolvedAddresses {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(addr.String(), portText))
+			if err == nil {
+				return conn, nil
+			}
+			dialErrors = append(dialErrors, err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		return nil, errors.Join(dialErrors...)
 	}
 }
 

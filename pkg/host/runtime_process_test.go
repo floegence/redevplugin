@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -384,105 +385,6 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 }
 
-func TestCallPluginMethodWorkerNetworkHostcallThroughBuiltRustRuntime(t *testing.T) {
-	if _, err := exec.LookPath("cargo"); err != nil {
-		t.Skip("cargo not found; skipping built Rust runtime integration")
-	}
-	repoRoot := findRepoRootForHostTest(t)
-	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
-	build.Dir = repoRoot
-	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
-	}
-	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
-	if runtime.GOOS == "windows" {
-		runtimePath += ".exe"
-	}
-
-	ctx := context.Background()
-	broker := connectivity.NewMemoryBroker()
-	executor := &recordingHostNetworkExecutor{
-		httpStatus: http.StatusAccepted,
-		httpBody:   []byte(`{"ok":true,"source":"rust-runtime"}`),
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
-		storageBroker:      storage.NewMemoryBroker(),
-		connectivityBroker: broker,
-		networkExecutor:    executor,
-	})
-	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:      runtimePath,
-		Diagnostics:      h.adapters.Diagnostics,
-		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     storageFilesBroker(h.adapters.Storage),
-		StorageKV:        storageKVBroker(h.adapters.Storage),
-		Connectivity:     broker,
-		NetworkExecutor:  executor,
-		HandshakeTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.adapters.RuntimeSupervisor = supervisor
-	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := supervisor.Stop(stopCtx); err != nil {
-			t.Errorf("Stop() error = %v", err)
-		}
-	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkHostcallFixturePackage(t), "worker.view")
-	body := []byte("hello from wasm network hostcall")
-
-	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params: map[string]any{
-			"network_body_base64": base64.StdEncoding.EncodeToString(body),
-		},
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() with network hostcall error = %v", err)
-	}
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("worker result data = %#v, want map", result.Data)
-	}
-	networkExecute, ok := data["network_execute"].(map[string]any)
-	if !ok {
-		t.Fatalf("network_execute result missing: %#v", data)
-	}
-	if networkExecute["ok"] != true ||
-		networkExecute["status_code"] != float64(http.StatusAccepted) ||
-		networkExecute["connector_id"] != "api" ||
-		networkExecute["transport"] != "http" {
-		t.Fatalf("network_execute result mismatch: %#v", networkExecute)
-	}
-	if executor.httpCalls != 1 ||
-		executor.lastHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
-		executor.lastHTTP.Grant.ConnectorID != "api" ||
-		executor.lastHTTP.Grant.Destination.Host != "api.example.com" ||
-		executor.lastHTTP.Grant.RuntimeGenerationID == "" ||
-		executor.lastHTTP.Method != http.MethodPost ||
-		executor.lastHTTP.Path != "/v1/worker" ||
-		string(executor.lastHTTP.Body) != string(body) {
-		t.Fatalf("network executor call mismatch: calls=%d req=%#v", executor.httpCalls, executor.lastHTTP)
-	}
-}
-
 func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *testing.T) {
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not found; skipping built Rust runtime integration")
@@ -577,7 +479,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		string(executor.lastHTTP.Body) != "hello from memory hostcall" {
 		t.Fatalf("network memory executor call mismatch: calls=%d req=%#v", executor.httpCalls, executor.lastHTTP)
 	}
-	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 1, 1, 0, 0)
+	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 0, 0, 0)
 }
 
 func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRuntime(t *testing.T) {
@@ -766,114 +668,6 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 	}
 }
 
-func TestCallPluginMethodWorkerStorageHostcallThroughBuiltRustRuntime(t *testing.T) {
-	if _, err := exec.LookPath("cargo"); err != nil {
-		t.Skip("cargo not found; skipping built Rust runtime integration")
-	}
-	repoRoot := findRepoRootForHostTest(t)
-	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
-	build.Dir = repoRoot
-	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
-	}
-	runtimePath := filepath.Join(repoRoot, "target", "debug", "redevplugin-runtime")
-	if runtime.GOOS == "windows" {
-		runtimePath += ".exe"
-	}
-
-	ctx := context.Background()
-	storageBroker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:  true,
-		localGenerated: true,
-		storageBroker:  storageBroker,
-	})
-	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:  runtimePath,
-		Diagnostics:  h.adapters.Diagnostics,
-		Artifacts:    runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants: runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles: storageFilesBroker(h.adapters.Storage),
-		StorageKV:    storageKVBroker(h.adapters.Storage),
-		Connectivity: h.adapters.Connectivity,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.adapters.RuntimeSupervisor = supervisor
-	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := supervisor.Stop(stopCtx); err != nil {
-			t.Errorf("Stop() error = %v", err)
-		}
-	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageFixturePackage(t), "worker.view")
-	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "workspace",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant() error = %v", err)
-	}
-	body := []byte("hello from wasm storage hostcall")
-
-	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    "surface_rpc",
-		SessionChannelIDHash: "channel_hash",
-		OwnerSessionHash:     "session_hash",
-		OwnerUserHash:        "user_hash",
-		BridgeChannelID:      "bridge_rpc",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.echo",
-		Params: map[string]any{
-			"storage_handle_grant_token": storageGrant.HandleGrant.HandleGrantToken,
-			"storage_store_id":           "workspace",
-			"storage_path":               "notes/from-wasm.txt",
-			"storage_data_base64":        base64.StdEncoding.EncodeToString(body),
-		},
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() with storage hostcall error = %v", err)
-	}
-	data, ok := result.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("worker result data = %#v, want map", result.Data)
-	}
-	storageFile, ok := data["storage_file"].(map[string]any)
-	if !ok {
-		t.Fatalf("storage_file result missing: %#v", data)
-	}
-	if storageFile["ok"] != true || storageFile["path"] != "notes/from-wasm.txt" || storageFile["size_bytes"] != float64(len(body)) {
-		t.Fatalf("storage_file result mismatch: %#v", storageFile)
-	}
-	read, err := storageBroker.ReadFile(ctx, storage.FileReadRequest{
-		PluginInstanceID: installed.PluginInstanceID,
-		StoreID:          "workspace",
-		Path:             "notes/from-wasm.txt",
-	})
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if string(read.Data) != string(body) {
-		t.Fatalf("stored file = %q, want %q", read.Data, body)
-	}
-}
-
 func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *testing.T) {
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not found; skipping built Rust runtime integration")
@@ -924,20 +718,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	health, err := supervisor.Health(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageMemoryHostcallFixturePackage(t), "worker.view")
-	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "workspace",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant() error = %v", err)
-	}
 	body := []byte("hello from memory storage hostcall")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
@@ -949,9 +730,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
 		Method:               "worker.echo",
-		Params: map[string]any{
-			"storage_handle_grant_token": storageGrant.HandleGrant.HandleGrantToken,
-		},
+		Params:               map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with storage memory hostcall error = %v", err)
@@ -1030,20 +809,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	health, err := supervisor.Health(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageKVMemoryHostcallFixturePackage(t), "worker.view")
-	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "cache",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant() error = %v", err)
-	}
 	body := []byte("hello from memory kv hostcall")
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
@@ -1055,9 +821,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
 		Method:               "worker.echo",
-		Params: map[string]any{
-			"storage_kv_handle_grant_token": storageGrant.HandleGrant.HandleGrantToken,
-		},
+		Params:               map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with storage kv memory hostcall error = %v", err)
@@ -1137,20 +901,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	if err := supervisor.Start(ctx, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	health, err := supervisor.Health(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t), "worker.view")
-	storageGrant, err := h.MintStorageHandleGrant(ctx, MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "db",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant() error = %v", err)
-	}
 
 	result, err := h.CallPluginMethod(ctx, CallMethodRequest{
 		PluginInstanceID:     installed.PluginInstanceID,
@@ -1161,9 +912,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 		BridgeChannelID:      "bridge_rpc",
 		GatewayToken:         gateway.GatewayToken,
 		Method:               "worker.echo",
-		Params: map[string]any{
-			"storage_sqlite_handle_grant_token": storageGrant.HandleGrant.HandleGrantToken,
-		},
+		Params:               map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("CallPluginMethod() with storage sqlite memory hostcall error = %v", err)
@@ -1178,6 +927,9 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	}
 	if storageSQLite["ok"] != true || storageSQLite["database"] != "plugin.sqlite" {
 		t.Fatalf("storage_sqlite result mismatch: %#v", storageSQLite)
+	}
+	if storageSQLite["rows_affected"] != float64(0) {
+		t.Fatalf("storage_sqlite rows_affected = %#v, want 0", storageSQLite["rows_affected"])
 	}
 	tableName := "worker_runs"
 	query, err := storageBroker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
@@ -1195,14 +947,14 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 	if len(query.Rows) != 1 || len(query.Rows[0]) != 1 || query.Rows[0][0].Text == nil || *query.Rows[0][0].Text != "worker_runs" {
 		t.Fatalf("sqlite table was not created through wasm hostcall: %#v", query.Rows)
 	}
-	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 1, 0, 0, 1)
+	assertRuntimeRevokeCounts(t, supervisor, installed.PluginInstanceID, installed.RevokeEpoch+1, 0, 0, 0)
 }
 
 type runtimeRevoker interface {
 	Revoke(context.Context, string, uint64) (runtimeclient.RevokeResult, error)
 }
 
-func assertRuntimeRevokeCounts(t *testing.T, supervisor runtimeRevoker, pluginInstanceID string, revokeEpoch uint64, actor, socket, stream, storageHandle int) {
+func assertRuntimeRevokeCounts(t *testing.T, supervisor runtimeRevoker, pluginInstanceID string, revokeEpoch uint64, socket, stream, storageHandle int) {
 	t.Helper()
 	revokeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -1212,11 +964,10 @@ func assertRuntimeRevokeCounts(t *testing.T, supervisor runtimeRevoker, pluginIn
 	}
 	if result.PluginInstanceID != pluginInstanceID ||
 		result.RevokeEpoch != revokeEpoch ||
-		result.ClosedActorCount != actor ||
 		result.ClosedSocketCount != socket ||
 		result.ClosedStreamCount != stream ||
 		result.ClosedStorageHandleCount != storageHandle {
-		t.Fatalf("Revoke() result mismatch: got %#v, want actor=%d socket=%d stream=%d storage=%d", result, actor, socket, stream, storageHandle)
+		t.Fatalf("Revoke() result mismatch: got %#v, want socket=%d stream=%d storage=%d", result, socket, stream, storageHandle)
 	}
 }
 
@@ -1259,7 +1010,7 @@ type hostRuntimeHeartbeatPayload struct {
 type hostRuntimeInvokePayload struct {
 	Lease      runtimeclient.Lease     `json:"lease"`
 	Method     string                  `json:"method"`
-	Invocation WorkerInvocationPayload `json:"invocation"`
+	Invocation workerInvocationPayload `json:"invocation"`
 }
 
 type hostRuntimeNetworkExecuteRequest struct {
@@ -1309,6 +1060,7 @@ type hostRuntimeNetworkExecuteResponse struct {
 func runHostRuntimeProcessHelper() {
 	reader := bufio.NewReader(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
+	var controlStarted bool
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -1337,6 +1089,41 @@ func runHostRuntimeProcessHelper() {
 				RuntimeGenerationID: frame.RuntimeGenerationID,
 				Payload:             raw,
 			})
+			if !controlStarted {
+				controlStarted = true
+				go runHostRuntimeControlHelper()
+			}
+		case "invoke_worker":
+			hostRuntimeProcessNetworkExecute(reader, encoder, frame)
+		default:
+			os.Exit(21)
+		}
+	}
+}
+
+func runHostRuntimeControlHelper() {
+	readFD, readErr := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_READ_FD"))
+	writeFD, writeErr := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_WRITE_FD"))
+	if readErr != nil || writeErr != nil || readFD < 3 || writeFD < 3 {
+		os.Exit(31)
+	}
+	readFile := os.NewFile(uintptr(readFD), "redevplugin-control-read")
+	writeFile := os.NewFile(uintptr(writeFD), "redevplugin-control-write")
+	if readFile == nil || writeFile == nil {
+		os.Exit(32)
+	}
+	reader := bufio.NewReader(readFile)
+	encoder := json.NewEncoder(writeFile)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var frame hostRuntimeIPCFrame
+		if err := json.Unmarshal(line, &frame); err != nil {
+			os.Exit(33)
+		}
+		switch frame.FrameType {
 		case "heartbeat":
 			var heartbeat hostRuntimeHeartbeatPayload
 			_ = json.Unmarshal(frame.Payload, &heartbeat)
@@ -1347,36 +1134,21 @@ func runHostRuntimeProcessHelper() {
 				"host_sent_unix_nano":   heartbeat.SentUnixNano,
 			})
 			raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: true, Result: result})
-			_ = encoder.Encode(hostRuntimeIPCFrame{
-				IPCVersion:          version.RustIPCVersion,
-				FrameType:           "heartbeat",
-				RequestID:           frame.RequestID,
-				RuntimeGenerationID: frame.RuntimeGenerationID,
-				Payload:             raw,
-			})
-		case "invoke_worker":
-			hostRuntimeProcessNetworkExecute(reader, encoder, frame)
+			_ = encoder.Encode(hostRuntimeIPCFrame{IPCVersion: version.RustIPCVersion, FrameType: "heartbeat", RequestID: frame.RequestID, RuntimeGenerationID: frame.RuntimeGenerationID, Payload: raw})
 		case "revoke_epoch":
-			var revokePayload hostRuntimeRevokePayload
-			_ = json.Unmarshal(frame.Payload, &revokePayload)
+			var revoke hostRuntimeRevokePayload
+			_ = json.Unmarshal(frame.Payload, &revoke)
 			result, _ := json.Marshal(map[string]any{
-				"plugin_instance_id":          revokePayload.PluginInstanceID,
-				"revoke_epoch":                revokePayload.RevokeEpoch,
-				"closed_actor_count":          0,
+				"plugin_instance_id":          revoke.PluginInstanceID,
+				"revoke_epoch":                revoke.RevokeEpoch,
 				"closed_socket_count":         0,
 				"closed_stream_count":         0,
 				"closed_storage_handle_count": 0,
 			})
 			raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: true, Result: result})
-			_ = encoder.Encode(hostRuntimeIPCFrame{
-				IPCVersion:          version.RustIPCVersion,
-				FrameType:           "revoke_epoch_ack",
-				RequestID:           frame.RequestID,
-				RuntimeGenerationID: frame.RuntimeGenerationID,
-				Payload:             raw,
-			})
+			_ = encoder.Encode(hostRuntimeIPCFrame{IPCVersion: version.RustIPCVersion, FrameType: "revoke_epoch_ack", RequestID: frame.RequestID, RuntimeGenerationID: frame.RuntimeGenerationID, Payload: raw})
 		default:
-			os.Exit(21)
+			os.Exit(34)
 		}
 	}
 }

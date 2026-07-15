@@ -1,26 +1,26 @@
 {
   "schema_version": "redevplugin.contract_registry.v1",
   "matrix": {
-    "plugin_ui_protocol_version": "plugin-ui-v2",
+    "plugin_ui_protocol_version": "plugin-ui-v3",
     "plugin_host_protocol_version": "plugin-host-v2",
-    "rust_ipc_version": "rust-ipc-v1",
-    "wasm_abi_version": "redevplugin-wasm-worker-v1",
-    "manifest_schema_version": "manifest-v2",
+    "rust_ipc_version": "rust-ipc-v2",
+    "wasm_abi_version": "redevplugin-wasm-worker-v2",
+    "manifest_schema_version": "manifest-v3",
     "package_signature_schema_version": "package-signature-v1",
-    "release_metadata_schema_version": "release-metadata-v2",
+    "release_metadata_schema_version": "release-metadata-v3",
     "source_policy_schema_version": "source-policy-v1",
     "source_revocations_schema_version": "source-revocations-v1",
     "token_ticket_schema_version": "token-ticket-v2",
-    "bridge_schema_version": "bridge-v2",
-    "opaque_surface_document_schema_version": "opaque-surface-document-v1",
-    "opaque_surface_transport_schema_version": "opaque-surface-transport-v1",
+    "bridge_schema_version": "bridge-v3",
+    "opaque_surface_document_schema_version": "opaque-surface-document-v2",
+    "opaque_surface_transport_schema_version": "opaque-surface-transport-v2",
     "target_classifier_version": "target-classifier-v1",
     "network_grant_schema_version": "network-grant-v1",
-    "plugin_platform_openapi_version": "plugin-platform-v2",
-    "compatibility_manifest_version": "redevplugin.compatibility.v2",
-    "compatibility_schema_version": "compatibility-manifest-v2",
-    "release_manifest_schema_version": "release-manifest-v2",
-    "worker_invocation_schema_version": "worker-invocation-v1",
+    "plugin_platform_openapi_version": "plugin-platform-v3",
+    "compatibility_manifest_version": "redevplugin.compatibility.v3",
+    "compatibility_schema_version": "compatibility-manifest-v3",
+    "release_manifest_schema_version": "release-manifest-v3",
+    "worker_invocation_schema_version": "worker-invocation-v2",
     "host_capability_contract_schema_version": "host-capability-contract-v1",
     "host_capability_pin_schema_version": "host-capability-pin-v1",
     "host_capability_manifest_schema_version": "host-capability-manifest-v1",
@@ -33,12 +33,12 @@
   "contracts": [
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v2.yaml",
+      "path": "spec/openapi/plugin-platform-v3.yaml",
       "version_key": "plugin_platform_openapi_version"
     },
     {
       "id": "manifest-schema",
-      "path": "spec/plugin/manifest-v2.schema.json",
+      "path": "spec/plugin/manifest-v3.schema.json",
       "version_key": "manifest_schema_version"
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "id": "release-metadata-schema",
-      "path": "spec/plugin/release-metadata-v2.schema.json",
+      "path": "spec/plugin/release-metadata-v3.schema.json",
       "version_key": "release_metadata_schema_version"
     },
     {
@@ -68,32 +68,32 @@
     },
     {
       "id": "iframe-bridge-schema",
-      "path": "spec/plugin/bridge-v2.schema.json",
+      "path": "spec/plugin/bridge-v3.schema.json",
       "version_key": "bridge_schema_version"
     },
     {
       "id": "opaque-surface-document-schema",
-      "path": "spec/plugin/opaque-surface-document-v1.schema.json",
+      "path": "spec/plugin/opaque-surface-document-v2.schema.json",
       "version_key": "opaque_surface_document_schema_version"
     },
     {
       "id": "opaque-surface-transport-schema",
-      "path": "spec/plugin/opaque-surface-transport-v1.schema.json",
+      "path": "spec/plugin/opaque-surface-transport-v2.schema.json",
       "version_key": "opaque_surface_transport_schema_version"
     },
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v2.schema.json",
+      "path": "spec/plugin/compatibility-manifest-v3.schema.json",
       "version_key": "compatibility_schema_version"
     },
     {
       "id": "release-manifest-schema",
-      "path": "spec/plugin/release-manifest-v2.schema.json",
+      "path": "spec/plugin/release-manifest-v3.schema.json",
       "version_key": "release_manifest_schema_version"
     },
     {
       "id": "worker-invocation-schema",
-      "path": "spec/plugin/worker-invocation-v1.schema.json",
+      "path": "spec/plugin/worker-invocation-v2.schema.json",
       "version_key": "worker_invocation_schema_version"
     },
     {
@@ -133,12 +133,12 @@
     },
     {
       "id": "rust-ipc-schema",
-      "path": "spec/plugin/ipc-v1.schema.json",
+      "path": "spec/plugin/ipc-v2.schema.json",
       "version_key": "rust_ipc_version"
     },
     {
       "id": "wasm-worker-schema",
-      "path": "spec/plugin/wasm-worker-v1.schema.json",
+      "path": "spec/plugin/wasm-worker-v2.schema.json",
       "version_key": "wasm_abi_version"
     },
     {

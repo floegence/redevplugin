@@ -234,7 +234,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2285,7 +2285,7 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 
 	if _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
@@ -2558,7 +2558,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 	gateway, err := host.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2663,7 +2663,7 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 	_, err = h.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2733,7 +2733,7 @@ func TestReadSurfaceAssetRequiresAssetSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSurfaceAsset() error = %v", err)
 	}
-	if string(asset.Content) != "status" || asset.Entry.Path != preparedAsset.Path || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
+	if !bytes.Equal(asset.Content, validPNGForTest()) || asset.Entry.Path != preparedAsset.Path || asset.Session.SurfaceInstanceID != bootstrap.SurfaceInstanceID {
 		t.Fatalf("asset mismatch: session=%#v entry=%#v content=%q", asset.Session, asset.Entry, string(asset.Content))
 	}
 	originalAssets := h.adapters.Assets
@@ -3190,7 +3190,6 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
-			ClosedActorCount:         2,
 			ClosedSocketCount:        3,
 			ClosedStreamCount:        4,
 			ClosedStorageHandleCount: 5,
@@ -3241,7 +3240,6 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
 	}
-	assertAuditDetail(t, event, "closed_actor_count", 2)
 	assertAuditDetail(t, event, "closed_socket_count", 3)
 	assertAuditDetail(t, event, "closed_stream_count", 4)
 	assertAuditDetail(t, event, "closed_storage_handle_count", 5)
@@ -3936,7 +3934,7 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 	assertRuntimeLeaseField(t, "issued_at", !runtime.lastLease.IssuedAt.IsZero())
 	assertRuntimeLeaseField(t, "issued_at_unix_ms", runtime.lastLease.IssuedAtUnixMillis != 0)
 	assertRuntimeLeaseEqual(t, "runtime method", runtime.lastMethod, "worker.echo")
-	var payload WorkerInvocationPayload
+	var payload workerInvocationPayload
 	if err := json.Unmarshal(runtime.lastPayload, &payload); err != nil {
 		t.Fatal(err)
 	}
@@ -4007,6 +4005,7 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 		developerMode:      true,
 		localGenerated:     true,
 		runtimeSupervisor:  runtime,
+		storageBroker:      storage.NewMemoryBroker(),
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
@@ -4030,6 +4029,60 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 	params, ok := raw["params"].(map[string]any)
 	if !ok || len(params) != 0 {
 		t.Fatalf("worker payload params = %#v, want empty object", raw["params"])
+	}
+}
+
+func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T) {
+	runtime := &recordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		result: capability.Result{Data: map[string]any{"from_worker": true}},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode:      true,
+		localGenerated:     true,
+		runtimeSupervisor:  runtime,
+		storageBroker:      storage.NewMemoryBroker(),
+		connectivityBroker: connectivity.NewMemoryBroker(),
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerStorageFixturePackage(t), "worker.view")
+
+	if _, err := h.CallPluginMethod(context.Background(), CallMethodRequest{
+		PluginInstanceID:     installed.PluginInstanceID,
+		SurfaceInstanceID:    "surface_rpc",
+		SessionChannelIDHash: "channel_hash",
+		OwnerSessionHash:     "session_hash",
+		OwnerUserHash:        "user_hash",
+		BridgeChannelID:      "bridge_rpc",
+		GatewayToken:         gateway.GatewayToken,
+		Method:               "worker.echo",
+		Params:               map[string]any{"message": "store this"},
+	}); err != nil {
+		t.Fatalf("CallPluginMethod() worker error = %v", err)
+	}
+
+	var payload workerInvocationPayload
+	if err := json.Unmarshal(runtime.lastPayload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	grant := payload.StorageHandleGrants["workspace"]
+	if !strings.HasPrefix(grant, "handle_grant.") {
+		t.Fatalf("storage grant = %q, want host-minted handle grant", grant)
+	}
+	if payload.BrokerAccessSHA256 == "" || len(payload.BrokerAccess.Storage) != 1 || payload.BrokerAccess.Storage[0].StoreID != "workspace" {
+		t.Fatalf("worker broker access = %#v hash=%q", payload.BrokerAccess, payload.BrokerAccessSHA256)
+	}
+	wantAccessHash, err := workerBrokerAccessHash(payload.BrokerAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.BrokerAccessSHA256 != wantAccessHash {
+		t.Fatalf("broker access hash = %q, want %q", payload.BrokerAccessSHA256, wantAccessHash)
+	}
+	if _, leaked := payload.Params["storage_handle_grant_token"]; leaked {
+		t.Fatalf("plugin params leaked storage grant: %#v", payload.Params)
+	}
+	if strings.Contains(string(runtime.lastPayload), `"storage_handle_grant_token"`) {
+		t.Fatalf("worker payload retained the legacy plugin-visible grant field: %s", runtime.lastPayload)
 	}
 }
 
@@ -6378,6 +6431,12 @@ func TestEnableEnsuresManifestStorageNamespaces(t *testing.T) {
 	}
 }
 
+func TestStorageQuotaFilesFromManifestUsesBoundedDefault(t *testing.T) {
+	if got := storageQuotaFilesFromManifest(nil); got != manifest.DefaultStoreQuotaFiles {
+		t.Fatalf("storageQuotaFilesFromManifest(nil) = %d, want %d", got, manifest.DefaultStoreQuotaFiles)
+	}
+}
+
 func TestMintStorageHandleGrantBindsStoreAndQuota(t *testing.T) {
 	storageBroker := storage.NewMemoryBroker()
 	host, _, audits := newTestHostWithStorage(t, true, true, storageBroker)
@@ -7468,7 +7527,6 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	runtime := &recordingRuntimeSupervisor{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
 		revokeResult: runtimeclient.RevokeResult{
-			ClosedActorCount:         7,
 			ClosedSocketCount:        8,
 			ClosedStreamCount:        9,
 			ClosedStorageHandleCount: 10,
@@ -7511,7 +7569,6 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing runtime capability revocation audit event: %#v", audits.events)
 	}
-	assertAuditDetail(t, event, "closed_actor_count", 7)
 	assertAuditDetail(t, event, "closed_socket_count", 8)
 	assertAuditDetail(t, event, "closed_stream_count", 9)
 	assertAuditDetail(t, event, "closed_storage_handle_count", 10)
@@ -7631,6 +7688,55 @@ func TestUninstallDeletesFileStorageNamespaces(t *testing.T) {
 	}
 	if len(namespaces) != 0 {
 		t.Fatalf("deleted storage namespaces still listed: %#v", namespaces)
+	}
+}
+
+func TestEnableEnsuresSQLiteNamespaceWithoutExecutingPluginDDL(t *testing.T) {
+	ctx := context.Background()
+	broker, err := storage.NewFileBroker(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileBroker() error = %v", err)
+	}
+	h, _, _ := newTestHostWithStorage(t, true, true, broker)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildSQLiteNamespaceFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID),
+	})
+	if err != nil {
+		t.Fatalf("EnablePlugin() error = %v", err)
+	}
+	namespaces, err := broker.ListNamespaces(ctx, enabled.PluginInstanceID)
+	if err != nil {
+		t.Fatalf("ListNamespaces() error = %v", err)
+	}
+	if len(namespaces) != 1 || namespaces[0].StoreID != "notes" || namespaces[0].Kind != storage.StoreSQLite {
+		t.Fatalf("enabled SQLite namespaces = %#v", namespaces)
+	}
+	_, err = broker.QuerySQLite(ctx, storage.SQLiteQueryRequest{
+		PluginInstanceID: enabled.PluginInstanceID,
+		StoreID:          "notes",
+		Database:         "notes.sqlite",
+		SQL:              "SELECT count(*) FROM notes",
+		MaxRows:          1,
+	})
+	if !errors.Is(err, storage.ErrFileNotFound) {
+		t.Fatalf("QuerySQLite() after enable error = %v, want absent plugin-owned database", err)
+	}
+	if _, err := h.DisablePlugin(ctx, DisableRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID),
+	}); err != nil {
+		t.Fatalf("DisablePlugin() error = %v", err)
+	}
+	if _, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:   enabled.PluginInstanceID,
+		PluginStateVersion: mustPluginStateVersion(t, h, enabled.PluginInstanceID),
+	}); err != nil {
+		t.Fatalf("EnablePlugin() second call error = %v", err)
 	}
 }
 
@@ -8574,6 +8680,18 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func buildSQLiteNamespaceFixturePackage(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "manifest.json"), sqliteNamespaceFixtureManifestJSON())
+	writeSurfaceFixture(t, dir, "SQLite Namespace")
+	var buf bytes.Buffer
+	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func buildSettingsFixturePackage(t *testing.T) []byte {
 	t.Helper()
 	dir := t.TempDir()
@@ -8911,22 +9029,8 @@ func buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t *testing.T) []
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Worker Network Stream Memory Hostcall")
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"max_chunk_bytes":4,"max_buffered_bytes":65536,"timeout_ms":1000,"content_type":"text/plain"}`)
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "redevplugin_worker_invoke", request))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
-	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-func buildWorkerNetworkHostcallFixturePackage(t *testing.T) []byte {
-	t.Helper()
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
-	writeSurfaceFixture(t, dir, "Worker Network Hostcall")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedHostcallWorkerWASMForTest("redevplugin.network", "http_request_demo", "redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", "redevplugin_worker_invoke", request))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.network"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -8940,7 +9044,7 @@ func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Network Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.network"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -8954,7 +9058,7 @@ func buildWorkerNetworkTransportMemoryHostcallFixturePackage(t *testing.T, trans
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerNetworkTransportFixtureManifestJSON(transport))
 	writeSurfaceFixture(t, dir, "Worker Network Transport Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkTransportMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke", transport))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.network"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -8967,8 +9071,8 @@ func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage")
-	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -8982,7 +9086,7 @@ func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -8996,7 +9100,7 @@ func buildWorkerStorageKVMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageKVFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage KV Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageKVMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -9010,7 +9114,7 @@ func buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), workerStorageSQLiteFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Worker Storage SQLite Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageSQLiteMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
-	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSON("redevplugin_worker_invoke"))
+	writeFile(t, filepath.Join(dir, "workers", "abi.json"), workerFixtureABIJSONWithImports([]string{"redevplugin.storage"}, "redevplugin_worker_invoke"))
 	var buf bytes.Buffer
 	if _, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
 		t.Fatal(err)
@@ -9051,7 +9155,15 @@ func writeSurfaceFixture(t *testing.T, dir string, title string) {
 	t.Helper()
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), fixtureSurfaceHTML(title))
 	writeFile(t, filepath.Join(dir, "ui", "assets", "app.js"), "void 0;")
-	writeFile(t, filepath.Join(dir, "ui", "assets", "status.png"), "status")
+	writeBytes(t, filepath.Join(dir, "ui", "assets", "status.png"), validPNGForTest())
+}
+
+func validPNGForTest() []byte {
+	raw, err := hex.DecodeString("89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082")
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
 func fixtureSurfaceHTML(title string) string {
@@ -9092,59 +9204,20 @@ func addIntentToManifestJSON(t *testing.T, manifestJSON string, dangerous bool) 
 }
 
 func minimalWorkerWASMForTest(exportName string) []byte {
-	exportNameBytes := []byte(exportName)
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-		0x03, 0x02, 0x01, 0x00,
-		0x07,
-	}
-	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, 0x00)
-	module = append(module, byte(len(exportPayload)))
-	module = append(module, exportPayload...)
-	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
-	return module
+	response := []byte(`{"ok":true,"data":{"backend":"executed wasm worker scaffold","transport":"rust runtime ipc","method":"worker.echo","worker_id":"echo_worker"}}`)
+	return abiV2WorkerWASMForTest(exportName, response, nil)
 }
 
-func storageHostcallWorkerWASMForTest(exportName string) []byte {
-	return importedHostcallWorkerWASMForTest("redevplugin.storage", "files_write_demo", exportName)
-}
-
-func importedHostcallWorkerWASMForTest(importModule string, importName string, exportName string) []byte {
-	exportNameBytes := []byte(exportName)
-	importModuleBytes := []byte(importModule)
-	importNameBytes := []byte(importName)
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x07, 0x02,
-		0x60, 0x00, 0x00,
-		0x60, 0x00, 0x00,
-		0x02,
-	}
-	importPayload := []byte{0x01, byte(len(importModuleBytes))}
-	importPayload = append(importPayload, importModuleBytes...)
-	importPayload = append(importPayload, byte(len(importNameBytes)))
-	importPayload = append(importPayload, importNameBytes...)
-	importPayload = append(importPayload, 0x00, 0x00)
-	module = append(module, byte(len(importPayload)))
-	module = append(module, importPayload...)
-	module = append(module, 0x03, 0x02, 0x01, 0x01, 0x07)
-	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, 0x01)
-	module = append(module, byte(len(exportPayload)))
-	module = append(module, exportPayload...)
-	module = append(module, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b)
-	return module
+type wasmHostcallFixture struct {
+	importModule  string
+	importName    string
+	responseField string
+	request       []byte
 }
 
 func networkMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", exportName, request)
 }
 
 func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transport connectivity.Transport) []byte {
@@ -9159,79 +9232,172 @@ func networkTransportMemoryHostcallWorkerWASMForTest(exportName string, transpor
 	default:
 		request = []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}`)
 	}
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", exportName, request)
 }
 
 func storageMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "files", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "files", "storage_file", exportName, request)
 }
 
 func storageKVMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"store_id":"cache","operation":"put","key":"runs/latest","value_base64":"aGVsbG8gZnJvbSBtZW1vcnkga3YgaG9zdGNhbGw=","max_bytes":0,"max_entries":0}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "kv", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "kv", "storage_kv", exportName, request)
 }
 
 func storageSQLiteMemoryHostcallWorkerWASMForTest(exportName string) []byte {
 	request := []byte(`{"store_id":"db","operation":"exec","database":"plugin.sqlite","sql":"CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)","args":[],"timeout_ms":1000}`)
-	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "sqlite", exportName, request)
+	return importedMemoryHostcallWorkerWASMForTest("redevplugin.storage", "sqlite", "storage_sqlite", exportName, request)
 }
 
-func importedMemoryHostcallWorkerWASMForTest(importModuleName string, importNameName string, exportName string, request []byte) []byte {
-	exportNameBytes := []byte(exportName)
-	importModule := []byte(importModuleName)
-	importName := []byte(importNameName)
-	module := []byte{
-		0x00, 0x61, 0x73, 0x6d,
-		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x0c, 0x02,
-		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
-		0x60, 0x00, 0x00,
-		0x02,
-	}
-	importPayload := []byte{0x01, byte(len(importModule))}
-	importPayload = append(importPayload, importModule...)
-	importPayload = append(importPayload, byte(len(importName)))
-	importPayload = append(importPayload, importName...)
-	importPayload = append(importPayload, 0x00, 0x00)
-	module = appendLEBUint32(module, uint32(len(importPayload)))
-	module = append(module, importPayload...)
-	module = append(module,
-		0x03, 0x02, 0x01, 0x01,
-		0x05, 0x03, 0x01, 0x00, 0x01,
-		0x07,
+func importedMemoryHostcallWorkerWASMForTest(importModule string, importName string, responseField string, exportName string, request []byte) []byte {
+	return abiV2WorkerWASMForTest(exportName, nil, &wasmHostcallFixture{
+		importModule:  importModule,
+		importName:    importName,
+		responseField: responseField,
+		request:       request,
+	})
+}
+
+func abiV2WorkerWASMForTest(exportName string, staticResponse []byte, hostcall *wasmHostcallFixture) []byte {
+	const (
+		outputPointer            = int32(64 * 1024)
+		requestAllocationPointer = int32(512 * 1024)
+		hostcallResponseCapacity = int32(256 * 1024)
 	)
-	exportPayload := []byte{0x02, 0x06}
-	exportPayload = append(exportPayload, []byte("memory")...)
-	exportPayload = append(exportPayload, 0x02, 0x00, byte(len(exportNameBytes)))
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, 0x01)
-	module = appendLEBUint32(module, uint32(len(exportPayload)))
-	module = append(module, exportPayload...)
-	module = append(module, 0x0a)
-	codePayload := []byte{0x01}
-	body := []byte{
-		0x00,
-		0x41, 0x00,
-		0x41,
+	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+
+	types := []byte{0x04}
+	types = append(types,
+		0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f,
+		0x60, 0x01, 0x7f, 0x01, 0x7f,
+		0x60, 0x02, 0x7f, 0x7f, 0x00,
+		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e,
+	)
+	module = appendWASMSection(module, 0x01, types)
+
+	importedFunctionCount := uint32(0)
+	if hostcall != nil {
+		imports := []byte{0x01}
+		imports = appendWASMName(imports, hostcall.importModule)
+		imports = appendWASMName(imports, hostcall.importName)
+		imports = append(imports, 0x00, 0x00)
+		module = appendWASMSection(module, 0x02, imports)
+		importedFunctionCount = 1
 	}
-	body = appendLEBInt32(body, int32(len(request)))
+	module = appendWASMSection(module, 0x03, []byte{0x03, 0x01, 0x02, 0x03})
+	module = appendWASMSection(module, 0x05, []byte{0x01, 0x00, 0x10})
+
+	exports := []byte{0x04}
+	exports = appendWASMName(exports, "memory")
+	exports = append(exports, 0x02, 0x00)
+	exports = appendWASMName(exports, "redevplugin_worker_alloc")
+	exports = append(exports, 0x00)
+	exports = appendLEBUint32(exports, importedFunctionCount)
+	exports = appendWASMName(exports, "redevplugin_worker_dealloc")
+	exports = append(exports, 0x00)
+	exports = appendLEBUint32(exports, importedFunctionCount+1)
+	exports = appendWASMName(exports, exportName)
+	exports = append(exports, 0x00)
+	exports = appendLEBUint32(exports, importedFunctionCount+2)
+	module = appendWASMSection(module, 0x07, exports)
+
+	allocBody := []byte{0x00, 0x41}
+	allocBody = appendLEBInt32(allocBody, requestAllocationPointer)
+	allocBody = append(allocBody, 0x0b)
+	deallocBody := []byte{0x00, 0x0b}
+	invokeBody := []byte{0x00}
+	dataSegments := make([]struct {
+		offset int32
+		data   []byte
+	}, 0, 2)
+
+	if hostcall == nil {
+		invokeBody = appendPackedWASMResponse(invokeBody, outputPointer, nil, int32(len(staticResponse)))
+		dataSegments = append(dataSegments, struct {
+			offset int32
+			data   []byte
+		}{offset: outputPointer, data: staticResponse})
+	} else {
+		prefix := []byte(`{"ok":true,"data":{"` + hostcall.responseField + `":`)
+		suffix := []byte(`}}`)
+		invokeBody = []byte{0x01, 0x01, 0x7f, 0x41, 0x00, 0x41}
+		invokeBody = appendLEBInt32(invokeBody, int32(len(hostcall.request)))
+		invokeBody = append(invokeBody, 0x41)
+		invokeBody = appendLEBInt32(invokeBody, outputPointer+int32(len(prefix)))
+		invokeBody = append(invokeBody, 0x41)
+		invokeBody = appendLEBInt32(invokeBody, hostcallResponseCapacity)
+		invokeBody = append(invokeBody, 0x10, 0x00, 0x21, 0x02)
+		for index, value := range suffix {
+			invokeBody = append(invokeBody, 0x41)
+			invokeBody = appendLEBInt32(invokeBody, outputPointer+int32(len(prefix)))
+			invokeBody = append(invokeBody, 0x20, 0x02, 0x6a, 0x41)
+			invokeBody = appendLEBInt32(invokeBody, int32(index))
+			invokeBody = append(invokeBody, 0x6a, 0x41)
+			invokeBody = appendLEBInt32(invokeBody, int32(value))
+			invokeBody = append(invokeBody, 0x3a, 0x00, 0x00)
+		}
+		invokeBody = appendPackedWASMResponse(invokeBody, outputPointer, []byte{0x20, 0x02}, int32(len(prefix)+len(suffix)))
+		dataSegments = append(dataSegments,
+			struct {
+				offset int32
+				data   []byte
+			}{offset: 0, data: hostcall.request},
+			struct {
+				offset int32
+				data   []byte
+			}{offset: outputPointer, data: prefix},
+		)
+	}
+	invokeBody = append(invokeBody, 0x0b)
+	code := []byte{0x03}
+	code = appendWASMFunctionBody(code, allocBody)
+	code = appendWASMFunctionBody(code, deallocBody)
+	code = appendWASMFunctionBody(code, invokeBody)
+	module = appendWASMSection(module, 0x0a, code)
+
+	data := appendLEBUint32(nil, uint32(len(dataSegments)))
+	for _, segment := range dataSegments {
+		data = append(data, 0x00, 0x41)
+		data = appendLEBInt32(data, segment.offset)
+		data = append(data, 0x0b)
+		data = appendLEBUint32(data, uint32(len(segment.data)))
+		data = append(data, segment.data...)
+	}
+	return appendWASMSection(module, 0x0b, data)
+}
+
+func appendPackedWASMResponse(body []byte, responsePointer int32, dynamicLength []byte, staticLength int32) []byte {
 	body = append(body, 0x41)
-	body = appendLEBInt32(body, 512)
-	body = append(body, 0x41)
-	body = appendLEBInt32(body, 512)
-	body = append(body, 0x10, 0x00, 0x1a, 0x0b)
-	codePayload = appendLEBUint32(codePayload, uint32(len(body)))
-	codePayload = append(codePayload, body...)
-	module = appendLEBUint32(module, uint32(len(codePayload)))
-	module = append(module, codePayload...)
-	module = append(module, 0x0b)
-	dataPayload := []byte{0x01, 0x00, 0x41, 0x00, 0x0b}
-	dataPayload = appendLEBUint32(dataPayload, uint32(len(request)))
-	dataPayload = append(dataPayload, request...)
-	module = appendLEBUint32(module, uint32(len(dataPayload)))
-	module = append(module, dataPayload...)
-	return module
+	body = appendLEBInt32(body, responsePointer)
+	body = append(body, 0xad, 0x42, 0x20, 0x86)
+	if len(dynamicLength) > 0 {
+		body = append(body, dynamicLength...)
+		body = append(body, 0xad, 0x41)
+		body = appendLEBInt32(body, staticLength)
+		body = append(body, 0xad, 0x7c)
+	} else {
+		body = append(body, 0x41)
+		body = appendLEBInt32(body, staticLength)
+		body = append(body, 0xad)
+	}
+	return append(body, 0x84)
+}
+
+func appendWASMSection(module []byte, sectionID byte, payload []byte) []byte {
+	module = append(module, sectionID)
+	module = appendLEBUint32(module, uint32(len(payload)))
+	return append(module, payload...)
+}
+
+func appendWASMName(out []byte, value string) []byte {
+	out = appendLEBUint32(out, uint32(len(value)))
+	return append(out, value...)
+}
+
+func appendWASMFunctionBody(out []byte, body []byte) []byte {
+	out = appendLEBUint32(out, uint32(len(body)))
+	return append(out, body...)
 }
 
 func appendLEBUint32(out []byte, value uint32) []byte {
@@ -9264,14 +9430,22 @@ func appendLEBInt32(out []byte, value int32) []byte {
 }
 
 func workerFixtureABIJSON(exports ...string) string {
+	return workerFixtureABIJSONWithImports(nil, exports...)
+}
+
+func workerFixtureABIJSONWithImports(imports []string, exports ...string) string {
 	rawExports, err := json.Marshal(exports)
 	if err != nil {
 		panic(err)
 	}
+	rawImports, err := json.Marshal(imports)
+	if err != nil {
+		panic(err)
+	}
 	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
 		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
+		"  \"imports\": " + string(rawImports) + "\n" +
 		"}\n"
 }
 
@@ -9284,7 +9458,7 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
@@ -9292,7 +9466,7 @@ func lifecycleManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
@@ -9302,7 +9476,7 @@ func lifecycleManifestJSON(version string, title string) string {
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
@@ -9310,7 +9484,7 @@ func storageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
@@ -9358,9 +9532,47 @@ func storageFixtureManifestJSON() string {
 	}`
 }
 
+func sqliteNamespaceFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redevplugin.manifest.v3",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.sqlite-namespace",
+			"display_name": "SQLite Namespace",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v3"
+		},
+		"surfaces": [
+			{"surface_id": "sqlite.view", "kind": "view", "label": "SQLite Namespace", "entry": "ui/index.html"}
+		],
+		"storage": {
+			"stores": [{
+				"store_id": "notes",
+				"kind": "sqlite",
+				"scope": "user",
+				"quota_bytes": 65536,
+				"quota_files": 4,
+				"schema_version": 1,
+				"migration": {
+					"from_version": 0,
+					"to_version": 1,
+					"reversible": true,
+					"requires_worker": true,
+					"estimated_bytes": 0,
+					"max_duration_ms": 1000,
+					"data_loss_risk": false,
+					"steps_hash": "sha256:sqlite-worker-migration-test"
+				}
+			}]
+		}
+	}`
+}
+
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
@@ -9368,7 +9580,7 @@ func settingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
@@ -9400,7 +9612,7 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 		version = "1.0.0"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.migration",
@@ -9408,7 +9620,7 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "migration.view", "kind": "view", "label": "Migration", "entry": "ui/index.html"}
@@ -9458,7 +9670,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
@@ -9466,7 +9678,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
@@ -9485,7 +9697,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
@@ -9493,7 +9705,7 @@ func dangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
@@ -9512,7 +9724,7 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
@@ -9520,7 +9732,7 @@ func operationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
@@ -9539,7 +9751,7 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
@@ -9547,7 +9759,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
@@ -9566,7 +9778,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
@@ -9574,7 +9786,7 @@ func coreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
@@ -9605,14 +9817,7 @@ func workerMethodSchemasJSON() string {
 				"type": "object",
 				"additionalProperties": false,
 				"properties": {
-					"message": {"type": "string"},
-					"network_body_base64": {"type": "string"},
-					"storage_handle_grant_token": {"type": "string"},
-					"storage_store_id": {"type": "string"},
-					"storage_path": {"type": "string"},
-					"storage_data_base64": {"type": "string"},
-					"storage_kv_handle_grant_token": {"type": "string"},
-					"storage_sqlite_handle_grant_token": {"type": "string"}
+					"message": {"type": "string"}
 				}
 			},
 			"response_schema": {
@@ -9663,7 +9868,7 @@ func workerMethodSchemasJSON() string {
 					},
 					"storage_file_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "path": {"type": "string"}, "size_bytes": {"type": "integer"}, "usage": {"$ref": "#/$defs/storage_usage"}}},
 					"storage_kv_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "key": {"type": "string"}, "size_bytes": {"type": "integer"}, "usage": {"$ref": "#/$defs/storage_usage"}}},
-					"storage_sqlite_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "database": {"type": "string"}, "usage": {"$ref": "#/$defs/storage_usage"}}}
+						"storage_sqlite_result": {"type": "object", "additionalProperties": false, "properties": {"ok": {"type": "boolean"}, "database": {"type": "string"}, "rows_affected": {"type": "integer", "minimum": 0}, "last_insert_id": {"type": "integer", "minimum": 0}, "usage": {"$ref": "#/$defs/storage_usage"}}}
 				},
 				"properties": {
 					"from_worker": {"type": "boolean"},
@@ -9688,7 +9893,7 @@ func workerMethodSchemasJSON() string {
 
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -9696,7 +9901,7 @@ func workerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9705,7 +9910,7 @@ func workerFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -9726,7 +9931,7 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
@@ -9734,7 +9939,7 @@ func workerNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9743,7 +9948,7 @@ func workerNetworkFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -9753,9 +9958,10 @@ func workerNetworkFixtureManifestJSON() string {
 		"methods": [
 			{
 				"method": "worker.echo",
-				"effect": "read",
+				"effect": "write",
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
+				` + workerNetworkBrokerAccessJSON(connectivity.TransportHTTP) + `
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -9765,6 +9971,19 @@ func workerNetworkFixtureManifestJSON() string {
 			]
 		}
 	}`
+}
+
+func workerNetworkBrokerAccessJSON(transport connectivity.Transport) string {
+	switch transport {
+	case connectivity.TransportWebSocket:
+		return `"broker_access": {"network": [{"connector_id": "stream", "transport": "websocket", "operations": ["websocket_round_trip"]}]},`
+	case connectivity.TransportTCP:
+		return `"broker_access": {"network": [{"connector_id": "mysql", "transport": "tcp", "operations": ["tcp_round_trip"]}]},`
+	case connectivity.TransportUDP:
+		return `"broker_access": {"network": [{"connector_id": "metrics", "transport": "udp", "operations": ["udp_round_trip"]}]},`
+	default:
+		return `"broker_access": {"network": [{"connector_id": "api", "transport": "http", "operations": ["http", "http_stream"], "http_methods": ["GET", "POST"]}]},`
+	}
 }
 
 func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport) string {
@@ -9778,7 +9997,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network.transport",
@@ -9786,7 +10005,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9795,48 +10014,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
-				"mode": "job",
-				"scope": "user",
-				"memory_limit_bytes": 16777216,
-				"idle_timeout_ms": 0
-			}
-		],
-		"methods": [
-			{
-				"method": "worker.echo",
-				"effect": "read",
-				"execution": "sync",
-				` + workerMethodSchemasJSON() + `
-				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
-			}
-		],
-		"network_access": {
-			"connectors": [` + connector + `]
-		}
-	}`
-}
-
-func workerStorageFixtureManifestJSON() string {
-	return `{
-		"schema_version": "redevplugin.manifest.v2",
-		"publisher": {"publisher_id": "example", "display_name": "Example"},
-		"plugin": {
-			"plugin_id": "com.example.worker.storage",
-			"display_name": "Worker Storage",
-			"version": "1.0.0",
-			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
-		},
-		"surfaces": [
-			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
-		],
-		"workers": [
-			{
-				"worker_id": "echo_worker",
-				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -9849,6 +10027,49 @@ func workerStorageFixtureManifestJSON() string {
 				"effect": "write",
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
+				` + workerNetworkBrokerAccessJSON(transport) + `
+				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
+			}
+		],
+		"network_access": {
+			"connectors": [` + connector + `]
+		}
+	}`
+}
+
+func workerStorageFixtureManifestJSON() string {
+	return `{
+		"schema_version": "redevplugin.manifest.v3",
+		"publisher": {"publisher_id": "example", "display_name": "Example"},
+		"plugin": {
+			"plugin_id": "com.example.worker.storage",
+			"display_name": "Worker Storage",
+			"version": "1.0.0",
+			"api_version": "plugin-v1",
+			"min_runtime_version": "0.1.0",
+			"ui_protocol_version": "plugin-ui-v3"
+		},
+		"surfaces": [
+			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
+		],
+		"workers": [
+			{
+				"worker_id": "echo_worker",
+				"artifact": "workers/echo.wasm",
+				"abi": "redevplugin-wasm-worker-v2",
+				"mode": "job",
+				"scope": "user",
+				"memory_limit_bytes": 16777216,
+				"idle_timeout_ms": 0
+			}
+		],
+		"methods": [
+			{
+				"method": "worker.echo",
+				"effect": "write",
+				"execution": "sync",
+				` + workerMethodSchemasJSON() + `
+				"broker_access": {"storage": [{"store_id": "workspace", "operations": ["read", "write", "delete", "list"]}]},
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -9878,7 +10099,7 @@ func workerStorageFixtureManifestJSON() string {
 
 func workerStorageKVFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.kv",
@@ -9886,7 +10107,7 @@ func workerStorageKVFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9895,7 +10116,7 @@ func workerStorageKVFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -9908,6 +10129,7 @@ func workerStorageKVFixtureManifestJSON() string {
 				"effect": "write",
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
+				"broker_access": {"storage": [{"store_id": "cache", "operations": ["get", "put", "delete", "list"]}]},
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -9937,7 +10159,7 @@ func workerStorageKVFixtureManifestJSON() string {
 
 func workerStorageSQLiteFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.sqlite",
@@ -9945,7 +10167,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9954,7 +10176,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216,
@@ -9967,6 +10189,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 				"effect": "write",
 				"execution": "sync",
 				` + workerMethodSchemasJSON() + `
+				"broker_access": {"storage": [{"store_id": "db", "operations": ["exec", "query"]}]},
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		],
@@ -10000,7 +10223,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",
@@ -10008,7 +10231,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}
@@ -10110,7 +10333,7 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -10461,7 +10684,7 @@ func releaseMetadataBytesForPackage(t *testing.T, ref PluginReleaseRef, pkg plug
 func releaseMetadataBytesForRelease(t *testing.T, ref PluginReleaseRef, release PluginPackageRelease) []byte {
 	t.Helper()
 	raw, err := json.Marshal(signedReleaseMetadata{
-		SchemaVersion:            "redevplugin.release_metadata.v2",
+		SchemaVersion:            "redevplugin.release_metadata.v3",
 		SourceID:                 release.SourceID,
 		ReleaseMetadataRef:       ref.ReleaseMetadataRef,
 		PublisherID:              release.PublisherID,
@@ -10553,7 +10776,7 @@ func releaseForPackage(ref PluginReleaseRef, pkg pluginpkg.Package) PluginPackag
 		Compatibility: &ReleaseCompatibility{
 			MinReDevPluginVersion: "0.1.0",
 			MinRuntimeVersion:     "0.1.0",
-			UIProtocolVersion:     "plugin-ui-v2",
+			UIProtocolVersion:     "plugin-ui-v3",
 		},
 	}
 }

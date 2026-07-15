@@ -15,7 +15,7 @@ import (
 
 func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,14 +33,14 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	}
 
 	props := requireNestedObject(t, schema, "properties")
-	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v2" {
+	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.manifest.v3" {
 		t.Fatalf("schema_version const = %#v", got)
 	}
 	pluginProps := requireNestedObject(t, props, "plugin", "properties")
 	if got := requireNestedObject(t, pluginProps, "api_version")["const"]; got != "plugin-v1" {
 		t.Fatalf("plugin.api_version const = %#v", got)
 	}
-	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v2" {
+	if got := requireNestedObject(t, pluginProps, "ui_protocol_version")["const"]; got != "plugin-ui-v3" {
 		t.Fatalf("plugin.ui_protocol_version const = %#v", got)
 	}
 
@@ -76,6 +76,15 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 		string(manifest.MethodExecutionOperation),
 		string(manifest.MethodExecutionSubscription),
 	})
+	brokerAccess := requireNestedObject(t, methodProps, "broker_access")
+	if brokerAccess["additionalProperties"] != false {
+		t.Fatalf("method broker_access additionalProperties = %#v, want false", brokerAccess["additionalProperties"])
+	}
+	storageBroker := requireNestedObject(t, brokerAccess, "properties", "storage", "items")
+	assertStringSet(t, requireStringSlice(t, storageBroker["required"], "storage broker required"), []string{"store_id", "operations"}, "storage broker required")
+	networkBroker := requireNestedObject(t, brokerAccess, "properties", "network", "items")
+	assertStringSet(t, requireStringSlice(t, networkBroker["required"], "network broker required"), []string{"connector_id", "transport", "operations"}, "network broker required")
+	assertStringEnum(t, requireNestedObject(t, networkBroker, "properties", "transport")["enum"], "network broker transport", []string{"http", "websocket", "tcp", "udp"})
 	route := requireNestedObject(t, methodProps, "route")
 	if route["additionalProperties"] != false {
 		t.Fatalf("method route additionalProperties = %#v, want false", route["additionalProperties"])
@@ -128,17 +137,22 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 	if got := requireNestedObject(t, workerProps, "abi")["const"]; got != version.WASMABIVersion {
 		t.Fatalf("worker abi const = %#v, want %q", got, version.WASMABIVersion)
 	}
-	assertStringEnum(t, requireNestedObject(t, workerProps, "mode")["enum"], "worker mode", []string{
-		string(manifest.WorkerModeJob),
-		string(manifest.WorkerModeActor),
-	})
+	if got := requireNestedObject(t, workerProps, "mode")["const"]; got != string(manifest.WorkerModeJob) {
+		t.Fatalf("worker mode const = %#v, want %q", got, manifest.WorkerModeJob)
+	}
 	assertStringEnum(t, requireNestedObject(t, workerProps, "scope")["enum"], "worker scope", []string{"user", "environment"})
+	if got := requireNestedObject(t, workerProps, "memory_limit_bytes")["maximum"]; got != float64(manifest.MaxWorkerMemoryLimitBytes) {
+		t.Fatalf("worker memory maximum = %#v, want %d", got, manifest.MaxWorkerMemoryLimitBytes)
+	}
 
 	storageProps := requireNestedObject(t, props, "storage", "properties", "stores", "items", "properties")
 	assertStringEnum(t, requireNestedObject(t, storageProps, "kind")["enum"], "storage kind", []string{"kv", "files", "sqlite"})
 	assertStringEnum(t, requireNestedObject(t, storageProps, "scope")["enum"], "storage scope", []string{"user", "environment"})
 	if _, ok := storageProps["quota_files"].(map[string]any); !ok {
 		t.Fatal("storage store schema missing quota_files")
+	}
+	if _, ok := storageProps["sqlite_bootstrap"]; ok {
+		t.Fatal("manifest v3 must not expose Host-owned sqlite_bootstrap")
 	}
 	migration := requireNestedObject(t, schema, "$defs", "migration")
 	if migration["additionalProperties"] != false {
@@ -168,7 +182,7 @@ func TestManifestSchemaMatchesGoManifestContract(t *testing.T) {
 
 func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	root := repoRoot(t)
-	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v2.schema.json"))
+	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "manifest-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,10 +195,10 @@ func TestManifestMethodSchemaMachineContractMatchesGoValidation(t *testing.T) {
 	if err := compiler.AddResource("https://schemas.redevplugin.dev/plugin/host-capability-pin-v1.schema.json", bytes.NewReader(pinSchemaRaw)); err != nil {
 		t.Fatal(err)
 	}
-	if err := compiler.AddResource("urn:redevplugin:manifest-v2", bytes.NewReader(schemaRaw)); err != nil {
+	if err := compiler.AddResource("urn:redevplugin:manifest-v3", bytes.NewReader(schemaRaw)); err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := compiler.Compile("urn:redevplugin:manifest-v2")
+	compiled, err := compiler.Compile("urn:redevplugin:manifest-v3")
 	if err != nil {
 		t.Fatal(err)
 	}

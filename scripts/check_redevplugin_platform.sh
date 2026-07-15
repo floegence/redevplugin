@@ -76,7 +76,7 @@ export GOWORK=off
   fi
   go run ./cmd/redevplugin scaffold com.example.smoke "Smoke Plugin" "$tmp_scaffold_dir" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_scaffold_dir/manifest.json" >/dev/null
-  go run ./cmd/redevplugin package "$tmp_scaffold_dir" "$tmp_package" >/dev/null
+  go run ./cmd/redevplugin package "$tmp_scaffold_dir/dist" "$tmp_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_package" >/dev/null
   go run ./cmd/redevplugin keygen test-key "$tmp_private_key" "$tmp_public_key" >/dev/null
   go run ./cmd/redevplugin sign "$tmp_package" "$tmp_private_key" "$tmp_signed_package" >/dev/null
@@ -102,8 +102,9 @@ if command -v npm >/dev/null 2>&1; then
   (
     cd "$ROOT_DIR"
     npm run typecheck
-    npm run test:demo
-    npm run test:demo:browser
+    npm run examples:typecheck
+    npm run test:browser-harness
+    npm run test:browser-harness:smoke
   )
 else
   echo "npm not found; skipping TypeScript check" >&2

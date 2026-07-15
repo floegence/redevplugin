@@ -6,8 +6,8 @@ allow = [
   "ISC",
   "MIT",
   "Unicode-3.0",
+  "Zlib",
 ]
 
 [advisories]
 ignore = []
-

@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	"github.com/tetratelabs/wazero"
 	"golang.org/x/net/html"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -64,6 +66,7 @@ const PackageSignaturePath = "signatures/package.sig"
 const PackageSignatureSchemaVersion = "redevplugin.package_signature.v1"
 const PackageSignatureAlgorithmEd25519 = "ed25519"
 const workerABIPath = "workers/abi.json"
+const maxWASMTableElements uint32 = 65_536
 
 var serviceWorkerDependencyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bnavigator\s*(?:\?\s*)?\.\s*serviceWorker\b`),
@@ -587,6 +590,7 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		return err
 	}
 	workerExports := map[string]map[string]struct{}{}
+	actualImports := map[string]struct{}{}
 	for i, worker := range m.Workers {
 		artifact, err := validateEntryPath(worker.Artifact)
 		if err != nil {
@@ -596,18 +600,23 @@ func validateManifestArtifacts(m manifest.Manifest, files map[string][]byte) err
 		if !ok {
 			return fmt.Errorf("workers[%d].artifact %q is not present in package", i, artifact)
 		}
-		exports, err := wasmExports(content)
+		contract, err := inspectWASMModule(content)
 		if err != nil {
 			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
 		}
-		if worker.Mode == manifest.WorkerModeActor {
-			for _, requiredExport := range []string{"redevplugin_actor_start", "redevplugin_actor_stop"} {
-				if _, ok := exports[requiredExport]; !ok {
-					return fmt.Errorf("workers[%d].mode actor requires %s export in %q", i, requiredExport, artifact)
-				}
-			}
+		if err := validateWASMWorkerContract(contract, worker.MemoryLimitBytes); err != nil {
+			return fmt.Errorf("workers[%d].artifact %q: %w", i, artifact, err)
 		}
-		workerExports[worker.WorkerID] = exports
+		for module := range contract.ImportModules {
+			if _, ok := workerABI.Imports[module]; !ok {
+				return fmt.Errorf("workers[%d].artifact %q imports undeclared module %q", i, artifact, module)
+			}
+			actualImports[module] = struct{}{}
+		}
+		workerExports[worker.WorkerID] = contract.FunctionExports()
+	}
+	if !sameStringSet(actualImports, workerABI.Imports) {
+		return fmt.Errorf("%s imports do not match packaged worker modules", workerABIPath)
 	}
 	for i, method := range m.Methods {
 		if method.Route.Kind != manifest.MethodRouteWorker {
@@ -971,8 +980,8 @@ func validateWorkerABIDescriptor(m manifest.Manifest, files map[string][]byte) (
 	if err := json.Unmarshal(raw, &descriptor); err != nil {
 		return validatedWorkerABI{}, fmt.Errorf("%s: %w", workerABIPath, err)
 	}
-	if descriptor.ABIVersion != "redevplugin-wasm-worker-v1" {
-		return validatedWorkerABI{}, fmt.Errorf("%s: abi_version must be redevplugin-wasm-worker-v1", workerABIPath)
+	if descriptor.ABIVersion != "redevplugin-wasm-worker-v2" {
+		return validatedWorkerABI{}, fmt.Errorf("%s: abi_version must be redevplugin-wasm-worker-v2", workerABIPath)
 	}
 	exports, err := validateWorkerABISet(workerABIPath, "exports", descriptor.Exports, allowedWorkerABIExports())
 	if err != nil {
@@ -984,16 +993,6 @@ func validateWorkerABIDescriptor(m manifest.Manifest, files map[string][]byte) (
 	imports, err := validateWorkerABISet(workerABIPath, "imports", descriptor.Imports, allowedWorkerABIImports())
 	if err != nil {
 		return validatedWorkerABI{}, err
-	}
-	for i, worker := range m.Workers {
-		if worker.Mode != manifest.WorkerModeActor {
-			continue
-		}
-		for _, requiredExport := range []string{"redevplugin_actor_start", "redevplugin_actor_stop"} {
-			if _, ok := exports[requiredExport]; !ok {
-				return validatedWorkerABI{}, fmt.Errorf("workers[%d].mode actor requires %s export in %s", i, requiredExport, workerABIPath)
-			}
-		}
 	}
 	return validatedWorkerABI{Exports: exports, Imports: imports}, nil
 }
@@ -1019,100 +1018,430 @@ func validateWorkerABISet(abiPath string, field string, values []string, allowed
 func allowedWorkerABIExports() map[string]struct{} {
 	return map[string]struct{}{
 		"redevplugin_worker_invoke": {},
-		"redevplugin_actor_start":   {},
-		"redevplugin_actor_stop":    {},
 	}
 }
 
 func allowedWorkerABIImports() map[string]struct{} {
 	return map[string]struct{}{
-		"redevplugin.log":       {},
-		"redevplugin.storage":   {},
-		"redevplugin.network":   {},
-		"redevplugin.operation": {},
-		"redevplugin.clock":     {},
+		"redevplugin.storage": {},
+		"redevplugin.network": {},
 	}
 }
 
-func wasmExports(module []byte) (map[string]struct{}, error) {
+const wasmPageBytes = 64 * 1024
+
+type wasmFunctionType struct {
+	Params  []byte
+	Results []byte
+}
+
+type wasmImportFunction struct {
+	Module    string
+	Name      string
+	TypeIndex uint32
+}
+
+type wasmExportDefinition struct {
+	Kind  byte
+	Index uint32
+}
+
+type wasmModuleContract struct {
+	Types             []wasmFunctionType
+	FunctionTypeIndex []uint32
+	Imports           []wasmImportFunction
+	ImportModules     map[string]struct{}
+	Exports           map[string]wasmExportDefinition
+	TableInitialSize  []uint32
+	MemoryInitialPage []uint32
+}
+
+func (contract wasmModuleContract) FunctionExports() map[string]struct{} {
+	exports := map[string]struct{}{}
+	for name, definition := range contract.Exports {
+		if definition.Kind == 0x00 {
+			exports[name] = struct{}{}
+		}
+	}
+	return exports
+}
+
+func inspectWASMModule(module []byte) (wasmModuleContract, error) {
+	ctx := context.Background()
+	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter())
+	defer runtime.Close(ctx)
+	compiled, err := runtime.CompileModule(ctx, module)
+	if err != nil {
+		return wasmModuleContract{}, fmt.Errorf("validate wasm module: %w", err)
+	}
+	defer compiled.Close(ctx)
 	if len(module) < 8 {
-		return nil, errors.New("wasm module is too short")
+		return wasmModuleContract{}, errors.New("wasm module is too short")
 	}
 	if !bytes.Equal(module[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
-		return nil, errors.New("wasm magic header is invalid")
+		return wasmModuleContract{}, errors.New("wasm magic header is invalid")
 	}
 	if !bytes.Equal(module[4:8], []byte{0x01, 0x00, 0x00, 0x00}) {
-		return nil, errors.New("wasm version must be 1")
+		return wasmModuleContract{}, errors.New("wasm version must be 1")
 	}
-	exports := map[string]struct{}{}
+	contract := wasmModuleContract{ImportModules: map[string]struct{}{}, Exports: map[string]wasmExportDefinition{}}
 	offset := 8
-	seenExportSection := false
+	seenSections := map[byte]struct{}{}
 	for offset < len(module) {
 		sectionID := module[offset]
 		offset++
 		payloadLength, err := readWASMVarUint32(module, &offset)
 		if err != nil {
-			return nil, fmt.Errorf("section %d length: %w", sectionID, err)
+			return wasmModuleContract{}, fmt.Errorf("section %d length: %w", sectionID, err)
 		}
 		payloadEnd := offset + int(payloadLength)
 		if payloadEnd < offset || payloadEnd > len(module) {
-			return nil, fmt.Errorf("section %d exceeds module size", sectionID)
+			return wasmModuleContract{}, fmt.Errorf("section %d exceeds module size", sectionID)
 		}
-		if sectionID == 7 {
-			if seenExportSection {
-				return nil, errors.New("duplicate export section")
+		if sectionID != 0 {
+			if _, exists := seenSections[sectionID]; exists {
+				return wasmModuleContract{}, fmt.Errorf("duplicate wasm section %d", sectionID)
 			}
-			seenExportSection = true
-			sectionExports, err := readWASMExportSection(module[offset:payloadEnd])
-			if err != nil {
-				return nil, fmt.Errorf("export section: %w", err)
-			}
-			for name := range sectionExports {
-				exports[name] = struct{}{}
-			}
+			seenSections[sectionID] = struct{}{}
+		}
+		payload := module[offset:payloadEnd]
+		switch sectionID {
+		case 1:
+			contract.Types, err = readWASMTypeSection(payload)
+		case 2:
+			contract.Imports, contract.ImportModules, err = readWASMImportSection(payload)
+		case 3:
+			contract.FunctionTypeIndex, err = readWASMFunctionSection(payload)
+		case 4:
+			contract.TableInitialSize, err = readWASMTableSection(payload)
+		case 5:
+			contract.MemoryInitialPage, err = readWASMMemorySection(payload)
+		case 7:
+			contract.Exports, err = readWASMExportSection(payload)
+		}
+		if err != nil {
+			return wasmModuleContract{}, fmt.Errorf("wasm section %d: %w", sectionID, err)
 		}
 		offset = payloadEnd
 	}
 	if offset != len(module) {
-		return nil, errors.New("wasm section parsing ended outside module boundary")
+		return wasmModuleContract{}, errors.New("wasm section parsing ended outside module boundary")
 	}
-	return exports, nil
+	for i, typeIndex := range contract.FunctionTypeIndex {
+		if int(typeIndex) >= len(contract.Types) {
+			return wasmModuleContract{}, fmt.Errorf("function[%d] references missing type %d", i, typeIndex)
+		}
+	}
+	for i, imported := range contract.Imports {
+		if int(imported.TypeIndex) >= len(contract.Types) {
+			return wasmModuleContract{}, fmt.Errorf("import[%d] references missing type %d", i, imported.TypeIndex)
+		}
+	}
+	return contract, nil
 }
 
-func readWASMExportSection(section []byte) (map[string]struct{}, error) {
+func validateWASMWorkerContract(contract wasmModuleContract, memoryLimitBytes int64) error {
+	if len(contract.TableInitialSize) > 1 {
+		return fmt.Errorf("worker must define at most one table, found %d", len(contract.TableInitialSize))
+	}
+	for i, initialElements := range contract.TableInitialSize {
+		if initialElements > maxWASMTableElements {
+			return fmt.Errorf("worker table[%d] initial size %d exceeds limit %d", i, initialElements, maxWASMTableElements)
+		}
+	}
+	if len(contract.MemoryInitialPage) != 1 {
+		return fmt.Errorf("worker must define exactly one linear memory, found %d", len(contract.MemoryInitialPage))
+	}
+	initialBytes := int64(contract.MemoryInitialPage[0]) * wasmPageBytes
+	if initialBytes > memoryLimitBytes {
+		return fmt.Errorf("worker initial memory %d exceeds manifest limit %d", initialBytes, memoryLimitBytes)
+	}
+	memoryExport, ok := contract.Exports["memory"]
+	if !ok || memoryExport.Kind != 0x02 || memoryExport.Index != 0 {
+		return errors.New("worker must export its only linear memory as \"memory\"")
+	}
+	required := map[string]wasmFunctionType{
+		"redevplugin_worker_alloc":   {Params: []byte{0x7f}, Results: []byte{0x7f}},
+		"redevplugin_worker_dealloc": {Params: []byte{0x7f, 0x7f}},
+		"redevplugin_worker_invoke":  {Params: []byte{0x7f, 0x7f}, Results: []byte{0x7e}},
+	}
+	for name, signature := range required {
+		actual, err := contract.exportedFunctionType(name)
+		if err != nil {
+			return err
+		}
+		if !sameWASMFunctionType(actual, signature) {
+			return fmt.Errorf("worker export %q has an invalid function signature", name)
+		}
+	}
+	allowedHostcalls := map[string]map[string]struct{}{
+		"redevplugin.storage": {"files": {}, "kv": {}, "sqlite": {}},
+		"redevplugin.network": {"execute": {}},
+	}
+	hostcallSignature := wasmFunctionType{Params: []byte{0x7f, 0x7f, 0x7f, 0x7f}, Results: []byte{0x7f}}
+	for _, imported := range contract.Imports {
+		functions, ok := allowedHostcalls[imported.Module]
+		if !ok {
+			return fmt.Errorf("worker import module %q is unsupported", imported.Module)
+		}
+		if _, ok := functions[imported.Name]; !ok {
+			return fmt.Errorf("worker import %s/%s is unsupported", imported.Module, imported.Name)
+		}
+		if !sameWASMFunctionType(contract.Types[imported.TypeIndex], hostcallSignature) {
+			return fmt.Errorf("worker import %s/%s has an invalid function signature", imported.Module, imported.Name)
+		}
+	}
+	return nil
+}
+
+func (contract wasmModuleContract) exportedFunctionType(name string) (wasmFunctionType, error) {
+	exported, ok := contract.Exports[name]
+	if !ok || exported.Kind != 0x00 {
+		return wasmFunctionType{}, fmt.Errorf("required function export %q is missing", name)
+	}
+	functionIndex := int(exported.Index)
+	if functionIndex < len(contract.Imports) {
+		return contract.Types[contract.Imports[functionIndex].TypeIndex], nil
+	}
+	definedIndex := functionIndex - len(contract.Imports)
+	if definedIndex < 0 || definedIndex >= len(contract.FunctionTypeIndex) {
+		return wasmFunctionType{}, fmt.Errorf("function export %q references missing function %d", name, exported.Index)
+	}
+	return contract.Types[contract.FunctionTypeIndex[definedIndex]], nil
+}
+
+func sameWASMFunctionType(left wasmFunctionType, right wasmFunctionType) bool {
+	return bytes.Equal(left.Params, right.Params) && bytes.Equal(left.Results, right.Results)
+}
+
+func sameStringSet(left map[string]struct{}, right map[string]struct{}) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for value := range left {
+		if _, ok := right[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func readWASMTypeSection(section []byte) ([]wasmFunctionType, error) {
+	offset := 0
+	count, err := readWASMVarUint32(section, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("type count: %w", err)
+	}
+	types := make([]wasmFunctionType, 0, count)
+	for i := uint32(0); i < count; i++ {
+		if offset >= len(section) || section[offset] != 0x60 {
+			return nil, fmt.Errorf("type[%d] is not a function type", i)
+		}
+		offset++
+		params, err := readWASMValueTypes(section, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("type[%d].params: %w", i, err)
+		}
+		results, err := readWASMValueTypes(section, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("type[%d].results: %w", i, err)
+		}
+		types = append(types, wasmFunctionType{Params: params, Results: results})
+	}
+	if offset != len(section) {
+		return nil, errors.New("type section has trailing bytes")
+	}
+	return types, nil
+}
+
+func readWASMValueTypes(section []byte, offset *int) ([]byte, error) {
+	count, err := readWASMVarUint32(section, offset)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]byte, int(count))
+	for i := range values {
+		if *offset >= len(section) {
+			return nil, errors.New("value type is missing")
+		}
+		value := section[*offset]
+		*offset = *offset + 1
+		if value != 0x7f && value != 0x7e && value != 0x7d && value != 0x7c && value != 0x70 && value != 0x6f {
+			return nil, fmt.Errorf("unsupported value type 0x%x", value)
+		}
+		values[i] = value
+	}
+	return values, nil
+}
+
+func readWASMImportSection(section []byte) ([]wasmImportFunction, map[string]struct{}, error) {
+	offset := 0
+	count, err := readWASMVarUint32(section, &offset)
+	if err != nil {
+		return nil, nil, fmt.Errorf("import count: %w", err)
+	}
+	imports := make([]wasmImportFunction, 0, count)
+	modules := map[string]struct{}{}
+	for i := uint32(0); i < count; i++ {
+		module, err := readWASMName(section, &offset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("import[%d].module: %w", i, err)
+		}
+		name, err := readWASMName(section, &offset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("import[%d].name: %w", i, err)
+		}
+		if offset >= len(section) || section[offset] != 0x00 {
+			return nil, nil, fmt.Errorf("import[%d] must be a function", i)
+		}
+		offset++
+		typeIndex, err := readWASMVarUint32(section, &offset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("import[%d].type: %w", i, err)
+		}
+		imports = append(imports, wasmImportFunction{Module: module, Name: name, TypeIndex: typeIndex})
+		modules[module] = struct{}{}
+	}
+	if offset != len(section) {
+		return nil, nil, errors.New("import section has trailing bytes")
+	}
+	return imports, modules, nil
+}
+
+func readWASMFunctionSection(section []byte) ([]uint32, error) {
+	offset := 0
+	count, err := readWASMVarUint32(section, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("function count: %w", err)
+	}
+	types := make([]uint32, 0, count)
+	for i := uint32(0); i < count; i++ {
+		typeIndex, err := readWASMVarUint32(section, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("function[%d].type: %w", i, err)
+		}
+		types = append(types, typeIndex)
+	}
+	if offset != len(section) {
+		return nil, errors.New("function section has trailing bytes")
+	}
+	return types, nil
+}
+
+func readWASMTableSection(section []byte) ([]uint32, error) {
+	offset := 0
+	count, err := readWASMVarUint32(section, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("table count: %w", err)
+	}
+	initialSizes := make([]uint32, 0, count)
+	for i := uint32(0); i < count; i++ {
+		if offset >= len(section) || (section[offset] != 0x70 && section[offset] != 0x6f) {
+			return nil, fmt.Errorf("table[%d] reference type is unsupported", i)
+		}
+		offset++
+		flags, err := readWASMVarUint32(section, &offset)
+		if err != nil || flags > 1 {
+			return nil, fmt.Errorf("table[%d] limits are unsupported", i)
+		}
+		minimum, err := readWASMVarUint32(section, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("table[%d].minimum: %w", i, err)
+		}
+		if flags == 1 {
+			maximum, err := readWASMVarUint32(section, &offset)
+			if err != nil || maximum < minimum {
+				return nil, fmt.Errorf("table[%d].maximum is invalid", i)
+			}
+		}
+		initialSizes = append(initialSizes, minimum)
+	}
+	if offset != len(section) {
+		return nil, errors.New("table section has trailing bytes")
+	}
+	return initialSizes, nil
+}
+
+func readWASMMemorySection(section []byte) ([]uint32, error) {
+	offset := 0
+	count, err := readWASMVarUint32(section, &offset)
+	if err != nil {
+		return nil, fmt.Errorf("memory count: %w", err)
+	}
+	initialPages := make([]uint32, 0, count)
+	for i := uint32(0); i < count; i++ {
+		flags, err := readWASMVarUint32(section, &offset)
+		if err != nil || flags > 1 {
+			return nil, fmt.Errorf("memory[%d] limits are unsupported", i)
+		}
+		minimum, err := readWASMVarUint32(section, &offset)
+		if err != nil {
+			return nil, fmt.Errorf("memory[%d].minimum: %w", i, err)
+		}
+		if flags == 1 {
+			maximum, err := readWASMVarUint32(section, &offset)
+			if err != nil || maximum < minimum {
+				return nil, fmt.Errorf("memory[%d].maximum is invalid", i)
+			}
+		}
+		initialPages = append(initialPages, minimum)
+	}
+	if offset != len(section) {
+		return nil, errors.New("memory section has trailing bytes")
+	}
+	return initialPages, nil
+}
+
+func readWASMExportSection(section []byte) (map[string]wasmExportDefinition, error) {
 	offset := 0
 	count, err := readWASMVarUint32(section, &offset)
 	if err != nil {
 		return nil, fmt.Errorf("export count: %w", err)
 	}
-	exports := map[string]struct{}{}
+	exports := map[string]wasmExportDefinition{}
 	for i := uint32(0); i < count; i++ {
-		nameLength, err := readWASMVarUint32(section, &offset)
+		name, err := readWASMName(section, &offset)
 		if err != nil {
-			return nil, fmt.Errorf("export[%d].name_length: %w", i, err)
+			return nil, fmt.Errorf("export[%d].name: %w", i, err)
 		}
-		nameEnd := offset + int(nameLength)
-		if nameEnd < offset || nameEnd > len(section) {
-			return nil, fmt.Errorf("export[%d].name exceeds export section", i)
-		}
-		name := string(section[offset:nameEnd])
-		offset = nameEnd
 		if offset >= len(section) {
 			return nil, fmt.Errorf("export[%d].kind is missing", i)
 		}
 		kind := section[offset]
 		offset++
-		if _, err := readWASMVarUint32(section, &offset); err != nil {
+		index, err := readWASMVarUint32(section, &offset)
+		if err != nil {
 			return nil, fmt.Errorf("export[%d].index: %w", i, err)
 		}
-		if kind == 0x00 {
-			exports[name] = struct{}{}
+		if kind > 0x04 {
+			return nil, fmt.Errorf("export[%d].kind is unsupported", i)
 		}
+		if _, exists := exports[name]; exists {
+			return nil, fmt.Errorf("export[%d].name %q is duplicated", i, name)
+		}
+		exports[name] = wasmExportDefinition{Kind: kind, Index: index}
 	}
 	if offset != len(section) {
 		return nil, errors.New("export section has trailing bytes")
 	}
 	return exports, nil
+}
+
+func readWASMName(section []byte, offset *int) (string, error) {
+	length, err := readWASMVarUint32(section, offset)
+	if err != nil {
+		return "", err
+	}
+	end := *offset + int(length)
+	if end < *offset || end > len(section) {
+		return "", errors.New("name exceeds section")
+	}
+	value := section[*offset:end]
+	*offset = end
+	if !utf8.Valid(value) {
+		return "", errors.New("name is not UTF-8")
+	}
+	return string(value), nil
 }
 
 func readWASMVarUint32(data []byte, offset *int) (uint32, error) {
@@ -1144,7 +1473,7 @@ func makeEntry(entryPath string, content []byte) (Entry, error) {
 		Size:        int64(len(content)),
 		SHA256:      "sha256:" + hex.EncodeToString(sum[:]),
 		Mode:        "0644",
-		ContentType: contentType(entryPath),
+		ContentType: contentType(entryPath, content),
 	}, nil
 }
 
@@ -1257,9 +1586,12 @@ func cloneFiles(files map[string][]byte) map[string][]byte {
 	return cloned
 }
 
-func contentType(entryPath string) string {
+func contentType(entryPath string, content []byte) string {
 	if entryPath == "manifest.json" || strings.HasSuffix(entryPath, ".json") {
 		return "application/json"
+	}
+	if detected := http.DetectContentType(content); detected == "image/png" || detected == "image/jpeg" || detected == "image/gif" || detected == "image/webp" {
+		return detected
 	}
 	if ext := path.Ext(entryPath); ext != "" {
 		if detected := mime.TypeByExtension(ext); detected != "" {

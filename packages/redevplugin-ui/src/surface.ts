@@ -22,7 +22,7 @@ import {
   type PluginSurfaceScope,
 } from "./surface-scope.js";
 
-export const opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v1" as const;
+export const opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2" as const;
 export const pluginRiskPlanSchemaVersion = "redevplugin.capability.risk_plan.v1" as const;
 
 export type PluginJSONValue = null | boolean | number | string | PluginJSONValue[] | PluginJSONObject;
@@ -72,15 +72,71 @@ export type PluginBridgeCancelMessage = {
 export type PluginBridgeLifecycleMessage = {
   type: "redevplugin.bridge.lifecycle";
   event: BridgeLifecycleEvent;
+  quiesce_id?: string;
+};
+
+export type PluginBridgeLifecycleAckMessage = {
+  type: "redevplugin.bridge.lifecycle_ack";
+  quiesce_id: string;
 };
 
 export type PluginUIActionEvent = {
   action: string;
-  event: "click" | "input" | "change" | "submit";
+  event: "click" | "input" | "change" | "submit" | "escape";
   value?: string;
   checked?: boolean;
   form_data?: Record<string, string>;
 };
+
+export type PluginCanvasSurface = {
+  canvas: OffscreenCanvas;
+  canvasId: string;
+  cssWidth: number;
+  cssHeight: number;
+  devicePixelRatio: number;
+};
+
+export type PluginCanvasAccessibilityState = {
+  label: string;
+  description: string;
+};
+
+export type PluginCanvasFocusEvent = {
+  type: "focus" | "blur";
+};
+
+export type PluginCanvasResizeEvent = {
+  type: "resize";
+  cssWidth: number;
+  cssHeight: number;
+  devicePixelRatio: number;
+};
+
+export type PluginCanvasKeyEvent = {
+  type: "key";
+  event: "keydown" | "keyup";
+  code: string;
+  key: string;
+  repeat: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+};
+
+export type PluginCanvasPointerEvent = {
+  type: "pointer";
+  event: "pointerdown" | "pointermove" | "pointerup" | "pointercancel";
+  pointerId: number;
+  pointerType: "mouse" | "pen" | "touch" | "unknown";
+  buttons: number;
+  button: number;
+  x: number;
+  y: number;
+  pressure: number;
+};
+
+export type PluginCanvasInputEvent = PluginCanvasFocusEvent | PluginCanvasResizeEvent | PluginCanvasKeyEvent | PluginCanvasPointerEvent;
 
 export type PluginUIAttributeValue = string | number | boolean;
 
@@ -181,7 +237,7 @@ export type MessageEventLike = {
 };
 
 export type MessagePortLike = {
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: readonly unknown[]): void;
   addEventListener(type: "message", listener: (event: MessageEventLike) => void): void;
   removeEventListener(type: "message", listener: (event: MessageEventLike) => void): void;
   start(): void;
@@ -216,6 +272,8 @@ type PendingCall = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  kind: "json" | "canvas" | "asset";
+  identifier?: string;
 };
 
 type WorkerBridgeClaim = { surfaceHandle: string; port: MessagePortLike };
@@ -249,6 +307,7 @@ const streamCredentialInvalidatingErrorCodes = new Set([
 const maxOpaqueSurfaceLazyAssets = 128;
 const maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
 const maxConcurrentAssetReads = 4;
+const maxSurfaceQuiesceMs = 1500;
 const pluginBridgeErrorCodeSet = new Set<string>(pluginBridgeErrorCodes);
 const hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
 const canonicalSemverPattern = new RegExp("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$");
@@ -262,14 +321,15 @@ export class PluginBridgeClient {
   #port: MessagePortLike;
   #pending = new Map<string, PendingCall>();
   #actionHandlers = new Map<string, Set<(event: PluginUIActionEvent) => void>>();
-  #lifecycleHandlers = new Set<(event: BridgeLifecycleEvent) => void>();
+  #canvasInputHandlers = new Map<string, Set<(event: PluginCanvasInputEvent) => void>>();
+  #lifecycleHandlers = new Set<(event: BridgeLifecycleEvent) => Promise<void> | void>();
   #ready = false;
   #readyPromise: Promise<void>;
   #resolveReady!: () => void;
   #rejectReady!: (reason: unknown) => void;
   #disposed = false;
   #onMessage = (event: MessageEventLike): void => {
-    this.#handleMessage(event);
+    void this.#handleMessage(event);
   };
 
   constructor(options: PluginBridgeClientOptions = {}) {
@@ -351,6 +411,47 @@ export class PluginBridgeClient {
     });
   }
 
+  openCanvas(canvasId: string): Promise<PluginCanvasSurface> {
+    this.#assertActive();
+    if (!validUIIdentifier(canvasId)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin canvas identifier is invalid");
+    }
+    const id = this.#requestID("canvas");
+    return this.#request<PluginCanvasSurface>(id, {
+      type: "redevplugin.ui.canvas.open",
+      id,
+      canvas_id: canvasId,
+    }, "canvas", canvasId);
+  }
+
+  updateCanvasAccessibility(canvasId: string, state: PluginCanvasAccessibilityState): Promise<void> {
+    this.#assertActive();
+    if (!validUIIdentifier(canvasId) || !validCanvasAccessibilityState(state)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin canvas accessibility state is invalid");
+    }
+    const id = this.#requestID("canvas");
+    return this.#request<void>(id, {
+      type: "redevplugin.ui.canvas.accessibility",
+      id,
+      canvas_id: canvasId,
+      label: state.label,
+      description: state.description,
+    });
+  }
+
+  loadImageAsset(assetId: string): Promise<ImageBitmap> {
+    this.#assertActive();
+    if (!validUIIdentifier(assetId)) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin image asset identifier is invalid");
+    }
+    const id = this.#requestID("asset");
+    return this.#request<ImageBitmap>(id, {
+      type: "redevplugin.ui.asset.image.open",
+      id,
+      asset_id: assetId,
+    }, "asset", assetId);
+  }
+
   onAction(action: string, handler: (event: PluginUIActionEvent) => void): () => void {
     this.#assertActive();
     if (!validActionID(action) || typeof handler !== "function") {
@@ -365,7 +466,21 @@ export class PluginBridgeClient {
     };
   }
 
-  onLifecycle(handler: (event: BridgeLifecycleEvent) => void): () => void {
+  onCanvasInput(canvasId: string, handler: (event: PluginCanvasInputEvent) => void): () => void {
+    this.#assertActive();
+    if (!validUIIdentifier(canvasId) || typeof handler !== "function") {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin canvas input subscription is invalid");
+    }
+    const handlers = this.#canvasInputHandlers.get(canvasId) ?? new Set();
+    handlers.add(handler);
+    this.#canvasInputHandlers.set(canvasId, handlers);
+    return () => {
+      handlers.delete(handler);
+      if (handlers.size === 0) this.#canvasInputHandlers.delete(canvasId);
+    };
+  }
+
+  onLifecycle(handler: (event: BridgeLifecycleEvent) => Promise<void> | void): () => void {
     this.#assertActive();
     this.#lifecycleHandlers.add(handler);
     return () => {
@@ -385,11 +500,12 @@ export class PluginBridgeClient {
     }
     this.#pending.clear();
     this.#actionHandlers.clear();
+    this.#canvasInputHandlers.clear();
     this.#lifecycleHandlers.clear();
     this.#port.close();
   }
 
-  #request<T>(id: string, message: unknown): Promise<T> {
+  #request<T>(id: string, message: unknown, kind: PendingCall["kind"] = "json", identifier?: string): Promise<T> {
     let normalizedMessage: PluginJSONObject;
     try {
       normalizedMessage = normalizePluginJSONObject(message);
@@ -416,6 +532,8 @@ export class PluginBridgeClient {
         resolve: (value: unknown) => resolve(value as T),
         reject,
         timer,
+        kind,
+        identifier,
       });
     });
     try {
@@ -431,9 +549,40 @@ export class PluginBridgeClient {
     return result;
   }
 
-  #handleMessage(event: MessageEventLike): void {
-    if (this.#disposed || !messageWithinLimit(event.data)) return;
+  async #handleMessage(event: MessageEventLike): Promise<void> {
+    if (this.#disposed) return;
     const data = event.data;
+    if (isCanvasReadyCandidate(data)) {
+      const pending = this.#pending.get(data.id);
+      if (!pending) return;
+      this.#pending.delete(data.id);
+      clearTimeout(pending.timer);
+      if (pending.kind !== "canvas" || pending.identifier !== data.canvas_id || !isCanvasReadyMessage(data)) {
+        pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin canvas response ${data.id} is invalid`));
+        return;
+      }
+      pending.resolve({
+        canvas: data.canvas,
+        canvasId: data.canvas_id,
+        cssWidth: data.css_width,
+        cssHeight: data.css_height,
+        devicePixelRatio: data.device_pixel_ratio,
+      } satisfies PluginCanvasSurface);
+      return;
+    }
+    if (isImageReadyCandidate(data)) {
+      const pending = this.#pending.get(data.id);
+      if (!pending) return;
+      this.#pending.delete(data.id);
+      clearTimeout(pending.timer);
+      if (pending.kind !== "asset" || pending.identifier !== data.asset_id || !isImageReadyMessage(data)) {
+        pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin image response ${data.id} is invalid`));
+        return;
+      }
+      pending.resolve(data.image);
+      return;
+    }
+    if (!messageWithinLimit(data)) return;
     if (isBridgeResponseCandidate(data)) {
       const pending = this.#pending.get(data.id);
       if (!pending) return;
@@ -443,7 +592,9 @@ export class PluginBridgeClient {
         pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin bridge response ${data.id} is invalid`));
         return;
       }
-      if (data.ok) pending.resolve(data.data);
+      if (data.ok && pending.kind !== "json") {
+        pending.reject(new PluginBridgeError("PLUGIN_CONTRACT_MISMATCH", `Plugin transfer response ${data.id} is invalid`));
+      } else if (data.ok) pending.resolve(data.data);
       else pending.reject(new PluginBridgeError(data.error_code, data.error, undefined, data.error_details));
       return;
     }
@@ -452,12 +603,29 @@ export class PluginBridgeClient {
         this.#ready = true;
         this.#resolveReady();
       }
-      for (const handler of this.#lifecycleHandlers) handler(data.event);
+      await Promise.allSettled(Array.from(this.#lifecycleHandlers, async (handler) => {
+        try {
+          await handler(data.event);
+        } catch {
+          // A plugin lifecycle observer cannot block bounded surface teardown.
+        }
+      }));
+      if (data.quiesce_id) {
+        this.#port.postMessage({
+          type: "redevplugin.bridge.lifecycle_ack",
+          quiesce_id: data.quiesce_id,
+        } satisfies PluginBridgeLifecycleAckMessage);
+      }
       if (data.event.type === "dispose") this.dispose();
       return;
     }
     if (isActionMessage(data)) {
       for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(data);
+      return;
+    }
+    const canvasInput = publicCanvasInputMessage(data);
+    if (canvasInput) {
+      for (const handler of this.#canvasInputHandlers.get(canvasInput.canvasId) ?? []) handler(canvasInput.event);
     }
   }
 
@@ -630,6 +798,7 @@ export type OpaqueSurfaceWorker = {
 
 export type OpaqueSurfaceAsset = {
   binding_id: string;
+  logical_ids: string[];
   path: string;
   sha256: string;
   size: number;
@@ -785,6 +954,11 @@ type OpenSignals = {
   workerReady: Deferred<void>;
 };
 
+type SurfaceQuiesce = {
+  id: string;
+  acknowledged: Deferred<void>;
+};
+
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value?: T | PromiseLike<T>) => void;
@@ -827,6 +1001,15 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const maxTextLength = ${opaqueSurfaceRenderLimits.max_text_length};
   const maxAttributeValueLength = ${opaqueSurfaceRenderLimits.max_attribute_value_length};
   const maxFormFields = ${opaqueSurfaceRenderLimits.max_form_fields};
+  const maxCanvasCount = ${opaqueSurfaceRenderLimits.max_canvas_count};
+  const maxCanvasDimension = ${opaqueSurfaceRenderLimits.max_canvas_dimension};
+  const maxCanvasTotalPixels = ${opaqueSurfaceRenderLimits.max_canvas_total_pixels};
+  const maxCanvasPointerEventsPerSecond = ${opaqueSurfaceRenderLimits.max_canvas_pointer_events_per_second};
+  const maxImageCount = ${opaqueSurfaceRenderLimits.max_image_count};
+  const maxImageDimension = ${opaqueSurfaceRenderLimits.max_image_dimension};
+  const maxImageTotalPixels = ${opaqueSurfaceRenderLimits.max_image_total_pixels};
+  const workerHeartbeatIntervalMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_interval_ms};
+  const workerHeartbeatTimeoutMs = ${opaqueSurfaceRenderLimits.worker_heartbeat_timeout_ms};
   const maxCriticalDocumentBytes = ${8 * 1024 * 1024};
   const maxPrivateAssetBase64Length = ${Math.ceil((32 * 1024 * 1024) / 3) * 4};
   const maxLazyAssetCount = ${maxOpaqueSurfaceLazyAssets};
@@ -873,6 +1056,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     catch { return false; }
   };
   const validIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+  const validResourceIdentifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
   const validOpaqueHandle = (value, prefix) => typeof value === "string" && value.startsWith(prefix + "_") && /^[A-Za-z0-9_-]{8,160}$/.test(value);
   const validDigest = (value) => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
   const validPath = (value) => typeof value === "string" && value.length > 0 && value.length <= 512 && !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some((part) => !part || part === "." || part === "..");
@@ -882,8 +1066,11 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (!globalAttributes.has(lower) && !lower.startsWith("aria-") && !(tagAttributes[tag] && tagAttributes[tag].has(lower))) return false;
     if (!["string", "number", "boolean"].includes(typeof value)) return false;
     if (lower === "data-redevplugin-action" && !validIdentifier(String(value))) return false;
+    if (lower === "data-redevplugin-escape-action" && !validIdentifier(String(value))) return false;
     if (lower === "data-redevplugin-asset-binding" && !validOpaqueHandle(String(value), "asset")) return false;
     if (lower === "data-redevplugin-asset-attr" && !["src", "poster"].includes(String(value))) return false;
+    if (lower === "data-redevplugin-canvas" && (tag !== "canvas" || !validResourceIdentifier(String(value)))) return false;
+    if (tag === "canvas" && (lower === "width" || lower === "height") && (!/^[1-9][0-9]{0,4}$/.test(String(value)) || Number(value) > maxCanvasDimension)) return false;
     if (tag === "input" && lower === "type" && !safeInputTypes.has(String(value).trim().toLowerCase() || "text")) return false;
     return String(value).length <= maxAttributeValueLength;
   };
@@ -907,8 +1094,8 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   };
   const validStyle = (value) => exactKeys(value, ["path", "sha256", "content"]) && validPath(value.path) && validDigest(value.sha256) && typeof value.content === "string" && value.content.length <= 2097152;
   const validWorker = (value) => exactKeys(value, ["path", "sha256", "type", "content"]) && validPath(value.path) && validDigest(value.sha256) && value.type === "classic" && typeof value.content === "string" && value.content.length <= 4194304;
-  const validAsset = (value) => exactKeys(value, ["binding_id", "path", "sha256", "size", "content_type"]) && validOpaqueHandle(value.binding_id, "asset") && validPath(value.path) && validDigest(value.sha256) && Number.isSafeInteger(value.size) && value.size >= 0 && value.size <= maxLazyAssetBytes && typeof value.content_type === "string" && value.content_type.length > 0 && value.content_type.length <= 256;
-  const validDocument = (value) => isRecord(value) && Object.keys(value).every((key) => ["schema_version", "entry_path", "entry_sha256", "title", "language", "direction", "body_html", "styles", "worker", "assets", "critical_bytes"].includes(key)) && value.schema_version === documentSchema && validPath(value.entry_path) && validDigest(value.entry_sha256) && (value.title === undefined || (typeof value.title === "string" && value.title.length <= 256)) && (value.language === undefined || (typeof value.language === "string" && value.language.length <= 64)) && (value.direction === undefined || ["ltr", "rtl", "auto"].includes(value.direction)) && typeof value.body_html === "string" && value.body_html.length <= 4194304 && Array.isArray(value.styles) && value.styles.every(validStyle) && validWorker(value.worker) && Array.isArray(value.assets) && value.assets.length <= maxLazyAssetCount && value.assets.every(validAsset) && new Set(value.assets.map((asset) => asset.binding_id)).size === value.assets.length && new Set(value.assets.map((asset) => asset.path)).size === value.assets.length && value.assets.reduce((total, asset) => total + asset.size, 0) <= maxLazyAssetBytes && Number.isSafeInteger(value.critical_bytes) && value.critical_bytes >= 0 && value.critical_bytes <= maxCriticalDocumentBytes;
+  const validAsset = (value) => exactKeys(value, ["binding_id", "logical_ids", "path", "sha256", "size", "content_type"]) && validOpaqueHandle(value.binding_id, "asset") && Array.isArray(value.logical_ids) && value.logical_ids.length > 0 && value.logical_ids.length <= 16 && value.logical_ids.every(validResourceIdentifier) && new Set(value.logical_ids).size === value.logical_ids.length && validPath(value.path) && validDigest(value.sha256) && Number.isSafeInteger(value.size) && value.size >= 0 && value.size <= maxLazyAssetBytes && typeof value.content_type === "string" && value.content_type.length > 0 && value.content_type.length <= 256;
+  const validDocument = (value) => isRecord(value) && Object.keys(value).every((key) => ["schema_version", "entry_path", "entry_sha256", "title", "language", "direction", "body_html", "styles", "worker", "assets", "critical_bytes"].includes(key)) && value.schema_version === documentSchema && validPath(value.entry_path) && validDigest(value.entry_sha256) && (value.title === undefined || (typeof value.title === "string" && value.title.length <= 256)) && (value.language === undefined || (typeof value.language === "string" && value.language.length <= 64)) && (value.direction === undefined || ["ltr", "rtl", "auto"].includes(value.direction)) && typeof value.body_html === "string" && value.body_html.length <= 4194304 && Array.isArray(value.styles) && value.styles.every(validStyle) && validWorker(value.worker) && Array.isArray(value.assets) && value.assets.length <= maxLazyAssetCount && value.assets.every(validAsset) && new Set(value.assets.map((asset) => asset.binding_id)).size === value.assets.length && new Set(value.assets.map((asset) => asset.path)).size === value.assets.length && new Set(value.assets.flatMap((asset) => asset.logical_ids)).size === value.assets.reduce((total, asset) => total + asset.logical_ids.length, 0) && value.assets.reduce((total, asset) => total + asset.size, 0) <= maxLazyAssetBytes && Number.isSafeInteger(value.critical_bytes) && value.critical_bytes >= 0 && value.critical_bytes <= maxCriticalDocumentBytes;
   let accepted = false;
   let initialized = false;
   let parentPort;
@@ -919,21 +1106,40 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   let surfaceHandle = "";
   let currentDocument;
   let workerReady = false;
+  let workerHeartbeatSequence = 0;
+  let workerHeartbeatPendingID;
+  let workerHeartbeatTimer;
+  let workerHeartbeatTimeout;
+  let pendingQuiesceID;
   const pendingWorkerRequests = new Set();
-  const requestSequence = { rpc: 0, stream: 0, render: 0, operation: 0 };
+  const requestSequence = { rpc: 0, stream: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
   let renderWindowStartedAt = 0;
   let renderCount = 0;
+  let lastAutofocusIdentity = "";
   const pendingAssets = new Map();
   const queuedAssets = [];
   let activeAssetReads = 0;
   let assetSequence = 0;
   const blobURLs = new Set();
+  const assetByLogicalID = new Map();
+  const verifiedAssetBytes = new Map();
+  const imageAssetDimensions = new Map();
+  const imageAssetTypes = new Map();
+  const pendingImageRequests = new Map();
+  const activeImageDecodes = new Set();
+  const imageReservations = new Map();
+  let retainedImageCount = 0;
+  let retainedImagePixels = 0;
+  const canvasRuntimes = new Map();
 
   const sendParent = (message) => {
     if (parentPort && withinLimit(message)) parentPort.postMessage(message);
   };
   const sendWorker = (message) => {
     if (workerPort && withinLimit(message)) workerPort.postMessage(message);
+  };
+  const sendWorkerTransfer = (message, transfer) => {
+    if (workerPort) workerPort.postMessage(message, transfer);
   };
   const fail = (message) => {
     document.documentElement.lang = "en";
@@ -946,6 +1152,14 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     disposeRuntime();
   };
   const disposeRuntime = () => {
+    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
+    if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
+    workerHeartbeatTimer = undefined;
+    workerHeartbeatTimeout = undefined;
+    workerHeartbeatPendingID = undefined;
+    workerReady = false;
+    for (const runtime of canvasRuntimes.values()) runtime.dispose();
+    canvasRuntimes.clear();
     if (workerControlPort) {
       workerControlPort.close();
       workerControlPort = undefined;
@@ -965,14 +1179,44 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     pendingAssets.clear();
     queuedAssets.length = 0;
     activeAssetReads = 0;
+    pendingImageRequests.clear();
+    activeImageDecodes.clear();
+    imageReservations.clear();
+    imageAssetDimensions.clear();
+    imageAssetTypes.clear();
+    retainedImageCount = 0;
+    retainedImagePixels = 0;
+    verifiedAssetBytes.clear();
+    assetByLogicalID.clear();
+  };
+  const validateCanvasIdentifiers = (root) => {
+    const identifiers = new Set();
+    let totalPixels = 0;
+    for (const canvas of root.querySelectorAll("canvas[data-redevplugin-canvas]")) {
+      const identifier = canvas.getAttribute("data-redevplugin-canvas");
+      if (!validResourceIdentifier(identifier) || identifiers.has(identifier)) throw new Error("plugin canvas identifiers are invalid or ambiguous");
+      identifiers.add(identifier);
+      if (identifiers.size > maxCanvasCount) throw new Error("plugin document exceeds the canvas count limit");
+      const width = Number(canvas.getAttribute("width") || 300);
+      const height = Number(canvas.getAttribute("height") || 150);
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width > maxCanvasDimension || height > maxCanvasDimension) {
+        throw new Error("plugin canvas dimensions are invalid");
+      }
+      totalPixels += width * height;
+      if (totalPixels > maxCanvasTotalPixels) throw new Error("plugin document exceeds the canvas pixel budget");
+    }
   };
   const applyStaticDocument = (surfaceDocument) => {
+    for (const asset of surfaceDocument.assets) {
+      for (const logicalID of asset.logical_ids) assetByLogicalID.set(logicalID, asset);
+    }
     document.title = typeof surfaceDocument.title === "string" ? surfaceDocument.title.slice(0, 256) : "Plugin";
     document.documentElement.lang = typeof surfaceDocument.language === "string" ? surfaceDocument.language.slice(0, 64) : "en";
     if (["ltr", "rtl", "auto"].includes(surfaceDocument.direction)) document.documentElement.dir = surfaceDocument.direction;
     const template = document.createElement("template");
     template.innerHTML = surfaceDocument.body_html;
     if (!validateDOMTree(template.content)) throw new Error("static plugin document failed renderer validation");
+    validateCanvasIdentifiers(template.content);
     document.body.replaceChildren(template.content.cloneNode(true));
     for (const styleAsset of surfaceDocument.styles) {
       const style = document.createElement("style");
@@ -997,6 +1241,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       if (!isRecord(value.attributes) || Object.keys(value.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
       for (const [name, attributeValue] of Object.entries(value.attributes)) {
         if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
+        if (name.toLowerCase() === "autofocus") {
+          if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
+          continue;
+        }
         if (typeof attributeValue === "boolean") {
           if (attributeValue) element.setAttribute(name, "");
         } else {
@@ -1010,22 +1258,88 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     }
     return element;
   };
+  const renderElementIdentity = (element) => ({
+    tag: element.tagName,
+    id: element.getAttribute("id") || "",
+    name: element.getAttribute("name") || "",
+    action: element.getAttribute("data-redevplugin-action") || "",
+    escapeAction: element.getAttribute("data-redevplugin-escape-action") || "",
+    ariaLabel: element.getAttribute("aria-label") || "",
+    value: element.tagName === "BUTTON" || element.tagName === "OPTION" ? element.getAttribute("value") || "" : "",
+  });
+  const sameRenderElementIdentity = (left, right) => left.tag === right.tag && left.id === right.id && left.name === right.name && left.action === right.action && left.escapeAction === right.escapeAction && left.ariaLabel === right.ariaLabel && left.value === right.value;
+  const captureRenderState = () => {
+    const active = document.activeElement instanceof Element && document.body.contains(document.activeElement) ? document.activeElement : undefined;
+    let selection;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      selection = { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection };
+    }
+    return {
+      activeIdentity: active ? renderElementIdentity(active) : undefined,
+      selection,
+      activeScrollTop: active instanceof HTMLElement ? active.scrollTop : 0,
+      activeScrollLeft: active instanceof HTMLElement ? active.scrollLeft : 0,
+      documentScrollTop: document.documentElement.scrollTop,
+      documentScrollLeft: document.documentElement.scrollLeft,
+      bodyScrollTop: document.body.scrollTop,
+      bodyScrollLeft: document.body.scrollLeft,
+    };
+  };
+  const restoreRenderState = (snapshot) => {
+    const autofocus = document.body.querySelector("[data-redevplugin-renderer-autofocus]");
+    const autofocusIdentity = autofocus instanceof Element ? JSON.stringify(renderElementIdentity(autofocus)) : "";
+    if (autofocus instanceof Element) autofocus.removeAttribute("data-redevplugin-renderer-autofocus");
+    let target;
+    if (autofocus instanceof HTMLElement && !autofocus.hasAttribute("disabled") && autofocusIdentity !== lastAutofocusIdentity) {
+      target = autofocus;
+      lastAutofocusIdentity = autofocusIdentity;
+    } else {
+      if (!autofocusIdentity) lastAutofocusIdentity = "";
+      if (snapshot.activeIdentity) {
+        for (const candidate of document.body.querySelectorAll(snapshot.activeIdentity.tag.toLowerCase())) {
+          if (sameRenderElementIdentity(renderElementIdentity(candidate), snapshot.activeIdentity)) {
+            target = candidate;
+            break;
+          }
+        }
+      }
+    }
+    if (target instanceof HTMLElement && !target.hasAttribute("disabled")) {
+      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+      target.scrollTop = snapshot.activeScrollTop;
+      target.scrollLeft = snapshot.activeScrollLeft;
+      if (snapshot.selection && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+        const length = target.value.length;
+        const start = Math.min(snapshot.selection.start ?? length, length);
+        const end = Math.min(snapshot.selection.end ?? start, length);
+        try { target.setSelectionRange(start, end, snapshot.selection.direction || "none"); } catch {}
+      }
+    }
+    document.documentElement.scrollTop = snapshot.documentScrollTop;
+    document.documentElement.scrollLeft = snapshot.documentScrollLeft;
+    document.body.scrollTop = snapshot.bodyScrollTop;
+    document.body.scrollLeft = snapshot.bodyScrollLeft;
+  };
   const applyWorkerRender = (tree) => {
+    if (canvasRuntimes.size > 0) throw new Error("plugin render cannot replace an active transferred canvas");
     const values = Array.isArray(tree) ? tree : [tree];
     const fragment = document.createDocumentFragment();
     const state = { nodes: 0 };
     for (const value of values) fragment.append(buildWorkerNode(value, state, 1));
+    validateCanvasIdentifiers(fragment);
+    const renderState = captureRenderState();
     document.body.replaceChildren(fragment);
+    restoreRenderState(renderState);
   };
-  const actionPayload = (event, element) => {
-    const payload = { type: "redevplugin.ui.action", action: element.getAttribute("data-redevplugin-action"), event: event.type };
+  const actionPayload = (event, element, eventType = event.type) => {
+    const payload = { type: "redevplugin.ui.action", action: element.getAttribute("data-redevplugin-action"), event: eventType };
     const target = event.target;
     if (target && typeof target.value === "string") payload.value = target.value.slice(0, maxTextLength);
     if (target && typeof target.checked === "boolean") payload.checked = target.checked;
-    if (event.type === "submit" && event.target instanceof HTMLFormElement) {
+    if (eventType === "submit" && element.tagName === "FORM") {
       const values = {};
       let count = 0;
-      for (const [name, value] of new FormData(event.target)) {
+      for (const [name, value] of new FormData(element)) {
         if (typeof value !== "string" || !validIdentifier(name) || count >= maxFormFields) continue;
         values[name] = value.slice(0, maxTextLength);
         count += 1;
@@ -1036,16 +1350,34 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   };
   const handleAction = (event) => {
     if (!["click", "input", "change", "submit"].includes(event.type)) return;
-    if (event.type === "submit") event.preventDefault();
     const origin = event.target instanceof Element ? event.target : null;
     const element = origin ? origin.closest("[data-redevplugin-action]") : null;
     if (!element || !document.body.contains(element)) return;
-    event.preventDefault();
+    if (element.tagName === "FORM" && event.type !== "submit") {
+      const submitButton = origin ? origin.closest("button") : null;
+      const buttonType = submitButton && element.contains(submitButton) ? (submitButton.getAttribute("type") || "submit").toLowerCase() : "";
+      if (event.type === "click" && buttonType === "submit") {
+        event.preventDefault();
+        sendWorker(actionPayload(event, element, "submit"));
+      }
+      return;
+    }
+    if (event.type === "submit" || (event.type === "click" && element.tagName === "BUTTON")) event.preventDefault();
     const action = element.getAttribute("data-redevplugin-action");
     if (!validIdentifier(action)) return;
     sendWorker(actionPayload(event, element));
   };
   for (const eventType of ["click", "input", "change", "submit"]) document.addEventListener(eventType, handleAction, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || event.repeat) return;
+    const origin = event.target instanceof Element ? event.target : document.activeElement instanceof Element ? document.activeElement : null;
+    const owner = origin ? origin.closest("[data-redevplugin-escape-action]") : null;
+    const action = owner?.getAttribute("data-redevplugin-escape-action");
+    if (!owner || !document.body.contains(owner) || !validIdentifier(action)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    sendWorker({ type: "redevplugin.ui.action", action, event: "escape" });
+  }, true);
   const pumpAssets = () => {
     while (activeAssetReads < maxConcurrentAssetReads && queuedAssets.length > 0) {
       const asset = queuedAssets.shift();
@@ -1059,6 +1391,129 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     queuedAssets.push(...currentDocument.assets);
     pumpAssets();
   };
+  const failTransferRequest = (id, error) => {
+    pendingImageRequests.delete(id);
+    activeImageDecodes.delete(id);
+    const reservedPixels = imageReservations.get(id);
+    if (reservedPixels !== undefined) {
+      imageReservations.delete(id);
+      retainedImageCount = Math.max(0, retainedImageCount - 1);
+      retainedImagePixels = Math.max(0, retainedImagePixels - reservedPixels);
+    }
+    completeWorkerRequest(id);
+    sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: "PLUGIN_CONTRACT_MISMATCH", error: String(error).slice(0, 512) });
+  };
+  const imageType = (contentType) => String(contentType).split(";", 1)[0].trim().toLowerCase();
+  const bytesMatch = (bytes, offset, values) => values.every((value, index) => bytes[offset + index] === value);
+  const asciiMatches = (bytes, offset, value) => Array.from(value).every((character, index) => bytes[offset + index] === character.charCodeAt(0));
+  const detectRasterImageType = (bytes) => {
+    if (bytes.length >= 8 && bytesMatch(bytes, 0, [137, 80, 78, 71, 13, 10, 26, 10])) return "image/png";
+    if (bytes.length >= 2 && bytesMatch(bytes, 0, [255, 216])) return "image/jpeg";
+    if (bytes.length >= 6 && (asciiMatches(bytes, 0, "GIF87a") || asciiMatches(bytes, 0, "GIF89a"))) return "image/gif";
+    if (bytes.length >= 12 && asciiMatches(bytes, 0, "RIFF") && asciiMatches(bytes, 8, "WEBP")) return "image/webp";
+    return "";
+  };
+  const uint16BE = (bytes, offset) => (bytes[offset] << 8) | bytes[offset + 1];
+  const uint16LE = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8);
+  const uint24LE = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+  const uint32BE = (bytes, offset) => ((bytes[offset] * 0x1000000) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]) >>> 0;
+  const readImageDimensions = (bytes, contentType) => {
+    const type = imageType(contentType);
+    let width = 0;
+    let height = 0;
+    if (type === "image/png") {
+      if (bytes.length < 24 || !bytesMatch(bytes, 0, [137, 80, 78, 71, 13, 10, 26, 10]) || !asciiMatches(bytes, 12, "IHDR")) throw new Error("PNG dimensions are invalid");
+      width = uint32BE(bytes, 16);
+      height = uint32BE(bytes, 20);
+    } else if (type === "image/gif") {
+      if (bytes.length < 10 || (!asciiMatches(bytes, 0, "GIF87a") && !asciiMatches(bytes, 0, "GIF89a"))) throw new Error("GIF dimensions are invalid");
+      width = uint16LE(bytes, 6);
+      height = uint16LE(bytes, 8);
+    } else if (type === "image/jpeg") {
+      if (bytes.length < 4 || !bytesMatch(bytes, 0, [255, 216])) throw new Error("JPEG dimensions are invalid");
+      let offset = 2;
+      const startOfFrame = new Set([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207]);
+      while (offset + 4 <= bytes.length) {
+        if (bytes[offset] !== 255) throw new Error("JPEG marker sequence is invalid");
+        while (offset < bytes.length && bytes[offset] === 255) offset += 1;
+        const marker = bytes[offset++];
+        if (marker === 217 || marker === 218) break;
+        if (marker === 1 || (marker >= 208 && marker <= 215)) continue;
+        if (offset + 2 > bytes.length) break;
+        const length = uint16BE(bytes, offset);
+        if (length < 2 || offset + length > bytes.length) throw new Error("JPEG segment length is invalid");
+        if (startOfFrame.has(marker)) {
+          if (length < 7) throw new Error("JPEG frame dimensions are invalid");
+          height = uint16BE(bytes, offset + 3);
+          width = uint16BE(bytes, offset + 5);
+          break;
+        }
+        offset += length;
+      }
+    } else if (type === "image/webp") {
+      if (bytes.length < 30 || !asciiMatches(bytes, 0, "RIFF") || !asciiMatches(bytes, 8, "WEBP")) throw new Error("WebP dimensions are invalid");
+      if (asciiMatches(bytes, 12, "VP8X")) {
+        width = uint24LE(bytes, 24) + 1;
+        height = uint24LE(bytes, 27) + 1;
+      } else if (asciiMatches(bytes, 12, "VP8L") && bytes[20] === 47) {
+        width = 1 + bytes[21] + ((bytes[22] & 63) << 8);
+        height = 1 + (bytes[22] >> 6) + (bytes[23] << 2) + ((bytes[24] & 15) << 10);
+      } else if (asciiMatches(bytes, 12, "VP8 ") && bytesMatch(bytes, 23, [157, 1, 42])) {
+        width = uint16LE(bytes, 26) & 0x3fff;
+        height = uint16LE(bytes, 28) & 0x3fff;
+      }
+    } else {
+      throw new Error("plugin raster image type is unsupported");
+    }
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0 || width > maxImageDimension || height > maxImageDimension) {
+      throw new Error("decoded image dimensions exceed the renderer budget");
+    }
+    return { width, height, pixels: width * height };
+  };
+  const retainImagePixels = (pixels) => {
+    if (!Number.isSafeInteger(pixels) || pixels <= 0 || retainedImageCount >= maxImageCount || retainedImagePixels + pixels > maxImageTotalPixels) {
+      throw new Error("decoded image assets exceed the renderer pixel budget");
+    }
+    retainedImageCount += 1;
+    retainedImagePixels += pixels;
+  };
+  const deliverImageAsset = async (id, assetID, asset) => {
+    if (!pendingImageRequests.has(id)) pendingImageRequests.set(id, { assetID, asset });
+    const bytes = verifiedAssetBytes.get(asset.binding_id);
+    if (!bytes) {
+      return;
+    }
+    if (activeImageDecodes.has(id)) return;
+    activeImageDecodes.add(id);
+    let image;
+    try {
+      const rasterType = imageAssetTypes.get(asset.binding_id) || imageType(asset.content_type);
+      const dimensions = imageAssetDimensions.get(asset.binding_id) || readImageDimensions(bytes, rasterType);
+      retainImagePixels(dimensions.pixels);
+      imageReservations.set(id, dimensions.pixels);
+      image = await createImageBitmap(new Blob([bytes], { type: rasterType }));
+      if (!pendingWorkerRequests.has(id) || !pendingImageRequests.has(id)) {
+        image.close();
+        const reservedPixels = imageReservations.get(id);
+        if (reservedPixels !== undefined) {
+          imageReservations.delete(id);
+          retainedImageCount = Math.max(0, retainedImageCount - 1);
+          retainedImagePixels = Math.max(0, retainedImagePixels - reservedPixels);
+        }
+        activeImageDecodes.delete(id);
+        return;
+      }
+      if (!image || image.width !== dimensions.width || image.height !== dimensions.height) throw new Error("decoded image dimensions changed after validation");
+      pendingImageRequests.delete(id);
+      activeImageDecodes.delete(id);
+      sendWorkerTransfer({ type: "redevplugin.ui.asset.image.ready", id, asset_id: assetID, image, width: image.width, height: image.height }, [image]);
+      imageReservations.delete(id);
+      completeWorkerRequest(id);
+    } catch (error) {
+      try { image && image.close(); } catch {}
+      failTransferRequest(id, error && error.message || "plugin image asset could not be decoded");
+    }
+  };
   const applyAsset = async (asset, contentBase64) => {
     if (contentBase64.length !== Math.ceil(asset.size / 3) * 4) throw new Error("plugin asset encoded size mismatch");
     const binary = atob(contentBase64);
@@ -1068,7 +1523,17 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     const digestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
     const actualDigest = "sha256:" + Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     if (actualDigest !== asset.sha256) throw new Error("plugin asset bytes failed SHA-256 verification");
-    const url = URL.createObjectURL(new Blob([bytes], { type: asset.content_type }));
+    const declaredType = imageType(asset.content_type);
+    const rasterType = detectRasterImageType(bytes);
+    if (rasterType || (declaredType.startsWith("image/") && declaredType !== "image/svg+xml")) {
+      const validatedType = rasterType || declaredType;
+      const dimensions = readImageDimensions(bytes, validatedType);
+      retainImagePixels(dimensions.pixels);
+      imageAssetDimensions.set(asset.binding_id, dimensions);
+      imageAssetTypes.set(asset.binding_id, validatedType);
+    }
+    verifiedAssetBytes.set(asset.binding_id, bytes);
+    const url = URL.createObjectURL(new Blob([bytes], { type: rasterType || asset.content_type }));
     blobURLs.add(url);
     document.documentElement.style.setProperty("--redevplugin-asset-" + asset.binding_id, 'url("' + url.replaceAll('"', '%22') + '")');
     for (const element of document.querySelectorAll('[data-redevplugin-asset-binding="' + asset.binding_id + '"]')) {
@@ -1076,6 +1541,9 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       if (attribute === "src" || attribute === "poster") element.setAttribute(attribute, url);
       element.removeAttribute("data-redevplugin-asset-binding");
       element.removeAttribute("data-redevplugin-asset-attr");
+    }
+    for (const [id, pending] of pendingImageRequests) {
+      if (pending.asset.binding_id === asset.binding_id) void deliverImageAsset(id, pending.assetID, pending.asset);
     }
   };
   const workerRuntime = () => [
@@ -1092,10 +1560,17 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     'const __rpControlPost = __rpControlPort.postMessage.bind(__rpControlPort);',
     'const __rpControlStart = __rpControlPort.start.bind(__rpControlPort);',
     'const __rpControlClose = __rpControlPort.close.bind(__rpControlPort);',
+    'const __rpControlAddEventListener = __rpControlPort.addEventListener.bind(__rpControlPort);',
     'const __rpGetPrototypeOf = Object.getPrototypeOf;',
     'const __rpGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;',
     'const __rpDefineProperty = Object.defineProperty;',
     'const __rpHasOwn = Object.prototype.hasOwnProperty;',
+    'const __rpObjectKeys = Object.keys;',
+    'const __rpApply = Reflect.apply;',
+    'const __rpNumberIsSafeInteger = Number.isSafeInteger.bind(Number);',
+    'const __rpOffscreenCanvas = globalThis.OffscreenCanvas;',
+    'const __rpCanvasPrototype = __rpOffscreenCanvas && __rpOffscreenCanvas.prototype;',
+    'const __rpTrackedCanvases = [];',
     'const __rpBlocked = () => { throw new TypeError("API is unavailable in the ReDevPlugin worker sandbox"); };',
     'const __rpSealDescriptor = (owner, name, value) => {',
     '    const descriptor = __rpGetOwnPropertyDescriptor(owner, name);',
@@ -1126,9 +1601,42 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     '    }',
     '    if (!found) throw new TypeError("MessagePort method is unavailable: " + name);',
     '};',
+    'const __rpTrackCanvas = (canvas) => {',
+    '    for (let index = 0; index < __rpTrackedCanvases.length; index += 1) if (__rpTrackedCanvases[index] === canvas) return;',
+    '    if (__rpTrackedCanvases.length >= ' + JSON.stringify(maxCanvasCount) + ') throw new RangeError("plugin canvas count exceeds the worker budget");',
+    '    __rpTrackedCanvases.push(canvas);',
+    '};',
+    'const __rpInstallCanvasBudget = () => {',
+    '    if (!__rpCanvasPrototype) return;',
+    '    const widthDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "width");',
+    '    const heightDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "height");',
+    '    const contextDescriptor = __rpGetOwnPropertyDescriptor(__rpCanvasPrototype, "getContext");',
+    '    if (!widthDescriptor || !heightDescriptor || typeof widthDescriptor.get !== "function" || typeof widthDescriptor.set !== "function" || typeof heightDescriptor.get !== "function" || typeof heightDescriptor.set !== "function" || !contextDescriptor || typeof contextDescriptor.value !== "function") throw new TypeError("OffscreenCanvas descriptors are unavailable");',
+    '    const readWidth = (canvas) => __rpApply(widthDescriptor.get, canvas, []);',
+    '    const readHeight = (canvas) => __rpApply(heightDescriptor.get, canvas, []);',
+    '    const validateResize = (canvas, axis, value) => {',
+    '        if (!__rpNumberIsSafeInteger(value) || value <= 0 || value > ' + JSON.stringify(maxCanvasDimension) + ') throw new RangeError("plugin canvas resize exceeds the worker dimension budget");',
+    '        __rpTrackCanvas(canvas);',
+    '        let pixels = 0;',
+    '        for (let index = 0; index < __rpTrackedCanvases.length; index += 1) {',
+    '            const current = __rpTrackedCanvases[index];',
+    '            const width = current === canvas && axis === "width" ? value : readWidth(current);',
+    '            const height = current === canvas && axis === "height" ? value : readHeight(current);',
+    '            pixels += width * height;',
+    '            if (pixels > ' + JSON.stringify(maxCanvasTotalPixels) + ') throw new RangeError("plugin canvas resize exceeds the worker pixel budget");',
+    '        }',
+    '    };',
+    '    __rpDefineProperty(__rpCanvasPrototype, "width", { configurable: false, enumerable: Boolean(widthDescriptor.enumerable), get() { return readWidth(this); }, set(value) { validateResize(this, "width", value); __rpApply(widthDescriptor.set, this, [value]); } });',
+    '    __rpDefineProperty(__rpCanvasPrototype, "height", { configurable: false, enumerable: Boolean(heightDescriptor.enumerable), get() { return readHeight(this); }, set(value) { validateResize(this, "height", value); __rpApply(heightDescriptor.set, this, [value]); } });',
+    '    __rpDefineProperty(__rpCanvasPrototype, "getContext", { configurable: false, enumerable: Boolean(contextDescriptor.enumerable), writable: false, value(type, ...options) { if (type !== "2d") throw new TypeError("only 2d canvas contexts are available"); __rpTrackCanvas(this); return __rpApply(contextDescriptor.value, this, [type, ...options]); } });',
+    '    __rpSealDescriptor(__rpCanvasPrototype, "constructor", undefined);',
+    '    __rpSealDescriptor(__rpCanvasPrototype, "convertToBlob", __rpBlocked);',
+    '    __rpSealDescriptor(__rpCanvasPrototype, "transferToImageBitmap", __rpBlocked);',
+    '};',
     'try {',
     '    for (const name of ["postMessage", "start", "close", "addEventListener", "removeEventListener"]) __rpSealMessagePortMethod(name);',
-    '    for (const [name, value] of Object.entries({fetch:__rpBlocked,XMLHttpRequest:undefined,WebSocket:undefined,EventSource:undefined,WebTransport:undefined,Worker:undefined,SharedWorker:undefined,indexedDB:undefined,caches:undefined,RTCPeerConnection:undefined,webkitRTCPeerConnection:undefined,BroadcastChannel:undefined,importScripts:undefined,postMessage:undefined,eval:undefined,Function:undefined,Blob:undefined,File:undefined,FileReader:undefined,FileReaderSync:undefined})) __rpSealChain(globalThis, name, value);',
+    '    __rpInstallCanvasBudget();',
+    '    for (const [name, value] of Object.entries({fetch:__rpBlocked,XMLHttpRequest:undefined,WebSocket:undefined,EventSource:undefined,WebTransport:undefined,Worker:undefined,SharedWorker:undefined,indexedDB:undefined,caches:undefined,RTCPeerConnection:undefined,webkitRTCPeerConnection:undefined,BroadcastChannel:undefined,importScripts:undefined,postMessage:undefined,eval:undefined,Function:undefined,Blob:undefined,File:undefined,FileReader:undefined,FileReaderSync:undefined,OffscreenCanvas:undefined,ImageBitmap:undefined,createImageBitmap:undefined})) __rpSealChain(globalThis, name, value);',
     '    for (const [name, value] of Object.entries({storage:undefined,sendBeacon:undefined,serviceWorker:undefined})) __rpSealChain(navigator, name, value);',
     '    const __rpFunctionPrototypes = [__rpGetPrototypeOf(function() {}), __rpGetPrototypeOf(async function() {}), __rpGetPrototypeOf(function*() {}), __rpGetPrototypeOf(async function*() {})];',
     '    for (const prototype of __rpFunctionPrototypes) __rpSealDescriptor(prototype, "constructor", undefined);',
@@ -1153,6 +1661,14 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     'Object.defineProperty(globalThis, ' + JSON.stringify(workerGlobalKey) + ', { configurable: false, enumerable: false, writable: false, value: __rpBridge });',
     '__rpControlStart();',
     '__rpPort.start();',
+    'const __rpControlListener = (event) => {',
+    '    const message = event.data;',
+    '    if (!message || typeof message !== "object" || Array.isArray(message)) return;',
+    '    const keys = __rpObjectKeys(message).sort();',
+    '    if (keys.length !== 2 || keys[0] !== "ping_id" || keys[1] !== "type" || message.type !== "redevplugin.worker.ping" || typeof message.ping_id !== "string" || !/^ping_[1-9][0-9]{0,15}$/.test(message.ping_id)) return;',
+    '    __rpControlPost({ type: "redevplugin.worker.pong", ping_id: message.ping_id });',
+    '};',
+    '__rpControlAddEventListener("message", __rpControlListener);',
     'let __rpFailed = false;',
     'const __rpReportFailure = (error) => { if (__rpFailed) return; __rpFailed = true; __rpControlPost({ type: "redevplugin.worker.error", error: String(error && error.message || error).slice(0, 512) }); };',
     'addEventListener("error", (event) => __rpReportFailure(event.error || event.message || "plugin worker failed"), { capture: true });',
@@ -1190,7 +1706,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const validCall = (value) => exactKeys(value, ["type", "request"]) && value.type === "redevplugin.bridge.call" && isRecord(value.request) && Object.keys(value.request).every((key) => ["id", "method", "params"].includes(key)) && typeof value.request.id === "string" && value.request.id.length <= 128 && typeof value.request.method === "string" && /^[A-Za-z0-9._:-]{1,256}$/.test(value.request.method) && (value.request.params === undefined || isRecord(value.request.params));
   const requestID = (value, expectedKind) => {
     if (typeof value !== "string") return undefined;
-    const match = /^(rpc|stream|render|operation)_([1-9][0-9]{0,15})$/.exec(value);
+    const match = /^(rpc|stream|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/.exec(value);
     if (!match || match[1] !== expectedKind) return undefined;
     const sequence = Number(match[2]);
     return Number.isSafeInteger(sequence) ? { kind: match[1], sequence } : undefined;
@@ -1211,6 +1727,175 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     return true;
   };
   const rejectWorkerRequest = (id, error) => sendWorker({ type: "redevplugin.bridge.response", id, ok: false, error_code: "PLUGIN_INVALID_REQUEST", error });
+  const findCanvas = (canvasID) => {
+    for (const element of document.querySelectorAll("canvas[data-redevplugin-canvas]")) {
+      if (element.getAttribute("data-redevplugin-canvas") === canvasID) return element;
+    }
+    return undefined;
+  };
+  const updateCanvasAccessibility = (id, canvasID, label, description) => {
+    const runtime = canvasRuntimes.get(canvasID);
+    if (!runtime || typeof label !== "string" || label.length < 1 || label.length > 256 || typeof description !== "string" || description.length > 1024) {
+      completeWorkerRequest(id);
+      return rejectWorkerRequest(id, "plugin canvas accessibility state is invalid");
+    }
+    if (!runtime.description) {
+      const status = document.createElement("span");
+      status.id = "redevplugin-canvas-description-" + canvasID.replace(/[^A-Za-z0-9_-]/g, "-");
+      status.style.position = "absolute";
+      status.style.width = "1px";
+      status.style.height = "1px";
+      status.style.padding = "0";
+      status.style.margin = "-1px";
+      status.style.overflow = "hidden";
+      status.style.clip = "rect(0, 0, 0, 0)";
+      status.style.whiteSpace = "nowrap";
+      status.style.border = "0";
+      runtime.canvas.insertAdjacentElement("afterend", status);
+      runtime.canvas.setAttribute("aria-describedby", status.id);
+      runtime.description = status;
+    }
+    runtime.canvas.setAttribute("aria-label", label);
+    runtime.description.textContent = description;
+    completeWorkerRequest(id);
+    sendWorker({ type: "redevplugin.bridge.response", id, ok: true });
+  };
+  const canvasMetrics = (canvas) => {
+    const rect = canvas.getBoundingClientRect();
+    const cssWidth = Math.ceil(rect.width || canvas.width || 1);
+    const cssHeight = Math.ceil(rect.height || canvas.height || 1);
+    const devicePixelRatio = Math.min(4, Math.max(0.5, Number(globalThis.devicePixelRatio) || 1));
+    if (!Number.isSafeInteger(cssWidth) || !Number.isSafeInteger(cssHeight) || cssWidth <= 0 || cssHeight <= 0 || cssWidth > maxCanvasDimension || cssHeight > maxCanvasDimension) {
+      throw new Error("plugin canvas dimensions exceed the renderer budget");
+    }
+    const pixelCount = Math.ceil(cssWidth * devicePixelRatio) * Math.ceil(cssHeight * devicePixelRatio);
+    return { cssWidth, cssHeight, devicePixelRatio, pixelCount };
+  };
+  const openCanvas = (id, canvasID) => {
+    const canvas = findCanvas(canvasID);
+    if (!canvas || canvasRuntimes.has(canvasID) || typeof canvas.transferControlToOffscreen !== "function" || typeof ResizeObserver !== "function") {
+      completeWorkerRequest(id);
+      return rejectWorkerRequest(id, "plugin canvas is missing, already transferred, or unsupported");
+    }
+    if (canvas.tabIndex < 0) canvas.tabIndex = 0;
+    let pointerWindowStartedAt = 0;
+    let pointerEvents = 0;
+    const listeners = [];
+    const listen = (type, handler) => {
+      canvas.addEventListener(type, handler, { passive: false });
+      listeners.push([type, handler]);
+    };
+    const sendInput = (event) => sendWorker({ type: "redevplugin.ui.canvas.input", canvas_id: canvasID, event });
+    const sendResize = () => {
+      const metrics = canvasMetrics(canvas);
+      const runtime = canvasRuntimes.get(canvasID);
+      let totalPixels = metrics.pixelCount;
+      for (const [identifier, active] of canvasRuntimes) {
+        if (identifier !== canvasID) totalPixels += active.pixelCount;
+      }
+      if (totalPixels > maxCanvasTotalPixels) throw new Error("plugin canvases exceed the renderer pixel budget");
+      if (runtime) runtime.pixelCount = metrics.pixelCount;
+      sendInput({ type: "resize", css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio });
+      return metrics;
+    };
+    const handlePointer = (event) => {
+      const now = performance.now();
+      if (now - pointerWindowStartedAt >= 1000) { pointerWindowStartedAt = now; pointerEvents = 0; }
+      if (event.type === "pointermove") {
+        if (pointerEvents >= maxCanvasPointerEventsPerSecond) return;
+        pointerEvents += 1;
+      }
+      event.preventDefault();
+      if (event.type === "pointerdown") {
+        try { canvas.focus({ preventScroll: true }); } catch { canvas.focus(); }
+        try { canvas.setPointerCapture(event.pointerId); } catch {}
+      }
+      if (event.type === "pointerup" || event.type === "pointercancel") {
+        try { canvas.releasePointerCapture(event.pointerId); } catch {}
+      }
+      const rect = canvas.getBoundingClientRect();
+      sendInput({
+        type: "pointer",
+        event: event.type,
+        pointer_id: Math.max(0, Number.isSafeInteger(event.pointerId) ? event.pointerId : 0),
+        pointer_type: ["mouse", "pen", "touch"].includes(event.pointerType) ? event.pointerType : "unknown",
+        buttons: Math.min(31, Math.max(0, Number.isSafeInteger(event.buttons) ? event.buttons : 0)),
+        button: Math.min(4, Math.max(-1, Number.isSafeInteger(event.button) ? event.button : -1)),
+        x: Math.min(32768, Math.max(-16384, event.clientX - rect.left)),
+        y: Math.min(32768, Math.max(-16384, event.clientY - rect.top)),
+        pressure: Math.min(1, Math.max(0, Number.isFinite(event.pressure) ? event.pressure : 0)),
+      });
+    };
+    const handleKey = (event) => {
+      event.preventDefault();
+      sendInput({
+        type: "key",
+        event: event.type,
+        code: String(event.code || "").slice(0, 64),
+        key: String(event.key || "").slice(0, 64),
+        repeat: Boolean(event.repeat),
+        alt_key: Boolean(event.altKey),
+        ctrl_key: Boolean(event.ctrlKey),
+        meta_key: Boolean(event.metaKey),
+        shift_key: Boolean(event.shiftKey),
+      });
+    };
+    for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) listen(type, handlePointer);
+    for (const type of ["keydown", "keyup"]) listen(type, handleKey);
+    listen("focus", () => sendInput({ type: "focus" }));
+    listen("blur", () => sendInput({ type: "blur" }));
+    const observer = new ResizeObserver(() => {
+      try { sendResize(); }
+      catch (error) { fail(error && error.message || "plugin canvas resize exceeded renderer limits"); }
+    });
+    observer.observe(canvas);
+    const runtime = { canvas, description: undefined, dispose: undefined, pixelCount: 0 };
+    const dispose = () => {
+      observer.disconnect();
+      for (const [type, handler] of listeners) canvas.removeEventListener(type, handler);
+      runtime.description?.remove();
+    };
+    runtime.dispose = dispose;
+    try {
+      const offscreen = canvas.transferControlToOffscreen();
+      const metrics = canvasMetrics(canvas);
+      let totalPixels = metrics.pixelCount;
+      for (const runtime of canvasRuntimes.values()) totalPixels += runtime.pixelCount;
+      if (canvasRuntimes.size >= maxCanvasCount || totalPixels > maxCanvasTotalPixels) throw new Error("plugin canvas resources exceed renderer limits");
+      runtime.pixelCount = metrics.pixelCount;
+      canvasRuntimes.set(canvasID, runtime);
+      completeWorkerRequest(id);
+      sendWorkerTransfer({ type: "redevplugin.ui.canvas.ready", id, canvas_id: canvasID, canvas: offscreen, css_width: metrics.cssWidth, css_height: metrics.cssHeight, device_pixel_ratio: metrics.devicePixelRatio }, [offscreen]);
+      sendResize();
+    } catch (error) {
+      dispose();
+      completeWorkerRequest(id);
+      rejectWorkerRequest(id, String(error && error.message || "plugin canvas transfer failed").slice(0, 512));
+    }
+  };
+  const scheduleWorkerHeartbeat = () => {
+    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
+    workerHeartbeatTimer = undefined;
+    if (!workerReady || !workerControlPort || workerHeartbeatPendingID) return;
+    workerHeartbeatTimer = setTimeout(() => {
+      workerHeartbeatTimer = undefined;
+      if (!workerReady || !workerControlPort || workerHeartbeatPendingID) return;
+      const pingID = "ping_" + (++workerHeartbeatSequence);
+      workerHeartbeatPendingID = pingID;
+      try {
+        workerControlPort.postMessage({ type: "redevplugin.worker.ping", ping_id: pingID });
+      } catch {
+        fail("plugin worker heartbeat could not be sent");
+        return;
+      }
+      workerHeartbeatTimeout = setTimeout(() => {
+        workerHeartbeatTimeout = undefined;
+        if (workerHeartbeatPendingID !== pingID) return;
+        workerHeartbeatPendingID = undefined;
+        fail("plugin worker heartbeat timed out");
+      }, workerHeartbeatTimeoutMs);
+    }, workerHeartbeatIntervalMs);
+  };
   const onWorkerControlMessage = (event) => {
     if (!withinLimit(event.data)) return;
     const message = event.data;
@@ -1218,6 +1903,14 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       if (workerReady) return;
       workerReady = true;
       sendParent({ type: "redevplugin.surface.worker_ready" });
+      scheduleWorkerHeartbeat();
+      return;
+    }
+    if (exactKeys(message, ["type", "ping_id"]) && message.type === "redevplugin.worker.pong" && message.ping_id === workerHeartbeatPendingID) {
+      if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
+      workerHeartbeatTimeout = undefined;
+      workerHeartbeatPendingID = undefined;
+      scheduleWorkerHeartbeat();
       return;
     }
     if (exactKeys(message, ["type", "error"]) && message.type === "redevplugin.worker.error" && typeof message.error === "string") {
@@ -1228,6 +1921,12 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const onWorkerMessage = (event) => {
     if (!withinLimit(event.data)) return;
     const message = event.data;
+    if (exactKeys(message, ["type", "quiesce_id"]) && message.type === "redevplugin.bridge.lifecycle_ack" && validOpaqueHandle(message.quiesce_id, "quiesce") && message.quiesce_id === pendingQuiesceID) {
+      pendingQuiesceID = undefined;
+      sendParent({ type: "redevplugin.surface.quiesce_ack", quiesce_id: message.quiesce_id });
+      disposeRuntime();
+      return;
+    }
     if (validCall(message)) {
       if (!acceptWorkerRequest(message.request.id, "rpc")) return rejectWorkerRequest(message.request.id, "duplicate, replayed, or excessive plugin request");
       sendParent(message);
@@ -1243,6 +1942,26 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
         validOpaqueHandle(message.operation_id, "operation") && (message.reason === undefined || (typeof message.reason === "string" && message.reason.length <= 256))) {
       if (!acceptWorkerRequest(message.id, "operation")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       sendParent(message);
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "canvas_id"]) && message.type === "redevplugin.ui.canvas.open" && typeof message.id === "string" && validResourceIdentifier(message.canvas_id)) {
+      if (!acceptWorkerRequest(message.id, "canvas")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      openCanvas(message.id, message.canvas_id);
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "canvas_id", "label", "description"]) && message.type === "redevplugin.ui.canvas.accessibility" && typeof message.id === "string" && validResourceIdentifier(message.canvas_id)) {
+      if (!acceptWorkerRequest(message.id, "canvas")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      updateCanvasAccessibility(message.id, message.canvas_id, message.label, message.description);
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "asset_id"]) && message.type === "redevplugin.ui.asset.image.open" && typeof message.id === "string" && validResourceIdentifier(message.asset_id)) {
+      if (!acceptWorkerRequest(message.id, "asset")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      const asset = assetByLogicalID.get(message.asset_id);
+      if (!asset || !String(asset.content_type).toLowerCase().startsWith("image/") || String(asset.content_type).toLowerCase() === "image/svg+xml") {
+        completeWorkerRequest(message.id);
+        return rejectWorkerRequest(message.id, "plugin image asset is not declared");
+      }
+      void deliverImageAsset(message.id, message.asset_id, asset);
       return;
     }
     if (exactKeys(message, ["type", "id", "tree"]) && message.type === "redevplugin.ui.render" && typeof message.id === "string") {
@@ -1263,6 +1982,11 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     }
     if (exactKeys(message, ["type", "id"]) && message.type === "redevplugin.bridge.cancel" && typeof message.id === "string") {
       if (!pendingWorkerRequests.has(message.id)) return rejectWorkerRequest(message.id, "plugin request is not pending");
+      if (pendingImageRequests.has(message.id)) {
+        pendingImageRequests.delete(message.id);
+        completeWorkerRequest(message.id);
+        return;
+      }
       completeWorkerRequest(message.id);
       sendParent(message);
     }
@@ -1287,9 +2011,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       sendWorker(message);
       return;
     }
-    if (message && message.type === "redevplugin.bridge.lifecycle" && isRecord(message.event) && ["ready", "visible", "hidden", "dispose"].includes(message.event.type)) {
+    if (message && message.type === "redevplugin.bridge.lifecycle" && isRecord(message.event) && ["ready", "visible", "hidden", "dispose"].includes(message.event.type) && Object.keys(message).every((key) => ["type", "event", "quiesce_id"].includes(key)) && (message.quiesce_id === undefined || (message.event.type === "dispose" && validOpaqueHandle(message.quiesce_id, "quiesce")))) {
+      pendingQuiesceID = message.quiesce_id;
       sendWorker(message);
-      if (message.event.type === "dispose") disposeRuntime();
+      if (message.event.type === "dispose" && !message.quiesce_id) disposeRuntime();
       return;
     }
     if (exactKeys(message, ["type", "request_id", "binding_id", "ok", "path", "sha256", "content_type", "content_base64"]) && message.type === "redevplugin.surface.asset.response" && typeof message.content_base64 === "string" && message.content_base64.length <= maxPrivateAssetBase64Length) {
@@ -1361,8 +2086,10 @@ export class PluginSurfaceHost {
   #transportIdle?: Deferred<void>;
   #port?: MessagePortLike;
   #openSignals?: OpenSignals;
+  #quiesce?: SurfaceQuiesce;
   #initialFrameLoad?: Deferred<void>;
   #frameLoaded = false;
+  #closePromise?: Promise<void>;
   #revokePromise?: Promise<void>;
   #unregisterSurfaceScope?: () => void;
   #opened = false;
@@ -1525,7 +2252,21 @@ export class PluginSurfaceHost {
     this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event });
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    if (this.#disposed) return Promise.resolve();
+    if (this.#closePromise) return this.#closePromise;
+    this.#closePromise = this.#closeSurface();
+    return this.#closePromise;
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    void this.#bestEffortRevokeSurface(true);
+    this.#disposeLocal();
+  }
+
+  async #closeSurface(): Promise<void> {
+    await this.#quiesceSurface();
     if (this.#disposed) return;
     const revoke = this.#revokeSurface(false);
     this.#disposeLocal();
@@ -1534,12 +2275,6 @@ export class PluginSurfaceHost {
     } catch (error) {
       throw toBridgeError(error, "PLUGIN_BRIDGE_DISPOSED");
     }
-  }
-
-  dispose(): void {
-    if (this.#disposed) return;
-    void this.#bestEffortRevokeSurface(true);
-    this.#disposeLocal();
   }
 
   #disposeLocal(): void {
@@ -1559,6 +2294,8 @@ export class PluginSurfaceHost {
     this.#openSignals?.workerReady.reject(disposedError);
     this.#openSignals?.portAcknowledged.reject(disposedError);
     this.#initialFrameLoad?.reject(disposedError);
+    this.#quiesce?.acknowledged.reject(disposedError);
+    this.#quiesce = undefined;
     this.#gatewayToken = undefined;
     this.#leaseExpiresAtMs = 0;
     this.#assetSession = undefined;
@@ -1594,6 +2331,10 @@ export class PluginSurfaceHost {
       }
       if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.worker_ready") {
         this.#openSignals?.workerReady.resolve();
+        return;
+      }
+      if (hasExactKeys(data, ["type", "quiesce_id"]) && data.type === "redevplugin.surface.quiesce_ack" && validOpaqueHandle(data.quiesce_id, "quiesce") && data.quiesce_id === this.#quiesce?.id) {
+        this.#quiesce.acknowledged.resolve();
         return;
       }
       if (hasExactKeys(data, ["type", "error"]) && data.type === "redevplugin.surface.error" && typeof data.error === "string") {
@@ -2059,6 +2800,32 @@ export class PluginSurfaceHost {
     }
   }
 
+  async #quiesceSurface(): Promise<void> {
+    if (!this.#ready || !this.#port || this.#quiesce) return;
+    const quiesce: SurfaceQuiesce = {
+      id: randomOpaqueHandle("quiesce"),
+      acknowledged: deferred<void>(),
+    };
+    void quiesce.acknowledged.promise.catch(() => undefined);
+    this.#quiesce = quiesce;
+    try {
+      this.#postToRenderer({
+        type: "redevplugin.bridge.lifecycle",
+        event: { type: "dispose" },
+        quiesce_id: quiesce.id,
+      } satisfies PluginBridgeLifecycleMessage);
+      await withTimeout(
+        quiesce.acknowledged.promise,
+        Math.min(this.#requestTimeoutMs, maxSurfaceQuiesceMs),
+        "Plugin surface quiesce timed out",
+      );
+    } catch {
+      // A non-responsive plugin cannot block session revocation and iframe teardown.
+    } finally {
+      if (this.#quiesce === quiesce) this.#quiesce = undefined;
+    }
+  }
+
   async #failSurface(error: PluginBridgeError): Promise<void> {
     if (this.#disposed) return;
     this.#ready = false;
@@ -2071,7 +2838,12 @@ export class PluginSurfaceHost {
   }
 
   #postResponse(id: string, data?: unknown): void {
-    this.#postToRenderer({ type: "redevplugin.bridge.response", id, ok: true, data });
+    const response = removeUndefined({ type: "redevplugin.bridge.response", id, ok: true, data });
+    if (!messageWithinLimit(response)) {
+      this.#postError(id, "PLUGIN_JSON_LIMIT_EXCEEDED", "Plugin response exceeds the bridge message limit");
+      return;
+    }
+    this.#postToRenderer(response);
   }
 
   #postError(id: string, errorCode: string, error: string, details?: unknown): void {
@@ -2301,13 +3073,17 @@ function isOpaqueSurfaceDocument(value: unknown): value is OpaqueSurfaceDocument
   ])) return false;
   if (!Array.isArray(value.assets) || value.assets.length > maxOpaqueSurfaceLazyAssets) return false;
   let lazyBytes = 0;
+  const logicalIDs = new Set<string>();
   for (const asset of value.assets) {
-    if (!hasExactKeys(asset, ["binding_id", "path", "sha256", "size", "content_type"]) ||
+    if (!hasExactKeys(asset, ["binding_id", "logical_ids", "path", "sha256", "size", "content_type"]) ||
         !validOpaqueHandle(asset.binding_id, "asset") || !validPackagePath(asset.path) || !validSHA256(asset.sha256) ||
+        !Array.isArray(asset.logical_ids) || asset.logical_ids.length < 1 || asset.logical_ids.length > 16 ||
+        asset.logical_ids.some((logicalID) => !validUIIdentifier(logicalID) || logicalIDs.has(logicalID)) ||
         !Number.isSafeInteger(asset.size) || Number(asset.size) < 0 || Number(asset.size) > maxOpaqueSurfaceLazyBytes ||
         typeof asset.content_type !== "string" || asset.content_type.length < 1 || asset.content_type.length > 256) {
       return false;
     }
+    for (const logicalID of asset.logical_ids) logicalIDs.add(logicalID);
     lazyBytes += Number(asset.size);
     if (!Number.isSafeInteger(lazyBytes) || lazyBytes > maxOpaqueSurfaceLazyBytes) return false;
   }
@@ -2377,12 +3153,26 @@ function isBridgeResponse(value: unknown): value is PluginBridgeResponse {
     return false;
   }
   if (value.error_code === "PLUGIN_CAPABILITY_ERROR") return isCapabilityBusinessErrorDetails(value.error_details);
+  if (value.error_code === "PLUGIN_WORKER_ERROR") return isWorkerErrorDetails(value.error_details);
   if (value.error_details === undefined) return true;
   try {
     return Object.keys(normalizePluginJSONObject(value.error_details)).length <= 8;
   } catch {
     return false;
   }
+}
+
+function validCanvasAccessibilityState(value: unknown): value is PluginCanvasAccessibilityState {
+  return hasExactKeys(value, ["label", "description"]) &&
+    typeof value.label === "string" && value.label.length > 0 && value.label.length <= 256 &&
+    typeof value.description === "string" && value.description.length <= 1024;
+}
+
+function isWorkerErrorDetails(value: unknown): value is PluginJSONObject {
+  return hasExactKeys(value, ["worker_error_code", "worker_error_message", "worker_error_origin"]) &&
+    typeof value.worker_error_code === "string" && businessErrorCodePattern.test(value.worker_error_code) &&
+    typeof value.worker_error_message === "string" && value.worker_error_message.length > 0 && value.worker_error_message.length <= 4096 &&
+    (value.worker_error_origin === "runtime" || value.worker_error_origin === "hostcall" || value.worker_error_origin === "plugin");
 }
 
 function isCapabilityBusinessErrorDetails(value: unknown): value is PluginJSONObject {
@@ -2409,20 +3199,145 @@ function isCapabilityBusinessErrorDetails(value: unknown): value is PluginJSONOb
 }
 
 function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessage {
-  return hasExactKeys(value, ["type", "event"]) &&
+  return hasAllowedKeys(value, ["type", "event", "quiesce_id"]) &&
     value.type === "redevplugin.bridge.lifecycle" &&
     hasExactKeys(value.event, ["type"]) &&
-    (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose");
+    (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose") &&
+    (value.quiesce_id === undefined || (value.event.type === "dispose" && validOpaqueHandle(value.quiesce_id, "quiesce")));
 }
 
 function isActionMessage(value: unknown): value is PluginUIActionEvent & { type: "redevplugin.ui.action" } {
   return hasAllowedKeys(value, ["type", "action", "event", "value", "checked", "form_data"]) &&
     value.type === "redevplugin.ui.action" &&
     validActionID(value.action) &&
-    (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit") &&
+    (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit" || value.event === "escape") &&
     (value.value == null || (typeof value.value === "string" && value.value.length <= 65536)) &&
     (value.checked == null || typeof value.checked === "boolean") &&
     (value.form_data == null || (isRecord(value.form_data) && Object.entries(value.form_data).every(([key, item]) => validActionID(key) && typeof item === "string" && item.length <= 65536)));
+}
+
+type PluginCanvasReadyMessage = {
+  type: "redevplugin.ui.canvas.ready";
+  id: string;
+  canvas_id: string;
+  canvas: OffscreenCanvas;
+  css_width: number;
+  css_height: number;
+  device_pixel_ratio: number;
+};
+
+type PluginImageReadyMessage = {
+  type: "redevplugin.ui.asset.image.ready";
+  id: string;
+  asset_id: string;
+  image: ImageBitmap;
+  width: number;
+  height: number;
+};
+
+function isCanvasReadyCandidate(value: unknown): value is { type: "redevplugin.ui.canvas.ready"; id: string; canvas_id: string } & Record<string, unknown> {
+  return isRecord(value) && value.type === "redevplugin.ui.canvas.ready" && typeof value.id === "string" && typeof value.canvas_id === "string";
+}
+
+function isCanvasReadyMessage(value: unknown): value is PluginCanvasReadyMessage {
+  return hasExactKeys(value, ["type", "id", "canvas_id", "canvas", "css_width", "css_height", "device_pixel_ratio"]) &&
+    value.type === "redevplugin.ui.canvas.ready" && validBridgeRequestID(value.id, "canvas") && validUIIdentifier(value.canvas_id) &&
+    isOffscreenCanvasLike(value.canvas) && validSurfaceDimension(value.css_width) && validSurfaceDimension(value.css_height) &&
+    validDevicePixelRatio(value.device_pixel_ratio);
+}
+
+function isImageReadyCandidate(value: unknown): value is { type: "redevplugin.ui.asset.image.ready"; id: string; asset_id: string } & Record<string, unknown> {
+  return isRecord(value) && value.type === "redevplugin.ui.asset.image.ready" && typeof value.id === "string" && typeof value.asset_id === "string";
+}
+
+function isImageReadyMessage(value: unknown): value is PluginImageReadyMessage {
+  return hasExactKeys(value, ["type", "id", "asset_id", "image", "width", "height"]) &&
+    value.type === "redevplugin.ui.asset.image.ready" && validBridgeRequestID(value.id, "asset") && validUIIdentifier(value.asset_id) &&
+    isImageBitmapLike(value.image) && Number.isInteger(value.width) && Number(value.width) > 0 && Number(value.width) <= opaqueSurfaceRenderLimits.max_image_dimension &&
+    Number.isInteger(value.height) && Number(value.height) > 0 && Number(value.height) <= opaqueSurfaceRenderLimits.max_image_dimension &&
+    value.image.width === value.width && value.image.height === value.height;
+}
+
+function publicCanvasInputMessage(value: unknown): { canvasId: string; event: PluginCanvasInputEvent } | undefined {
+  if (!hasExactKeys(value, ["type", "canvas_id", "event"]) || value.type !== "redevplugin.ui.canvas.input" ||
+      !validUIIdentifier(value.canvas_id) || !isRecord(value.event)) return undefined;
+  const event = value.event;
+  if (hasExactKeys(event, ["type"]) && (event.type === "focus" || event.type === "blur")) {
+    return { canvasId: value.canvas_id, event: { type: event.type } };
+  }
+  if (hasExactKeys(event, ["type", "css_width", "css_height", "device_pixel_ratio"]) && event.type === "resize" &&
+      validSurfaceDimension(event.css_width) && validSurfaceDimension(event.css_height) && validDevicePixelRatio(event.device_pixel_ratio)) {
+    return {
+      canvasId: value.canvas_id,
+      event: { type: "resize", cssWidth: event.css_width, cssHeight: event.css_height, devicePixelRatio: event.device_pixel_ratio },
+    };
+  }
+  if (hasExactKeys(event, ["type", "event", "code", "key", "repeat", "alt_key", "ctrl_key", "meta_key", "shift_key"]) &&
+      event.type === "key" && (event.event === "keydown" || event.event === "keyup") &&
+      typeof event.code === "string" && event.code.length <= 64 && typeof event.key === "string" && event.key.length <= 64 &&
+      typeof event.repeat === "boolean" && typeof event.alt_key === "boolean" && typeof event.ctrl_key === "boolean" &&
+      typeof event.meta_key === "boolean" && typeof event.shift_key === "boolean") {
+    return {
+      canvasId: value.canvas_id,
+      event: {
+        type: "key",
+        event: event.event,
+        code: event.code,
+        key: event.key,
+        repeat: event.repeat,
+        altKey: event.alt_key,
+        ctrlKey: event.ctrl_key,
+        metaKey: event.meta_key,
+        shiftKey: event.shift_key,
+      },
+    };
+  }
+  if (hasExactKeys(event, ["type", "event", "pointer_id", "pointer_type", "buttons", "button", "x", "y", "pressure"]) &&
+      event.type === "pointer" && ["pointerdown", "pointermove", "pointerup", "pointercancel"].includes(String(event.event)) &&
+      Number.isInteger(event.pointer_id) && Number(event.pointer_id) >= 0 &&
+      ["mouse", "pen", "touch", "unknown"].includes(String(event.pointer_type)) &&
+      Number.isInteger(event.buttons) && Number(event.buttons) >= 0 && Number(event.buttons) <= 31 &&
+      Number.isInteger(event.button) && Number(event.button) >= -1 && Number(event.button) <= 4 &&
+      validCanvasCoordinate(event.x) && validCanvasCoordinate(event.y) &&
+      typeof event.pressure === "number" && Number.isFinite(event.pressure) && event.pressure >= 0 && event.pressure <= 1) {
+    return {
+      canvasId: value.canvas_id,
+      event: {
+        type: "pointer",
+        event: event.event as PluginCanvasPointerEvent["event"],
+        pointerId: Number(event.pointer_id),
+        pointerType: event.pointer_type as PluginCanvasPointerEvent["pointerType"],
+        buttons: Number(event.buttons),
+        button: Number(event.button),
+        x: event.x,
+        y: event.y,
+        pressure: event.pressure,
+      },
+    };
+  }
+  return undefined;
+}
+
+function isOffscreenCanvasLike(value: unknown): value is OffscreenCanvas {
+  return isRecord(value) && Number.isInteger(value.width) && Number(value.width) > 0 && Number(value.width) <= opaqueSurfaceRenderLimits.max_canvas_dimension &&
+    Number.isInteger(value.height) && Number(value.height) > 0 && Number(value.height) <= opaqueSurfaceRenderLimits.max_canvas_dimension && typeof value.getContext === "function";
+}
+
+function isImageBitmapLike(value: unknown): value is ImageBitmap {
+  return isRecord(value) && Number.isInteger(value.width) && Number(value.width) > 0 && Number(value.width) <= opaqueSurfaceRenderLimits.max_image_dimension &&
+    Number.isInteger(value.height) && Number(value.height) > 0 && Number(value.height) <= opaqueSurfaceRenderLimits.max_image_dimension && typeof value.close === "function";
+}
+
+function validSurfaceDimension(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= opaqueSurfaceRenderLimits.max_canvas_dimension;
+}
+
+function validDevicePixelRatio(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0.5 && value <= 4;
+}
+
+function validCanvasCoordinate(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= -16384 && value <= 32768;
 }
 
 function isMessagePortLike(value: unknown): value is MessagePortLike {
@@ -2504,10 +3419,11 @@ function validRPCParams(value: unknown): value is Record<string, unknown> | unde
 
 const pluginMethodPattern = new RegExp("^[-A-Za-z0-9._:]{1,256}$");
 const pluginActionPattern = new RegExp("^[-A-Za-z0-9._:]{1,128}$");
+const pluginUIIdentifierPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
 const opaqueHandlePattern = new RegExp("^[-A-Za-z0-9_]{8,160}$");
-const bridgeRequestIDPattern = /^(rpc|stream|render|operation)_([1-9][0-9]{0,15})$/;
+const bridgeRequestIDPattern = /^(rpc|stream|render|operation|canvas|asset)_([1-9][0-9]{0,15})$/;
 
-function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "stream" | "render" | "operation"): value is string {
+function validBridgeRequestID(value: unknown, expectedKind?: "rpc" | "stream" | "render" | "operation" | "canvas" | "asset"): value is string {
   if (typeof value !== "string") return false;
   const match = bridgeRequestIDPattern.exec(value);
   if (!match || (expectedKind && match[1] !== expectedKind)) return false;
@@ -2520,6 +3436,10 @@ function validMethod(value: unknown): value is string {
 
 function validActionID(value: unknown): value is string {
   return typeof value === "string" && pluginActionPattern.test(value);
+}
+
+function validUIIdentifier(value: unknown): value is string {
+  return typeof value === "string" && pluginUIIdentifierPattern.test(value);
 }
 
 function validOpaqueHandle(value: unknown, prefix: string): value is string {

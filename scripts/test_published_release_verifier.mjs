@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -20,6 +20,9 @@ const verifierRoot = join(tempRoot, "isolated-verifier");
 const verifierScripts = join(verifierRoot, "scripts");
 const publishedVerifier = join(verifierScripts, "verify_published_release.mjs");
 const bundleVerifier = join(verifierScripts, "verify_redevplugin_release_bundle.mjs");
+const rustToolchain = run("rustup", ["show", "active-toolchain"], "resolve release verifier Rust toolchain", { cwd: root }).trim().split(/\s+/, 1)[0];
+if (!/^[A-Za-z0-9_.-]+$/.test(rustToolchain)) throw new Error("rustup returned an invalid release verifier toolchain");
+const verifierEnvironment = { ...process.env, NPM_CONFIG_REGISTRY: "https://registry.invalid", RUSTUP_TOOLCHAIN: rustToolchain };
 const targets = [
   { id: "x86_64-unknown-linux-gnu", format: "elf", machine: 62 },
   { id: "aarch64-unknown-linux-gnu", format: "elf", machine: 183 },
@@ -48,12 +51,28 @@ try {
     "verify structural runtime matrix",
     {
       cwd: verifierRoot,
-      env: { ...process.env, NPM_CONFIG_REGISTRY: "https://registry.invalid" },
+      env: verifierEnvironment,
     },
   );
   if (existsSync(join(verifierRoot, "node_modules"))) {
     throw new Error("published verifier installed or reused dependencies outside its standalone consumer");
   }
+
+  const sdkNegative = bundles[3];
+  const sdkManifest = JSON.parse(readFileSync(join(sdkNegative.bundleRoot, "release-manifest.json"), "utf8"));
+  const sdkCratePath = join(sdkNegative.bundleRoot, sdkManifest.worker_sdk.path);
+  const sdkExtractRoot = join(tempRoot, "worker-sdk-mutation");
+  mkdirSync(sdkExtractRoot, { recursive: true });
+  run("tar", ["-xzf", sdkCratePath, "-C", sdkExtractRoot], "extract worker SDK mutation fixture");
+  const sdkPackageRoot = `redevplugin-worker-sdk-${version}`;
+  appendFileSync(join(sdkExtractRoot, sdkPackageRoot, "README.md"), "\nCross-bundle identity mutation fixture.\n");
+  rmSync(sdkCratePath);
+  run("tar", ["-C", sdkExtractRoot, "-czf", sdkCratePath, sdkPackageRoot], "repack worker SDK mutation fixture");
+  refreshReleaseManifest(sdkNegative.bundleRoot, sdkNegative.target.id);
+  const sdkArchive = join(artifactDir, `${basename(sdkNegative.bundleRoot)}.tar.gz`);
+  rmSync(sdkArchive);
+  run("tar", ["-C", tempRoot, "-czf", sdkArchive, basename(sdkNegative.bundleRoot)], "archive worker SDK mutation fixture");
+  assertPublishedVerifierRejects("runtime archives do not contain the same worker SDK crate bytes", "cross-bundle worker SDK drift");
 
   const toolchainNegative = bundles[2];
   const toolchainLockPath = join(toolchainNegative.bundleRoot, "notices/package-lock.json");
@@ -168,8 +187,29 @@ function refreshReleaseManifest(bundleRoot, runtimeTarget) {
     file.size = bytes.length;
   }
   manifest.files.sort((left, right) => left.path.localeCompare(right.path));
+  const workerSDKFile = manifest.files.find((file) => file.path === manifest.worker_sdk.path);
+  if (!workerSDKFile) throw new Error("release manifest worker SDK file is missing");
+  manifest.worker_sdk.sha256 = workerSDKFile.sha256;
+  manifest.worker_sdk.size = workerSDKFile.size;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   writeFileSync(join(bundleRoot, "SHA256SUMS"), manifest.files.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\n");
+}
+
+function assertPublishedVerifierRejects(expectedMessage, label) {
+  const result = spawnSync(
+    "node",
+    [publishedVerifier, artifactDir, version, sourceCommit],
+    {
+      cwd: verifierRoot,
+      encoding: "utf8",
+      env: verifierEnvironment,
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  );
+  const output = `${result.stderr ?? ""}${result.stdout ?? ""}`;
+  if (result.status === 0 || !output.includes(expectedMessage)) {
+    throw new Error(`published verifier accepted ${label} or returned the wrong diagnostic: ${output || result.error}`);
+  }
 }
 
 function assertBundleVerifierRejects(bundleRoot, expectedMessage, label) {
@@ -179,7 +219,7 @@ function assertBundleVerifierRejects(bundleRoot, expectedMessage, label) {
     {
       cwd: verifierRoot,
       encoding: "utf8",
-      env: { ...process.env, NPM_CONFIG_REGISTRY: "https://registry.invalid" },
+      env: verifierEnvironment,
       maxBuffer: 8 * 1024 * 1024,
     },
   );

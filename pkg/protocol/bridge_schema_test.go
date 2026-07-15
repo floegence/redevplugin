@@ -18,7 +18,14 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	requireConst(t, defs, "call", "type", "redevplugin.bridge.call")
 	requireConst(t, defs, "cancel", "type", "redevplugin.bridge.cancel")
 	requireConst(t, defs, "operation_cancel", "type", "redevplugin.bridge.operation.cancel")
+	requireConst(t, defs, "canvas_open", "type", "redevplugin.ui.canvas.open")
+	requireConst(t, defs, "canvas_accessibility", "type", "redevplugin.ui.canvas.accessibility")
+	requireConst(t, defs, "canvas_ready", "type", "redevplugin.ui.canvas.ready")
+	requireConst(t, defs, "canvas_input", "type", "redevplugin.ui.canvas.input")
+	requireConst(t, defs, "image_open", "type", "redevplugin.ui.asset.image.open")
+	requireConst(t, defs, "image_ready", "type", "redevplugin.ui.asset.image.ready")
 	requireConst(t, defs, "lifecycle", "type", "redevplugin.bridge.lifecycle")
+	requireConst(t, defs, "lifecycle_ack", "type", "redevplugin.bridge.lifecycle_ack")
 	if _, ok := defs["handshake"]; ok {
 		t.Fatal("plugin-visible bridge schema must not expose the trusted-parent HTTP handshake")
 	}
@@ -30,7 +37,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 		t.Fatalf("call params type = %#v, want object", params["type"])
 	}
 	requestID := requireDef(t, defs, "request_id")
-	if got := requestID["pattern"]; got != "^(rpc|stream|render|operation)_[1-9][0-9]{0,15}$" {
+	if got := requestID["pattern"]; got != "^(rpc|stream|render|operation|canvas|asset)_[1-9][0-9]{0,15}$" {
 		t.Fatalf("request id pattern = %#v", got)
 	}
 	cancel := requireDef(t, defs, "cancel")
@@ -42,6 +49,8 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	if got := requireNestedObject(t, operationCancel, "properties", "operation_id")["$ref"]; got != "#/$defs/opaque_handle" {
 		t.Fatalf("operation cancel handle ref = %#v", got)
 	}
+	canvasAccessibility := requireDef(t, defs, "canvas_accessibility")
+	assertStringSet(t, requireStringSlice(t, canvasAccessibility["required"], "canvas accessibility required"), []string{"type", "id", "canvas_id", "label", "description"}, "canvas accessibility required")
 
 	lifecycle := requireDef(t, defs, "lifecycle")
 	event := requireNestedObject(t, lifecycle, "properties", "event")
@@ -61,7 +70,7 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 
 func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +111,15 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 		"max_text_length",
 		"max_attribute_value_length",
 		"max_form_fields",
+		"max_canvas_count",
+		"max_canvas_dimension",
+		"max_canvas_total_pixels",
+		"max_canvas_pointer_events_per_second",
+		"max_image_count",
+		"max_image_dimension",
+		"max_image_total_pixels",
+		"worker_heartbeat_interval_ms",
+		"worker_heartbeat_timeout_ms",
 		"global_attributes",
 		"tag_attributes",
 		"safe_input_types",
@@ -119,7 +137,7 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	}
 	element := variants[1].(map[string]any)
 	tags := requireStringSlice(t, requireNestedObject(t, element, "properties", "tag")["enum"], "render tag enum")
-	wantTags := map[string]bool{"main": false, "button": false, "input": false, "table": false, "img": false, "video": false}
+	wantTags := map[string]bool{"main": false, "button": false, "input": false, "table": false, "img": false, "video": false, "canvas": false}
 	for _, tag := range tags {
 		if _, ok := wantTags[tag]; ok {
 			wantTags[tag] = true
@@ -151,7 +169,7 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 func readBridgeSchema(t *testing.T) map[string]any {
 	t.Helper()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v2.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v3.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

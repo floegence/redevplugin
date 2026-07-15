@@ -19,28 +19,32 @@ fixtures that must be rejected on every run.
 
 | Area | Regression evidence | Observed baseline or executable negative signal | Passing command and enforced behavior |
 | --- | --- | --- | --- |
-| Opaque browser proof | `demo/browser/browser-contract.test.mjs` and browser acceptance probes | The v1 demo loaded plugin pages from a sandbox origin, used `allow-same-origin`, and had no opaque `srcdoc` worker path | `npm run test:demo:browser` proves exact `sandbox="allow-scripts"`, opaque origin, strict CSP, both credentialless branches, blocked parent DOM/storage/network access, classic worker execution, and deterministic disposal |
+| Opaque browser proof | `internal/browserharness/opaque-surface-contract.test.mjs` and browser acceptance probes | The retired v1 browser fixture loaded plugin pages from a sandbox origin, used `allow-same-origin`, and had no opaque `srcdoc` worker path | `npm run test:browser-harness:smoke` proves exact `sandbox="allow-scripts"`, opaque origin, strict CSP, both credentialless branches, blocked parent DOM/storage/network access, classic worker execution, and deterministic disposal |
 | SDK-owned iframe | `packages/redevplugin-ui/test/opaque-surface.test.ts` | `PluginSurfaceHost`, closed preparation documents, frame-generation acknowledgement, and parent-only transport did not exist | `npm --prefix packages/redevplugin-ui test` proves fresh SDK-owned iframe creation, immutable placement element, secret-free port transfer, prepare/ack/token ordering, lease renewal, reload limits, and fail-closed teardown |
 | Plugin entrypoint isolation | `packages/redevplugin-ui/test/entrypoints.test.ts` | The package root mixed trusted-parent management and plugin bridge APIs | `npm --prefix packages/redevplugin-ui test` proves `/plugin` exports only `PluginBridgeClient`, the root is the trusted-parent allowlist, and the internal bootstrap factory is not public |
 | Token and ticket contract | `pkg/protocol/token_ticket_schema_test.go` plus `testdata/contracts/tokens/asset-ticket-v2.json` | The v1 fixture did not bind the opaque asset session and did not reject unknown fields through a typed round trip | `GOWORK=off go test -count=1 ./pkg/protocol ./pkg/version` proves JSON Schema validation, closed typed decoding, canonical round trip, required `asset_session_nonce`, and unknown-field rejection |
 | Host surface lifecycle | `pkg/bridge/surface_test.go`, `pkg/host/surface_cache_test.go`, and `pkg/httpadapter/httpadapter_test.go` | The v1 host exposed origin/cookie asset routes and lacked prepare, parent-only asset read, scope revoke, and revision-bound disposal semantics | `GOWORK=off go test -count=1 ./pkg/bridge ./pkg/host ./pkg/httpadapter` proves bounded sessions, single-use credentials, prepared-document and generation gates, digest revalidation, stale revision rejection, scope revocation, and side-effect-free failures |
 | Package render policy | `pkg/pluginpkg/surface_document_test.go`, `pkg/manifest/method_schema_test.go`, and malicious generated fixtures | Plugin HTML and method schemas were not constrained by one generated closed policy | `GOWORK=off go test -count=1 ./pkg/pluginpkg ./pkg/manifest` proves one classic worker, closed DOM/CSS/asset policy, compiled closed request/response schemas, and rejection of executable or dependency-bearing package content |
-| Bridge source scan | Extended `scripts/check_redevplugin_ui_bridge.sh` | Generated demos, scaffold assets, and generated-plugin fixtures were outside the wildcard-message scan | `./scripts/check_redevplugin_ui_bridge.sh` allows only the secret-free internal bootstrap transfer and rejects trusted-parent imports or wildcard `postMessage` in plugin code |
-| Real runtime integration | `demo/browser/real-runtime-smoke.mjs` | The real demo depended on v1 plugin pages, subdomain/cookie bootstrap, and direct route-shaped plugin logic | `npm run test:demo:browser` runs the Go Host, HTTP adapter, Rust runtime, opaque iframe, classic worker, parent-only assets/streams, storage broker, and network broker together |
+| Renderer resource budgets | `opaque-surface.test.ts`, Canvas/image browser smoke, and generated render-policy checks | Canvas transfer, decoded image area, pointer traffic, and worker-created graphics resources were not one closed budget | `npm run test:ui` and browser smoke prove four-canvas, dimension, aggregate-pixel, 120 Hz pointer, 32-image, pre-decode dimension, `OffscreenCanvas`, and `createImageBitmap` enforcement |
+| Worker liveness and quiesce | Async lifecycle and non-responsive close tests in `opaque-surface.test.ts` | Immediate teardown could race plugin persistence, while a stalled worker had no private renderer liveness proof | `npm run test:ui` proves async observers settle before quiesce ACK, close remains bounded at 1.5 seconds, and the 10-second ping/5-second pong deadline fails closed |
+| Bridge source scan | Extended `scripts/check_redevplugin_ui_bridge.sh` | Generated examples, scaffold assets, browser-harness fixtures, and generated-plugin fixtures were outside the wildcard-message scan | `./scripts/check_redevplugin_ui_bridge.sh` allows only the secret-free internal bootstrap transfer and rejects trusted-parent imports or wildcard `postMessage` in plugin code |
+| Real runtime integration | `internal/browserharness/examples-server-smoke.mjs` and `opaque-surface-smoke.mjs` | The retired v1 runtime fixture depended on plugin pages, subdomain/cookie bootstrap, and direct route-shaped plugin logic | `npm run test:browser-harness:smoke` runs the Go Host, HTTP adapter, Rust runtime, opaque iframe, classic worker, parent-only assets/streams, storage broker, and network broker together; it verifies Memos quiesce persistence and non-modal delete focus, Weather saved-location/network flows, navigation focus, Sky Strike canvas pixels/animation/accessibility/FPS behavior, deterministic score persistence and reload, and desktop/mobile/320 px layouts |
 | Bounded opening | `surface opening deadline revokes server state, tears down locally, and remains retryable` in `opaque-surface.test.ts` | Before the total deadline was implemented, the test failed with `Missing expected rejection` because individually bounded prepare/token stages could exceed the aggregate opening budget | `npm run test:ui` proves timeout error identity, server revoke, local iframe/port teardown, one bounded retry charge, and healthy retry reset |
-| Release identity | Release artifact fixtures plus `test_published_release_verifier.mjs` and `test_npm_registry_release_verifier.mjs` | The valid npm 11 fixture deliberately omits optional `gitHead`; mutation fixtures alter target sets, extra assets, npm tarball bytes, a supplied `gitHead`, SLSA subject digest, repository, workflow path/ref, and source commit; every conflicting mutation must fail | The runtime contract gate verifies the exact four-target signed asset set, npm export set, compatibility/license evidence, actual registry tarball SHA-512, optional metadata consistency, and mandatory SLSA DSSE source identity |
+| Release identity | Release artifact fixtures plus `test_published_release_verifier.mjs` and `test_npm_registry_release_verifier.mjs` | The valid npm 11 fixture deliberately omits optional `gitHead`; mutation fixtures alter target sets, extra assets, npm tarball bytes, worker SDK crate bytes, a supplied `gitHead`, SLSA subject digest, repository, workflow path/ref, and source commit; every conflicting mutation must fail | The runtime contract gate verifies the exact four-target signed asset set, identical embedded npm and Worker SDK bytes, npm export set, compatibility/license evidence, actual registry tarball SHA-512, optional metadata consistency, and mandatory SLSA DSSE source identity |
+| Release version closure | `check_redevplugin_release_metadata.mjs` and `test_redevplugin_release_metadata.mjs` | Mutation fixtures drift the tag coordinate, Go compatibility floor, first changelog release, Worker SDK version, and canonical Cargo manifest path | `npm run release-metadata:check` proves source metadata agrees on one release version, while tagged preflight repeats the check against the actual Git tag before any package job starts |
 
 ## Contract And Generated Artifact Evidence
 
 A2 updates the following public sources and their generated identities together:
 
-- `spec/openapi/plugin-platform-v2.yaml`;
-- `spec/plugin/bridge-v2.schema.json`;
+- `spec/openapi/plugin-platform-v3.yaml`;
+- `spec/plugin/bridge-v3.schema.json`;
 - `spec/plugin/token-ticket-v2.schema.json`;
-- `spec/plugin/opaque-surface-document-v1.schema.json`;
-- `spec/plugin/opaque-surface-transport-v1.schema.json`;
-- `spec/plugin/compatibility-manifest-v2.schema.json`;
-- `spec/plugin/release-manifest-v2.schema.json`;
+- `spec/plugin/opaque-surface-document-v2.schema.json`;
+- `spec/plugin/opaque-surface-transport-v2.schema.json`;
+- `spec/plugin/wasm-worker-v2.schema.json`;
+- `spec/plugin/compatibility-manifest-v3.schema.json`;
+- `spec/plugin/release-manifest-v3.schema.json`;
 - `spec/plugin/contract-registry-v1.json`;
 - generated Go version/contract registries and TypeScript contract/render-policy
   registries;
@@ -56,18 +60,23 @@ The tagged workflow blocks every immutable package or publication operation on
 all of the following independent gates:
 
 - `quality-release`: Go format/test/lint, TypeScript lint/typecheck/build/unit/
-  demo/browser tests, bridge boundary checks, Rust format/clippy/test/deny, and
+  Examples/browser-harness tests, bridge boundary checks, Rust format/clippy/test/deny,
+  and
   both runtime and platform contract suites;
 - `audit-release`: npm, Go vulnerability, and Rust dependency audit;
 - `stress-release`: release-mode race, lifecycle, broker, browser, runtime,
   release-bundle, and A2 screenshot/evidence checks.
 
-The npm pack job, every native runtime bundle job, npm trusted publication, and
-GitHub Release publication explicitly depend on `quality-release`. The release
-then downloads the public npm tarball, recomputes SHA-512, validates the SLSA
+The SDK pack job installs the WASM target, builds the npm tarball and Rust
+Worker SDK crate once, and compiles the extracted `.crate` with its locked
+dependencies. Every
+native runtime bundle job, npm trusted publication, and GitHub Release
+publication explicitly depends on `quality-release`. The release then downloads
+the public npm tarball, recomputes SHA-512, validates the SLSA
 DSSE subject/repository/workflow/tag/source commit, and verifies GitHub tag/release identity,
-four runtime targets, signatures/checksums, compatibility hashes, Go direct and
-proxy module identity, and the exact npm export surface from public coordinates.
+four runtime targets, identical embedded Worker SDK crate bytes,
+signatures/checksums, compatibility hashes, Go direct and proxy module identity,
+and the exact npm export surface from public coordinates.
 
 ## Boundary Result
 

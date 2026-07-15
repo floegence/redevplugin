@@ -75,7 +75,7 @@ const requiredCategories = [
   "connectivity_classifier",
   "runtime_revoke_ack",
   "storage_quota",
-  "browser_demo",
+  "browser_harness",
   "runtime_contract",
   "release_bundle",
   "published_release_verifier",
@@ -112,7 +112,7 @@ const requiredSteps = [
   "go_race_core",
   "stress_evidence",
   "go_all",
-  "browser_demo",
+  "browser_harness",
   "runtime_contract",
   "release_bundle",
   "published_release_verifier",
@@ -218,7 +218,6 @@ if (p95Ms > thresholdMs) {
 if (maxMs >= hardTimeoutMs) {
   fail(`runtime_revoke_ack max_ms ${maxMs} must be below hard_timeout_ms ${hardTimeoutMs}`);
 }
-requireAtLeast(evidenceByCategory, "runtime_revoke_ack", "closed_actor", 1);
 requireAtLeast(evidenceByCategory, "runtime_revoke_ack", "closed_socket", 1);
 requireAtLeast(evidenceByCategory, "runtime_revoke_ack", "closed_stream", 1);
 requireAtLeast(evidenceByCategory, "runtime_revoke_ack", "closed_storage", 1);

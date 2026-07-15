@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sky Strike</title>
+    <link rel="stylesheet" href="assets/styles.css">
+    <link rel="redevplugin-image" href="assets/starfield-v2.webp" data-redevplugin-asset-id="starfield-background">
+    <link rel="redevplugin-image" href="assets/player.png" data-redevplugin-asset-id="player-ship">
+    <link rel="redevplugin-image" href="assets/enemy.png" data-redevplugin-asset-id="enemy-ship">
+    <link rel="redevplugin-image" href="assets/laser.png" data-redevplugin-asset-id="player-laser">
+    <link rel="redevplugin-image" href="assets/meteor.png" data-redevplugin-asset-id="meteor">
+  </head>
+  <body>
+    <main class="game-shell arcade-shell">
+      <section class="canvas-stage" aria-label="Sky Strike game">
+        <canvas data-redevplugin-canvas="playfield" width="960" height="540" tabindex="0" aria-label="Sky Strike mission playfield" aria-describedby="control-hint"></canvas>
+        <div class="game-actions">
+          <button type="button" data-redevplugin-action="pause-game" title="Play, pause, or resume" aria-label="Play, pause, or resume"><span class="icon-play-pause" aria-hidden="true"></span></button>
+          <button type="button" data-redevplugin-action="restart-game" title="Restart mission" aria-label="Restart mission"><span class="icon-restart" aria-hidden="true"></span></button>
+        </div>
+        <div id="control-hint" class="control-hint"><span class="keyboard-copy">WASD or arrows to fly / Space to fire</span><span class="touch-copy">Drag to fly / Hold to fire</span></div>
+      </section>
+    </main>
+    <script type="text/redevplugin-worker" src="assets/app.js"></script>
+  </body>
+</html>

@@ -32,7 +32,7 @@ product session authority.
 
 ## Bridge Protocol
 
-The bridge protocol is described by `spec/plugin/bridge-v2.schema.json` and
+The bridge protocol is described by `spec/plugin/bridge-v3.schema.json` and
 implemented by the TypeScript package. Contract checks keep these frame names,
 the UI protocol version, and forbidden response fields aligned with the schema:
 
@@ -43,7 +43,7 @@ the UI protocol version, and forbidden response fields aligned with the schema:
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v2`.
+- `plugin-ui-v3`.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -70,7 +70,7 @@ asset-session nonce, plugin state version, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v2.schema.json` contract.
+`bridge-v3.schema.json` contract.
 
 ## Management Client
 
@@ -167,6 +167,28 @@ media blobs are created inside the opaque frame; executable plugin code runs
 only in the hardened Dedicated Worker. Asset sessions, tickets, gateway tokens,
 stream tickets, and confirmation tokens never cross into plugin code.
 
+The same policy owns interactive resource budgets. A surface may transfer four
+canvases, each dimension is capped at 4096 pixels, aggregate canvas area is
+16,777,216 pixels, and pointer movement is capped at 120 events per second.
+Raster type and dimensions are read from PNG, JPEG, GIF, or WebP bytes before
+decode, regardless of filename or declared MIME. A surface may decode 32 images
+and 33,554,432 pixels in total. The plugin worker cannot construct an additional
+`OffscreenCanvas` or call `createImageBitmap`.
+
+Canvas plugins open a declared surface with `openCanvas(...)` and publish the
+current semantic state with `updateCanvasAccessibility(...)`. The trusted
+renderer binds the supplied label and description to the declared canvas only;
+the worker cannot select another DOM node or inject markup. Games should keep
+the label concise and include their current phase, score, remaining lives, and
+FPS so keyboard and assistive-technology users receive the same operational
+state that is drawn into the bitmap.
+
+Forms use `data-redevplugin-action` on the form element. The renderer prevents
+native sandbox submission, resolves nested content inside the clicked submit
+button, and emits one `submit` action whose `form_data` contains at most 128
+bounded string fields. Plugin UI should treat the action message as the only
+submission path.
+
 Each lazy asset has an opaque, package-builder-derived `binding_id` in the
 prepared document. The worker may request only that binding. `PluginSurfaceHost`
 looks up the corresponding prepared asset and sends the parent-only HTTP request
@@ -190,6 +212,13 @@ The Host renews a live surface lease before expiry by rotating both the
 parent-held gateway token and asset session on the same bridge channel. Reads
 wait for the current renewal, old credentials are revoked by the server, and a
 renewal failure closes the surface rather than continuing with stale authority.
+
+`close()` first sends a unique dispose quiesce request. `PluginBridgeClient`
+awaits every async lifecycle observer before acknowledging, allowing plugins to
+flush bounded persistence work. The trusted parent waits at most 1.5 seconds,
+then proceeds with server revocation and local teardown. Separately, the
+renderer pings the worker every 10 seconds and requires a pong within 5 seconds;
+a missing acknowledgement closes the surface as a worker failure.
 
 ## Surface Reload Guard
 
@@ -238,10 +267,12 @@ iframes management credentials. Intent execution still preserves local policy
 evaluation, permission grants, audit events, and dangerous-method fail-closed
 behavior.
 
-## Browser Demo Coverage
+## Examples And Browser Harness Coverage
 
-The browser demo under `demo/browser/` exercises the surface SDK in realistic
-browser conditions:
+The user-facing Showcase under `examples/` exercises complete installable
+plugins in realistic browser conditions. Platform-only security and contract
+fixtures live separately under `internal/browserharness` and
+`testdata/browser-harness`:
 
 - the host page asks the SDK to create a fresh same-host opaque `srcdoc` iframe
   and mounts `surfaceHost.element` without a caller-provided frame, plugin
@@ -252,19 +283,31 @@ browser conditions:
 - sandbox security probes assert parent DOM/cookie/storage, localStorage,
   sessionStorage, IndexedDB, Cache API, Service Worker, direct fetch, WebSocket,
   nested Worker, dynamic import, eval, and Function constructors are blocked;
-- real runtime smoke uses the Go Host library, HTTP adapter, Rust runtime,
+- the Examples smoke uses the Go Host library, HTTP adapter, Rust runtime,
   parent-only asset/stream transport, WASM workers, storage broker, and network
-  broker end to end for HTTP, WebSocket, TCP, and UDP.
+  broker end to end for persistent Memos, saved Weather locations and external
+  HTTP, plus the Sky Strike canvas, images, input, animation, FPS display, and
+  semantic canvas status;
+- compact-view acceptance rejects memo navigation while an autosave is failing,
+  proves retry preserves the draft, verifies Weather retains the previous city
+  until a replacement forecast succeeds, and enforces minimum touch targets;
+- Memos uses a 24-row UI page and a 30-row worker hard limit. A real compiled
+  WASM/ABI regression loads 61 pinned notes as 24, 24, and 13 rows, proving the
+  Showcase does not rely on an unbounded library response;
+- the opaque browser harness covers platform-only HTTP, WebSocket, TCP, UDP,
+  stream, confirmation, lifecycle, and security probes without presenting
+  those probes as a user example.
 
-`npm run test:demo:browser` persists the A2 acceptance report and visual evidence
+`npm run test:browser-harness:smoke` persists the A2 acceptance report and visual evidence
 as `dist/a2-evidence/redevplugin-a2-acceptance.json`,
 `redevplugin-a2-supported.png`, and `redevplugin-a2-unsupported.png`. CI uploads
 the same files, and tagged releases checksum and sign them alongside runtime and
 stress artifacts.
 
-These demos are platform conformance checks for ReDevPlugin, not product UI
-implementations. Host products still own product navigation, workbench layout,
-settings placement, activity bars, and branded UI copy.
+The Showcase is a host-neutral product-quality capability gallery, while the
+browser harness is test infrastructure. Host products still own product
+navigation, workbench layout, settings placement, activity bars, and branded UI
+copy.
 
 ## Host Product Integration Guidance
 

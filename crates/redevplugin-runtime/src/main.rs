@@ -1,9 +1,22 @@
-use std::collections::{HashMap, HashSet};
-use std::io::{self, BufRead, Write};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::{self, BufRead, Read, Write};
+use std::os::fd::{FromRawFd, RawFd};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use wasmi::{AsContext, AsContextMut, Config};
+use wasmi::{AsContext, AsContextMut, Config, StoreLimits, StoreLimitsBuilder};
 
 const DEFAULT_WASM_WORKER_FUEL: u64 = 5_000_000;
+const MAX_WASM_WORKER_REQUEST_BYTES: usize = 256 * 1024;
+const MAX_WASM_WORKER_RESPONSE_BYTES: usize = 512 * 1024;
+const MAX_WASM_HOSTCALL_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_WASM_HOSTCALL_RESPONSE_BYTES: usize = 512 * 1024;
+const MAX_WASM_TABLE_ELEMENTS: usize = 65_536;
+const MAX_IPC_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CONTROL_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_BROKER_RESPONSE_FRAME_BYTES: usize = 1024 * 1024;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
 const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
 const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
@@ -18,10 +31,10 @@ fn main() {
 fn run() -> Result<(), String> {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .map_err(|err| format!("read hello frame: {err}"))?;
+    let mut line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "hello frame")?;
+    if line.is_empty() {
+        return Err("hello frame is empty".to_string());
+    }
     let (request_id, runtime_generation_id, channel_nonce) =
         redevplugin_ipc::validate_hello_frame(&line).map_err(|err| err.to_string())?;
     let runtime_lease_public_keys =
@@ -42,16 +55,13 @@ fn run() -> Result<(), String> {
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write hello ack: {err}"))?;
 
-    let mut revocations = RuntimeRevocations::default();
+    let shared = Arc::new(RuntimeSharedState::default());
+    start_control_channel(Arc::clone(&shared), runtime_generation_id.clone())?;
     let mut lease_replays = RuntimeLeaseReplayCache::default();
-    let mut resources = RuntimeResourceRegistry::default();
-    let mut control = ControlChannelState::new();
+    let clock = current_unix_millis;
     loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|err| format!("read ipc frame: {err}"))?;
-        if read == 0 {
+        line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "ipc frame")?;
+        if line.is_empty() {
             break;
         }
         let (frame_type, request_id, frame_generation_id) =
@@ -60,32 +70,19 @@ fn run() -> Result<(), String> {
             return Err("runtime_generation_id mismatch".to_string());
         }
         let response = match frame_type.as_str() {
-            redevplugin_ipc::FRAME_TYPE_HEARTBEAT => {
-                handle_heartbeat(&mut control, &request_id, &runtime_generation_id, &line)
-            }
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => handle_worker_invocation(
                 &mut reader,
                 &mut stdout,
                 &mut WorkerInvocationState {
-                    revocations: &revocations,
+                    shared: &shared,
                     lease_replays: &mut lease_replays,
-                    resources: &mut resources,
-                    control: &control,
                     runtime_lease_public_keys: &runtime_lease_public_keys,
-                    now_unix_ms: current_unix_millis()?,
+                    clock: &clock,
                 },
                 &request_id,
                 &runtime_generation_id,
                 &line,
             )?,
-            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => handle_revoke_epoch(
-                &mut revocations,
-                &mut resources,
-                &mut control,
-                &request_id,
-                &runtime_generation_id,
-                &line,
-            ),
             _ => redevplugin_ipc::response_frame(
                 "diagnostic",
                 &request_id,
@@ -105,13 +102,109 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    let limit = u64::try_from(max_bytes)
+        .map_err(|_| format!("{label} size limit exceeds this runtime"))?
+        .saturating_add(1);
+    let read = reader
+        .take(limit)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|err| format!("read {label}: {err}"))?;
+    if read == 0 {
+        return Ok(String::new());
+    }
+    if bytes.len() > max_bytes {
+        return Err(format!("{label} exceeds {max_bytes} bytes"));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{label} must be UTF-8"))
+}
+
+fn start_control_channel(
+    shared: Arc<RuntimeSharedState>,
+    runtime_generation_id: String,
+) -> Result<(), String> {
+    let read_file = inherited_control_file("REDEVPLUGIN_CONTROL_READ_FD")?;
+    let write_file = inherited_control_file("REDEVPLUGIN_CONTROL_WRITE_FD")?;
+    thread::Builder::new()
+        .name("redevplugin-control".to_string())
+        .spawn(move || {
+            if let Err(err) =
+                run_control_channel(read_file, write_file, &shared, &runtime_generation_id)
+            {
+                eprintln!("redevplugin-runtime control error: {err}");
+                std::process::exit(1);
+            }
+        })
+        .map_err(|err| format!("start runtime control channel: {err}"))?;
+    Ok(())
+}
+
+fn inherited_control_file(variable: &str) -> Result<File, String> {
+    let raw = std::env::var(variable).map_err(|_| format!("{variable} is required"))?;
+    let fd: RawFd = raw
+        .parse()
+        .map_err(|_| format!("{variable} must be a file descriptor"))?;
+    if fd < 3 {
+        return Err(format!("{variable} must be an inherited file descriptor"));
+    }
+    // The Go supervisor transfers ownership of each dedicated control descriptor.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn run_control_channel(
+    read_file: File,
+    mut write_file: File,
+    shared: &RuntimeSharedState,
+    runtime_generation_id: &str,
+) -> Result<(), String> {
+    let mut reader = io::BufReader::new(read_file);
+    loop {
+        let line = read_bounded_line(&mut reader, MAX_CONTROL_FRAME_BYTES, "control frame")?;
+        if line.is_empty() {
+            return Ok(());
+        }
+        let (frame_type, request_id, frame_generation_id) =
+            redevplugin_ipc::parse_frame_identity(&line).map_err(|err| err.to_string())?;
+        if frame_generation_id != runtime_generation_id {
+            return Err("control runtime_generation_id mismatch".to_string());
+        }
+        let response = match frame_type.as_str() {
+            redevplugin_ipc::FRAME_TYPE_HEARTBEAT => {
+                handle_heartbeat(&shared.control, &request_id, runtime_generation_id, &line)
+            }
+            redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
+                handle_revoke_epoch(shared, &request_id, runtime_generation_id, &line)
+            }
+            _ => redevplugin_ipc::response_frame(
+                "diagnostic",
+                &request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_UNSUPPORTED_FRAME),
+                Some("runtime control frame type is not supported"),
+            ),
+        };
+        write_file
+            .write_all(response.as_bytes())
+            .and_then(|_| write_file.write_all(b"\n"))
+            .and_then(|_| write_file.flush())
+            .map_err(|err| format!("write control response: {err}"))?;
+    }
+}
+
 fn handle_heartbeat(
-    control: &mut ControlChannelState,
+    control: &ControlChannelState,
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
 ) -> String {
-    let host_sent_unix_nano = match required_json_number(line, "sent_unix_nano") {
+    let request = match redevplugin_ipc::parse_heartbeat_request(line) {
         Ok(value) => value,
         Err(err) => {
             return redevplugin_ipc::response_frame(
@@ -125,9 +218,9 @@ fn handle_heartbeat(
             );
         }
     };
-    let max_staleness_ms = match required_json_number(line, "max_staleness_ms") {
-        Ok(value) if value > 0 => value,
-        Ok(_) => {
+    let max_staleness_ms = match request.max_staleness_ms {
+        value if value > 0 => value,
+        _ => {
             return redevplugin_ipc::response_frame(
                 redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
                 request_id,
@@ -136,17 +229,6 @@ fn handle_heartbeat(
                 None,
                 None,
                 Some("max_staleness_ms must be positive"),
-            );
-        }
-        Err(err) => {
-            return redevplugin_ipc::response_frame(
-                redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
-                request_id,
-                runtime_generation_id,
-                false,
-                None,
-                None,
-                Some(err.as_str()),
             );
         }
     };
@@ -159,7 +241,7 @@ fn handle_heartbeat(
         runtime_generation_id,
         runtime_unix_nano.max(1),
         max_staleness_ms,
-        host_sent_unix_nano,
+        request.sent_unix_nano,
     );
     redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
@@ -174,6 +256,11 @@ fn handle_heartbeat(
 
 #[derive(Debug)]
 struct ControlChannelState {
+    timing: Mutex<ControlChannelTiming>,
+}
+
+#[derive(Debug)]
+struct ControlChannelTiming {
     last_refresh: Instant,
     max_staleness: Duration,
 }
@@ -181,35 +268,44 @@ struct ControlChannelState {
 impl ControlChannelState {
     fn new() -> Self {
         Self {
-            last_refresh: Instant::now(),
-            max_staleness: DEFAULT_CONTROL_MAX_STALENESS,
+            timing: Mutex::new(ControlChannelTiming {
+                last_refresh: Instant::now(),
+                max_staleness: DEFAULT_CONTROL_MAX_STALENESS,
+            }),
         }
     }
 
-    fn refresh(&mut self, max_staleness: Duration) {
-        self.max_staleness = max_staleness.max(Duration::from_millis(1));
-        self.refresh_without_staleness_change();
+    fn refresh(&self, max_staleness: Duration) {
+        let mut timing = self.timing.lock().expect("control timing mutex poisoned");
+        timing.max_staleness = max_staleness.max(Duration::from_millis(1));
+        timing.last_refresh = Instant::now();
     }
 
-    fn refresh_without_staleness_change(&mut self) {
-        self.last_refresh = Instant::now();
+    fn refresh_without_staleness_change(&self) {
+        self.timing
+            .lock()
+            .expect("control timing mutex poisoned")
+            .last_refresh = Instant::now();
     }
 
     fn validate_fresh(&self) -> Result<(), RuntimeControlError> {
-        let elapsed = self.last_refresh.elapsed();
-        if elapsed > self.max_staleness {
+        let timing = self.timing.lock().expect("control timing mutex poisoned");
+        let elapsed = timing.last_refresh.elapsed();
+        let max_staleness = timing.max_staleness;
+        if elapsed > max_staleness {
             return Err(RuntimeControlError::Stale {
                 elapsed_ms: duration_millis_u64(elapsed),
-                max_staleness_ms: duration_millis_u64(self.max_staleness),
+                max_staleness_ms: duration_millis_u64(max_staleness),
             });
         }
         Ok(())
     }
 
     #[cfg(test)]
-    fn force_stale_for_test(&mut self) {
-        let stale_by = self.max_staleness + Duration::from_millis(1);
-        self.last_refresh = Instant::now()
+    fn force_stale_for_test(&self) {
+        let mut timing = self.timing.lock().expect("control timing mutex poisoned");
+        let stale_by = timing.max_staleness + Duration::from_millis(1);
+        timing.last_refresh = Instant::now()
             .checked_sub(stale_by)
             .unwrap_or_else(Instant::now);
     }
@@ -245,13 +341,6 @@ impl std::fmt::Display for RuntimeControlError {
     }
 }
 
-fn worker_hostcall_error_code(message: &str) -> &'static str {
-    if message.starts_with(RUNTIME_CONTROL_STALE_MESSAGE_PREFIX) {
-        return redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE;
-    }
-    redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED
-}
-
 fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
@@ -264,13 +353,50 @@ fn current_unix_millis() -> Result<i64, String> {
         .map_err(|_| "system time exceeds i64 milliseconds".to_string())
 }
 
+struct RuntimeSharedState {
+    revocations: Mutex<RuntimeRevocations>,
+    control: ControlChannelState,
+}
+
+impl Default for RuntimeSharedState {
+    fn default() -> Self {
+        Self {
+            revocations: Mutex::new(RuntimeRevocations::default()),
+            control: ControlChannelState::new(),
+        }
+    }
+}
+
+impl RuntimeSharedState {
+    fn validate_invocation_frame(&self, frame: &str) -> Result<(), RuntimeRevocationError> {
+        self.revocations
+            .lock()
+            .expect("runtime revocation mutex poisoned")
+            .validate_invocation_frame(frame)
+    }
+
+    fn validate_hostcall(&self, frame: &str, now_unix_ms: i64) -> Result<(), String> {
+        self.control
+            .validate_fresh()
+            .map_err(|err| format!("{}: {err}", err.code()))?;
+        self.validate_invocation_frame(frame)
+            .map_err(|err| format!("{}: {err}", err.code()))?;
+        redevplugin_ipc::validate_worker_runtime_lease(frame, now_unix_ms)
+            .map_err(|err| format!("{}: {err}", redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID))
+    }
+}
+
 struct WorkerInvocationState<'a> {
-    revocations: &'a RuntimeRevocations,
+    shared: &'a RuntimeSharedState,
     lease_replays: &'a mut RuntimeLeaseReplayCache,
-    resources: &'a mut RuntimeResourceRegistry,
-    control: &'a ControlChannelState,
     runtime_lease_public_keys: &'a [redevplugin_ipc::RuntimeLeasePublicKey],
-    now_unix_ms: i64,
+    clock: &'a dyn Fn() -> Result<i64, String>,
+}
+
+impl WorkerInvocationState<'_> {
+    fn now_unix_ms(&self) -> Result<i64, String> {
+        (self.clock)()
+    }
 }
 
 fn handle_worker_invocation<R: BufRead, W: Write>(
@@ -281,7 +407,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     line: &str,
 ) -> Result<String, String> {
-    if let Err(err) = state.control.validate_fresh() {
+    if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -308,7 +434,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    if let Err(err) = state.revocations.validate_invocation_frame(line) {
+    if let Err(err) = state.shared.validate_invocation_frame(line) {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -335,7 +461,21 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             Some(err.as_str()),
         ));
     }
-    if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, state.now_unix_ms) {
+    let invocation_now_unix_ms = match state.now_unix_ms() {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+                Some(err.as_str()),
+            ));
+        }
+    };
+    if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, invocation_now_unix_ms) {
         return Ok(redevplugin_ipc::response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
             request_id,
@@ -348,7 +488,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
     }
     if let Err(err) = state
         .lease_replays
-        .consume_invocation_frame(line, state.now_unix_ms)
+        .consume_invocation_frame(line, invocation_now_unix_ms)
     {
         let code = err.code();
         let message = err.to_string();
@@ -362,7 +502,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             Some(message.as_str()),
         ));
     }
-    if let Err(err) = state.control.validate_fresh() {
+    if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -384,10 +524,7 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write open_handle request: {err}"))?;
 
-    let mut artifact_response = String::new();
-    reader
-        .read_line(&mut artifact_response)
-        .map_err(|err| format!("read open_handle response: {err}"))?;
+    let artifact_response = read_bounded_line(reader, MAX_IPC_FRAME_BYTES, "open_handle response")?;
     if artifact_response.is_empty() {
         return Ok(redevplugin_ipc::response_frame(
             redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
@@ -418,7 +555,34 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    if let Err(err) = state.control.validate_fresh() {
+    let post_artifact_now_unix_ms = match state.now_unix_ms() {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+                Some(err.as_str()),
+            ));
+        }
+    };
+    if let Err(err) =
+        redevplugin_ipc::validate_worker_runtime_lease(line, post_artifact_now_unix_ms)
+    {
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+            Some(err.as_str()),
+        ));
+    }
+    if let Err(err) = state.shared.control.validate_fresh() {
         let code = err.code();
         let message = err.to_string();
         return Ok(redevplugin_ipc::response_frame(
@@ -445,13 +609,44 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
             ));
         }
     };
-    let execution =
-        match execute_worker_module(&wasm_bytes, &identity.export, |request| match request {
+    let worker_request = match redevplugin_ipc::worker_request_json_v2(line) {
+        Ok(request) => request,
+        Err(err) => {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
+                Some(err.as_str()),
+            ));
+        }
+    };
+    let memory_limit_bytes = match redevplugin_ipc::runtime_lease_memory_limit_bytes(line) {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+                Some(err.as_str()),
+            ));
+        }
+    };
+    let shared = state.shared;
+    let clock = state.clock;
+    let execution = match execute_worker_module_v2(
+        &wasm_bytes,
+        &identity.export,
+        worker_request.as_bytes(),
+        memory_limit_bytes,
+        |request| match request {
             WorkerHostcallRequest::StorageFile(request_json) => {
-                state
-                    .control
-                    .validate_fresh()
-                    .map_err(|err| err.to_string())?;
+                shared.validate_hostcall(line, clock()?)?;
                 perform_storage_file_request(
                     reader,
                     stdout,
@@ -459,14 +654,10 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
-                    state.resources,
                 )
             }
             WorkerHostcallRequest::StorageKV(request_json) => {
-                state
-                    .control
-                    .validate_fresh()
-                    .map_err(|err| err.to_string())?;
+                shared.validate_hostcall(line, clock()?)?;
                 perform_storage_kv_request(
                     reader,
                     stdout,
@@ -474,14 +665,10 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
-                    state.resources,
                 )
             }
             WorkerHostcallRequest::StorageSQLite(request_json) => {
-                state
-                    .control
-                    .validate_fresh()
-                    .map_err(|err| err.to_string())?;
+                shared.validate_hostcall(line, clock()?)?;
                 perform_storage_sqlite_request(
                     reader,
                     stdout,
@@ -489,14 +676,10 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
-                    state.resources,
                 )
             }
             WorkerHostcallRequest::NetworkExecute(request_json) => {
-                state
-                    .control
-                    .validate_fresh()
-                    .map_err(|err| err.to_string())?;
+                shared.validate_hostcall(line, clock()?)?;
                 perform_network_execute_request(
                     reader,
                     stdout,
@@ -504,336 +687,110 @@ fn handle_worker_invocation<R: BufRead, W: Write>(
                     runtime_generation_id,
                     line,
                     &request_json,
-                    state.resources,
                 )
             }
-        }) {
-            Ok(execution) => execution,
-            Err(err) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
-                    Some(err.as_str()),
-                ));
-            }
-        };
-    if let Ok(plugin_instance_id) = required_json_string(line, "plugin_instance_id") {
-        state.resources.track_actor(
-            &plugin_instance_id,
-            &identity.worker_id,
-            &identity.artifact,
-            &identity.export,
-        );
-    }
-    let mut memory_network_results = Vec::new();
-    if execution.network_execute_requested {
-        for result in execution.network_execute_results {
-            match result {
-                Ok(result) => {
-                    memory_network_results.push(result);
-                }
-                Err(err) => {
-                    return Ok(redevplugin_ipc::response_frame(
-                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                        request_id,
-                        runtime_generation_id,
-                        false,
-                        None,
-                        Some(worker_hostcall_error_code(err.as_str())),
-                        Some(err.as_str()),
-                    ));
-                }
-            }
-        }
-        if memory_network_results.is_empty() {
+        },
+    ) {
+        Ok(execution) => execution,
+        Err(err) => {
             return Ok(redevplugin_ipc::response_frame(
                 redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
                 false,
                 None,
-                Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                Some("network hostcall did not produce a response"),
+                Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
+                Some(err.as_str()),
             ));
         }
-    }
-    let mut memory_storage_file_result = None;
-    if execution.storage_file_requested {
-        match execution.storage_file_result {
-            Some(Ok(result)) => {
-                memory_storage_file_result = Some(result);
-            }
-            Some(Err(err)) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(worker_hostcall_error_code(err.as_str())),
-                    Some(err.as_str()),
-                ));
-            }
-            None => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                    Some("storage hostcall did not produce a response"),
-                ));
-            }
-        }
-    }
-    let mut memory_storage_kv_result = None;
-    if execution.storage_kv_requested {
-        match execution.storage_kv_result {
-            Some(Ok(result)) => {
-                memory_storage_kv_result = Some(result);
-            }
-            Some(Err(err)) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(worker_hostcall_error_code(err.as_str())),
-                    Some(err.as_str()),
-                ));
-            }
-            None => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                    Some("storage kv hostcall did not produce a response"),
-                ));
-            }
-        }
-    }
-    let mut memory_storage_sqlite_result = None;
-    if execution.storage_sqlite_requested {
-        match execution.storage_sqlite_result {
-            Some(Ok(result)) => {
-                memory_storage_sqlite_result = Some(result);
-            }
-            Some(Err(err)) => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(worker_hostcall_error_code(err.as_str())),
-                    Some(err.as_str()),
-                ));
-            }
-            None => {
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                    Some("storage sqlite hostcall did not produce a response"),
-                ));
-            }
-        }
-    }
-    let storage_file_result = match memory_storage_file_result {
-        Some(result) => Some(result),
-        None if execution.storage_file_write_demo_requested => {
-            if let Err(err) = state.control.validate_fresh() {
-                let code = err.code();
-                let message = err.to_string();
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(code),
-                    Some(message.as_str()),
-                ));
-            }
-            match perform_storage_file_write_demo(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                state.resources,
-            ) {
-                Ok(result) => Some(result),
-                Err(err) => {
-                    return Ok(redevplugin_ipc::response_frame(
-                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                        request_id,
-                        runtime_generation_id,
-                        false,
-                        None,
-                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                        Some(err.as_str()),
-                    ));
-                }
-            }
-        }
-        None => None,
     };
-    let storage_kv_result = match memory_storage_kv_result {
-        Some(result) => Some(result),
-        None if execution.storage_kv_put_demo_requested => {
-            if let Err(err) = state.control.validate_fresh() {
-                let code = err.code();
-                let message = err.to_string();
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(code),
-                    Some(message.as_str()),
-                ));
-            }
-            match perform_storage_kv_put_demo(
-                reader,
-                stdout,
+    let completion_now_unix_ms = match state.now_unix_ms() {
+        Ok(value) => value,
+        Err(err) => {
+            return Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
                 request_id,
                 runtime_generation_id,
-                line,
-                state.resources,
-            ) {
-                Ok(result) => Some(result),
-                Err(err) => {
-                    return Ok(redevplugin_ipc::response_frame(
-                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                        request_id,
-                        runtime_generation_id,
-                        false,
-                        None,
-                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                        Some(err.as_str()),
-                    ));
-                }
-            }
+                false,
+                None,
+                Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+                Some(err.as_str()),
+            ));
         }
-        None => None,
     };
-    let storage_sqlite_result = match memory_storage_sqlite_result {
-        Some(result) => Some(result),
-        None if execution.storage_sqlite_exec_demo_requested => {
-            if let Err(err) = state.control.validate_fresh() {
-                let code = err.code();
-                let message = err.to_string();
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(code),
-                    Some(message.as_str()),
-                ));
-            }
-            match perform_storage_sqlite_exec_demo(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                state.resources,
-            ) {
-                Ok(result) => Some(result),
-                Err(err) => {
-                    return Ok(redevplugin_ipc::response_frame(
-                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                        request_id,
-                        runtime_generation_id,
-                        false,
-                        None,
-                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                        Some(err.as_str()),
-                    ));
-                }
-            }
-        }
-        None => None,
-    };
-    let network_execute_result =
-        if memory_network_results.is_empty() && execution.network_http_request_demo_requested {
-            if let Err(err) = state.control.validate_fresh() {
-                let code = err.code();
-                let message = err.to_string();
-                return Ok(redevplugin_ipc::response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    false,
-                    None,
-                    Some(code),
-                    Some(message.as_str()),
-                ));
-            }
-            match perform_network_http_request_demo(
-                reader,
-                stdout,
-                request_id,
-                runtime_generation_id,
-                line,
-                state.resources,
-            ) {
-                Ok(result) => Some(result),
-                Err(err) => {
-                    return Ok(redevplugin_ipc::response_frame(
-                        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                        request_id,
-                        runtime_generation_id,
-                        false,
-                        None,
-                        Some(redevplugin_ipc::ERR_WASM_HOSTCALL_FAILED),
-                        Some(err.as_str()),
-                    ));
-                }
-            }
-        } else {
-            None
-        };
-    if let Some(result) = network_execute_result {
-        memory_network_results.push(result);
+    if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, completion_now_unix_ms) {
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID),
+            Some(err.as_str()),
+        ));
     }
-    let network_result_refs: Vec<&str> = memory_network_results
-        .iter()
-        .map(std::string::String::as_str)
-        .collect();
-    let result = redevplugin_ipc::worker_success_result_json_with_network_results(
-        &identity,
-        execution.validated.byte_len,
-        storage_file_result.as_deref(),
-        storage_kv_result.as_deref(),
-        storage_sqlite_result.as_deref(),
-        network_result_refs,
-    );
-    Ok(redevplugin_ipc::response_frame(
-        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-        request_id,
-        runtime_generation_id,
-        true,
-        Some(result.as_str()),
-        None,
-        None,
-    ))
+    if let Err(err) = state.shared.control.validate_fresh() {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
+    if let Err(err) = state.shared.validate_invocation_frame(line) {
+        let code = err.code();
+        let message = err.to_string();
+        return Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(code),
+            Some(message.as_str()),
+        ));
+    }
+    match redevplugin_ipc::parse_worker_response_v2(&execution.response_json) {
+        Ok(redevplugin_ipc::WorkerResponseV2::Success(data)) => {
+            let result = format!("{{\"data\":{data}}}");
+            Ok(redevplugin_ipc::response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                true,
+                Some(result.as_str()),
+                None,
+                None,
+            ))
+        }
+        Ok(redevplugin_ipc::WorkerResponseV2::Failure { code, message }) => {
+            let error_origin = trusted_worker_error_origin(&execution, &code, &message);
+            Ok(redevplugin_ipc::response_error_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ResponseError {
+                    code: code.as_str(),
+                    message: message.as_str(),
+                    origin: error_origin,
+                },
+            ))
+        }
+        Err(err) => Ok(redevplugin_ipc::response_frame(
+            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+            request_id,
+            runtime_generation_id,
+            false,
+            None,
+            Some(redevplugin_ipc::ERR_WASM_WORKER_INVALID),
+            Some(err.as_str()),
+        )),
+    }
 }
 
 #[derive(Default)]
@@ -850,10 +807,10 @@ impl RuntimeRevocations {
     }
 
     fn validate_invocation_frame(&self, frame: &str) -> Result<(), RuntimeRevocationError> {
-        let plugin_instance_id = required_json_string(frame, "plugin_instance_id")
+        let invocation = redevplugin_ipc::parse_worker_invocation_context(frame)
             .map_err(|_| RuntimeRevocationError::InvalidInvocation)?;
-        let invocation_epoch = required_json_number(frame, "revoke_epoch")
-            .map_err(|_| RuntimeRevocationError::InvalidInvocation)?;
+        let plugin_instance_id = invocation.plugin_instance_id;
+        let invocation_epoch = invocation.revoke_epoch;
         match self.revoked_epoch_by_plugin.get(&plugin_instance_id) {
             Some(revoked_epoch) if invocation_epoch < *revoked_epoch => {
                 Err(RuntimeRevocationError::Revoked {
@@ -865,94 +822,6 @@ impl RuntimeRevocations {
             _ => Ok(()),
         }
     }
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct RuntimeResourceCloseCounts {
-    actor: u64,
-    socket: u64,
-    stream: u64,
-    storage_handle: u64,
-}
-
-#[derive(Debug, Hash, PartialEq, Eq)]
-struct RuntimeResourceKey {
-    plugin_instance_id: String,
-    resource_id: String,
-}
-
-impl RuntimeResourceKey {
-    fn new(plugin_instance_id: &str, resource_id: String) -> Self {
-        Self {
-            plugin_instance_id: plugin_instance_id.to_string(),
-            resource_id,
-        }
-    }
-}
-
-#[derive(Default)]
-struct RuntimeResourceRegistry {
-    actors: HashSet<RuntimeResourceKey>,
-    sockets: HashSet<RuntimeResourceKey>,
-    streams: HashSet<RuntimeResourceKey>,
-    storage_handles: HashSet<RuntimeResourceKey>,
-}
-
-impl RuntimeResourceRegistry {
-    fn track_actor(
-        &mut self,
-        plugin_instance_id: &str,
-        worker_id: &str,
-        artifact: &str,
-        export: &str,
-    ) {
-        self.actors.insert(RuntimeResourceKey::new(
-            plugin_instance_id,
-            format!("worker:{worker_id}:{artifact}:{export}"),
-        ));
-    }
-
-    fn track_storage_handle(&mut self, plugin_instance_id: &str, handle_id: &str, method: &str) {
-        self.storage_handles.insert(RuntimeResourceKey::new(
-            plugin_instance_id,
-            format!("{method}:{handle_id}"),
-        ));
-    }
-
-    fn track_socket(&mut self, req: &redevplugin_ipc::NetworkExecuteRequest) {
-        self.sockets.insert(RuntimeResourceKey::new(
-            &req.plugin_instance_id,
-            format!("{}:{}:{}", req.transport, req.connector_id, req.destination),
-        ));
-    }
-
-    fn track_stream(&mut self, req: &redevplugin_ipc::NetworkExecuteRequest, stream_id: &str) {
-        if stream_id.trim().is_empty() {
-            return;
-        }
-        self.streams.insert(RuntimeResourceKey::new(
-            &req.plugin_instance_id,
-            format!("{}:{}:{stream_id}", req.transport, req.connector_id),
-        ));
-    }
-
-    fn revoke_plugin(&mut self, plugin_instance_id: &str) -> RuntimeResourceCloseCounts {
-        RuntimeResourceCloseCounts {
-            actor: remove_plugin_resources(&mut self.actors, plugin_instance_id),
-            socket: remove_plugin_resources(&mut self.sockets, plugin_instance_id),
-            stream: remove_plugin_resources(&mut self.streams, plugin_instance_id),
-            storage_handle: remove_plugin_resources(&mut self.storage_handles, plugin_instance_id),
-        }
-    }
-}
-
-fn remove_plugin_resources(
-    resources: &mut HashSet<RuntimeResourceKey>,
-    plugin_instance_id: &str,
-) -> u64 {
-    let before = resources.len();
-    resources.retain(|resource| resource.plugin_instance_id != plugin_instance_id);
-    u64::try_from(before.saturating_sub(resources.len())).unwrap_or(u64::MAX)
 }
 
 struct RuntimeLeaseReplayCache {
@@ -1083,14 +952,12 @@ impl std::fmt::Display for RuntimeRevocationError {
 }
 
 fn handle_revoke_epoch(
-    revocations: &mut RuntimeRevocations,
-    resources: &mut RuntimeResourceRegistry,
-    control: &mut ControlChannelState,
+    shared: &RuntimeSharedState,
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
 ) -> String {
-    let plugin_instance_id = match required_json_string(line, "plugin_instance_id") {
+    let request = match redevplugin_ipc::parse_revoke_epoch_request(line) {
         Ok(value) => value,
         Err(err) => {
             return redevplugin_ipc::response_frame(
@@ -1104,30 +971,18 @@ fn handle_revoke_epoch(
             );
         }
     };
-    let revoke_epoch = match required_last_json_number(line, "revoke_epoch") {
-        Ok(value) => value,
-        Err(err) => {
-            return redevplugin_ipc::response_frame(
-                redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
-                request_id,
-                runtime_generation_id,
-                false,
-                None,
-                Some(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID),
-                Some(err.as_str()),
-            );
-        }
-    };
-    revocations.revoke_plugin(&plugin_instance_id, revoke_epoch);
-    let closed = resources.revoke_plugin(&plugin_instance_id);
-    control.refresh_without_staleness_change();
+    shared
+        .revocations
+        .lock()
+        .expect("runtime revocation mutex poisoned")
+        .revoke_plugin(&request.plugin_instance_id, request.revoke_epoch);
+    shared.control.refresh_without_staleness_change();
     let result_json = redevplugin_ipc::revoke_epoch_ack_result_json(
-        &plugin_instance_id,
-        revoke_epoch,
-        closed.actor,
-        closed.socket,
-        closed.stream,
-        closed.storage_handle,
+        &request.plugin_instance_id,
+        request.revoke_epoch,
+        0,
+        0,
+        0,
     );
     redevplugin_ipc::response_frame(
         redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH_ACK,
@@ -1141,20 +996,15 @@ fn handle_revoke_epoch(
 }
 
 #[derive(Debug)]
-struct WorkerExecution {
-    validated: redevplugin_wasm_abi::ValidatedWorkerModule,
-    storage_file_write_demo_requested: bool,
-    storage_file_requested: bool,
-    storage_file_result: Option<Result<String, String>>,
-    storage_kv_put_demo_requested: bool,
-    storage_kv_requested: bool,
-    storage_kv_result: Option<Result<String, String>>,
-    storage_sqlite_exec_demo_requested: bool,
-    storage_sqlite_requested: bool,
-    storage_sqlite_result: Option<Result<String, String>>,
-    network_http_request_demo_requested: bool,
-    network_execute_requested: bool,
-    network_execute_results: Vec<Result<String, String>>,
+struct WorkerExecutionV2 {
+    response_json: String,
+    hostcall_failures: Vec<TrustedWorkerFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrustedWorkerFailure {
+    code: String,
+    message: String,
 }
 
 enum WorkerHostcallRequest {
@@ -1167,64 +1017,146 @@ enum WorkerHostcallRequest {
 type WorkerBrokerHostcall<'a> = dyn FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a;
 
 struct WorkerHostState<'a> {
-    storage_file_write_demo_requested: bool,
-    storage_file_requested: bool,
-    storage_file_result: Option<Result<String, String>>,
-    storage_kv_put_demo_requested: bool,
-    storage_kv_requested: bool,
-    storage_kv_result: Option<Result<String, String>>,
-    storage_sqlite_exec_demo_requested: bool,
-    storage_sqlite_requested: bool,
-    storage_sqlite_result: Option<Result<String, String>>,
-    network_http_request_demo_requested: bool,
-    network_execute_requested: bool,
-    network_execute_results: Vec<Result<String, String>>,
     broker_hostcall: Box<WorkerBrokerHostcall<'a>>,
+    limits: StoreLimits,
+    hostcall_failures: Vec<TrustedWorkerFailure>,
 }
 
 impl<'a> WorkerHostState<'a> {
     fn new(
         broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
+        memory_limit_bytes: usize,
     ) -> Self {
         Self {
-            storage_file_write_demo_requested: false,
-            storage_file_requested: false,
-            storage_file_result: None,
-            storage_kv_put_demo_requested: false,
-            storage_kv_requested: false,
-            storage_kv_result: None,
-            storage_sqlite_exec_demo_requested: false,
-            storage_sqlite_requested: false,
-            storage_sqlite_result: None,
-            network_http_request_demo_requested: false,
-            network_execute_requested: false,
-            network_execute_results: Vec::new(),
             broker_hostcall: Box::new(broker_hostcall),
+            limits: StoreLimitsBuilder::new()
+                .memory_size(memory_limit_bytes)
+                .table_elements(MAX_WASM_TABLE_ELEMENTS)
+                .instances(1)
+                .memories(1)
+                .tables(1)
+                .trap_on_grow_failure(true)
+                .build(),
+            hostcall_failures: Vec::new(),
         }
     }
 }
 
-fn execute_worker_module<'a>(
+fn execute_worker_module_v2<'a>(
     wasm_bytes: &[u8],
     export_name: &str,
+    request_json: &[u8],
+    memory_limit_bytes: usize,
     broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
-) -> Result<WorkerExecution, String> {
-    let validated = redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
+) -> Result<WorkerExecutionV2, String> {
+    if request_json.is_empty() || request_json.len() > MAX_WASM_WORKER_REQUEST_BYTES {
+        return Err("worker request exceeds the ABI v2 size limit".to_string());
+    }
+    if memory_limit_bytes == 0 {
+        return Err("worker memory limit must be positive".to_string());
+    }
+    redevplugin_wasm_abi::validate_worker_module(wasm_bytes, export_name)?;
     let mut config = Config::default();
     config.consume_fuel(true);
     let engine = wasmi::Engine::new(&config);
     let module = wasmi::Module::new(&engine, wasm_bytes)
         .map_err(|err| format!("compile wasm worker module: {err}"))?;
     let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&engine);
-    linker
-        .func_wrap(
-            "redevplugin.storage",
-            "files_write_demo",
-            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
-                caller.data_mut().storage_file_write_demo_requested = true;
-            },
-        )
-        .map_err(|err| format!("define storage hostcall import: {err}"))?;
+    define_v2_worker_hostcalls(&mut linker)?;
+    let mut store = wasmi::Store::new(
+        &engine,
+        WorkerHostState::new(broker_hostcall, memory_limit_bytes),
+    );
+    store.limiter(|state| &mut state.limits);
+    store
+        .set_fuel(DEFAULT_WASM_WORKER_FUEL)
+        .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
+    let instance = linker
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
+    let memory = instance
+        .get_memory(&store, "memory")
+        .ok_or_else(|| "ABI v2 worker must export memory".to_string())?;
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&store, "redevplugin_worker_alloc")
+        .map_err(|err| format!("resolve ABI v2 worker allocator: {err}"))?;
+    let dealloc = instance
+        .get_typed_func::<(i32, i32), ()>(&store, "redevplugin_worker_dealloc")
+        .map_err(|err| format!("resolve ABI v2 worker deallocator: {err}"))?;
+    let invoke = instance
+        .get_typed_func::<(i32, i32), i64>(&store, export_name)
+        .map_err(|err| format!("resolve ABI v2 worker export {export_name:?}: {err}"))?;
+
+    let request_len = i32::try_from(request_json.len())
+        .map_err(|_| "worker request length exceeds i32".to_string())?;
+    let request_ptr = alloc
+        .call(&mut store, request_len)
+        .map_err(|err| format!("allocate ABI v2 worker request: {err}"))?;
+    let request_offset = usize::try_from(request_ptr)
+        .map_err(|_| "ABI v2 worker allocator returned a negative pointer".to_string())?;
+    memory
+        .write(store.as_context_mut(), request_offset, request_json)
+        .map_err(|err| format!("write ABI v2 worker request memory: {err}"))?;
+
+    let packed = match invoke.call(&mut store, (request_ptr, request_len)) {
+        Ok(value) => value as u64,
+        Err(err) => {
+            let _ = dealloc.call(&mut store, (request_ptr, request_len));
+            return Err(format!(
+                "execute ABI v2 worker export {export_name:?}: {err}"
+            ));
+        }
+    };
+    let _ = dealloc.call(&mut store, (request_ptr, request_len));
+
+    let response_ptr_u32 = u32::try_from(packed >> 32)
+        .map_err(|_| "ABI v2 worker response pointer exceeds u32".to_string())?;
+    let response_len_u32 = u32::try_from(packed & 0xffff_ffff)
+        .map_err(|_| "ABI v2 worker response length exceeds u32".to_string())?;
+    let response_ptr = i32::try_from(response_ptr_u32)
+        .map_err(|_| "ABI v2 worker response pointer exceeds i32".to_string())?;
+    let response_len = i32::try_from(response_len_u32)
+        .map_err(|_| "ABI v2 worker response length exceeds i32".to_string())?;
+    let response_size = usize::try_from(response_len)
+        .map_err(|_| "ABI v2 worker response length is negative".to_string())?;
+    if response_size == 0 || response_size > MAX_WASM_WORKER_RESPONSE_BYTES {
+        return Err("ABI v2 worker response exceeds the size limit".to_string());
+    }
+    let response_offset = usize::try_from(response_ptr)
+        .map_err(|_| "ABI v2 worker response pointer is negative".to_string())?;
+    let mut response = vec![0_u8; response_size];
+    let read_result = memory.read(store.as_context(), response_offset, &mut response);
+    let _ = dealloc.call(&mut store, (response_ptr, response_len));
+    read_result.map_err(|err| format!("read ABI v2 worker response memory: {err}"))?;
+    let response_json = String::from_utf8(response)
+        .map_err(|_| "ABI v2 worker response must be UTF-8 JSON".to_string())?;
+
+    let hostcall_failures = store.data().hostcall_failures.clone();
+    Ok(WorkerExecutionV2 {
+        response_json,
+        hostcall_failures,
+    })
+}
+
+fn trusted_worker_error_origin(
+    execution: &WorkerExecutionV2,
+    code: &str,
+    message: &str,
+) -> &'static str {
+    if execution
+        .hostcall_failures
+        .iter()
+        .any(|failure| failure.code == code && failure.message == message)
+    {
+        redevplugin_ipc::ERROR_ORIGIN_HOSTCALL
+    } else {
+        redevplugin_ipc::ERROR_ORIGIN_PLUGIN
+    }
+}
+
+fn define_v2_worker_hostcalls<'a>(
+    linker: &mut wasmi::Linker<WorkerHostState<'a>>,
+) -> Result<(), String> {
     linker
         .func_wrap(
             "redevplugin.storage",
@@ -1244,16 +1176,7 @@ fn execute_worker_module<'a>(
                 )
             },
         )
-        .map_err(|err| format!("define storage memory hostcall import: {err}"))?;
-    linker
-        .func_wrap(
-            "redevplugin.storage",
-            "kv_put_demo",
-            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
-                caller.data_mut().storage_kv_put_demo_requested = true;
-            },
-        )
-        .map_err(|err| format!("define storage kv demo hostcall import: {err}"))?;
+        .map_err(|err| format!("define storage files hostcall import: {err}"))?;
     linker
         .func_wrap(
             "redevplugin.storage",
@@ -1273,16 +1196,7 @@ fn execute_worker_module<'a>(
                 )
             },
         )
-        .map_err(|err| format!("define storage kv memory hostcall import: {err}"))?;
-    linker
-        .func_wrap(
-            "redevplugin.storage",
-            "sqlite_exec_demo",
-            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
-                caller.data_mut().storage_sqlite_exec_demo_requested = true;
-            },
-        )
-        .map_err(|err| format!("define storage sqlite demo hostcall import: {err}"))?;
+        .map_err(|err| format!("define storage kv hostcall import: {err}"))?;
     linker
         .func_wrap(
             "redevplugin.storage",
@@ -1302,16 +1216,7 @@ fn execute_worker_module<'a>(
                 )
             },
         )
-        .map_err(|err| format!("define storage sqlite memory hostcall import: {err}"))?;
-    linker
-        .func_wrap(
-            "redevplugin.network",
-            "http_request_demo",
-            |mut caller: wasmi::Caller<'_, WorkerHostState>| {
-                caller.data_mut().network_http_request_demo_requested = true;
-            },
-        )
-        .map_err(|err| format!("define network hostcall import: {err}"))?;
+        .map_err(|err| format!("define storage sqlite hostcall import: {err}"))?;
     linker
         .func_wrap(
             "redevplugin.network",
@@ -1331,67 +1236,90 @@ fn execute_worker_module<'a>(
                 )
             },
         )
-        .map_err(|err| format!("define network execute memory hostcall import: {err}"))?;
-    linker
-        .func_wrap(
-            "redevplugin.network",
-            "http_request",
-            |mut caller: wasmi::Caller<'_, WorkerHostState<'a>>,
-             request_ptr: i32,
-             request_len: i32,
-             response_ptr: i32,
-             response_len: i32|
-             -> i32 {
-                perform_network_execute_request_hostcall(
-                    &mut caller,
-                    request_ptr,
-                    request_len,
-                    response_ptr,
-                    response_len,
-                )
-            },
-        )
-        .map_err(|err| format!("define network memory hostcall import: {err}"))?;
-    let mut store = wasmi::Store::new(&engine, WorkerHostState::new(broker_hostcall));
-    store
-        .set_fuel(DEFAULT_WASM_WORKER_FUEL)
-        .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
-    let instance = linker
-        .instantiate_and_start(&mut store, &module)
-        .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
-    let invoke = instance
-        .get_typed_func::<(), ()>(&store, export_name)
-        .map_err(|err| format!("resolve wasm worker export {export_name:?}: {err}"))?;
-    invoke
-        .call(&mut store, ())
-        .map_err(|err| format!("execute wasm worker export {export_name:?}: {err}"))?;
-    let storage_file_write_demo_requested = store.data().storage_file_write_demo_requested;
-    let storage_file_requested = store.data().storage_file_requested;
-    let storage_file_result = store.data().storage_file_result.clone();
-    let storage_kv_put_demo_requested = store.data().storage_kv_put_demo_requested;
-    let storage_kv_requested = store.data().storage_kv_requested;
-    let storage_kv_result = store.data().storage_kv_result.clone();
-    let storage_sqlite_exec_demo_requested = store.data().storage_sqlite_exec_demo_requested;
-    let storage_sqlite_requested = store.data().storage_sqlite_requested;
-    let storage_sqlite_result = store.data().storage_sqlite_result.clone();
-    let network_http_request_demo_requested = store.data().network_http_request_demo_requested;
-    let network_execute_requested = store.data().network_execute_requested;
-    let network_execute_results = store.data().network_execute_results.clone();
-    Ok(WorkerExecution {
-        validated,
-        storage_file_write_demo_requested,
-        storage_file_requested,
-        storage_file_result,
-        storage_kv_put_demo_requested,
-        storage_kv_requested,
-        storage_kv_result,
-        storage_sqlite_exec_demo_requested,
-        storage_sqlite_requested,
-        storage_sqlite_result,
-        network_http_request_demo_requested,
-        network_execute_requested,
-        network_execute_results,
+        .map_err(|err| format!("define network execute hostcall import: {err}"))?;
+    Ok(())
+}
+
+fn worker_hostcall_error_json(error: &str) -> String {
+    let error = error.trim();
+    let (candidate, message) = error
+        .split_once(": ")
+        .map(|(code, message)| (code.trim(), message.trim()))
+        .unwrap_or(("HOSTCALL_FAILED", error));
+    let code = if stable_worker_error_code(candidate) {
+        candidate
+    } else {
+        "HOSTCALL_FAILED"
+    };
+    let message = if message.is_empty() {
+        "hostcall failed"
+    } else {
+        message
+    };
+    serde_json::json!({
+        "ok": false,
+        "error_code": code,
+        "message": message,
     })
+    .to_string()
+}
+
+fn record_hostcall_response(caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>, response: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(response) else {
+        return;
+    };
+    if value.get("ok").and_then(serde_json::Value::as_bool) != Some(false) {
+        return;
+    }
+    let code = value
+        .get("error_code")
+        .or_else(|| value.get("code"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| stable_worker_error_code(value))
+        .unwrap_or("HOSTCALL_FAILED");
+    let message = value
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("hostcall failed");
+    let failures = &mut caller.data_mut().hostcall_failures;
+    if failures.len() < 64
+        && !failures
+            .iter()
+            .any(|failure| failure.code == code && failure.message == message)
+    {
+        failures.push(TrustedWorkerFailure {
+            code: code.to_string(),
+            message: message.to_string(),
+        });
+    }
+}
+
+fn record_hostcall_abi_error(
+    caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
+    code: i32,
+) -> i32 {
+    let message = format!("hostcall failed with ABI code {code}");
+    let failures = &mut caller.data_mut().hostcall_failures;
+    if failures.len() < 64
+        && !failures
+            .iter()
+            .any(|failure| failure.code == "HOSTCALL_FAILED" && failure.message == message)
+    {
+        failures.push(TrustedWorkerFailure {
+            code: "HOSTCALL_FAILED".to_string(),
+            message,
+        });
+    }
+    code
+}
+
+fn stable_worker_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn perform_storage_file_request_hostcall(
@@ -1401,7 +1329,6 @@ fn perform_storage_file_request_hostcall(
     response_ptr: i32,
     response_len: i32,
 ) -> i32 {
-    caller.data_mut().storage_file_requested = true;
     let request_ptr = match usize::try_from(request_ptr) {
         Ok(value) => value,
         Err(_) => return record_storage_hostcall_error(caller, -1),
@@ -1418,7 +1345,10 @@ fn perform_storage_file_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_storage_hostcall_error(caller, -1),
     };
-    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    if request_len == 0
+        || request_len > MAX_WASM_HOSTCALL_REQUEST_BYTES
+        || response_len == 0
+        || response_len > MAX_WASM_HOSTCALL_RESPONSE_BYTES
     {
         return record_storage_hostcall_error(caller, -2);
     }
@@ -1443,19 +1373,11 @@ fn perform_storage_file_request_hostcall(
         let state = caller.data_mut();
         (state.broker_hostcall)(WorkerHostcallRequest::StorageFile(request_json.to_string()))
     };
-    let response_json = match response_json {
-        Ok(value) => value,
-        Err(err) => {
-            caller.data_mut().storage_file_result = Some(Err(err));
-            return -6;
-        }
-    };
+    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
-        caller.data_mut().storage_file_result = Some(Err(
-            "storage files response does not fit in the output buffer".to_string(),
-        ));
-        return -7;
+        return record_storage_hostcall_error(caller, -7);
     }
     if memory
         .write(caller.as_context_mut(), response_ptr, response)
@@ -1463,22 +1385,17 @@ fn perform_storage_file_request_hostcall(
     {
         return record_storage_hostcall_error(caller, -8);
     }
-    let written = match i32::try_from(response.len()) {
+    match i32::try_from(response.len()) {
         Ok(value) => value,
-        Err(_) => return record_storage_hostcall_error(caller, -9),
-    };
-    caller.data_mut().storage_file_result = Some(Ok(response_json));
-    written
+        Err(_) => record_storage_hostcall_error(caller, -9),
+    }
 }
 
 fn record_storage_hostcall_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     code: i32,
 ) -> i32 {
-    caller.data_mut().storage_file_result = Some(Err(format!(
-        "storage files hostcall failed with ABI code {code}"
-    )));
-    code
+    record_hostcall_abi_error(caller, code)
 }
 
 fn perform_storage_kv_request_hostcall(
@@ -1488,7 +1405,6 @@ fn perform_storage_kv_request_hostcall(
     response_ptr: i32,
     response_len: i32,
 ) -> i32 {
-    caller.data_mut().storage_kv_requested = true;
     let request_ptr = match usize::try_from(request_ptr) {
         Ok(value) => value,
         Err(_) => return record_storage_kv_hostcall_error(caller, -1),
@@ -1505,7 +1421,10 @@ fn perform_storage_kv_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_storage_kv_hostcall_error(caller, -1),
     };
-    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    if request_len == 0
+        || request_len > MAX_WASM_HOSTCALL_REQUEST_BYTES
+        || response_len == 0
+        || response_len > MAX_WASM_HOSTCALL_RESPONSE_BYTES
     {
         return record_storage_kv_hostcall_error(caller, -2);
     }
@@ -1530,19 +1449,11 @@ fn perform_storage_kv_request_hostcall(
         let state = caller.data_mut();
         (state.broker_hostcall)(WorkerHostcallRequest::StorageKV(request_json.to_string()))
     };
-    let response_json = match response_json {
-        Ok(value) => value,
-        Err(err) => {
-            caller.data_mut().storage_kv_result = Some(Err(err));
-            return -6;
-        }
-    };
+    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
-        caller.data_mut().storage_kv_result = Some(Err(
-            "storage kv response does not fit in the output buffer".to_string(),
-        ));
-        return -7;
+        return record_storage_kv_hostcall_error(caller, -7);
     }
     if memory
         .write(caller.as_context_mut(), response_ptr, response)
@@ -1550,22 +1461,17 @@ fn perform_storage_kv_request_hostcall(
     {
         return record_storage_kv_hostcall_error(caller, -8);
     }
-    let written = match i32::try_from(response.len()) {
+    match i32::try_from(response.len()) {
         Ok(value) => value,
-        Err(_) => return record_storage_kv_hostcall_error(caller, -9),
-    };
-    caller.data_mut().storage_kv_result = Some(Ok(response_json));
-    written
+        Err(_) => record_storage_kv_hostcall_error(caller, -9),
+    }
 }
 
 fn record_storage_kv_hostcall_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     code: i32,
 ) -> i32 {
-    caller.data_mut().storage_kv_result.replace(Err(format!(
-        "storage kv hostcall failed with ABI code {code}"
-    )));
-    code
+    record_hostcall_abi_error(caller, code)
 }
 
 fn perform_storage_sqlite_request_hostcall(
@@ -1575,7 +1481,6 @@ fn perform_storage_sqlite_request_hostcall(
     response_ptr: i32,
     response_len: i32,
 ) -> i32 {
-    caller.data_mut().storage_sqlite_requested = true;
     let request_ptr = match usize::try_from(request_ptr) {
         Ok(value) => value,
         Err(_) => return record_storage_sqlite_hostcall_error(caller, -1),
@@ -1592,7 +1497,10 @@ fn perform_storage_sqlite_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_storage_sqlite_hostcall_error(caller, -1),
     };
-    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    if request_len == 0
+        || request_len > MAX_WASM_HOSTCALL_REQUEST_BYTES
+        || response_len == 0
+        || response_len > MAX_WASM_HOSTCALL_RESPONSE_BYTES
     {
         return record_storage_sqlite_hostcall_error(caller, -2);
     }
@@ -1619,19 +1527,11 @@ fn perform_storage_sqlite_request_hostcall(
             request_json.to_string(),
         ))
     };
-    let response_json = match response_json {
-        Ok(value) => value,
-        Err(err) => {
-            caller.data_mut().storage_sqlite_result = Some(Err(err));
-            return -6;
-        }
-    };
+    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
-        caller.data_mut().storage_sqlite_result = Some(Err(
-            "storage sqlite response does not fit in the output buffer".to_string(),
-        ));
-        return -7;
+        return record_storage_sqlite_hostcall_error(caller, -7);
     }
     if memory
         .write(caller.as_context_mut(), response_ptr, response)
@@ -1639,22 +1539,17 @@ fn perform_storage_sqlite_request_hostcall(
     {
         return record_storage_sqlite_hostcall_error(caller, -8);
     }
-    let written = match i32::try_from(response.len()) {
+    match i32::try_from(response.len()) {
         Ok(value) => value,
-        Err(_) => return record_storage_sqlite_hostcall_error(caller, -9),
-    };
-    caller.data_mut().storage_sqlite_result = Some(Ok(response_json));
-    written
+        Err(_) => record_storage_sqlite_hostcall_error(caller, -9),
+    }
 }
 
 fn record_storage_sqlite_hostcall_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     code: i32,
 ) -> i32 {
-    caller.data_mut().storage_sqlite_result.replace(Err(format!(
-        "storage sqlite hostcall failed with ABI code {code}"
-    )));
-    code
+    record_hostcall_abi_error(caller, code)
 }
 
 fn perform_network_execute_request_hostcall(
@@ -1664,7 +1559,6 @@ fn perform_network_execute_request_hostcall(
     response_ptr: i32,
     response_len: i32,
 ) -> i32 {
-    caller.data_mut().network_execute_requested = true;
     let request_ptr = match usize::try_from(request_ptr) {
         Ok(value) => value,
         Err(_) => return record_network_hostcall_error(caller, -1),
@@ -1681,7 +1575,10 @@ fn perform_network_execute_request_hostcall(
         Ok(value) => value,
         Err(_) => return record_network_hostcall_error(caller, -1),
     };
-    if request_len == 0 || request_len > 64 * 1024 || response_len == 0 || response_len > 256 * 1024
+    if request_len == 0
+        || request_len > MAX_WASM_HOSTCALL_REQUEST_BYTES
+        || response_len == 0
+        || response_len > MAX_WASM_HOSTCALL_RESPONSE_BYTES
     {
         return record_network_hostcall_error(caller, -2);
     }
@@ -1708,19 +1605,11 @@ fn perform_network_execute_request_hostcall(
             request_json.to_string(),
         ))
     };
-    let response_json = match response_json {
-        Ok(value) => value,
-        Err(err) => {
-            caller.data_mut().network_execute_results.push(Err(err));
-            return -6;
-        }
-    };
+    let response_json = response_json.unwrap_or_else(|err| worker_hostcall_error_json(&err));
+    record_hostcall_response(caller, &response_json);
     let response = response_json.as_bytes();
     if response.len() > response_len {
-        caller.data_mut().network_execute_results.push(Err(
-            "network execute response does not fit in the output buffer".to_string(),
-        ));
-        return -7;
+        return record_network_hostcall_error(caller, -7);
     }
     if memory
         .write(caller.as_context_mut(), response_ptr, response)
@@ -1728,40 +1617,17 @@ fn perform_network_execute_request_hostcall(
     {
         return record_network_hostcall_error(caller, -8);
     }
-    let written = match i32::try_from(response.len()) {
+    match i32::try_from(response.len()) {
         Ok(value) => value,
-        Err(_) => return record_network_hostcall_error(caller, -9),
-    };
-    caller
-        .data_mut()
-        .network_execute_results
-        .push(Ok(response_json));
-    written
+        Err(_) => record_network_hostcall_error(caller, -9),
+    }
 }
 
 fn record_network_hostcall_error(
     caller: &mut wasmi::Caller<'_, WorkerHostState<'_>>,
     code: i32,
 ) -> i32 {
-    caller.data_mut().network_execute_results.push(Err(format!(
-        "network execute hostcall failed with ABI code {code}"
-    )));
-    code
-}
-
-fn perform_storage_file_write_demo<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    resources: &mut RuntimeResourceRegistry,
-) -> Result<String, String> {
-    let req = storage_file_write_demo_request(invocation_frame, runtime_generation_id)?;
-    let result =
-        dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, &req)?;
-    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
-    Ok(result)
+    record_hostcall_abi_error(caller, code)
 }
 
 fn perform_storage_file_request<R: BufRead, W: Write>(
@@ -1771,28 +1637,14 @@ fn perform_storage_file_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
-    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_file_request(invocation_frame, runtime_generation_id, request_json)?;
-    let result =
-        dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, &req)?;
-    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
-    Ok(result)
-}
-
-fn perform_storage_kv_put_demo<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    resources: &mut RuntimeResourceRegistry,
-) -> Result<String, String> {
-    let req = storage_kv_put_demo_request(invocation_frame, runtime_generation_id)?;
-    let result =
-        dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, &req)?;
-    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
-    Ok(result)
+    redevplugin_ipc::validate_worker_storage_broker_access(
+        invocation_frame,
+        &req.store_id,
+        &req.operation,
+    )?;
+    dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, &req)
 }
 
 fn perform_storage_kv_request<R: BufRead, W: Write>(
@@ -1802,28 +1654,14 @@ fn perform_storage_kv_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
-    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_kv_request(invocation_frame, runtime_generation_id, request_json)?;
-    let result =
-        dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, &req)?;
-    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
-    Ok(result)
-}
-
-fn perform_storage_sqlite_exec_demo<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    resources: &mut RuntimeResourceRegistry,
-) -> Result<String, String> {
-    let req = storage_sqlite_exec_demo_request(invocation_frame, runtime_generation_id)?;
-    let result =
-        dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, &req)?;
-    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
-    Ok(result)
+    redevplugin_ipc::validate_worker_storage_broker_access(
+        invocation_frame,
+        &req.store_id,
+        &req.operation,
+    )?;
+    dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, &req)
 }
 
 fn perform_storage_sqlite_request<R: BufRead, W: Write>(
@@ -1833,13 +1671,14 @@ fn perform_storage_sqlite_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
-    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = storage_sqlite_request(invocation_frame, runtime_generation_id, request_json)?;
-    let result =
-        dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, &req)?;
-    resources.track_storage_handle(&req.plugin_instance_id, &req.handle_id, &req.method);
-    Ok(result)
+    redevplugin_ipc::validate_worker_storage_broker_access(
+        invocation_frame,
+        &req.store_id,
+        &req.operation,
+    )?;
+    dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, &req)
 }
 
 fn dispatch_storage_file_request<R: BufRead, W: Write>(
@@ -1857,10 +1696,11 @@ fn dispatch_storage_file_request<R: BufRead, W: Write>(
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write storage_file request: {err}"))?;
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|err| format!("read storage_file response: {err}"))?;
+    let response = read_bounded_line(
+        reader,
+        MAX_BROKER_RESPONSE_FRAME_BYTES,
+        "storage_file response",
+    )?;
     if response.is_empty() {
         return Err("storage_file response is empty".to_string());
     }
@@ -1886,10 +1726,11 @@ fn dispatch_storage_kv_request<R: BufRead, W: Write>(
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write storage_kv request: {err}"))?;
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|err| format!("read storage_kv response: {err}"))?;
+    let response = read_bounded_line(
+        reader,
+        MAX_BROKER_RESPONSE_FRAME_BYTES,
+        "storage_kv response",
+    )?;
     if response.is_empty() {
         return Err("storage_kv response is empty".to_string());
     }
@@ -1916,10 +1757,11 @@ fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write storage_sqlite request: {err}"))?;
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|err| format!("read storage_sqlite response: {err}"))?;
+    let response = read_bounded_line(
+        reader,
+        MAX_BROKER_RESPONSE_FRAME_BYTES,
+        "storage_sqlite response",
+    )?;
     if response.is_empty() {
         return Err("storage_sqlite response is empty".to_string());
     }
@@ -1931,49 +1773,140 @@ fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
     redevplugin_ipc::storage_sqlite_payload_json(&response)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StorageFileHostcallRequest {
+    operation: String,
+    store_id: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    data_base64: String,
+    max_bytes: Option<u64>,
+    max_entries: Option<u64>,
+    recursive: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StorageKVHostcallRequest {
+    operation: String,
+    store_id: String,
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    value_base64: String,
+    #[serde(default)]
+    prefix: String,
+    max_bytes: Option<u64>,
+    max_entries: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StorageSQLiteHostcallRequest {
+    operation: String,
+    store_id: String,
+    #[serde(default)]
+    database: String,
+    sql: String,
+    #[serde(default)]
+    args: Vec<serde_json::Value>,
+    max_rows: Option<u64>,
+    max_response_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkExecuteHostcallRequest {
+    connector_id: String,
+    transport: String,
+    destination: String,
+    operation: String,
+    #[serde(default)]
+    method: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    query: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    headers: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    message_type: String,
+    #[serde(default)]
+    body_base64: String,
+    #[serde(default)]
+    payload_base64: String,
+    ttl_ms: Option<u64>,
+    max_request_bytes: Option<u64>,
+    max_response_bytes: Option<u64>,
+    max_chunk_bytes: Option<u64>,
+    max_buffered_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+    stream_id: Option<String>,
+    stream_method: Option<String>,
+    stream_effect: Option<String>,
+    stream_execution: Option<String>,
+    surface_instance_id: Option<String>,
+    owner_session_hash: Option<String>,
+    owner_user_hash: Option<String>,
+    session_channel_id_hash: Option<String>,
+    bridge_channel_id: Option<String>,
+    #[serde(default)]
+    content_type: String,
+}
+
+fn decode_hostcall_request<T: for<'de> Deserialize<'de>>(
+    input: &str,
+    label: &str,
+) -> Result<T, String> {
+    serde_json::from_str(input).map_err(|err| format!("decode {label}: {err}"))
+}
+
+fn require_non_empty(value: &str, field: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("missing {field}"))
+    } else {
+        Ok(())
+    }
+}
+
 fn storage_file_request(
     invocation_frame: &str,
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::StorageFileRequest, String> {
-    let store_id = request_or_invocation_string(
-        request_json,
-        "store_id",
-        invocation_frame,
-        "storage_store_id",
-    )?;
-    let handle_grant_token = required_json_string(invocation_frame, "storage_handle_grant_token")?;
-    let path =
-        request_or_invocation_string(request_json, "path", invocation_frame, "storage_path")?;
-    let data_base64 = request_json_string(request_json, "data_base64")
-        .or_else(|| request_json_string(invocation_frame, "storage_data_base64"))
-        .unwrap_or_default();
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+    let request: StorageFileHostcallRequest =
+        decode_hostcall_request(request_json, "storage file hostcall request")?;
+    require_non_empty(&request.operation, "operation")?;
+    require_non_empty(&request.store_id, "store_id")?;
+    if request.operation != "list" {
+        require_non_empty(&request.path, "path")?;
+    }
+    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let store_id = request.store_id;
+    let handle_grant_token =
+        redevplugin_ipc::worker_storage_handle_grant(invocation_frame, &store_id)?;
     Ok(redevplugin_ipc::StorageFileRequest {
         handle_grant_token,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
+        plugin_instance_id: invocation.plugin_instance_id,
+        active_fingerprint: invocation.active_fingerprint,
+        runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
         runtime_shard_id: String::new(),
         handle_id: format!("storage:{store_id}"),
         method: "storage.files".to_string(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        operation: request_json_string(request_json, "operation")
-            .unwrap_or_else(|| "write".to_string()),
+        policy_revision: invocation.policy_revision,
+        management_revision: invocation.management_revision,
+        revoke_epoch: invocation.revoke_epoch,
+        operation: request.operation,
         store_id,
-        path,
-        data_base64,
-        max_bytes: request_json_number(request_json, "max_bytes").unwrap_or(0),
-        max_entries: request_json_number(request_json, "max_entries").unwrap_or(0),
-        recursive: request_json_bool(request_json, "recursive").unwrap_or(false),
+        path: request.path,
+        data_base64: request.data_base64,
+        max_bytes: request.max_bytes.unwrap_or(0),
+        max_entries: request.max_entries.unwrap_or(0),
+        recursive: request.recursive.unwrap_or(false),
     })
 }
 
@@ -1982,57 +1915,36 @@ fn storage_kv_request(
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::StorageKVRequest, String> {
-    let store_id = request_or_invocation_string(
-        request_json,
-        "store_id",
-        invocation_frame,
-        "storage_kv_store_id",
-    )
-    .or_else(|_| {
-        request_or_invocation_string(
-            request_json,
-            "store_id",
-            invocation_frame,
-            "storage_store_id",
-        )
-    })?;
+    let request: StorageKVHostcallRequest =
+        decode_hostcall_request(request_json, "storage KV hostcall request")?;
+    require_non_empty(&request.operation, "operation")?;
+    require_non_empty(&request.store_id, "store_id")?;
+    if request.operation != "list" {
+        require_non_empty(&request.key, "key")?;
+    }
+    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let store_id = request.store_id;
     let handle_grant_token =
-        redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_handle_grant_token")
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
-            })
-            .ok_or_else(|| "missing storage_kv_handle_grant_token".to_string())?;
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+        redevplugin_ipc::worker_storage_handle_grant(invocation_frame, &store_id)?;
     Ok(redevplugin_ipc::StorageKVRequest {
         handle_grant_token,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
+        plugin_instance_id: invocation.plugin_instance_id,
+        active_fingerprint: invocation.active_fingerprint,
+        runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
         runtime_shard_id: String::new(),
         handle_id: format!("storage:{store_id}"),
         method: "storage.kv".to_string(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        operation: request_json_string(request_json, "operation")
-            .unwrap_or_else(|| "put".to_string()),
+        policy_revision: invocation.policy_revision,
+        management_revision: invocation.management_revision,
+        revoke_epoch: invocation.revoke_epoch,
+        operation: request.operation,
         store_id,
-        key: request_json_string(request_json, "key")
-            .or_else(|| request_json_string(invocation_frame, "storage_kv_key"))
-            .unwrap_or_default(),
-        value_base64: request_json_string(request_json, "value_base64")
-            .or_else(|| request_json_string(invocation_frame, "storage_kv_value_base64"))
-            .unwrap_or_default(),
-        prefix: request_json_string(request_json, "prefix").unwrap_or_default(),
-        max_bytes: request_json_number(request_json, "max_bytes").unwrap_or(0),
-        max_entries: request_json_number(request_json, "max_entries").unwrap_or(0),
+        key: request.key,
+        value_base64: request.value_base64,
+        prefix: request.prefix,
+        max_bytes: request.max_bytes.unwrap_or(0),
+        max_entries: request.max_entries.unwrap_or(0),
     })
 }
 
@@ -2041,233 +1953,37 @@ fn storage_sqlite_request(
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::StorageSQLiteRequest, String> {
-    let store_id = request_or_invocation_string(
-        request_json,
-        "store_id",
-        invocation_frame,
-        "storage_sqlite_store_id",
-    )
-    .or_else(|_| {
-        request_or_invocation_string(
-            request_json,
-            "store_id",
-            invocation_frame,
-            "storage_store_id",
-        )
-    })?;
+    let request: StorageSQLiteHostcallRequest =
+        decode_hostcall_request(request_json, "storage SQLite hostcall request")?;
+    require_non_empty(&request.operation, "operation")?;
+    require_non_empty(&request.store_id, "store_id")?;
+    require_non_empty(&request.sql, "sql")?;
+    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let store_id = request.store_id;
     let handle_grant_token =
-        redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_handle_grant_token")
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
-            })
-            .ok_or_else(|| "missing storage_sqlite_handle_grant_token".to_string())?;
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
+        redevplugin_ipc::worker_storage_handle_grant(invocation_frame, &store_id)?;
     Ok(redevplugin_ipc::StorageSQLiteRequest {
         handle_grant_token,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
+        plugin_instance_id: invocation.plugin_instance_id,
+        active_fingerprint: invocation.active_fingerprint,
+        runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
         runtime_shard_id: String::new(),
         handle_id: format!("storage:{store_id}"),
         method: "storage.sqlite".to_string(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        operation: request_json_string(request_json, "operation")
-            .unwrap_or_else(|| "query".to_string()),
+        policy_revision: invocation.policy_revision,
+        management_revision: invocation.management_revision,
+        revoke_epoch: invocation.revoke_epoch,
+        operation: request.operation,
         store_id,
-        database: request_json_string(request_json, "database")
-            .or_else(|| request_json_string(invocation_frame, "storage_sqlite_database"))
-            .unwrap_or_default(),
-        sql: request_json_string(request_json, "sql")
-            .or_else(|| request_json_string(invocation_frame, "storage_sqlite_sql"))
-            .ok_or_else(|| "missing storage sqlite sql".to_string())?,
-        args_json: request_json_array(request_json, "args").unwrap_or_else(|| "[]".to_string()),
-        max_rows: request_json_number(request_json, "max_rows").unwrap_or(0),
-        max_response_bytes: request_json_number(request_json, "max_response_bytes").unwrap_or(0),
-        timeout_ms: request_json_number(request_json, "timeout_ms").unwrap_or(0),
+        database: request.database,
+        sql: request.sql,
+        args_json: serde_json::to_string(&request.args)
+            .map_err(|err| format!("encode storage SQLite args: {err}"))?,
+        max_rows: request.max_rows.unwrap_or(0),
+        max_response_bytes: request.max_response_bytes.unwrap_or(0),
+        timeout_ms: request.timeout_ms.unwrap_or(0),
     })
-}
-
-fn storage_file_write_demo_request(
-    invocation_frame: &str,
-    runtime_generation_id: &str,
-) -> Result<redevplugin_ipc::StorageFileRequest, String> {
-    let handle_grant_token = required_json_string(invocation_frame, "storage_handle_grant_token")?;
-    let store_id = required_json_string(invocation_frame, "storage_store_id")?;
-    let path = required_json_string(invocation_frame, "storage_path")?;
-    let data_base64 = required_json_string(invocation_frame, "storage_data_base64")?;
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
-    Ok(redevplugin_ipc::StorageFileRequest {
-        handle_grant_token,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
-        runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
-        handle_id: format!("storage:{store_id}"),
-        method: "storage.files".to_string(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        operation: "write".to_string(),
-        store_id,
-        path,
-        data_base64,
-        max_bytes: 0,
-        max_entries: 0,
-        recursive: false,
-    })
-}
-
-fn storage_sqlite_exec_demo_request(
-    invocation_frame: &str,
-    runtime_generation_id: &str,
-) -> Result<redevplugin_ipc::StorageSQLiteRequest, String> {
-    let handle_grant_token =
-        redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_handle_grant_token")
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
-            })
-            .ok_or_else(|| "missing storage_sqlite_handle_grant_token".to_string())?;
-    let store_id =
-        redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_store_id")
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "storage_store_id"))
-            .ok_or_else(|| "missing storage_sqlite_store_id".to_string())?;
-    let sql = redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_sql")
-        .unwrap_or_else(|| {
-            "CREATE TABLE IF NOT EXISTS worker_runs (id INTEGER PRIMARY KEY, note TEXT NOT NULL)"
-                .to_string()
-        });
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
-    Ok(redevplugin_ipc::StorageSQLiteRequest {
-        handle_grant_token,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
-        runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
-        handle_id: format!("storage:{store_id}"),
-        method: "storage.sqlite".to_string(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        operation: "exec".to_string(),
-        store_id,
-        database: redevplugin_ipc::extract_json_string(invocation_frame, "storage_sqlite_database")
-            .unwrap_or_default(),
-        sql,
-        args_json: "[]".to_string(),
-        max_rows: 0,
-        max_response_bytes: 0,
-        timeout_ms: 1000,
-    })
-}
-
-fn storage_kv_put_demo_request(
-    invocation_frame: &str,
-    runtime_generation_id: &str,
-) -> Result<redevplugin_ipc::StorageKVRequest, String> {
-    let handle_grant_token =
-        redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_handle_grant_token")
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                redevplugin_ipc::extract_json_string(invocation_frame, "storage_handle_grant_token")
-            })
-            .ok_or_else(|| "missing storage_kv_handle_grant_token".to_string())?;
-    let store_id = redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_store_id")
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| redevplugin_ipc::extract_json_string(invocation_frame, "storage_store_id"))
-        .ok_or_else(|| "missing storage_kv_store_id".to_string())?;
-    let key = redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_key")
-        .unwrap_or_else(|| "demo/last_broker_run".to_string());
-    let value_base64 =
-        redevplugin_ipc::extract_json_string(invocation_frame, "storage_kv_value_base64")
-            .unwrap_or_else(|| "Z2VuZXJhdGVkIGJhY2tlbmQga3Ygc2FtcGxl".to_string());
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
-    Ok(redevplugin_ipc::StorageKVRequest {
-        handle_grant_token,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
-        runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
-        handle_id: format!("storage:{store_id}"),
-        method: "storage.kv".to_string(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        operation: "put".to_string(),
-        store_id,
-        key,
-        value_base64,
-        prefix: String::new(),
-        max_bytes: 0,
-        max_entries: 0,
-    })
-}
-
-fn perform_network_http_request_demo<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    resources: &mut RuntimeResourceRegistry,
-) -> Result<String, String> {
-    let req = network_http_request_demo(invocation_frame, runtime_generation_id)?;
-    let network_request_id = format!("{request_id}:network_execute");
-    let frame =
-        redevplugin_ipc::network_execute_frame(&network_request_id, runtime_generation_id, &req);
-    stdout
-        .write_all(frame.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write network_execute request: {err}"))?;
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|err| format!("read network_execute response: {err}"))?;
-    if response.is_empty() {
-        return Err("network_execute response is empty".to_string());
-    }
-    redevplugin_ipc::validate_network_execute_response(
-        &response,
-        &network_request_id,
-        runtime_generation_id,
-        "api",
-        "http",
-    )?;
-    let result = redevplugin_ipc::network_execute_payload_json(&response)?;
-    resources.track_socket(&req);
-    if let Some(stream_id) = request_json_string(&result, "stream_id") {
-        resources.track_stream(&req, &stream_id);
-    }
-    Ok(result)
 }
 
 fn perform_network_execute_request<R: BufRead, W: Write>(
@@ -2277,9 +1993,15 @@ fn perform_network_execute_request<R: BufRead, W: Write>(
     runtime_generation_id: &str,
     invocation_frame: &str,
     request_json: &str,
-    resources: &mut RuntimeResourceRegistry,
 ) -> Result<String, String> {
     let req = network_execute_request(invocation_frame, runtime_generation_id, request_json)?;
+    redevplugin_ipc::validate_worker_network_broker_access(
+        invocation_frame,
+        &req.connector_id,
+        &req.transport,
+        &req.operation,
+        &req.method,
+    )?;
     let network_request_id = format!("{request_id}:network_execute");
     let frame =
         redevplugin_ipc::network_execute_frame(&network_request_id, runtime_generation_id, &req);
@@ -2288,30 +2010,22 @@ fn perform_network_execute_request<R: BufRead, W: Write>(
         .and_then(|_| stdout.write_all(b"\n"))
         .and_then(|_| stdout.flush())
         .map_err(|err| format!("write network_execute request: {err}"))?;
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|err| format!("read network_execute response: {err}"))?;
+    let response = read_bounded_line(
+        reader,
+        MAX_BROKER_RESPONSE_FRAME_BYTES,
+        "network_execute response",
+    )?;
     if response.is_empty() {
         return Err("network_execute response is empty".to_string());
     }
-    let connector_id =
-        request_json_string(request_json, "connector_id").unwrap_or_else(|| "api".to_string());
-    let transport =
-        request_json_string(request_json, "transport").unwrap_or_else(|| "http".to_string());
     redevplugin_ipc::validate_network_execute_response(
         &response,
         &network_request_id,
         runtime_generation_id,
-        &connector_id,
-        &transport,
+        &req.connector_id,
+        &req.transport,
     )?;
-    let result = redevplugin_ipc::network_execute_payload_json(&response)?;
-    resources.track_socket(&req);
-    if let Some(stream_id) = request_json_string(&result, "stream_id") {
-        resources.track_stream(&req, &stream_id);
-    }
-    Ok(result)
+    redevplugin_ipc::network_execute_payload_json(&response)
 }
 
 fn network_execute_request(
@@ -2319,268 +2033,93 @@ fn network_execute_request(
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
-    for field in [
-        "stream_method",
-        "stream_effect",
-        "stream_execution",
-        "surface_instance_id",
-        "owner_session_hash",
-        "owner_user_hash",
-        "session_channel_id_hash",
-        "bridge_channel_id",
+    let request: NetworkExecuteHostcallRequest =
+        decode_hostcall_request(request_json, "network execute hostcall request")?;
+    require_non_empty(&request.connector_id, "connector_id")?;
+    require_non_empty(&request.transport, "transport")?;
+    require_non_empty(&request.destination, "destination")?;
+    require_non_empty(&request.operation, "operation")?;
+    for (field, value) in [
+        ("stream_method", request.stream_method.as_ref()),
+        ("stream_effect", request.stream_effect.as_ref()),
+        ("stream_execution", request.stream_execution.as_ref()),
+        ("surface_instance_id", request.surface_instance_id.as_ref()),
+        ("owner_session_hash", request.owner_session_hash.as_ref()),
+        ("owner_user_hash", request.owner_user_hash.as_ref()),
+        (
+            "session_channel_id_hash",
+            request.session_channel_id_hash.as_ref(),
+        ),
+        ("bridge_channel_id", request.bridge_channel_id.as_ref()),
     ] {
-        if request_json_string(request_json, field).is_some() {
+        if value.is_some() {
             return Err(format!(
                 "network request must not set host-owned invocation field {field}"
             ));
         }
     }
-    let plugin_id = required_json_string(invocation_frame, "plugin_id")?;
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
-    let stream_method =
-        redevplugin_ipc::extract_json_string(invocation_frame, "method").unwrap_or_default();
-    let stream_effect =
-        redevplugin_ipc::extract_json_string(invocation_frame, "effect").unwrap_or_default();
-    let stream_execution =
-        redevplugin_ipc::extract_json_string(invocation_frame, "execution").unwrap_or_default();
-    let operation =
-        request_json_string(request_json, "operation").unwrap_or_else(|| "http".to_string());
-    let requested_stream_id = request_json_string(request_json, "stream_id");
-    let stream_id = if operation == "http_stream" {
-        if requested_stream_id.is_some() {
-            return Err("http_stream request must not select the host-owned stream_id".to_string());
-        }
-        let host_stream_id =
-            redevplugin_ipc::extract_json_string(invocation_frame, "stream_id").unwrap_or_default();
-        if host_stream_id.is_empty() {
+    if request.stream_id.is_some() {
+        return Err("network request must not set the host-owned stream_id".to_string());
+    }
+    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let stream_id = if request.operation == "http_stream" {
+        if invocation.stream_id.is_empty() {
             return Err("http_stream invocation is missing the host-owned stream_id".to_string());
         }
-        host_stream_id
+        invocation.stream_id.clone()
     } else {
-        requested_stream_id.unwrap_or_default()
+        String::new()
     };
+    let query_json = serde_json::to_string(&request.query)
+        .map_err(|err| format!("encode network query: {err}"))?;
+    let headers_json = serde_json::to_string(&request.headers)
+        .map_err(|err| format!("encode network headers: {err}"))?;
     Ok(redevplugin_ipc::NetworkExecuteRequest {
-        plugin_id,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
+        plugin_id: invocation.plugin_id,
+        plugin_instance_id: invocation.plugin_instance_id,
+        active_fingerprint: invocation.active_fingerprint,
+        runtime_instance_id: invocation.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
         runtime_shard_id: String::new(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        connector_id: request_json_string(request_json, "connector_id")
-            .unwrap_or_else(|| "api".to_string()),
-        transport: request_json_string(request_json, "transport")
-            .unwrap_or_else(|| "http".to_string()),
-        destination: request_json_string(request_json, "destination")
-            .unwrap_or_else(|| "https://api.example.com".to_string()),
-        ttl_ms: request_json_number(request_json, "ttl_ms").unwrap_or(30_000),
-        operation,
-        method: request_json_string(request_json, "method").unwrap_or_else(|| "GET".to_string()),
-        path: request_json_string(request_json, "path").unwrap_or_else(|| "/".to_string()),
-        headers_json: request_json_object(request_json, "headers")
-            .unwrap_or_else(|| "{}".to_string()),
-        message_type: request_json_string(request_json, "message_type").unwrap_or_default(),
-        body_base64: request_json_string(request_json, "body_base64").unwrap_or_default(),
-        payload_base64: request_json_string(request_json, "payload_base64").unwrap_or_default(),
-        max_request_bytes: request_json_number(request_json, "max_request_bytes")
-            .unwrap_or(64 * 1024),
-        max_response_bytes: request_json_number(request_json, "max_response_bytes")
-            .unwrap_or(256 * 1024),
-        max_chunk_bytes: request_json_number(request_json, "max_chunk_bytes").unwrap_or(32 * 1024),
-        max_buffered_bytes: request_json_number(request_json, "max_buffered_bytes")
-            .unwrap_or(1024 * 1024),
-        timeout_ms: request_json_number(request_json, "timeout_ms").unwrap_or(5_000),
+        policy_revision: invocation.policy_revision,
+        management_revision: invocation.management_revision,
+        revoke_epoch: invocation.revoke_epoch,
+        connector_id: request.connector_id,
+        transport: request.transport,
+        destination: request.destination,
+        ttl_ms: request.ttl_ms.unwrap_or(30_000),
+        operation: request.operation,
+        method: if request.method.trim().is_empty() {
+            "GET".to_string()
+        } else {
+            request.method
+        },
+        path: if request.path.trim().is_empty() {
+            "/".to_string()
+        } else {
+            request.path
+        },
+        query_json,
+        headers_json,
+        message_type: request.message_type,
+        body_base64: request.body_base64,
+        payload_base64: request.payload_base64,
+        max_request_bytes: request.max_request_bytes.unwrap_or(64 * 1024),
+        max_response_bytes: request.max_response_bytes.unwrap_or(256 * 1024),
+        max_chunk_bytes: request.max_chunk_bytes.unwrap_or(32 * 1024),
+        max_buffered_bytes: request.max_buffered_bytes.unwrap_or(1024 * 1024),
+        timeout_ms: request.timeout_ms.unwrap_or(5_000),
         stream_id,
-        stream_method,
-        stream_effect,
-        stream_execution,
-        surface_instance_id: redevplugin_ipc::extract_json_string(
-            invocation_frame,
-            "surface_instance_id",
-        )
-        .unwrap_or_default(),
-        owner_session_hash: redevplugin_ipc::extract_json_string(
-            invocation_frame,
-            "owner_session_hash",
-        )
-        .unwrap_or_default(),
-        owner_user_hash: redevplugin_ipc::extract_json_string(invocation_frame, "owner_user_hash")
-            .unwrap_or_default(),
-        session_channel_id_hash: redevplugin_ipc::extract_json_string(
-            invocation_frame,
-            "session_channel_id_hash",
-        )
-        .unwrap_or_default(),
-        bridge_channel_id: redevplugin_ipc::extract_json_string(
-            invocation_frame,
-            "bridge_channel_id",
-        )
-        .unwrap_or_default(),
-        content_type: request_json_string(request_json, "content_type").unwrap_or_default(),
+        stream_method: invocation.method,
+        stream_effect: invocation.effect,
+        stream_execution: invocation.execution,
+        surface_instance_id: invocation.surface_instance_id,
+        owner_session_hash: invocation.owner_session_hash,
+        owner_user_hash: invocation.owner_user_hash,
+        session_channel_id_hash: invocation.session_channel_id_hash,
+        bridge_channel_id: invocation.bridge_channel_id,
+        content_type: request.content_type,
     })
-}
-
-fn network_http_request_demo(
-    invocation_frame: &str,
-    runtime_generation_id: &str,
-) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
-    let plugin_id = required_json_string(invocation_frame, "plugin_id")?;
-    let plugin_instance_id = required_json_string(invocation_frame, "plugin_instance_id")?;
-    let active_fingerprint = required_json_string(invocation_frame, "active_fingerprint")?;
-    let runtime_instance_id = required_json_string(invocation_frame, "runtime_instance_id")?;
-    let policy_revision = required_json_number(invocation_frame, "policy_revision")?;
-    let management_revision = required_json_number(invocation_frame, "management_revision")?;
-    let revoke_epoch = required_json_number(invocation_frame, "revoke_epoch")?;
-    let body_base64 = redevplugin_ipc::extract_json_string(invocation_frame, "network_body_base64")
-        .unwrap_or_default();
-    Ok(redevplugin_ipc::NetworkExecuteRequest {
-        plugin_id,
-        plugin_instance_id,
-        active_fingerprint,
-        runtime_instance_id,
-        runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: String::new(),
-        policy_revision,
-        management_revision,
-        revoke_epoch,
-        connector_id: "api".to_string(),
-        transport: "http".to_string(),
-        destination: "https://api.example.com".to_string(),
-        ttl_ms: 30_000,
-        operation: "http".to_string(),
-        method: "POST".to_string(),
-        path: "/v1/worker".to_string(),
-        headers_json: r#"{"Content-Type":["text/plain"]}"#.to_string(),
-        message_type: String::new(),
-        body_base64,
-        payload_base64: String::new(),
-        max_request_bytes: 1024,
-        max_response_bytes: 4096,
-        max_chunk_bytes: 0,
-        max_buffered_bytes: 0,
-        timeout_ms: 1000,
-        stream_id: String::new(),
-        stream_method: String::new(),
-        stream_effect: String::new(),
-        stream_execution: String::new(),
-        surface_instance_id: String::new(),
-        owner_session_hash: String::new(),
-        owner_user_hash: String::new(),
-        session_channel_id_hash: String::new(),
-        bridge_channel_id: String::new(),
-        content_type: String::new(),
-    })
-}
-
-fn required_json_string(input: &str, key: &str) -> Result<String, String> {
-    let value =
-        redevplugin_ipc::extract_json_string(input, key).ok_or_else(|| format!("missing {key}"))?;
-    if value.trim().is_empty() {
-        return Err(format!("empty {key}"));
-    }
-    Ok(value)
-}
-
-fn required_json_number(input: &str, key: &str) -> Result<u64, String> {
-    redevplugin_ipc::extract_json_number_u64(input, key).ok_or_else(|| format!("missing {key}"))
-}
-
-fn required_last_json_number(input: &str, key: &str) -> Result<u64, String> {
-    let pattern = format!("\"{key}\"");
-    let key_start = input
-        .rfind(&pattern)
-        .ok_or_else(|| format!("missing {key}"))?;
-    let after_key = &input[key_start + pattern.len()..];
-    let colon = after_key
-        .find(':')
-        .ok_or_else(|| format!("missing {key}"))?;
-    let after_colon = after_key[colon + 1..].trim_start();
-    let digits: String = after_colon
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect();
-    if digits.is_empty() {
-        return Err(format!("missing {key}"));
-    }
-    digits.parse().map_err(|_| format!("invalid {key}"))
-}
-
-fn request_json_string(input: &str, key: &str) -> Option<String> {
-    redevplugin_ipc::extract_json_string(input, key).filter(|value| !value.trim().is_empty())
-}
-
-fn request_json_number(input: &str, key: &str) -> Option<u64> {
-    redevplugin_ipc::extract_json_number_u64(input, key)
-}
-
-fn request_json_bool(input: &str, key: &str) -> Option<bool> {
-    redevplugin_ipc::extract_json_bool(input, key)
-}
-
-fn request_json_object(input: &str, key: &str) -> Option<String> {
-    redevplugin_ipc::extract_json_object(input, key)
-}
-
-fn request_json_array(input: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{key}\"");
-    let key_start = input.find(&pattern)?;
-    let after_key = &input[key_start + pattern.len()..];
-    let colon = after_key.find(':')?;
-    let value = after_key[colon + 1..].trim_start();
-    json_array_prefix(value)
-}
-
-fn json_array_prefix(input: &str) -> Option<String> {
-    if !input.starts_with('[') {
-        return None;
-    }
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (idx, ch) in input.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if in_string {
-            match ch {
-                '\\' => escaped = true,
-                '"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '[' => depth += 1,
-            ']' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(input[..=idx].to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn request_or_invocation_string(
-    request_json: &str,
-    request_key: &str,
-    invocation_frame: &str,
-    invocation_key: &str,
-) -> Result<String, String> {
-    request_json_string(request_json, request_key)
-        .or_else(|| request_json_string(invocation_frame, invocation_key))
-        .ok_or_else(|| format!("missing {request_key}"))
 }
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
@@ -2623,13 +2162,16 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::OnceLock;
+
+    const TEST_WORKER_MEMORY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
     fn runtime_lease_fixture_public_keys() -> &'static [redevplugin_ipc::RuntimeLeasePublicKey] {
         static KEYS: OnceLock<Vec<redevplugin_ipc::RuntimeLeasePublicKey>> = OnceLock::new();
         KEYS.get_or_init(|| {
             let public_key: [u8; 32] =
-                decode_base64("IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=")
+                decode_base64("6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=")
                     .expect("fixture public key base64")
                     .try_into()
                     .expect("fixture public key length");
@@ -2645,19 +2187,34 @@ mod tests {
     }
 
     fn worker_invocation_state<'a>(
-        revocations: &'a RuntimeRevocations,
+        shared: &'a RuntimeSharedState,
         lease_replays: &'a mut RuntimeLeaseReplayCache,
-        resources: &'a mut RuntimeResourceRegistry,
-        control: &'a ControlChannelState,
     ) -> WorkerInvocationState<'a> {
         WorkerInvocationState {
-            revocations,
+            shared,
             lease_replays,
-            resources,
-            control,
             runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
-            now_unix_ms: 1_783_161_901_000,
+            clock: &fixed_runtime_lease_clock,
         }
+    }
+
+    fn fixed_runtime_lease_clock() -> Result<i64, String> {
+        Ok(1_783_161_901_000)
+    }
+
+    fn expired_runtime_lease_clock() -> Result<i64, String> {
+        Ok(1_783_161_930_000)
+    }
+
+    fn sqlite_usage_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "plugin_instance_id": "plugini_test",
+            "store_id": "memos",
+            "usage_bytes": 256,
+            "quota_bytes": 1_048_576,
+            "usage_files": 1,
+            "quota_files": 1_000
+        })
     }
 
     #[test]
@@ -2670,6 +2227,14 @@ mod tests {
     fn rejects_invalid_base64() {
         let err = decode_base64("abc$").expect_err("invalid base64");
         assert!(err.contains("invalid character"));
+    }
+
+    #[test]
+    fn bounded_line_reader_rejects_oversized_frames() {
+        let mut reader = std::io::Cursor::new(b"123456789\n".to_vec());
+        let err = read_bounded_line(&mut reader, 8, "test frame")
+            .expect_err("oversized frame must fail closed");
+        assert!(err.contains("exceeds 8 bytes"), "{err}");
     }
 
     #[test]
@@ -2788,7 +2353,7 @@ mod tests {
 
     #[test]
     fn control_channel_state_fails_closed_when_stale_and_recovers_on_refresh() {
-        let mut control = ControlChannelState::new();
+        let control = ControlChannelState::new();
         control.refresh(Duration::from_millis(1));
         control.force_stale_for_test();
         let err = control
@@ -2806,109 +2371,73 @@ mod tests {
     }
 
     #[test]
+    fn revoked_invocation_cannot_reach_host_io() {
+        let shared = RuntimeSharedState::default();
+        shared
+            .revocations
+            .lock()
+            .expect("runtime revocation mutex")
+            .revoke_plugin("plugini_1", 2);
+        let frame = worker_invocation_frame("plugini_1", 1);
+        let mut host_io_calls = 0;
+        let result = shared.validate_hostcall(&frame, 1_000).map(|()| {
+            host_io_calls += 1;
+        });
+
+        let error = result.expect_err("revoked hostcall must fail before host io");
+        assert!(error.contains(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED));
+        assert_eq!(host_io_calls, 0);
+    }
+
+    #[test]
+    fn expired_invocation_cannot_reach_host_io() {
+        let shared = RuntimeSharedState::default();
+        let frame =
+            worker_invocation_frame_with_lease_expiry("plugini_1", 1, "lease_1", "nonce_1", 2_000);
+        let mut host_io_calls = 0;
+        let result = shared.validate_hostcall(&frame, 2_000).map(|()| {
+            host_io_calls += 1;
+        });
+
+        let error = result.expect_err("expired hostcall must fail before host io");
+        assert!(error.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
+        assert_eq!(host_io_calls, 0);
+    }
+
+    #[test]
     fn handle_revoke_epoch_updates_runtime_revocation_state() {
-        let mut revocations = RuntimeRevocations::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let mut control = ControlChannelState::new();
-        control.force_stale_for_test();
+        let shared = RuntimeSharedState::default();
+        shared.control.force_stale_for_test();
         let response = handle_revoke_epoch(
-            &mut revocations,
-            &mut resources,
-            &mut control,
+            &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+            r#"{"ipc_version":"rust-ipc-v2","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
         );
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":true"#));
         assert!(response.contains(r#""plugin_instance_id":"plugini_1""#));
         assert!(response.contains(r#""revoke_epoch":7"#));
-        assert!(response.contains(r#""closed_actor_count":0"#));
         assert!(response.contains(r#""closed_socket_count":0"#));
         assert!(response.contains(r#""closed_stream_count":0"#));
         assert!(response.contains(r#""closed_storage_handle_count":0"#));
-        let err = revocations
+        let err = shared
+            .revocations
+            .lock()
+            .expect("runtime revocation mutex")
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 6))
             .expect_err("old invocation should be revoked");
         assert_eq!(err.code(), redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED);
-        control
+        shared
+            .control
             .validate_fresh()
             .expect("valid revoke control frame should refresh control freshness");
     }
 
     #[test]
-    fn handle_revoke_epoch_closes_registered_runtime_resources() {
-        let mut revocations = RuntimeRevocations::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        resources.track_actor(
-            "plugini_1",
-            "backend",
-            "workers/backend.wasm",
-            "redevplugin_worker_invoke",
-        );
-        resources.track_storage_handle("plugini_1", "storage:db", "storage.sqlite");
-        resources.track_storage_handle("plugini_1", "storage:db", "storage.sqlite");
-        resources.track_socket(&network_execute_request_for_test(
-            "plugini_1",
-            "http",
-            "api",
-            "https://api.example.com",
-        ));
-        resources.track_stream(
-            &network_execute_request_for_test(
-                "plugini_1",
-                "http",
-                "api",
-                "https://api.example.com",
-            ),
-            "stream_1",
-        );
-        resources.track_actor(
-            "plugini_2",
-            "backend",
-            "workers/backend.wasm",
-            "redevplugin_worker_invoke",
-        );
-
-        let mut control = ControlChannelState::new();
-        let response = handle_revoke_epoch(
-            &mut revocations,
-            &mut resources,
-            &mut control,
-            "r1",
-            "g1",
-            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
-        );
-
-        assert!(response.contains(r#""ok":true"#));
-        assert!(response.contains(r#""closed_actor_count":1"#));
-        assert!(response.contains(r#""closed_socket_count":1"#));
-        assert!(response.contains(r#""closed_stream_count":1"#));
-        assert!(response.contains(r#""closed_storage_handle_count":1"#));
-        assert_eq!(resources.actors.len(), 1);
-        assert!(resources.sockets.is_empty());
-        assert!(resources.streams.is_empty());
-        assert!(resources.storage_handles.is_empty());
-
-        let second = handle_revoke_epoch(
-            &mut revocations,
-            &mut resources,
-            &mut control,
-            "r2",
-            "g1",
-            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r2","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":8}}"#,
-        );
-        assert!(second.contains(r#""closed_actor_count":0"#));
-        assert!(second.contains(r#""closed_socket_count":0"#));
-        assert!(second.contains(r#""closed_stream_count":0"#));
-        assert!(second.contains(r#""closed_storage_handle_count":0"#));
-    }
-
-    #[test]
-    fn successful_storage_request_registers_runtime_storage_handle() {
-        let mut resources = RuntimeResourceRegistry::default();
+    fn successful_storage_request_round_trips_without_runtime_resource_tracking() {
         let mut input = std::io::Cursor::new(
-            br#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34}}"#
+            br#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34}}"#
                 .iter()
                 .copied()
                 .chain(std::iter::once(b'\n'))
@@ -2923,7 +2452,6 @@ mod tests {
             "g1",
             &broker_invocation_frame("plugini_1"),
             r#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8="}"#,
-            &mut resources,
         )
         .expect("storage request should succeed");
 
@@ -2933,18 +2461,33 @@ mod tests {
             request.contains(r#""frame_type":"storage_file""#),
             "{request}"
         );
-        let closed = resources.revoke_plugin("plugini_1");
-        assert_eq!(closed.storage_handle, 1);
-        assert_eq!(closed.actor, 0);
-        assert_eq!(closed.socket, 0);
-        assert_eq!(closed.stream, 0);
     }
 
     #[test]
-    fn successful_network_stream_request_registers_socket_and_stream() {
-        let mut resources = RuntimeResourceRegistry::default();
+    fn method_scoped_storage_denial_happens_before_host_io() {
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+        let invocation = broker_invocation_frame("plugini_1")
+            .replace(r#"["read","write","delete","list"]"#, r#"["read"]"#);
+
+        let err = perform_storage_file_request(
+            &mut input,
+            &mut output,
+            "r1",
+            "g1",
+            &invocation,
+            r#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8="}"#,
+        )
+        .expect_err("write access must be denied");
+
+        assert!(err.contains("not allowed"), "{err}");
+        assert!(output.is_empty(), "denied storage access reached Host I/O");
+    }
+
+    #[test]
+    fn successful_network_stream_request_round_trips_without_runtime_resource_tracking() {
         let mut input = std::io::Cursor::new(
-            br#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"connector_id":"api","transport":"http","status_code":200,"stream_id":"stream_1"}}"#
+            br#"{"ipc_version":"rust-ipc-v2","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"connector_id":"api","transport":"http","status_code":200,"stream_id":"stream_1"}}"#
                 .iter()
                 .copied()
                 .chain(std::iter::once(b'\n'))
@@ -2959,7 +2502,6 @@ mod tests {
             "g1",
             &broker_invocation_frame("plugini_1"),
             r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"GET","path":"/v1/stream","max_chunk_bytes":1024,"max_buffered_bytes":4096}"#,
-            &mut resources,
         )
         .expect("network stream request should succeed");
 
@@ -2970,22 +2512,36 @@ mod tests {
             "{request}"
         );
         assert!(request.contains(r#""stream_id":"stream_1""#), "{request}");
-        let closed = resources.revoke_plugin("plugini_1");
-        assert_eq!(closed.socket, 1);
-        assert_eq!(closed.stream, 1);
-        assert_eq!(closed.actor, 0);
-        assert_eq!(closed.storage_handle, 0);
+    }
+
+    #[test]
+    fn method_scoped_http_denial_happens_before_host_io() {
+        let mut input = std::io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::<u8>::new();
+
+        let err = perform_network_execute_request(
+            &mut input,
+            &mut output,
+            "r1",
+            "g1",
+            &broker_invocation_frame("plugini_1"),
+            r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"DELETE","path":"/v1/items/1"}"#,
+        )
+        .expect_err("DELETE access must be denied");
+
+        assert!(err.contains("not allowed"), "{err}");
+        assert!(output.is_empty(), "denied network access reached Host I/O");
     }
 
     #[test]
     fn handle_heartbeat_returns_structured_ack() {
-        let mut control = ControlChannelState::new();
+        let control = ControlChannelState::new();
         control.force_stale_for_test();
         let response = handle_heartbeat(
-            &mut control,
+            &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v1","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
+            r#"{"ipc_version":"rust-ipc-v2","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
         );
         assert!(response.contains(r#""frame_type":"heartbeat""#));
         assert!(response.contains(r#""ok":true"#));
@@ -2999,12 +2555,12 @@ mod tests {
 
     #[test]
     fn handle_heartbeat_fails_closed_for_invalid_frame() {
-        let mut control = ControlChannelState::new();
+        let control = ControlChannelState::new();
         let response = handle_heartbeat(
-            &mut control,
+            &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v1","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
+            r#"{"ipc_version":"rust-ipc-v2","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
         );
         assert!(response.contains(r#""frame_type":"heartbeat""#));
         assert!(response.contains(r#""ok":false"#));
@@ -3012,44 +2568,40 @@ mod tests {
 
     #[test]
     fn handle_revoke_epoch_fails_closed_for_invalid_frame() {
-        let mut revocations = RuntimeRevocations::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let mut control = ControlChannelState::new();
+        let shared = RuntimeSharedState::default();
         let response = handle_revoke_epoch(
-            &mut revocations,
-            &mut resources,
-            &mut control,
+            &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v1","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
+            r#"{"ipc_version":"rust-ipc-v2","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
         );
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":false"#));
         assert!(response.contains(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID));
-        revocations
+        shared
+            .revocations
+            .lock()
+            .expect("runtime revocation mutex")
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 0))
             .expect("invalid revoke frame must not create a revocation record");
     }
 
     #[test]
     fn worker_invocation_rejects_stale_epoch_before_opening_artifact() {
-        let mut revocations = RuntimeRevocations::default();
-        revocations.revoke_plugin("plugini_1", 5);
+        let shared = RuntimeSharedState::default();
+        shared
+            .revocations
+            .lock()
+            .expect("runtime revocation mutex")
+            .revoke_plugin("plugini_1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(
-                &revocations,
-                &mut lease_replays,
-                &mut resources,
-                &control,
-            ),
+            &mut worker_invocation_state(&shared, &mut lease_replays),
             "r1",
             "g1",
             &worker_invocation_frame("plugini_1", 4),
@@ -3067,23 +2619,16 @@ mod tests {
 
     #[test]
     fn worker_invocation_rejects_stale_control_before_opening_artifact() {
-        let revocations = RuntimeRevocations::default();
+        let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let mut control = ControlChannelState::new();
-        control.force_stale_for_test();
+        shared.control.force_stale_for_test();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(
-                &revocations,
-                &mut lease_replays,
-                &mut resources,
-                &control,
-            ),
+            &mut worker_invocation_state(&shared, &mut lease_replays),
             "r1",
             "g1",
             signed_worker_invocation_fixture(),
@@ -3101,10 +2646,8 @@ mod tests {
 
     #[test]
     fn worker_invocation_rejects_unsigned_lease_before_opening_artifact_when_keys_configured() {
-        let revocations = RuntimeRevocations::default();
+        let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let control = ControlChannelState::new();
         let runtime_lease_public_keys = vec![redevplugin_ipc::RuntimeLeasePublicKey {
             key_id: "host_ephemeral_key_1".to_string(),
             public_key: [7u8; 32],
@@ -3116,12 +2659,10 @@ mod tests {
             &mut input,
             &mut output,
             &mut WorkerInvocationState {
-                revocations: &revocations,
+                shared: &shared,
                 lease_replays: &mut lease_replays,
-                resources: &mut resources,
-                control: &control,
                 runtime_lease_public_keys: &runtime_lease_public_keys,
-                now_unix_ms: 1_783_161_901_000,
+                clock: &fixed_runtime_lease_clock,
             },
             "r1",
             "g1",
@@ -3140,15 +2681,16 @@ mod tests {
 
     #[test]
     fn worker_invocation_rejects_expired_lease_before_opening_artifact() {
-        let revocations = RuntimeRevocations::default();
+        let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
-        let mut state =
-            worker_invocation_state(&revocations, &mut lease_replays, &mut resources, &control);
-        state.now_unix_ms = 1_783_161_930_000;
+        let mut state = WorkerInvocationState {
+            shared: &shared,
+            lease_replays: &mut lease_replays,
+            runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+            clock: &expired_runtime_lease_clock,
+        };
 
         let response = handle_worker_invocation(
             &mut input,
@@ -3168,19 +2710,147 @@ mod tests {
     }
 
     #[test]
-    fn worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact() {
-        let revocations = RuntimeRevocations::default();
+    fn worker_invocation_revalidates_lease_before_returning_success() {
+        let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let control = ControlChannelState::new();
+        let clock_calls = Cell::new(0_u32);
+        let clock = || {
+            let call = clock_calls.get();
+            clock_calls.set(call + 1);
+            if call < 2 {
+                Ok(1_783_161_901_000)
+            } else {
+                Ok(1_783_161_930_000)
+            }
+        };
+        let response_json = r#"{"ok":true,"data":{"value":"done"}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 2048) {response_json:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i64.const {}))"#,
+            ((2048_u64) << 32) | response_json.len() as u64,
+        ))
+        .expect("compile lease expiry worker");
+        let artifact_response = format!(
+            "{{\"ipc_version\":\"rust-ipc-v2\",\"frame_type\":\"open_handle\",\"request_id\":\"r1:artifact\",\"runtime_generation_id\":\"g1\",\"payload\":{{\"ok\":true,\"package_hash\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"artifact\":\"workers/backend.wasm\",\"sha256\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"content_base64\":\"{}\"}}}}\n",
+            encode_base64_for_test(&module),
+        );
+        let mut input = std::io::Cursor::new(artifact_response.into_bytes());
+        let mut output = Vec::<u8>::new();
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut WorkerInvocationState {
+                shared: &shared,
+                lease_replays: &mut lease_replays,
+                runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+                clock: &clock,
+            },
+            "r1",
+            "g1",
+            signed_worker_invocation_fixture(),
+        )
+        .expect("worker invocation response");
+
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
+        assert!(!response.contains(r#""ok":true"#));
+        assert!(clock_calls.get() >= 3);
+    }
+
+    #[test]
+    fn worker_invocation_revalidates_revocation_before_returning_success() {
+        let shared = RuntimeSharedState::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let clock_calls = Cell::new(0_u32);
+        let clock = || {
+            let call = clock_calls.get();
+            clock_calls.set(call + 1);
+            if call == 2 {
+                shared
+                    .revocations
+                    .lock()
+                    .expect("runtime revocation mutex")
+                    .revoke_plugin("plugini_fixture_v1", 14);
+            }
+            Ok(1_783_161_901_000)
+        };
+        let artifact_response = successful_worker_artifact_response();
+        let mut input = std::io::Cursor::new(artifact_response.into_bytes());
+        let mut output = Vec::<u8>::new();
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut WorkerInvocationState {
+                shared: &shared,
+                lease_replays: &mut lease_replays,
+                runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+                clock: &clock,
+            },
+            "r1",
+            "g1",
+            signed_worker_invocation_fixture(),
+        )
+        .expect("worker invocation response");
+
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED));
+        assert!(!response.contains(r#""ok":true"#));
+        assert!(clock_calls.get() >= 3);
+    }
+
+    #[test]
+    fn worker_invocation_revalidates_control_freshness_before_returning_success() {
+        let shared = RuntimeSharedState::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
+        let clock_calls = Cell::new(0_u32);
+        let clock = || {
+            let call = clock_calls.get();
+            clock_calls.set(call + 1);
+            if call == 2 {
+                shared.control.force_stale_for_test();
+            }
+            Ok(1_783_161_901_000)
+        };
+        let artifact_response = successful_worker_artifact_response();
+        let mut input = std::io::Cursor::new(artifact_response.into_bytes());
+        let mut output = Vec::<u8>::new();
+
+        let response = handle_worker_invocation(
+            &mut input,
+            &mut output,
+            &mut WorkerInvocationState {
+                shared: &shared,
+                lease_replays: &mut lease_replays,
+                runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
+                clock: &clock,
+            },
+            "r1",
+            "g1",
+            signed_worker_invocation_fixture(),
+        )
+        .expect("worker invocation response");
+
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE));
+        assert!(!response.contains(r#""ok":true"#));
+        assert!(clock_calls.get() >= 3);
+    }
+
+    #[test]
+    fn worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact() {
+        let shared = RuntimeSharedState::default();
+        let mut lease_replays = RuntimeLeaseReplayCache::default();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
         let (prefix, invocation) = signed_worker_invocation_fixture()
-            .split_once("\"invocation\":{")
+            .split_once("\"invocation\": {")
             .expect("signed invocation object");
         let invocation = invocation.replacen(
-            "\"operation_id\":\"operation_fixture_v1\"",
-            "\"operation_id\":\"operation_other\"",
+            "\"operation_id\": \"operation_fixture_v1\"",
+            "\"operation_id\": \"operation_other\"",
             1,
         );
         let frame = format!("{prefix}\"invocation\":{{{invocation}");
@@ -3188,12 +2858,7 @@ mod tests {
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(
-                &revocations,
-                &mut lease_replays,
-                &mut resources,
-                &control,
-            ),
+            &mut worker_invocation_state(&shared, &mut lease_replays),
             "r1",
             "g1",
             &frame,
@@ -3209,23 +2874,20 @@ mod tests {
 
     #[test]
     fn worker_invocation_allows_current_epoch_to_open_artifact() {
-        let mut revocations = RuntimeRevocations::default();
-        revocations.revoke_plugin("plugini_fixture_v1", 5);
+        let shared = RuntimeSharedState::default();
+        shared
+            .revocations
+            .lock()
+            .expect("runtime revocation mutex")
+            .revoke_plugin("plugini_fixture_v1", 5);
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
 
         let response = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(
-                &revocations,
-                &mut lease_replays,
-                &mut resources,
-                &control,
-            ),
+            &mut worker_invocation_state(&shared, &mut lease_replays),
             "r1",
             "g1",
             signed_worker_invocation_fixture(),
@@ -3235,17 +2897,15 @@ mod tests {
         let output = String::from_utf8(output).expect("artifact request utf8");
         assert!(
             output.contains(r#""frame_type":"open_handle""#),
-            "current invocation should request the bound worker artifact: {output}"
+            "current invocation should request the bound worker artifact: output={output} response={response}"
         );
         assert!(response.contains(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED));
     }
 
     #[test]
     fn worker_invocation_rejects_replayed_lease_before_opening_artifact() {
-        let revocations = RuntimeRevocations::default();
+        let shared = RuntimeSharedState::default();
         let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut resources = RuntimeResourceRegistry::default();
-        let control = ControlChannelState::new();
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::<u8>::new();
         let frame = signed_worker_invocation_fixture().to_string();
@@ -3253,12 +2913,7 @@ mod tests {
         let first = handle_worker_invocation(
             &mut input,
             &mut output,
-            &mut worker_invocation_state(
-                &revocations,
-                &mut lease_replays,
-                &mut resources,
-                &control,
-            ),
+            &mut worker_invocation_state(&shared, &mut lease_replays),
             "r1",
             "g1",
             &frame,
@@ -3275,12 +2930,7 @@ mod tests {
         let replay = handle_worker_invocation(
             &mut replay_input,
             &mut replay_output,
-            &mut worker_invocation_state(
-                &revocations,
-                &mut lease_replays,
-                &mut resources,
-                &control,
-            ),
+            &mut worker_invocation_state(&shared, &mut lease_replays),
             "r2",
             "g1",
             &frame,
@@ -3297,163 +2947,409 @@ mod tests {
     }
 
     #[test]
-    fn executes_minimal_wasm_worker_export() {
-        let module = minimal_worker_wasm("redevplugin_worker_invoke");
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            unexpected_hostcall(request)
-        })
-        .expect("minimal worker executes");
-        assert_eq!(execution.validated.byte_len, module.len());
-        assert!(!execution.storage_file_write_demo_requested);
-        assert!(!execution.storage_file_requested);
-        assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_execute_requested);
-    }
+    fn executes_v2_worker_with_dynamic_request_and_response() {
+        let request = br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.save","params":{}}"#;
+        let response = r#"{"ok":true,"data":{"saved":true,"title":"Launch notes"}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 2048) {response:?})
+                (func (export "redevplugin_worker_alloc") (param $len i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param $ptr i32) (param $len i32) (result i64)
+                    local.get $len
+                    i32.const {}
+                    i32.ne
+                    if
+                        unreachable
+                    end
+                    i64.const {})
+            )"#,
+            request.len(),
+            ((2048_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile v2 worker fixture");
 
-    #[test]
-    fn executes_storage_hostcall_wasm_worker_export() {
-        let module = storage_hostcall_worker_wasm("redevplugin_worker_invoke");
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            unexpected_hostcall(request)
-        })
-        .expect("storage hostcall worker executes");
-        assert_eq!(execution.validated.byte_len, module.len());
-        assert!(execution.storage_file_write_demo_requested);
-        assert!(!execution.storage_file_requested);
-        assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_execute_requested);
-    }
-
-    #[test]
-    fn executes_network_hostcall_wasm_worker_export() {
-        let module = imported_hostcall_worker_wasm(
-            "redevplugin.network",
-            "http_request_demo",
-            "redevplugin_worker_invoke",
-        );
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            unexpected_hostcall(request)
-        })
-        .expect("network hostcall worker executes");
-        assert_eq!(execution.validated.byte_len, module.len());
-        assert!(!execution.storage_file_write_demo_requested);
-        assert!(!execution.storage_file_requested);
-        assert!(execution.network_http_request_demo_requested);
-        assert!(!execution.network_execute_requested);
-    }
-
-    #[test]
-    fn executes_storage_memory_hostcall_wasm_worker_export() {
-        let module = storage_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            let WorkerHostcallRequest::StorageFile(request) = request else {
-                panic!("expected storage hostcall request");
-            };
-            assert!(request.contains(r#""store_id":"workspace""#), "{request}");
-            assert!(request.contains(r#""operation":"write""#), "{request}");
-            Ok(r#"{"ok":true,"path":"notes/from-memory.txt","size_bytes":34}"#.to_string())
-        })
-        .expect("storage memory hostcall worker executes");
-        assert_eq!(execution.validated.byte_len, module.len());
-        assert!(!execution.storage_file_write_demo_requested);
-        assert!(execution.storage_file_requested);
-        assert_eq!(
-            execution.storage_file_result,
-            Some(Ok(
-                r#"{"ok":true,"path":"notes/from-memory.txt","size_bytes":34}"#.to_string()
-            ))
-        );
-        assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_execute_requested);
-    }
-
-    #[test]
-    fn stale_control_rejects_memory_hostcall_before_broker_dispatch() {
-        let module = storage_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
-        let mut control = ControlChannelState::new();
-        control.force_stale_for_test();
-        let mut broker_called = false;
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            control.validate_fresh().map_err(|err| err.to_string())?;
-            broker_called = true;
-            unexpected_hostcall(request)
-        })
-        .expect("stale control still produces a worker execution result");
-
-        assert!(execution.storage_file_requested);
-        assert!(
-            !broker_called,
-            "stale control channel must stop new broker IO before dispatch"
-        );
-        let err = execution
-            .storage_file_result
-            .expect("storage hostcall result")
-            .expect_err("stale control should reject the hostcall");
-        assert_eq!(
-            worker_hostcall_error_code(err.as_str()),
-            redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE
-        );
-    }
-
-    #[test]
-    fn executes_network_memory_hostcall_wasm_worker_export() {
-        let module = network_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            let WorkerHostcallRequest::NetworkExecute(request) = request else {
-                panic!("expected network hostcall request");
-            };
-            assert!(request.contains(r#""connector_id":"api""#), "{request}");
-            assert!(request.contains(r#""method":"POST""#), "{request}");
-            Ok(r#"{"ok":true,"transport":"http","status_code":202}"#.to_string())
-        })
-        .expect("network memory hostcall worker executes");
-        assert_eq!(execution.validated.byte_len, module.len());
-        assert!(!execution.storage_file_write_demo_requested);
-        assert!(!execution.storage_file_requested);
-        assert!(!execution.network_http_request_demo_requested);
-        assert!(execution.network_execute_requested);
-        assert_eq!(
-            execution.network_execute_results,
-            vec![Ok(
-                r#"{"ok":true,"transport":"http","status_code":202}"#.to_string()
-            )]
-        );
-    }
-
-    #[test]
-    fn executes_legacy_network_http_request_memory_hostcall_wasm_worker_export() {
-        let request = br#"{"connector_id":"stream","transport":"websocket","destination":"wss://stream.example.com","operation":"websocket_round_trip","message_type":"text","payload_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}"#;
-        let module = imported_memory_hostcall_worker_wasm(
-            "redevplugin.network",
-            "http_request",
+        let execution = execute_worker_module_v2(
+            &module,
             "redevplugin_worker_invoke",
             request,
-        );
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            let WorkerHostcallRequest::NetworkExecute(request) = request else {
-                panic!("expected network execute hostcall request");
-            };
-            assert!(request.contains(r#""transport":"websocket""#), "{request}");
-            assert!(
-                request.contains(r#""operation":"websocket_round_trip""#),
-                "{request}"
-            );
-            Ok(r#"{"ok":true,"transport":"websocket","message_type":"text"}"#.to_string())
-        })
-        .expect("legacy network hostcall worker executes");
-        assert!(execution.network_execute_requested);
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect("v2 worker executes");
+
+        assert_eq!(execution.response_json, response);
+    }
+
+    #[test]
+    fn executes_compiled_example_worker_with_portable_dispatch() {
+        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let execution = execute_worker_module_v2(
+            module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{"query":""}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            |request| match request {
+                WorkerHostcallRequest::StorageSQLite(request_json) => {
+                    if request_json.contains(r#""operation":"query""#) {
+                        Ok(r#"{"ok":true,"database":"memos.sqlite","columns":["id","title","body","pinned","created_at","updated_at"],"rows":[],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":0,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
+                    } else {
+                        Ok(r#"{"ok":true,"database":"memos.sqlite","rows_affected":0,"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":0,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
+                    }
+                }
+                request => unexpected_hostcall(request),
+            },
+        )
+        .expect("compiled example worker executes with portable dispatch");
         assert_eq!(
-            execution.network_execute_results,
-            vec![Ok(
-                r#"{"ok":true,"transport":"websocket","message_type":"text"}"#.to_string()
-            )]
+            execution.response_json,
+            r#"{"ok":true,"data":{"has_more":false,"notes":[],"offset":0,"total":0}}"#
         );
+    }
+
+    #[test]
+    fn executes_compiled_example_worker_save_with_portable_dispatch() {
+        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let mut hostcall_count = 0;
+        let execution = execute_worker_module_v2(
+            module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.save","params":{"id":"","title":"Smoke memo","body":"Stored through SQLite","pinned":true}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            |request| match request {
+                WorkerHostcallRequest::StorageSQLite(request_json) => {
+                    hostcall_count += 1;
+                    if request_json.contains(r#""operation":"query""#) {
+                        Ok(r#"{"ok":true,"database":"memos.sqlite","columns":["id","title","body","pinned","created_at","updated_at"],"rows":[[{"text":"note_0123456789abcdef"},{"text":"Smoke memo"},{"text":"Stored through SQLite"},{"int":1},{"text":"2026-07-14T00:00:00Z"},{"text":"2026-07-14T00:00:00Z"}]],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
+                    } else {
+                        Ok(r#"{"ok":true,"database":"memos.sqlite","rows_affected":1,"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
+                    }
+                }
+                request => unexpected_hostcall(request),
+            },
+        )
+        .expect("compiled example worker save executes with portable dispatch");
+
+        assert_eq!(hostcall_count, 2);
+        let redevplugin_ipc::WorkerResponseV2::Success(data) =
+            redevplugin_ipc::parse_worker_response_v2(&execution.response_json)
+                .expect("valid worker response")
+        else {
+            panic!("save must return a successful worker response");
+        };
+        assert!(data.contains(r#""id":"note_0123456789abcdef""#), "{data}");
+        assert!(data.contains(r#""pinned":true"#), "{data}");
+    }
+
+    #[test]
+    fn compiled_memos_worker_pages_across_sixty_one_pinned_notes() {
+        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let execute_page = |offset: usize| {
+            let request = format!(
+                r#"{{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{{"query":"","offset":{offset},"limit":24,"pinned_only":true}}}}"#
+            );
+            execute_worker_module_v2(
+                module,
+                "redevplugin_worker_invoke",
+                request.as_bytes(),
+                TEST_WORKER_MEMORY_LIMIT_BYTES,
+                |hostcall| {
+                    let WorkerHostcallRequest::StorageSQLite(request_json) = hostcall else {
+                        return Err("unexpected non-SQLite memos hostcall".to_string());
+                    };
+                    let request: serde_json::Value = serde_json::from_str(&request_json)
+                        .map_err(|err| format!("decode memos SQLite request: {err}"))?;
+                    let sql = request["sql"]
+                        .as_str()
+                        .ok_or_else(|| "memos SQLite request omitted sql".to_string())?;
+                    if sql.starts_with("SELECT count(*)") {
+                        return Ok(serde_json::json!({
+                            "ok": true,
+                            "database": "memos.sqlite",
+                            "columns": ["count(*)"],
+                            "rows": [[{"int": 61}]],
+                            "usage": sqlite_usage_fixture()
+                        })
+                        .to_string());
+                    }
+                    if !sql.contains("WHERE pinned = 1") || !sql.contains("LIMIT ? OFFSET ?") {
+                        return Err(format!("unexpected memos page query: {sql}"));
+                    }
+                    let request_offset = request["args"]
+                        .as_array()
+                        .and_then(|args| args.last())
+                        .and_then(|value| value["int"].as_u64())
+                        .ok_or_else(|| "memos page query omitted offset".to_string())?
+                        as usize;
+                    let page_len = if request_offset < 48 { 24 } else { 13 };
+                    let rows = (0..page_len)
+                        .map(|index| {
+                            let absolute = request_offset + index;
+                            serde_json::json!([
+                                {"text": format!("note_{absolute:04}")},
+                                {"text": format!("Pinned memo {}", absolute + 1)},
+                                {"text": "A bounded summary"},
+                                {"int": 1},
+                                {"text": "2026-07-14T00:00:00Z"},
+                                {"text": "2026-07-14T00:00:00Z"}
+                            ])
+                        })
+                        .collect::<Vec<_>>();
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "database": "memos.sqlite",
+                        "columns": ["id", "title", "body", "pinned", "created_at", "updated_at"],
+                        "rows": rows,
+                        "usage": sqlite_usage_fixture()
+                    })
+                    .to_string())
+                },
+            )
+            .expect("compiled memos page executes")
+        };
+
+        let first: serde_json::Value =
+            serde_json::from_str(&execute_page(0).response_json).expect("decode first memos page");
+        assert_eq!(first["data"]["notes"].as_array().map(Vec::len), Some(24));
+        assert_eq!(first["data"]["has_more"], true);
+        assert_eq!(first["data"]["total"], 61);
+
+        let second: serde_json::Value = serde_json::from_str(&execute_page(24).response_json)
+            .expect("decode second memos page");
+        assert_eq!(second["data"]["notes"].as_array().map(Vec::len), Some(24));
+        assert_eq!(second["data"]["has_more"], true);
+        assert_eq!(second["data"]["offset"], 24);
+
+        let third: serde_json::Value =
+            serde_json::from_str(&execute_page(48).response_json).expect("decode third memos page");
+        assert_eq!(third["data"]["notes"].as_array().map(Vec::len), Some(13));
+        assert_eq!(third["data"]["has_more"], false);
+        assert_eq!(third["data"]["offset"], 48);
+    }
+
+    #[test]
+    fn rejects_v2_worker_response_outside_exported_memory() {
+        let module = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i64.const 281474976710672)
+            )"#,
+        )
+        .expect("compile invalid v2 worker fixture");
+
+        let error = execute_worker_module_v2(
+            &module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect_err("out-of-bounds response must fail closed");
+
+        assert!(error.contains("response memory"), "{error}");
+    }
+
+    #[test]
+    fn rejects_worker_module_above_signed_memory_limit() {
+        let response = r#"{"ok":true,"data":{}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 2)
+                (data (i32.const 2048) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i64.const {})
+            )"#,
+            ((2048_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile memory-limited worker fixture");
+
+        let error = execute_worker_module_v2(
+            &module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
+            64 * 1024,
+            unexpected_hostcall,
+        )
+        .expect_err("initial memory above the signed limit must fail closed");
+
+        assert!(
+            error.contains("resource limiter") || error.contains("memory"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_memory_grow_above_signed_memory_limit() {
+        let response = r#"{"ok":true,"data":{}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 1 4)
+                (data (i32.const 2048) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i32.const 1
+                    memory.grow
+                    drop
+                    i64.const {})
+            )"#,
+            ((2048_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile memory-grow worker fixture");
+
+        let error = execute_worker_module_v2(
+            &module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
+            64 * 1024,
+            unexpected_hostcall,
+        )
+        .expect_err("memory.grow above the signed limit must fail closed");
+
+        assert!(
+            error.contains("resource limiter")
+                || error.contains("memory")
+                || error.contains("grow"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_worker_table_above_runtime_limit() {
+        let response = r#"{"ok":true,"data":{}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (table 65537 funcref)
+                (memory (export "memory") 1)
+                (data (i32.const 2048) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i64.const {}))"#,
+            ((2048_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile table-limited worker fixture");
+
+        let error = execute_worker_module_v2(
+            &module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
+        .expect_err("table above the runtime limit must fail closed");
+
+        assert!(
+            error.contains("table") || error.contains("resource limiter"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn broker_failures_are_encoded_for_worker_error_handling() {
+        assert_eq!(
+            worker_hostcall_error_json("NETWORK_TARGET_DENIED: destination is private"),
+            r#"{"error_code":"NETWORK_TARGET_DENIED","message":"destination is private","ok":false}"#
+        );
+        assert_eq!(
+            worker_hostcall_error_json("transport closed"),
+            r#"{"error_code":"HOSTCALL_FAILED","message":"transport closed","ok":false}"#
+        );
+    }
+
+    #[test]
+    fn plugin_cannot_spoof_runtime_or_hostcall_error_origin() {
+        let plugin_execution = WorkerExecutionV2 {
+            response_json: String::new(),
+            hostcall_failures: Vec::new(),
+        };
+        assert_eq!(
+            trusted_worker_error_origin(
+                &plugin_execution,
+                "RUNTIME_CAPABILITY_REVOKED",
+                "runtime capability was revoked",
+            ),
+            redevplugin_ipc::ERROR_ORIGIN_PLUGIN,
+        );
+        let hostcall_execution = WorkerExecutionV2 {
+            response_json: String::new(),
+            hostcall_failures: vec![TrustedWorkerFailure {
+                code: "NETWORK_TARGET_DENIED".to_string(),
+                message: "destination is private".to_string(),
+            }],
+        };
+        assert_eq!(
+            trusted_worker_error_origin(
+                &hostcall_execution,
+                "NETWORK_TARGET_DENIED",
+                "destination is private",
+            ),
+            redevplugin_ipc::ERROR_ORIGIN_HOSTCALL,
+        );
+    }
+
+    #[test]
+    fn executes_v2_worker_storage_hostcall() {
+        let hostcall_request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
+        let worker_response = r#"{"ok":true,"data":{"notes":[]}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (import "redevplugin.storage" "sqlite" (func $sqlite (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 4096) {hostcall_request:?})
+                (data (i32.const 12288) {worker_response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i32.const 4096
+                    i32.const {}
+                    i32.const 8192
+                    i32.const 1024
+                    call $sqlite
+                    drop
+                    i64.const {})
+            )"#,
+            hostcall_request.len(),
+            ((12288_u64) << 32) | worker_response.len() as u64,
+        ))
+        .expect("compile storage worker fixture");
+        let mut called = false;
+
+        let execution = execute_worker_module_v2(
+            &module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            |request| {
+                let WorkerHostcallRequest::StorageSQLite(request) = request else {
+                    panic!("expected sqlite hostcall");
+                };
+                assert_eq!(request, hostcall_request);
+                called = true;
+                Ok(r#"{"ok":true,"database":"notes.sqlite","rows":[]}"#.to_string())
+            },
+        )
+        .expect("storage worker executes");
+
+        assert!(called);
+        assert_eq!(execution.response_json, worker_response);
     }
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
-        let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","query":{"format":["json"],"timezone":["auto"]},"max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
         let got = network_execute_request(invocation, "g1", request)
             .expect("stream network execute request");
 
@@ -3471,11 +3367,24 @@ mod tests {
         assert_eq!(got.max_chunk_bytes, 4);
         assert_eq!(got.max_buffered_bytes, 65536);
         assert_eq!(got.content_type, "text/plain");
+        assert_eq!(got.query_json, r#"{"format":["json"],"timezone":["auto"]}"#);
+    }
+
+    #[test]
+    fn storage_request_uses_host_only_grant_map() {
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
+        let request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
+
+        let got = storage_sqlite_request(invocation, "g1", request)
+            .expect("storage request with host-only grant map");
+
+        assert_eq!(got.handle_grant_token, "handle_grant.host-only-secret");
+        assert_eq!(got.store_id, "notes");
     }
 
     #[test]
     fn network_execute_request_rejects_plugin_owned_audience_overrides() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         for field in [
             "stream_method",
             "stream_effect",
@@ -3500,7 +3409,7 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_selected_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
 
         let err = network_execute_request(invocation, "g1", request)
@@ -3510,8 +3419,29 @@ mod tests {
     }
 
     #[test]
+    fn network_hostcall_request_rejects_unknown_duplicate_and_trailing_fields() {
+        let invocation = broker_invocation_frame("plugini_1");
+        let valid = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"GET"}"#;
+        network_execute_request(&invocation, "g1", valid).expect("closed network request");
+
+        for invalid in [
+            format!("{valid}{{}}"),
+            valid.replace(r#""method":"GET""#, r#""method":"GET","unknown":true"#),
+            valid.replace(
+                r#""connector_id":"api""#,
+                r#""connector_id":"api","connector_id":"other""#,
+            ),
+        ] {
+            assert!(
+                network_execute_request(&invocation, "g1", &invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn network_execute_request_rejects_missing_host_owned_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
 
         let err = network_execute_request(invocation, "g1", request)
@@ -3521,37 +3451,15 @@ mod tests {
     }
 
     #[test]
-    fn executes_storage_sqlite_memory_hostcall_wasm_worker_export() {
-        let module = storage_sqlite_memory_hostcall_worker_wasm("redevplugin_worker_invoke");
-        let execution = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            let WorkerHostcallRequest::StorageSQLite(request) = request else {
-                panic!("expected storage sqlite hostcall request");
-            };
-            assert!(request.contains(r#""store_id":"db""#), "{request}");
-            assert!(request.contains(r#""operation":"query""#), "{request}");
-            assert!(request.contains(r#""sql":"SELECT title FROM events WHERE score = ?""#), "{request}");
-            Ok(r#"{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]]}"#.to_string())
-        })
-        .expect("storage sqlite memory hostcall worker executes");
-        assert_eq!(execution.validated.byte_len, module.len());
-        assert!(!execution.storage_sqlite_exec_demo_requested);
-        assert!(execution.storage_sqlite_requested);
-        assert_eq!(
-            execution.storage_sqlite_result,
-            Some(Ok(
-                r#"{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]]}"#.to_string()
-            ))
-        );
-        assert!(!execution.network_http_request_demo_requested);
-        assert!(!execution.network_execute_requested);
-    }
-
-    #[test]
     fn rejects_wasm_worker_with_missing_export() {
         let module = minimal_worker_wasm("other_export");
-        let err = execute_worker_module(&module, "redevplugin_worker_invoke", |request| {
-            unexpected_hostcall(request)
-        })
+        let err = execute_worker_module_v2(
+            &module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            unexpected_hostcall,
+        )
         .expect_err("missing worker export");
         assert!(err.contains("required function export"));
     }
@@ -3567,13 +3475,37 @@ mod tests {
         }
     }
 
+    fn encode_base64_for_test(input: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = String::with_capacity(input.len().div_ceil(3) * 4);
+        for chunk in input.chunks(3) {
+            let first = chunk[0];
+            let second = chunk.get(1).copied().unwrap_or(0);
+            let third = chunk.get(2).copied().unwrap_or(0);
+            encoded.push(ALPHABET[(first >> 2) as usize] as char);
+            encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+            if chunk.len() > 1 {
+                encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+            } else {
+                encoded.push('=');
+            }
+            if chunk.len() > 2 {
+                encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
+            } else {
+                encoded.push('=');
+            }
+        }
+        encoded
+    }
+
     fn worker_invocation_frame(plugin_instance_id: &str, revoke_epoch: u64) -> String {
         worker_invocation_frame_with_lease(plugin_instance_id, revoke_epoch, "lease_1", "nonce_1")
     }
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grant_token":"handle_grant.secret","method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}"#
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","operations":["read","write","delete","list"]}},{{"store_id":"notes","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 
@@ -3592,6 +3524,25 @@ mod tests {
         )
     }
 
+    fn successful_worker_artifact_response() -> String {
+        let response_json = r#"{"ok":true,"data":{"value":"done"}}"#;
+        let module = wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 2048) {response_json:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
+                    i64.const {}))"#,
+            ((2048_u64) << 32) | response_json.len() as u64,
+        ))
+        .expect("compile successful worker");
+        format!(
+            "{{\"ipc_version\":\"rust-ipc-v2\",\"frame_type\":\"open_handle\",\"request_id\":\"r1:artifact\",\"runtime_generation_id\":\"g1\",\"payload\":{{\"ok\":true,\"package_hash\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"artifact\":\"workers/backend.wasm\",\"sha256\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"content_base64\":\"{}\"}}}}\n",
+            encode_base64_for_test(&module),
+        )
+    }
+
     fn worker_invocation_frame_with_lease_expiry(
         plugin_instance_id: &str,
         revoke_epoch: u64,
@@ -3600,179 +3551,24 @@ mod tests {
         expires_at_unix_ms: i64,
     ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_token":"token_1","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"sync","audit_correlation_id":"audit_1","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
         )
     }
 
-    fn network_execute_request_for_test(
-        plugin_instance_id: &str,
-        transport: &str,
-        connector_id: &str,
-        destination: &str,
-    ) -> redevplugin_ipc::NetworkExecuteRequest {
-        redevplugin_ipc::NetworkExecuteRequest {
-            plugin_id: "com.example.worker".to_string(),
-            plugin_instance_id: plugin_instance_id.to_string(),
-            active_fingerprint: "sha256:active".to_string(),
-            runtime_instance_id: "runtime_1".to_string(),
-            runtime_generation_id: "g1".to_string(),
-            runtime_shard_id: String::new(),
-            policy_revision: 1,
-            management_revision: 1,
-            revoke_epoch: 1,
-            connector_id: connector_id.to_string(),
-            transport: transport.to_string(),
-            destination: destination.to_string(),
-            ttl_ms: 30_000,
-            operation: "http_stream".to_string(),
-            method: "GET".to_string(),
-            path: "/".to_string(),
-            headers_json: "{}".to_string(),
-            message_type: String::new(),
-            body_base64: String::new(),
-            payload_base64: String::new(),
-            max_request_bytes: 1024,
-            max_response_bytes: 4096,
-            max_chunk_bytes: 1024,
-            max_buffered_bytes: 4096,
-            timeout_ms: 1000,
-            stream_id: String::new(),
-            stream_method: "worker.echo".to_string(),
-            stream_effect: "read".to_string(),
-            stream_execution: "subscription".to_string(),
-            surface_instance_id: "surface_1".to_string(),
-            owner_session_hash: "session_hash".to_string(),
-            owner_user_hash: "user_hash".to_string(),
-            session_channel_id_hash: "channel_hash".to_string(),
-            bridge_channel_id: "bridge_1".to_string(),
-            content_type: "text/plain".to_string(),
-        }
-    }
-
     fn minimal_worker_wasm(export_name: &str) -> Vec<u8> {
-        let export_name_bytes = export_name.as_bytes();
-        let mut module = vec![
-            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-            0x03, 0x02, 0x01, 0x00, 0x07,
-        ];
-        let mut export_payload = vec![0x01, export_name_bytes.len() as u8];
-        export_payload.extend_from_slice(export_name_bytes);
-        export_payload.extend_from_slice(&[0x00, 0x00]);
-        module.push(export_payload.len() as u8);
-        module.extend_from_slice(&export_payload);
-        module.extend_from_slice(&[0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b]);
-        module
-    }
-
-    fn storage_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
-        imported_hostcall_worker_wasm("redevplugin.storage", "files_write_demo", export_name)
-    }
-
-    fn storage_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
-        let request = br#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8gZnJvbSBtZW1vcnkgc3RvcmFnZSBob3N0Y2FsbA==","max_bytes":0,"max_entries":0,"recursive":false}"#;
-        imported_memory_hostcall_worker_wasm("redevplugin.storage", "files", export_name, request)
-    }
-
-    fn network_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
-        let request = br#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8=","max_request_bytes":1024,"max_response_bytes":4096,"timeout_ms":1000}"#;
-        imported_memory_hostcall_worker_wasm("redevplugin.network", "execute", export_name, request)
-    }
-
-    fn storage_sqlite_memory_hostcall_worker_wasm(export_name: &str) -> Vec<u8> {
-        let request = br#"{"store_id":"db","operation":"query","database":"plugin.sqlite","sql":"SELECT title FROM events WHERE score = ?","args":[{"int":7}],"max_rows":10,"max_response_bytes":4096,"timeout_ms":1000}"#;
-        imported_memory_hostcall_worker_wasm("redevplugin.storage", "sqlite", export_name, request)
-    }
-
-    fn imported_memory_hostcall_worker_wasm(
-        import_module: &str,
-        import_name: &str,
-        export_name: &str,
-        request: &[u8],
-    ) -> Vec<u8> {
-        let export_name_bytes = export_name.as_bytes();
-        let import_module = import_module.as_bytes();
-        let import_name = import_name.as_bytes();
-        let mut module = vec![
-            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x02, 0x60, 0x04, 0x7f,
-            0x7f, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x00, 0x02,
-        ];
-        let mut import_payload = vec![0x01, import_module.len() as u8];
-        import_payload.extend_from_slice(import_module);
-        import_payload.push(import_name.len() as u8);
-        import_payload.extend_from_slice(import_name);
-        import_payload.extend_from_slice(&[0x00, 0x00]);
-        push_leb_u32(&mut module, import_payload.len() as u32);
-        module.extend_from_slice(&import_payload);
-        module.extend_from_slice(&[0x03, 0x02, 0x01, 0x01, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07]);
-        let mut export_payload = vec![0x02, 0x06];
-        export_payload.extend_from_slice(b"memory");
-        export_payload.extend_from_slice(&[0x02, 0x00, export_name_bytes.len() as u8]);
-        export_payload.extend_from_slice(export_name_bytes);
-        export_payload.extend_from_slice(&[0x00, 0x01]);
-        push_leb_u32(&mut module, export_payload.len() as u32);
-        module.extend_from_slice(&export_payload);
-        module.extend_from_slice(&[0x0a]);
-        let mut code_payload = vec![0x01];
-        let mut body = vec![0x00, 0x41, 0x00, 0x41];
-        push_leb_u32(&mut body, request.len() as u32);
-        body.extend_from_slice(&[0x41]);
-        push_leb_u32(&mut body, 512);
-        body.extend_from_slice(&[0x41]);
-        push_leb_u32(&mut body, 512);
-        body.extend_from_slice(&[0x10, 0x00, 0x1a, 0x0b]);
-        push_leb_u32(&mut code_payload, body.len() as u32);
-        code_payload.extend_from_slice(&body);
-        push_leb_u32(&mut module, code_payload.len() as u32);
-        module.extend_from_slice(&code_payload);
-        module.extend_from_slice(&[0x0b]);
-        let mut data_payload = vec![0x01, 0x00, 0x41, 0x00, 0x0b];
-        push_leb_u32(&mut data_payload, request.len() as u32);
-        data_payload.extend_from_slice(request);
-        push_leb_u32(&mut module, data_payload.len() as u32);
-        module.extend_from_slice(&data_payload);
-        module
-    }
-
-    fn imported_hostcall_worker_wasm(
-        import_module: &str,
-        import_name: &str,
-        export_name: &str,
-    ) -> Vec<u8> {
-        let export_name_bytes = export_name.as_bytes();
-        let import_module = import_module.as_bytes();
-        let import_name = import_name.as_bytes();
-        let mut module = vec![
-            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x02, 0x60, 0x00, 0x00,
-            0x60, 0x00, 0x00, 0x02,
-        ];
-        let mut import_payload = vec![0x01, import_module.len() as u8];
-        import_payload.extend_from_slice(import_module);
-        import_payload.push(import_name.len() as u8);
-        import_payload.extend_from_slice(import_name);
-        import_payload.extend_from_slice(&[0x00, 0x00]);
-        module.push(import_payload.len() as u8);
-        module.extend_from_slice(&import_payload);
-        module.extend_from_slice(&[0x03, 0x02, 0x01, 0x01, 0x07]);
-        let mut export_payload = vec![0x01, export_name_bytes.len() as u8];
-        export_payload.extend_from_slice(export_name_bytes);
-        export_payload.extend_from_slice(&[0x00, 0x01]);
-        module.push(export_payload.len() as u8);
-        module.extend_from_slice(&export_payload);
-        module.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b]);
-        module
-    }
-
-    fn push_leb_u32(out: &mut Vec<u8>, mut value: u32) {
-        loop {
-            let mut byte = (value & 0x7f) as u8;
-            value >>= 7;
-            if value != 0 {
-                byte |= 0x80;
-            }
-            out.push(byte);
-            if value == 0 {
-                break;
-            }
-        }
+        let response = r#"{"ok":true,"data":{}}"#;
+        wat::parse_str(format!(
+            r#"(module
+                (memory (export "memory") 1)
+                (data (i32.const 2048) {response:?})
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32)
+                    i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export {export_name:?}) (param i32 i32) (result i64)
+                    i64.const {})
+            )"#,
+            ((2048_u64) << 32) | response.len() as u64,
+        ))
+        .expect("compile minimal ABI v2 worker")
     }
 }

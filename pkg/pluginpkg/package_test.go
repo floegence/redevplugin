@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -464,7 +465,7 @@ func TestBuildAcceptsPackageLocalSurfaceAssets(t *testing.T) {
   </body>
 </html>`)
 	mustWrite(t, filepath.Join(dir, "ui", "assets", "styles.css"), "body{}")
-	mustWrite(t, filepath.Join(dir, "ui", "assets", "icon.png"), "png")
+	mustWriteBytes(t, filepath.Join(dir, "ui", "assets", "icon.png"), minimalPNGForTest())
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
@@ -876,6 +877,20 @@ func TestBuildRejectsMalformedWorkerWASM(t *testing.T) {
 	}
 }
 
+func TestWASMInspectionRejectsSharedInvalidOpcodeFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "contracts", "wasm", "invalid-final-opcode.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectWASMModule(module); err == nil {
+		t.Fatal("inspectWASMModule() accepted a module with an invalid function opcode")
+	}
+}
+
 func TestReadRejectsWorkerRouteMissingExport(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -934,6 +949,19 @@ func TestBuildAcceptsWorkerWASMExport(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsWorkerTableAboveLimit(t *testing.T) {
+	dir := writeFixturePackageDir(t)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
+	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithTableForTest(maxWASMTableElements+1))
+	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
+
+	var buf bytes.Buffer
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	if err == nil || !strings.Contains(err.Error(), "table") {
+		t.Fatalf("BuildFromDir() error = %v, want table element limit", err)
+	}
+}
+
 func TestBuildRejectsWorkerWithoutABIDescriptor(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
@@ -949,7 +977,7 @@ func TestBuildRejectsWorkerRouteMissingABIDescriptorExport(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_actor_start"))
+	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("unsupported_export"))
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
@@ -962,7 +990,7 @@ func TestBuildRejectsUnknownWorkerABIImport(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), "{\n"+
-		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n"+
+		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n"+
 		"  \"exports\": [\"redevplugin_worker_invoke\"],\n"+
 		"  \"imports\": [\"redeven.shell\"]\n"+
 		"}\n")
@@ -973,31 +1001,16 @@ func TestBuildRejectsUnknownWorkerABIImport(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsActorWorkerMissingWASMExports(t *testing.T) {
+func TestBuildRejectsUnsupportedActorWorkerMode(t *testing.T) {
 	dir := writeFixturePackageDir(t)
-	mustWrite(t, filepath.Join(dir, "manifest.json"), actorWorkerManifestJSON())
+	manifestJSON := strings.Replace(workerManifestJSON(), `"mode": "job"`, `"mode": "actor"`, 1)
+	mustWrite(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke", "redevplugin_actor_start", "redevplugin_actor_stop"))
+	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
 	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
-		t.Fatal("BuildFromDir() expected actor worker wasm export error")
-	}
-}
-
-func TestBuildAcceptsActorWorkerLifecycleExports(t *testing.T) {
-	dir := writeFixturePackageDir(t)
-	mustWrite(t, filepath.Join(dir, "manifest.json"), actorWorkerManifestJSON())
-	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMWithExportsForTest("redevplugin_worker_invoke", "redevplugin_actor_start", "redevplugin_actor_stop"))
-	mustWrite(t, filepath.Join(dir, "workers", "abi.json"), workerABIJSON("redevplugin_worker_invoke", "redevplugin_actor_start", "redevplugin_actor_stop"))
-
-	var buf bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
-	if err != nil {
-		t.Fatalf("BuildFromDir() actor worker error = %v", err)
-	}
-	if pkg.Manifest.Workers[0].Mode != "actor" {
-		t.Fatalf("worker mode = %s, want actor", pkg.Manifest.Workers[0].Mode)
+		t.Fatal("BuildFromDir() expected unsupported actor worker mode error")
 	}
 }
 
@@ -1196,32 +1209,82 @@ func requireValidationError(t *testing.T, err error, code ValidationErrorCode, r
 }
 
 func minimalPNGForTest() []byte {
-	return []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0x00, 0x00, 0x0d}
+	raw, err := hex.DecodeString("89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082")
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
 func minimalWorkerWASMForTest(exportName string) []byte {
-	return minimalWorkerWASMWithExportsForTest(exportName)
-}
-
-func minimalWorkerWASMWithExportsForTest(exportNames ...string) []byte {
 	module := []byte{
 		0x00, 0x61, 0x73, 0x6d,
 		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-		0x03, 0x02, 0x01, 0x00,
-		0x07,
+		0x01, 0x11, 0x03,
+		0x60, 0x01, 0x7f, 0x01, 0x7f,
+		0x60, 0x02, 0x7f, 0x7f, 0x00,
+		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e,
+		0x03, 0x04, 0x03, 0x00, 0x01, 0x02,
+		0x05, 0x03, 0x01, 0x00, 0x01,
 	}
-	exportPayload := []byte{byte(len(exportNames))}
-	for _, exportName := range exportNames {
-		exportNameBytes := []byte(exportName)
-		exportPayload = append(exportPayload, byte(len(exportNameBytes)))
-		exportPayload = append(exportPayload, exportNameBytes...)
-		exportPayload = append(exportPayload, 0x00, 0x00)
+	exportPayload := []byte{0x04}
+	for _, export := range []struct {
+		name  string
+		kind  byte
+		index byte
+	}{
+		{name: "memory", kind: 0x02, index: 0x00},
+		{name: "redevplugin_worker_alloc", kind: 0x00, index: 0x00},
+		{name: "redevplugin_worker_dealloc", kind: 0x00, index: 0x01},
+		{name: exportName, kind: 0x00, index: 0x02},
+	} {
+		exportPayload = append(exportPayload, byte(len(export.name)))
+		exportPayload = append(exportPayload, export.name...)
+		exportPayload = append(exportPayload, export.kind, export.index)
 	}
-	module = append(module, byte(len(exportPayload)))
+	module = append(module, 0x07, byte(len(exportPayload)))
 	module = append(module, exportPayload...)
-	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	module = append(module,
+		0x0a, 0x0f, 0x03,
+		0x05, 0x00, 0x41, 0x80, 0x08, 0x0b,
+		0x02, 0x00, 0x0b,
+		0x04, 0x00, 0x42, 0x00, 0x0b,
+	)
 	return module
+}
+
+func workerWASMWithTableForTest(initialElements uint32) []byte {
+	module := minimalWorkerWASMForTest("redevplugin_worker_invoke")
+	memorySection := []byte{0x05, 0x03, 0x01, 0x00, 0x01}
+	index := bytes.Index(module, memorySection)
+	if index < 0 {
+		panic("minimal worker memory section not found")
+	}
+	payload := []byte{0x01, 0x70, 0x00}
+	payload = append(payload, encodeWASMVarUint32ForTest(initialElements)...)
+	section := []byte{0x04}
+	section = append(section, encodeWASMVarUint32ForTest(uint32(len(payload)))...)
+	section = append(section, payload...)
+	withTable := make([]byte, 0, len(module)+len(section))
+	withTable = append(withTable, module[:index]...)
+	withTable = append(withTable, section...)
+	withTable = append(withTable, module[index:]...)
+	return withTable
+}
+
+func encodeWASMVarUint32ForTest(value uint32) []byte {
+	encoded := make([]byte, 0, 5)
+	for {
+		current := byte(value & 0x7f)
+		value >>= 7
+		if value != 0 {
+			current |= 0x80
+		}
+		encoded = append(encoded, current)
+		if value == 0 {
+			return encoded
+		}
+	}
 }
 
 func minimalMemoryExportWASMForTest(exportName string) []byte {
@@ -1246,9 +1309,9 @@ func workerABIJSON(exports ...string) string {
 		panic(err)
 	}
 	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
 		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
+		"  \"imports\": []\n" +
 		"}\n"
 }
 
@@ -1274,7 +1337,7 @@ func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
 
 func validManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.pkg",
@@ -1282,7 +1345,7 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "pkg.view", "kind": "view", "label": "Package", "entry": "ui/index.html"}
@@ -1292,7 +1355,7 @@ func validManifestJSON() string {
 
 func workerManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -1300,7 +1363,7 @@ func workerManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -1309,7 +1372,7 @@ func workerManifestJSON() string {
 			{
 				"worker_id": "echo_worker",
 				"artifact": "workers/echo.wasm",
-				"abi": "redevplugin-wasm-worker-v1",
+				"abi": "redevplugin-wasm-worker-v2",
 				"mode": "job",
 				"scope": "user",
 				"memory_limit_bytes": 16777216
@@ -1329,47 +1392,5 @@ func workerManifestJSON() string {
 				"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
 			}
 		]
-		}`
-}
-
-func actorWorkerManifestJSON() string {
-	return `{
-			"schema_version": "redevplugin.manifest.v2",
-			"publisher": {"publisher_id": "example", "display_name": "Example"},
-			"plugin": {
-				"plugin_id": "com.example.actor",
-				"display_name": "Actor",
-				"version": "1.0.0",
-				"api_version": "plugin-v1",
-				"min_runtime_version": "0.1.0",
-				"ui_protocol_version": "plugin-ui-v2"
-			},
-			"surfaces": [
-				{"surface_id": "actor.view", "kind": "view", "label": "Actor", "entry": "ui/index.html"}
-			],
-			"workers": [
-				{
-					"worker_id": "echo_worker",
-					"artifact": "workers/echo.wasm",
-					"abi": "redevplugin-wasm-worker-v1",
-					"mode": "actor",
-					"scope": "user",
-					"memory_limit_bytes": 16777216
-				}
-			],
-			"methods": [
-				{
-					"method": "worker.echo",
-					"effect": "read",
-					"execution": "sync",
-					"request_schema": {
-						"type": "object",
-						"additionalProperties": false,
-						"properties": {"message": {"type": "string"}}
-					},
-					"response_schema": {"type": "object", "additionalProperties": false},
-					"route": {"kind": "worker", "worker_id": "echo_worker", "export": "redevplugin_worker_invoke"}
-				}
-			]
 		}`
 }

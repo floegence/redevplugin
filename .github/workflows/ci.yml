@@ -29,7 +29,7 @@ jobs:
         run: GOWORK=off golangci-lint run ./...
 
   typescript:
-    name: TypeScript and Browser Demo
+    name: TypeScript, Examples, and Browser Harness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -39,6 +39,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - run: rustup target add wasm32-unknown-unknown
       - run: npm run check
         env:
           REDEVPLUGIN_A2_EVIDENCE_DIR: dist/a2-evidence
@@ -102,6 +103,10 @@ jobs:
           bash -n scripts/build_redevplugin_release.sh
           bash -n scripts/assert_github_release_absent.sh
           bash -n scripts/verify_github_release_identity.sh
+          node --check scripts/build_redevplugin_worker_sdk_package.mjs
+          node --check scripts/check_redevplugin_release_metadata.mjs
+          node --check scripts/test_redevplugin_release_metadata.mjs
+          node --check scripts/verify_redevplugin_release_bundle.mjs
           node --check scripts/verify_published_release.mjs
           node --check scripts/verify_npm_registry_release.mjs
           node --check scripts/verify_go_module_readback.mjs

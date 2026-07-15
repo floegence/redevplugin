@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -37,6 +38,83 @@ func TestDecodeRejectsTrailingJSONValue(t *testing.T) {
 
 	if _, err := Decode(strings.NewReader(raw)); err == nil {
 		t.Fatal("Decode() expected trailing JSON error")
+	}
+}
+
+func TestValidateMatchesManifestV3RequiredFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*Manifest)
+	}{
+		{
+			name:  "plugin display name",
+			field: "plugin.display_name",
+			mutate: func(m *Manifest) {
+				m.Plugin.DisplayName = " "
+			},
+		},
+		{
+			name:  "minimum runtime version",
+			field: "plugin.min_runtime_version",
+			mutate: func(m *Manifest) {
+				m.Plugin.MinRuntimeVersion = ""
+			},
+		},
+		{
+			name:  "surfaces field",
+			field: "surfaces",
+			mutate: func(m *Manifest) {
+				m.Surfaces = nil
+			},
+		},
+		{
+			name:  "negative worker idle timeout",
+			field: "workers[0].idle_timeout_ms",
+			mutate: func(m *Manifest) {
+				m.Workers = []WorkerSpec{{
+					WorkerID: "worker", Artifact: "workers/worker.wasm", ABI: "redevplugin-wasm-worker-v2",
+					Mode: WorkerModeJob, Scope: "user", MemoryLimitBytes: 1 << 20, IdleTimeoutMS: -1,
+				}}
+			},
+		},
+		{
+			name:  "empty network destination",
+			field: "network_access.connectors[0].destinations[0]",
+			mutate: func(m *Manifest) {
+				m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
+					ConnectorID: "api", Transport: "http", Scope: "user", Destinations: []string{" "},
+				}}}
+			},
+		},
+		{
+			name:  "setting label",
+			field: "settings.fields[0].label",
+			mutate: func(m *Manifest) {
+				m.Settings.Fields[0].Label = ""
+			},
+		},
+		{
+			name:  "intent id",
+			field: "intents[0].intent_id",
+			mutate: func(m *Manifest) {
+				m.Intents[0].IntentID = " "
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := validManifest()
+			tt.mutate(&candidate)
+			var validationErr ValidationError
+			if err := Validate(candidate); !errors.As(err, &validationErr) {
+				t.Fatalf("Validate() error = %v, want ValidationError", err)
+			}
+			if validationErr.Field != tt.field {
+				t.Fatalf("Validate() field = %q, want %q", validationErr.Field, tt.field)
+			}
+		})
 	}
 }
 
@@ -589,11 +667,76 @@ func TestValidateStorageQuotaFiles(t *testing.T) {
 		t.Fatalf("Validate() with quota_files error = %v", err)
 	}
 
-	for _, value := range []int64{0, -1} {
+	for _, value := range []int64{0, -1, MaxStoreQuotaFiles + 1} {
 		m.Storage.Stores[0].QuotaFiles = &value
 		if err := Validate(m); err == nil {
 			t.Fatalf("Validate() with quota_files=%d expected error", value)
 		}
+	}
+}
+
+func TestValidateStorageResourceLimits(t *testing.T) {
+	t.Run("store count", func(t *testing.T) {
+		m := validManifest()
+		m.Storage = &StorageSpec{Stores: make([]StoreSpec, MaxStorageStores+1)}
+		for i := range m.Storage.Stores {
+			m.Storage.Stores[i] = StoreSpec{
+				StoreID:       fmt.Sprintf("store-%d", i),
+				Kind:          "kv",
+				Scope:         "user",
+				QuotaBytes:    1024,
+				SchemaVersion: 1,
+				Migration:     noopMigration(),
+			}
+		}
+		expectValidationField(t, m, "storage.stores")
+	})
+
+	t.Run("quota bytes", func(t *testing.T) {
+		m := validManifest()
+		m.Storage = &StorageSpec{Stores: []StoreSpec{{
+			StoreID:       "cache",
+			Kind:          "kv",
+			Scope:         "user",
+			QuotaBytes:    MaxStoreQuotaBytes + 1,
+			SchemaVersion: 1,
+			Migration:     noopMigration(),
+		}}}
+		expectValidationField(t, m, "storage.stores[0].quota_bytes")
+	})
+}
+
+func TestValidateReadMethodRejectsMutatingStorageBrokerOperations(t *testing.T) {
+	for _, operation := range []string{"write", "delete", "put", "exec"} {
+		t.Run(operation, func(t *testing.T) {
+			m := validManifestWithWorkerMethod()
+			m.Storage = &StorageSpec{Stores: []StoreSpec{{
+				StoreID:       "store",
+				Kind:          storageKindForOperation(operation),
+				Scope:         "user",
+				QuotaBytes:    1024,
+				SchemaVersion: 1,
+				Migration:     noopMigration(),
+			}}}
+			m.Methods[1].Effect = MethodEffectRead
+			m.Methods[1].BrokerAccess = &MethodBrokerAccessSpec{Storage: []StorageBrokerAccessSpec{{
+				StoreID:    "store",
+				Operations: []string{operation},
+			}}}
+
+			expectValidationField(t, m, "methods[1].broker_access.storage[0].operations[0]")
+		})
+	}
+}
+
+func storageKindForOperation(operation string) string {
+	switch operation {
+	case "write", "delete":
+		return "files"
+	case "put":
+		return "kv"
+	default:
+		return "sqlite"
 	}
 }
 
@@ -721,7 +864,7 @@ func TestValidateWorkers(t *testing.T) {
 	m.Workers = []WorkerSpec{{
 		WorkerID:         "echo_worker",
 		Artifact:         "workers/echo.wasm",
-		ABI:              "redevplugin-wasm-worker-v1",
+		ABI:              "redevplugin-wasm-worker-v2",
 		Mode:             WorkerModeJob,
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
@@ -782,6 +925,13 @@ func TestValidateWorkers(t *testing.T) {
 			name: "invalid memory",
 			mutate: func(m *Manifest) {
 				m.Workers[0].MemoryLimitBytes = 0
+			},
+			field: "workers[0].memory_limit_bytes",
+		},
+		{
+			name: "memory exceeds platform maximum",
+			mutate: func(m *Manifest) {
+				m.Workers[0].MemoryLimitBytes = MaxWorkerMemoryLimitBytes + 1
 			},
 			field: "workers[0].memory_limit_bytes",
 		},
@@ -853,7 +1003,7 @@ func validManifestWithWorkerMethod() Manifest {
 	m.Workers = []WorkerSpec{{
 		WorkerID:         "echo_worker",
 		Artifact:         "workers/echo.wasm",
-		ABI:              "redevplugin-wasm-worker-v1",
+		ABI:              "redevplugin-wasm-worker-v2",
 		Mode:             WorkerModeJob,
 		Scope:            "user",
 		MemoryLimitBytes: 16 << 20,
@@ -866,6 +1016,108 @@ func validManifestWithWorkerMethod() Manifest {
 		RequestSchema:  closedObjectSchema(),
 		ResponseSchema: closedObjectSchema(),
 	})
+	return m
+}
+
+func TestValidateAcceptsMethodScopedBrokerAccess(t *testing.T) {
+	m := validManifestWithBrokerAccess()
+	if err := Validate(m); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidMethodScopedBrokerAccess(t *testing.T) {
+	tests := []struct {
+		name   string
+		field  string
+		mutate func(*Manifest)
+	}{
+		{
+			name:  "broker access is worker-only",
+			field: "methods[0].broker_access",
+			mutate: func(m *Manifest) {
+				m.Methods[0].BrokerAccess = m.Methods[len(m.Methods)-1].BrokerAccess
+			},
+		},
+		{
+			name:  "storage store must be declared",
+			field: "methods[1].broker_access.storage[0].store_id",
+			mutate: func(m *Manifest) {
+				m.Methods[1].BrokerAccess.Storage[0].StoreID = "missing"
+			},
+		},
+		{
+			name:  "storage operation must match kind",
+			field: "methods[1].broker_access.storage[0].operations[0]",
+			mutate: func(m *Manifest) {
+				m.Methods[1].BrokerAccess.Storage[0].Operations = []string{"drop"}
+			},
+		},
+		{
+			name:  "connector transport must match declaration",
+			field: "methods[1].broker_access.network[0].transport",
+			mutate: func(m *Manifest) {
+				m.Methods[1].BrokerAccess.Network[0].Transport = "tcp"
+			},
+		},
+		{
+			name:  "http methods must be canonical",
+			field: "methods[1].broker_access.network[0].http_methods[0]",
+			mutate: func(m *Manifest) {
+				m.Methods[1].BrokerAccess.Network[0].HTTPMethods = []string{"get"}
+			},
+		},
+		{
+			name:  "read effect cannot authorize an http write",
+			field: "methods[1].broker_access.network[0].http_methods[0]",
+			mutate: func(m *Manifest) {
+				m.Methods[1].BrokerAccess.Network[0].HTTPMethods = []string{"POST"}
+			},
+		},
+		{
+			name:  "read effect cannot authorize a bidirectional transport",
+			field: "methods[1].broker_access.network[0].operations[0]",
+			mutate: func(m *Manifest) {
+				m.NetworkAccess.Connectors[0].Transport = "websocket"
+				m.Methods[1].BrokerAccess.Network[0] = NetworkBrokerAccessSpec{
+					ConnectorID: "forecast", Transport: "websocket", Operations: []string{"websocket_round_trip"},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := validManifestWithBrokerAccess()
+			tt.mutate(&m)
+			err := Validate(m)
+			if err == nil || !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("Validate() error = %v, want field %q", err, tt.field)
+			}
+		})
+	}
+}
+
+func validManifestWithBrokerAccess() Manifest {
+	m := validManifestWithWorkerMethod()
+	m.Storage = &StorageSpec{Stores: []StoreSpec{{
+		StoreID:       "notes",
+		Kind:          "sqlite",
+		Scope:         "user",
+		QuotaBytes:    1 << 20,
+		SchemaVersion: 1,
+		Migration: MigrationSpec{
+			FromVersion: 0, ToVersion: 1, Reversible: true, RequiresWorker: true,
+			MaxDurationMS: 1000, StepsHash: "sha256:notes-v1",
+		},
+	}}}
+	m.NetworkAccess = &NetworkAccessSpec{Connectors: []NetworkConnectorSpec{{
+		ConnectorID: "forecast", Transport: "http", Scope: "user", Destinations: []string{"https://api.example.com"},
+	}}}
+	m.Methods[len(m.Methods)-1].BrokerAccess = &MethodBrokerAccessSpec{
+		Storage: []StorageBrokerAccessSpec{{StoreID: "notes", Operations: []string{"query"}}},
+		Network: []NetworkBrokerAccessSpec{{ConnectorID: "forecast", Transport: "http", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
+	}
 	return m
 }
 
@@ -916,7 +1168,7 @@ func stringPtr(value string) *string {
 
 func validManifest() Manifest {
 	return Manifest{
-		SchemaVersion: "redevplugin.manifest.v2",
+		SchemaVersion: "redevplugin.manifest.v3",
 		Publisher:     Publisher{PublisherID: "example", DisplayName: "Example"},
 		Plugin: Plugin{
 			PluginID:          "com.example.resources",
@@ -924,7 +1176,7 @@ func validManifest() Manifest {
 			Version:           "1.0.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v2",
+			UIProtocolVersion: "plugin-ui-v3",
 		},
 		Surfaces: []SurfaceSpec{
 			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html"},
@@ -974,7 +1226,7 @@ func noopMigration() MigrationSpec {
 
 func validManifestJSON() string {
 	return fmt.Sprintf(`{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.resources",
@@ -982,7 +1234,7 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}

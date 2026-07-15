@@ -27,7 +27,7 @@ class FakePort implements MessagePortLike {
   #listeners = new Set<(event: MessageEventLike) => void>();
   closed = false;
 
-  postMessage(message: unknown): void {
+  postMessage(message: unknown, _transfer?: readonly unknown[]): void {
     if (this.postError) throw this.postError;
     if (this.closed) throw new Error("port is closed");
     this.sent.push(message);
@@ -246,7 +246,7 @@ function preparation() {
     issued_at: "2026-07-12T00:00:00Z",
     expires_at: "2026-07-12T00:10:00Z",
     document: {
-      schema_version: "redevplugin.opaque_surface_document.v1",
+      schema_version: "redevplugin.opaque_surface_document.v2",
       entry_path: "ui/index.html",
       entry_sha256: digest("b"),
       title: "Plugin",
@@ -255,7 +255,7 @@ function preparation() {
       body_html: '<main><button data-redevplugin-action="refresh">Refresh</button><img data-redevplugin-asset-binding="asset_12345678" data-redevplugin-asset-attr="src" alt="Status"></main>',
       styles: [{ path: "ui/app.css", sha256: digest("c"), content: ":root{color:#111}" }],
       worker: { path: "ui/app.js", sha256: digest("d"), type: "classic", content: "const client = new globalThis.PluginBridgeClient(); void client.ready();" },
-      assets: [{ binding_id: "asset_12345678", path: "ui/status.png", sha256: digest("e"), size: 8, content_type: "image/png" }],
+      assets: [{ binding_id: "asset_12345678", logical_ids: ["status-image"], path: "ui/status.png", sha256: digest("e"), size: 8, content_type: "image/png" }],
       critical_bytes: 512,
     },
   };
@@ -308,6 +308,37 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("message.content_type !== asset.content_type"), true);
   assert.equal(html.includes('crypto.subtle.digest("SHA-256"'), true);
   assert.equal(html.includes("plugin asset bytes failed SHA-256 verification"), true);
+  assert.equal(html.includes("transferControlToOffscreen"), true);
+  assert.equal(html.includes("new ResizeObserver"), true);
+  assert.equal(html.includes("redevplugin.ui.canvas.input"), true);
+  assert.equal(html.includes("maxCanvasCount = 4"), true);
+  assert.equal(html.includes("maxCanvasDimension = 4096"), true);
+  assert.equal(html.includes("maxCanvasTotalPixels = 16777216"), true);
+  assert.equal(html.includes("maxImageCount = 32"), true);
+  assert.equal(html.includes("maxImageDimension = 4096"), true);
+  assert.equal(html.includes("maxImageTotalPixels = 33554432"), true);
+  assert.equal(html.includes("detectRasterImageType"), true);
+  assert.equal(html.includes("readImageDimensions"), true);
+  assert.equal(html.includes("decoded image assets exceed the renderer pixel budget"), true);
+  assert.equal(html.includes("OffscreenCanvas:undefined"), true);
+  assert.equal(html.includes("plugin canvas resize exceeds the worker pixel budget"), true);
+  assert.equal(html.includes("redevplugin.worker.ping"), true);
+  assert.equal(html.includes("redevplugin.worker.pong"), true);
+  assert.equal(html.includes("plugin worker heartbeat timed out"), true);
+  assert.equal(html.includes('event.type === "pointermove"'), true);
+  assert.equal(html.includes("createImageBitmap"), true);
+  assert.equal(html.includes("logical_ids"), true);
+  assert.equal(html.includes('element.tagName === "FORM" && event.type !== "submit"'), true);
+  assert.equal(html.includes('const submitButton = origin ? origin.closest("button") : null'), true);
+  assert.equal(html.includes('sendWorker(actionPayload(event, element, "submit"))'), true);
+  assert.equal(html.includes("captureRenderState"), true);
+  assert.equal(html.includes("restoreRenderState"), true);
+  assert.equal(html.includes("setSelectionRange"), true);
+  assert.equal(html.includes('querySelector("[data-redevplugin-renderer-autofocus]")'), true);
+  assert.equal(html.includes('querySelector("[autofocus]")'), false);
+  assert.equal(html.includes("redevplugin.ui.canvas.accessibility"), true);
+  assert.equal(html.includes('event.key !== "Escape"'), true);
+  assert.equal(html.includes("data-redevplugin-escape-action"), true);
   assert.equal(html.includes("surfaceDocument.worker.content"), true);
   assert.equal(html.includes(hostBootstrap.pluginId), false);
   assert.equal(html.includes(hostBootstrap.bridgeNonce), false);
@@ -449,8 +480,164 @@ test("plugin bridge client exposes only a public handle and its private port", a
     error.errorCode === "PLUGIN_CAPABILITY_ERROR" &&
     (error.details as { business_error_code?: string })?.business_error_code === "DOCUMENT_NOT_FOUND"
   );
+  const actions: string[] = [];
+  client.onAction("close-dialog", (event) => actions.push(event.event));
+  rendererPort.postMessage({ type: "redevplugin.ui.action", action: "close-dialog", event: "escape" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(actions, ["escape"]);
   client.dispose();
   assert.equal(pluginPort.closed, true);
+});
+
+test("plugin bridge acknowledges quiesce only after async lifecycle observers settle", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  let releasePersistence!: () => void;
+  const persistence = new Promise<void>((resolve) => {
+    releasePersistence = resolve;
+  });
+  let disposalStarted = false;
+  client.onLifecycle(async (event) => {
+    if (event.type !== "dispose") return;
+    disposalStarted = true;
+    await persistence;
+  });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.lifecycle",
+    event: { type: "dispose" },
+    quiesce_id: "quiesce_12345678",
+  });
+  await waitFor(() => disposalStarted);
+  assert.equal(pluginPort.sent.some((message) =>
+    (message as { type?: string }).type === "redevplugin.bridge.lifecycle_ack"
+  ), false);
+
+  releasePersistence();
+  await waitFor(() => pluginPort.sent.some((message) =>
+    (message as { type?: string }).type === "redevplugin.bridge.lifecycle_ack"
+  ));
+  assert.deepEqual(pluginPort.sent.at(-1), {
+    type: "redevplugin.bridge.lifecycle_ack",
+    quiesce_id: "quiesce_12345678",
+  });
+  assert.equal(pluginPort.closed, true);
+});
+
+test("plugin bridge transfers one canvas and verified image assets by logical identifier", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  const canvas = { width: 960, height: 540, getContext() { return null; } } as unknown as OffscreenCanvas;
+  const opening = client.openCanvas("playfield");
+  assert.deepEqual(pluginPort.sent[0], {
+    type: "redevplugin.ui.canvas.open",
+    id: "canvas_1",
+    canvas_id: "playfield",
+  });
+  rendererPort.postMessage({
+    type: "redevplugin.ui.canvas.ready",
+    id: "canvas_1",
+    canvas_id: "playfield",
+    canvas,
+    css_width: 960,
+    css_height: 540,
+    device_pixel_ratio: 2,
+  });
+  assert.deepEqual(await opening, {
+    canvas,
+    canvasId: "playfield",
+    cssWidth: 960,
+    cssHeight: 540,
+    devicePixelRatio: 2,
+  });
+
+  const updatingAccessibility = client.updateCanvasAccessibility("playfield", {
+    label: "Sky Strike. Running. Score 120. Three lives. 60 FPS.",
+    description: "Use arrow keys to fly and Space to fire.",
+  });
+  assert.deepEqual(pluginPort.sent[1], {
+    type: "redevplugin.ui.canvas.accessibility",
+    id: "canvas_2",
+    canvas_id: "playfield",
+    label: "Sky Strike. Running. Score 120. Three lives. 60 FPS.",
+    description: "Use arrow keys to fly and Space to fire.",
+  });
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "canvas_2", ok: true });
+  await updatingAccessibility;
+
+  const image = { width: 64, height: 64, close() {} } as unknown as ImageBitmap;
+  const loading = client.loadImageAsset("player-ship");
+  assert.deepEqual(pluginPort.sent[2], {
+    type: "redevplugin.ui.asset.image.open",
+    id: "asset_3",
+    asset_id: "player-ship",
+  });
+  rendererPort.postMessage({
+    type: "redevplugin.ui.asset.image.ready",
+    id: "asset_3",
+    asset_id: "player-ship",
+    image,
+    width: 64,
+    height: 64,
+  });
+  assert.equal(await loading, image);
+
+  client.dispose();
+});
+
+test("plugin bridge normalizes canvas focus, resize, keyboard, and pointer input", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+  const events: unknown[] = [];
+  const unsubscribe = client.onCanvasInput("playfield", (event) => events.push(event));
+
+  for (const event of [
+    { type: "focus" },
+    { type: "resize", css_width: 800, css_height: 450, device_pixel_ratio: 2 },
+    { type: "key", event: "keydown", code: "ArrowLeft", key: "ArrowLeft", repeat: false, alt_key: false, ctrl_key: false, meta_key: false, shift_key: false },
+    { type: "pointer", event: "pointermove", pointer_id: 1, pointer_type: "mouse", buttons: 1, button: -1, x: 120.5, y: 82.25, pressure: 0.5 },
+  ]) {
+    rendererPort.postMessage({ type: "redevplugin.ui.canvas.input", canvas_id: "playfield", event });
+  }
+  rendererPort.postMessage({
+    type: "redevplugin.ui.canvas.input",
+    canvas_id: "playfield",
+    event: { type: "pointer", event: "pointermove", pointer_id: -1, x: Number.NaN, y: 0 },
+  });
+  await Promise.resolve();
+
+  assert.equal(events.length, 4);
+  assert.deepEqual(events[2], {
+    type: "key",
+    event: "keydown",
+    code: "ArrowLeft",
+    key: "ArrowLeft",
+    repeat: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+  });
+  assert.deepEqual(events[3], {
+    type: "pointer",
+    event: "pointermove",
+    pointerId: 1,
+    pointerType: "mouse",
+    buttons: 1,
+    button: -1,
+    x: 120.5,
+    y: 82.25,
+    pressure: 0.5,
+  });
+  unsubscribe();
+  client.dispose();
 });
 
 test("plugin bridge client rejects malformed capability errors immediately", async () => {
@@ -623,9 +810,23 @@ test("surface host transfers one secret-free wildcard port and waits for paint, 
   assert.equal(JSON.stringify(frame.transferred.map((entry) => entry.message)).includes("gateway_secret"), false);
 
   fetch.push({});
-  await host.close();
+  const closing = host.close();
+  const concurrentClosing = host.close();
+  assert.equal(concurrentClosing, closing);
+  await waitFor(() => channel.port1.sent.some((message) =>
+    (message as { type?: string; quiesce_id?: string }).type === "redevplugin.bridge.lifecycle" &&
+    typeof (message as { quiesce_id?: string }).quiesce_id === "string"
+  ));
+  const quiesce = channel.port1.sent.find((message) =>
+    (message as { type?: string; quiesce_id?: string }).type === "redevplugin.bridge.lifecycle" &&
+    typeof (message as { quiesce_id?: string }).quiesce_id === "string"
+  ) as { quiesce_id: string };
+  assert.equal(quiesce.quiesce_id.startsWith("quiesce_"), true);
+  assert.equal(fetch.calls.length, 2);
+  channel.port2.postMessage({ type: "redevplugin.surface.quiesce_ack", quiesce_id: quiesce.quiesce_id });
+  await Promise.all([closing, concurrentClosing]);
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
-	assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { bridge_nonce: "bridge_nonce_1" });
+  assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { bridge_nonce: "bridge_nonce_1" });
   assert.equal(channel.port1.closed, true);
   assert.equal(frame.srcdoc, "");
 });
@@ -1117,6 +1318,55 @@ test("trusted parent forwards validated capability error details without credent
     business_error_details: { document_id: "doc-missing" },
   });
   assert.equal(JSON.stringify(response).includes("gateway"), false);
+  host.dispose();
+});
+
+test("trusted parent converts oversized RPC responses into a bounded bridge error", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    bridgeChannelId: "bridge_12345678",
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await opening;
+
+  fetch.push({ data: { payload: "x".repeat(240 * 1024) } });
+  channel.port2.postMessage({
+    type: "redevplugin.bridge.call",
+    request: { id: "rpc_101", method: "payload.read", params: {} },
+  });
+  await waitFor(() => fetch.calls.length === 3);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    channel.port1.sent.some((value) => (value as { id?: string }).id === "rpc_101"),
+    true,
+    JSON.stringify(channel.port1.sent),
+  );
+  const accepted = channel.port1.sent.find((value) => (value as { id?: string }).id === "rpc_101") as { ok?: boolean };
+  assert.equal(accepted.ok, true);
+
+  fetch.push({ data: { payload: "x".repeat(300 * 1024) } });
+  channel.port2.postMessage({
+    type: "redevplugin.bridge.call",
+    request: { id: "rpc_102", method: "payload.read", params: {} },
+  });
+  await waitFor(() => channel.port1.sent.some((value) => (value as { id?: string }).id === "rpc_102"));
+  const rejected = channel.port1.sent.find((value) => (value as { id?: string }).id === "rpc_102") as {
+    ok?: boolean;
+    error_code?: string;
+  };
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error_code, "PLUGIN_JSON_LIMIT_EXCEEDED");
   host.dispose();
 });
 
@@ -1790,6 +2040,35 @@ test("surface close bounds a non-responsive revocation transport", async () => {
     new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
   ]);
   assert.equal(result === "hung", false);
+  assert.equal(frame.srcdoc, "");
+});
+
+test("surface close bounds a non-responsive plugin quiesce", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    requestTimeoutMs: 10,
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await opening;
+
+  fetch.push({});
+  const result = await Promise.race([
+    host.close().then(() => "resolved", () => "rejected"),
+    new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+  ]);
+  assert.equal(result, "resolved");
+  assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
   assert.equal(frame.srcdoc, "");
 });
 

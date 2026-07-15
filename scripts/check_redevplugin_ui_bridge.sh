@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-BRIDGE_SCHEMA="$ROOT_DIR/spec/plugin/bridge-v2.schema.json"
+BRIDGE_SCHEMA="$ROOT_DIR/spec/plugin/bridge-v3.schema.json"
 SURFACE_SRC="$ROOT_DIR/packages/redevplugin-ui/src/surface.ts"
 CONTRACTS_SRC="$ROOT_DIR/packages/redevplugin-ui/src/contracts.gen.ts"
 
@@ -46,8 +46,8 @@ for (const forbidden of [
     throw new Error(`plugin-visible bridge schema exposes trusted-parent field ${forbidden}`);
   }
 }
-if (!contracts.includes('"plugin_ui_protocol_version": "plugin-ui-v2"')) {
-  throw new Error("generated UI protocol version is not plugin-ui-v2");
+if (!contracts.includes('"plugin_ui_protocol_version": "plugin-ui-v3"')) {
+  throw new Error("generated UI protocol version is not plugin-ui-v3");
 }
 if (!schema["x-redevplugin-render-policy"]) {
   throw new Error("bridge schema is missing the generated renderer policy source");
@@ -79,13 +79,18 @@ for (const forbidden of ["plugin_id", "surface_instance_id", "active_fingerprint
 }
 
 const pluginSourceFiles = [
-  "demo/browser/opaque-plugin-worker.ts",
-  "demo/browser/real-plugin-worker.ts",
-  "demo/browser/scaffold-plugin-worker.ts",
+  "examples/plugin-ui/memos.ts",
+  "examples/plugin-ui/weather.ts",
+  "examples/plugin-ui/sky-strike.ts",
+  "internal/scaffoldtemplate/plugin-worker.ts",
+  "testdata/browser-harness/opaque-surface/plugin-worker.ts",
 ];
 for (const relativePath of pluginSourceFiles) {
   const source = fs.readFileSync(path.join(rootDir, relativePath), "utf8");
-  if (!source.includes("packages/redevplugin-ui/src/plugin.js")) {
+  const importsPluginEntrypoint = source.includes("packages/redevplugin-ui/src/plugin.js") ||
+    source.includes('from "@floegence/redevplugin-ui/plugin"') ||
+    source.includes("from '@floegence/redevplugin-ui/plugin'");
+  if (!importsPluginEntrypoint) {
     throw new Error(`${relativePath} must import the plugin-only SDK entrypoint`);
   }
   for (const forbiddenEntrypoint of ["/src/index.js", "/src/trusted-parent.js", "/dist/index.js", "/dist/trusted-parent.js"]) {
@@ -97,8 +102,9 @@ for (const relativePath of pluginSourceFiles) {
 
 const scannedPluginFiles = [
   ...pluginSourceFiles,
-  ...walkFiles(path.join(rootDir, "demo/browser/generated")),
-  ...walkFiles(path.join(rootDir, "cmd/redevplugin/demo_assets")),
+  ...walkFiles(path.join(rootDir, "examples/plugins")),
+  ...walkFiles(path.join(rootDir, "cmd/redevplugin/scaffold_assets")),
+  ...walkFiles(path.join(rootDir, "testdata/browser-harness")),
   ...walkFiles(path.join(rootDir, "testdata/generated_plugins")),
 ].map((entry) => path.isAbsolute(entry) ? entry : path.join(rootDir, entry));
 const wildcardPostMessage = /(?:\bpostMessage|\.postMessage)\s*\([^)]*,\s*["']\*["']/g;

@@ -2,21 +2,28 @@ package pluginpkg
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"mime"
 	"path"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	parse "github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/css"
 	"github.com/tdewolff/parse/v2/js"
+	_ "golang.org/x/image/webp"
 	"golang.org/x/net/html"
 )
 
-const OpaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v1"
+const OpaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2"
 
 type OpaqueSurfaceWorkerType string
 
@@ -61,22 +68,29 @@ type OpaqueSurfaceWorker struct {
 }
 
 type OpaqueSurfaceAsset struct {
-	BindingID   string `json:"binding_id"`
-	Path        string `json:"path"`
-	SHA256      string `json:"sha256"`
-	Size        int64  `json:"size"`
-	ContentType string `json:"content_type"`
+	BindingID   string   `json:"binding_id"`
+	LogicalIDs  []string `json:"logical_ids"`
+	Path        string   `json:"path"`
+	SHA256      string   `json:"sha256"`
+	Size        int64    `json:"size"`
+	ContentType string   `json:"content_type"`
 }
 
 type OpaqueSurfaceAssetReader func(assetPath string) (Asset, error)
 
 type opaqueSurfaceBuilder struct {
-	entryPath string
-	readAsset OpaqueSurfaceAssetReader
-	document  OpaqueSurfaceDocument
-	assets    map[string]OpaqueSurfaceAsset
-	lazyBytes int64
-	workerSet bool
+	entryPath    string
+	readAsset    OpaqueSurfaceAssetReader
+	document     OpaqueSurfaceDocument
+	assets       map[string]int
+	assetIDs     map[string]string
+	canvasIDs    map[string]struct{}
+	canvasCount  int
+	canvasPixels int64
+	imageCount   int
+	imagePixels  int64
+	lazyBytes    int64
+	workerSet    bool
 }
 
 func BuildOpaqueSurfaceDocument(entryPath string, readAsset OpaqueSurfaceAssetReader) (OpaqueSurfaceDocument, error) {
@@ -109,7 +123,9 @@ func BuildOpaqueSurfaceDocument(entryPath string, readAsset OpaqueSurfaceAssetRe
 			Assets:        []OpaqueSurfaceAsset{},
 			CriticalBytes: int64(len(entry.Content)),
 		},
-		assets: map[string]OpaqueSurfaceAsset{},
+		assets:    map[string]int{},
+		assetIDs:  map[string]string{},
+		canvasIDs: map[string]struct{}{},
 	}
 	body, err := builder.sanitizeDocument(doc)
 	if err != nil {
@@ -182,11 +198,17 @@ func (b *opaqueSurfaceBuilder) sanitizeDocument(doc *html.Node) (*html.Node, err
 				return nil
 			case "link":
 				rel := strings.ToLower(strings.TrimSpace(htmlAttribute(node, "rel")))
-				if rel != "stylesheet" {
+				switch rel {
+				case "stylesheet":
+					if err := b.appendStyle(node, baseDir); err != nil {
+						return err
+					}
+				case "redevplugin-image":
+					if err := b.appendDeclaredImage(node, baseDir); err != nil {
+						return err
+					}
+				default:
 					return fmt.Errorf("opaque surface entry %q contains unsupported link rel %q", b.entryPath, rel)
-				}
-				if err := b.appendStyle(node, baseDir); err != nil {
-					return err
 				}
 				removeHTMLNode(node)
 				return nil
@@ -204,6 +226,11 @@ func (b *opaqueSurfaceBuilder) sanitizeDocument(doc *html.Node) (*html.Node, err
 			if _, ok := opaqueSurfaceAllowedTags[tag]; ok {
 				if err := b.sanitizeAttributes(node, tag, baseDir); err != nil {
 					return err
+				}
+				if tag == "canvas" {
+					if err := b.registerCanvas(node); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -287,6 +314,33 @@ func (b *opaqueSurfaceBuilder) appendStyle(node *html.Node, htmlBaseDir string) 
 	return nil
 }
 
+func (b *opaqueSurfaceBuilder) appendDeclaredImage(node *html.Node, htmlBaseDir string) error {
+	if node.Parent == nil || node.Parent.Type != html.ElementNode || !strings.EqualFold(node.Parent.Data, "head") {
+		return errors.New("opaque surface image declarations must appear in <head>")
+	}
+	logicalID := strings.TrimSpace(htmlAttribute(node, "data-redevplugin-asset-id"))
+	if !validOpaqueSurfaceLogicalIdentifier(logicalID) {
+		return fmt.Errorf("opaque surface image asset identifier %q is invalid", logicalID)
+	}
+	assetPath, err := resolveOpaqueSurfaceAssetPath(htmlBaseDir, htmlAttribute(node, "href"))
+	if err != nil {
+		return fmt.Errorf("opaque surface image asset: %w", err)
+	}
+	asset, err := readOpaqueSurfaceAsset(b.readAsset, assetPath)
+	if err != nil {
+		return err
+	}
+	contentType := strings.TrimSpace(asset.Entry.ContentType)
+	if contentType == "" {
+		contentType = mime.TypeByExtension(strings.ToLower(path.Ext(asset.Entry.Path)))
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") || strings.EqualFold(contentType, "image/svg+xml") {
+		return fmt.Errorf("opaque surface image asset %q must be a non-SVG image", assetPath)
+	}
+	_, err = b.registerAsset(asset, logicalID)
+	return err
+}
+
 func (b *opaqueSurfaceBuilder) sanitizeAttributes(node *html.Node, tag string, baseDir string) error {
 	attrs := make([]html.Attribute, 0, len(node.Attr)+2)
 	for _, attr := range node.Attr {
@@ -319,6 +373,13 @@ func (b *opaqueSurfaceBuilder) sanitizeAttributes(node *html.Node, tag string, b
 			if err := validateOpaqueSurfaceAttribute(tag, key, attr.Val); err != nil {
 				return err
 			}
+			if tag == "canvas" && key == "data-redevplugin-canvas" {
+				canvasID := strings.TrimSpace(attr.Val)
+				if _, exists := b.canvasIDs[canvasID]; exists {
+					return fmt.Errorf("opaque surface canvas identifier %q must be unique", canvasID)
+				}
+				b.canvasIDs[canvasID] = struct{}{}
+			}
 			attr.Key = key
 			attrs = append(attrs, attr)
 			continue
@@ -334,7 +395,10 @@ func (b *opaqueSurfaceBuilder) sanitizeAttributes(node *html.Node, tag string, b
 		if err != nil {
 			return err
 		}
-		binding, err := b.registerAsset(asset)
+		if opaqueSurfaceRequiresImageAsset(tag, key) && !opaqueSurfaceImageContentType(asset) {
+			return fmt.Errorf("opaque surface element <%s> attribute %q must reference a raster image", tag, key)
+		}
+		binding, err := b.registerAsset(asset, "")
 		if err != nil {
 			return err
 		}
@@ -400,7 +464,7 @@ func (b *opaqueSurfaceBuilder) rewriteStyle(assetPath string, content []byte) (s
 		if err != nil {
 			return "", err
 		}
-		binding, err := b.registerAsset(asset)
+		binding, err := b.registerAsset(asset, "")
 		if err != nil {
 			return "", err
 		}
@@ -411,9 +475,22 @@ func (b *opaqueSurfaceBuilder) rewriteStyle(assetPath string, content []byte) (s
 	return out.String(), nil
 }
 
-func (b *opaqueSurfaceBuilder) registerAsset(asset Asset) (OpaqueSurfaceAsset, error) {
-	if existing, ok := b.assets[asset.Entry.Path]; ok {
-		return existing, nil
+func (b *opaqueSurfaceBuilder) registerAsset(asset Asset, logicalID string) (OpaqueSurfaceAsset, error) {
+	if index, ok := b.assets[asset.Entry.Path]; ok {
+		if logicalID != "" {
+			if existingPath, exists := b.assetIDs[logicalID]; exists && existingPath != asset.Entry.Path {
+				return OpaqueSurfaceAsset{}, fmt.Errorf("opaque surface asset identifier %q must be unique", logicalID)
+			}
+			existing := &b.document.Assets[index]
+			if !containsString(existing.LogicalIDs, logicalID) {
+				if len(existing.LogicalIDs) >= 16 {
+					return OpaqueSurfaceAsset{}, fmt.Errorf("opaque surface asset %q exceeds 16 logical identifiers", asset.Entry.Path)
+				}
+				existing.LogicalIDs = append(existing.LogicalIDs, logicalID)
+			}
+			b.assetIDs[logicalID] = asset.Entry.Path
+		}
+		return b.document.Assets[index], nil
 	}
 	if len(b.document.Assets) >= maxOpaqueSurfaceLazyAssets {
 		return OpaqueSurfaceAsset{}, fmt.Errorf("opaque surface lazy asset count exceeds %d", maxOpaqueSurfaceLazyAssets)
@@ -432,17 +509,170 @@ func (b *opaqueSurfaceBuilder) registerAsset(asset Asset) (OpaqueSurfaceAsset, e
 	if len(contentType) > 256 {
 		return OpaqueSurfaceAsset{}, fmt.Errorf("opaque surface asset %q content type exceeds 256 bytes", asset.Entry.Path)
 	}
+	if strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		if err := b.registerImage(asset); err != nil {
+			return OpaqueSurfaceAsset{}, err
+		}
+	}
+	if logicalID == "" {
+		logicalID = "asset-" + strings.TrimPrefix(sha256String([]byte(asset.Entry.Path)), "sha256:")[:24]
+	}
+	if existingPath, exists := b.assetIDs[logicalID]; exists && existingPath != asset.Entry.Path {
+		return OpaqueSurfaceAsset{}, fmt.Errorf("opaque surface asset identifier %q must be unique", logicalID)
+	}
 	binding := OpaqueSurfaceAsset{
 		BindingID:   "asset_" + strings.TrimPrefix(sha256String([]byte(asset.Entry.Path)), "sha256:")[:24],
+		LogicalIDs:  []string{logicalID},
 		Path:        asset.Entry.Path,
 		SHA256:      asset.Entry.SHA256,
 		Size:        assetSize,
 		ContentType: contentType,
 	}
-	b.assets[asset.Entry.Path] = binding
+	b.assets[asset.Entry.Path] = len(b.document.Assets)
+	b.assetIDs[logicalID] = asset.Entry.Path
 	b.document.Assets = append(b.document.Assets, binding)
 	b.lazyBytes += assetSize
 	return binding, nil
+}
+
+func (b *opaqueSurfaceBuilder) registerCanvas(node *html.Node) error {
+	if b.canvasCount >= opaqueSurfaceMaxCanvasCount {
+		return fmt.Errorf("opaque surface canvas count exceeds %d", opaqueSurfaceMaxCanvasCount)
+	}
+	width, err := opaqueSurfaceCanvasDimension(node, "width", 300)
+	if err != nil {
+		return err
+	}
+	height, err := opaqueSurfaceCanvasDimension(node, "height", 150)
+	if err != nil {
+		return err
+	}
+	pixels := int64(width) * int64(height)
+	if pixels > int64(opaqueSurfaceMaxCanvasTotalPixels)-b.canvasPixels {
+		return fmt.Errorf("opaque surface canvas pixels exceed %d", opaqueSurfaceMaxCanvasTotalPixels)
+	}
+	b.canvasCount++
+	b.canvasPixels += pixels
+	return nil
+}
+
+func opaqueSurfaceCanvasDimension(node *html.Node, name string, defaultValue int) (int, error) {
+	raw := strings.TrimSpace(htmlAttribute(node, name))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > opaqueSurfaceMaxCanvasDimension {
+		return 0, fmt.Errorf("opaque surface canvas %s must be an integer from 1 to %d", name, opaqueSurfaceMaxCanvasDimension)
+	}
+	return value, nil
+}
+
+type opaqueSurfaceImageInfo struct {
+	width  int
+	height int
+	pixels int64
+}
+
+func (b *opaqueSurfaceBuilder) registerImage(asset Asset) error {
+	if b.imageCount >= opaqueSurfaceMaxImageCount {
+		return fmt.Errorf("opaque surface image count exceeds %d", opaqueSurfaceMaxImageCount)
+	}
+	info, err := decodeOpaqueSurfaceImageInfo(asset.Entry.Path, asset.Content)
+	if err != nil {
+		return fmt.Errorf("opaque surface image asset %q: %w", asset.Entry.Path, err)
+	}
+	if info.width > opaqueSurfaceMaxImageDimension || info.height > opaqueSurfaceMaxImageDimension {
+		return fmt.Errorf("opaque surface image dimensions exceed %d", opaqueSurfaceMaxImageDimension)
+	}
+	if info.pixels <= 0 || info.pixels > int64(opaqueSurfaceMaxImageTotalPixels)-b.imagePixels {
+		return fmt.Errorf("opaque surface image pixels exceed %d", opaqueSurfaceMaxImageTotalPixels)
+	}
+	b.imageCount++
+	b.imagePixels += info.pixels
+	return nil
+}
+
+func decodeOpaqueSurfaceImageInfo(assetPath string, content []byte) (opaqueSurfaceImageInfo, error) {
+	if strings.EqualFold(path.Ext(assetPath), ".ico") {
+		return decodeOpaqueSurfaceICOInfo(content)
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(content))
+	if err != nil {
+		return opaqueSurfaceImageInfo{}, fmt.Errorf("decode raster dimensions: %w", err)
+	}
+	switch format {
+	case "png", "jpeg", "gif", "webp":
+	default:
+		return opaqueSurfaceImageInfo{}, fmt.Errorf("image format %q is unsupported", format)
+	}
+	if config.Width <= 0 || config.Height <= 0 {
+		return opaqueSurfaceImageInfo{}, errors.New("decoded image dimensions must be positive")
+	}
+	return opaqueSurfaceImageInfo{
+		width:  config.Width,
+		height: config.Height,
+		pixels: int64(config.Width) * int64(config.Height),
+	}, nil
+}
+
+func decodeOpaqueSurfaceICOInfo(content []byte) (opaqueSurfaceImageInfo, error) {
+	if len(content) < 6 || binary.LittleEndian.Uint16(content[0:2]) != 0 || binary.LittleEndian.Uint16(content[2:4]) != 1 {
+		return opaqueSurfaceImageInfo{}, errors.New("ICO directory header is invalid")
+	}
+	count := int(binary.LittleEndian.Uint16(content[4:6]))
+	if count < 1 || count > 16 || len(content) < 6+count*16 {
+		return opaqueSurfaceImageInfo{}, errors.New("ICO image count is invalid")
+	}
+	info := opaqueSurfaceImageInfo{}
+	for i := 0; i < count; i++ {
+		entry := content[6+i*16 : 6+(i+1)*16]
+		width := int(entry[0])
+		height := int(entry[1])
+		if width == 0 {
+			width = 256
+		}
+		if height == 0 {
+			height = 256
+		}
+		size := int(binary.LittleEndian.Uint32(entry[8:12]))
+		offset := int(binary.LittleEndian.Uint32(entry[12:16]))
+		end := offset + size
+		if size <= 0 || offset < 6+count*16 || end < offset || end > len(content) {
+			return opaqueSurfaceImageInfo{}, fmt.Errorf("ICO image[%d] payload is invalid", i)
+		}
+		if width > info.width {
+			info.width = width
+		}
+		if height > info.height {
+			info.height = height
+		}
+		info.pixels += int64(width) * int64(height)
+	}
+	return info, nil
+}
+
+func opaqueSurfaceImageContentType(asset Asset) bool {
+	contentType := strings.TrimSpace(asset.Entry.ContentType)
+	if contentType == "" {
+		contentType = mime.TypeByExtension(strings.ToLower(path.Ext(asset.Entry.Path)))
+	}
+	return strings.HasPrefix(strings.ToLower(contentType), "image/") && !strings.EqualFold(contentType, "image/svg+xml")
+}
+
+func opaqueSurfaceRequiresImageAsset(tag string, attribute string) bool {
+	return (tag == "img" && attribute == "src") ||
+		(tag == "input" && attribute == "src") ||
+		(tag == "video" && attribute == "poster")
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func validateBundledWorkerJavaScript(assetPath string, content []byte) error {
@@ -569,8 +799,19 @@ func validateOpaqueSurfaceAttribute(tag string, key string, value string) error 
 	if key == "data-redevplugin-asset-attr" && value != "src" && value != "poster" {
 		return fmt.Errorf("opaque surface element <%s> asset attribute %q is invalid", tag, value)
 	}
+	if key == "data-redevplugin-canvas" {
+		if tag != "canvas" || !validOpaqueSurfaceLogicalIdentifier(strings.TrimSpace(value)) {
+			return fmt.Errorf("opaque surface element <%s> attribute %q is not supported", tag, key)
+		}
+	}
 	if tag == "input" && key == "type" && !safeOpaqueInputType(value) {
 		return fmt.Errorf("opaque surface input type %q is not supported", value)
+	}
+	if tag == "canvas" && (key == "width" || key == "height") {
+		dimension, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || dimension < 1 || dimension > opaqueSurfaceMaxCanvasDimension {
+			return fmt.Errorf("opaque surface canvas %s must be an integer from 1 to %d", key, opaqueSurfaceMaxCanvasDimension)
+		}
 	}
 	return nil
 }
@@ -586,6 +827,14 @@ func validOpaqueSurfaceIdentifier(value string) bool {
 		return false
 	}
 	return true
+}
+
+func validOpaqueSurfaceLogicalIdentifier(value string) bool {
+	if !validOpaqueSurfaceIdentifier(value) {
+		return false
+	}
+	first := value[0]
+	return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')
 }
 
 func validOpaqueSurfaceHandle(value string, prefix string) bool {

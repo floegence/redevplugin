@@ -93,16 +93,34 @@ type MethodRouteSpec struct {
 }
 
 type MethodSpec struct {
-	Method         string              `json:"method"`
-	Effect         MethodEffect        `json:"effect,omitempty"`
-	Execution      MethodExecutionMode `json:"execution,omitempty"`
-	Dangerous      bool                `json:"dangerous,omitempty"`
-	PreflightOnly  bool                `json:"preflight_only,omitempty"`
-	Confirmation   *ConfirmationSpec   `json:"confirmation,omitempty"`
-	CancelPolicy   *CancelPolicySpec   `json:"cancel_policy,omitempty"`
-	RequestSchema  map[string]any      `json:"request_schema,omitempty"`
-	ResponseSchema map[string]any      `json:"response_schema,omitempty"`
-	Route          MethodRouteSpec     `json:"route"`
+	Method         string                  `json:"method"`
+	Effect         MethodEffect            `json:"effect,omitempty"`
+	Execution      MethodExecutionMode     `json:"execution,omitempty"`
+	Dangerous      bool                    `json:"dangerous,omitempty"`
+	PreflightOnly  bool                    `json:"preflight_only,omitempty"`
+	Confirmation   *ConfirmationSpec       `json:"confirmation,omitempty"`
+	CancelPolicy   *CancelPolicySpec       `json:"cancel_policy,omitempty"`
+	RequestSchema  map[string]any          `json:"request_schema,omitempty"`
+	ResponseSchema map[string]any          `json:"response_schema,omitempty"`
+	Route          MethodRouteSpec         `json:"route"`
+	BrokerAccess   *MethodBrokerAccessSpec `json:"broker_access,omitempty"`
+}
+
+type MethodBrokerAccessSpec struct {
+	Storage []StorageBrokerAccessSpec `json:"storage,omitempty"`
+	Network []NetworkBrokerAccessSpec `json:"network,omitempty"`
+}
+
+type StorageBrokerAccessSpec struct {
+	StoreID    string   `json:"store_id"`
+	Operations []string `json:"operations"`
+}
+
+type NetworkBrokerAccessSpec struct {
+	ConnectorID string   `json:"connector_id"`
+	Transport   string   `json:"transport"`
+	Operations  []string `json:"operations"`
+	HTTPMethods []string `json:"http_methods,omitempty"`
 }
 
 type ConfirmationMode string
@@ -170,8 +188,12 @@ type WidgetSizeSpec struct {
 type WorkerMode string
 
 const (
-	WorkerModeJob   WorkerMode = "job"
-	WorkerModeActor WorkerMode = "actor"
+	WorkerModeJob             WorkerMode = "job"
+	MaxWorkerMemoryLimitBytes int64      = 256 << 20
+	MaxStorageStores                     = 16
+	MaxStoreQuotaBytes        int64      = 1 << 30
+	MaxStoreQuotaFiles        int64      = 100_000
+	DefaultStoreQuotaFiles    int64      = 10_000
 )
 
 type WorkerSpec struct {
@@ -273,8 +295,8 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if m.SchemaVersion != "redevplugin.manifest.v2" {
-		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v2"}
+	if m.SchemaVersion != "redevplugin.manifest.v3" {
+		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v3"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -282,14 +304,23 @@ func Validate(m Manifest) error {
 	if strings.TrimSpace(m.Plugin.PluginID) == "" {
 		return ValidationError{Field: "plugin.plugin_id", Message: "is required"}
 	}
+	if strings.TrimSpace(m.Plugin.DisplayName) == "" {
+		return ValidationError{Field: "plugin.display_name", Message: "is required"}
+	}
 	if strings.TrimSpace(m.Plugin.Version) == "" {
 		return ValidationError{Field: "plugin.version", Message: "is required"}
 	}
 	if m.Plugin.APIVersion != "plugin-v1" {
 		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
 	}
-	if m.Plugin.UIProtocolVersion != "plugin-ui-v2" {
-		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be plugin-ui-v2"}
+	if m.Plugin.UIProtocolVersion != "plugin-ui-v3" {
+		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be plugin-ui-v3"}
+	}
+	if strings.TrimSpace(m.Plugin.MinRuntimeVersion) == "" {
+		return ValidationError{Field: "plugin.min_runtime_version", Message: "is required"}
+	}
+	if m.Surfaces == nil {
+		return ValidationError{Field: "surfaces", Message: "is required"}
 	}
 
 	bindings := map[string]struct{}{}
@@ -318,17 +349,23 @@ func Validate(m Manifest) error {
 		if strings.TrimSpace(worker.Artifact) == "" {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].artifact", i), Message: "is required"}
 		}
-		if worker.ABI != "redevplugin-wasm-worker-v1" {
-			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redevplugin-wasm-worker-v1"}
+		if worker.ABI != "redevplugin-wasm-worker-v2" {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].abi", i), Message: "must be redevplugin-wasm-worker-v2"}
 		}
-		if worker.Mode != WorkerModeJob && worker.Mode != WorkerModeActor {
-			return ValidationError{Field: fmt.Sprintf("workers[%d].mode", i), Message: "must be job or actor"}
+		if worker.Mode != WorkerModeJob {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].mode", i), Message: "must be job"}
 		}
 		if worker.Scope != "user" && worker.Scope != "environment" {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].scope", i), Message: "must be user or environment"}
 		}
 		if worker.MemoryLimitBytes <= 0 {
 			return ValidationError{Field: fmt.Sprintf("workers[%d].memory_limit_bytes", i), Message: "must be positive"}
+		}
+		if worker.MemoryLimitBytes > MaxWorkerMemoryLimitBytes {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].memory_limit_bytes", i), Message: fmt.Sprintf("must not exceed %d", MaxWorkerMemoryLimitBytes)}
+		}
+		if worker.IdleTimeoutMS < 0 {
+			return ValidationError{Field: fmt.Sprintf("workers[%d].idle_timeout_ms", i), Message: "must not be negative"}
 		}
 	}
 
@@ -433,6 +470,9 @@ func Validate(m Manifest) error {
 	}
 
 	for i, intent := range m.Intents {
+		if strings.TrimSpace(intent.IntentID) == "" {
+			return ValidationError{Field: fmt.Sprintf("intents[%d].intent_id", i), Message: "is required"}
+		}
 		if _, ok := methods[intent.Method]; !ok {
 			return ValidationError{Field: fmt.Sprintf("intents[%d].method", i), Message: "must reference a declared method"}
 		}
@@ -460,6 +500,9 @@ func Validate(m Manifest) error {
 			if !validSettingType(field.Type) {
 				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].type", i), Message: "must be string, boolean, number, integer, enum, select, or secret"}
 			}
+			if strings.TrimSpace(field.Label) == "" {
+				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].label", i), Message: "is required"}
+			}
 			if (field.Type == "enum" || field.Type == "select") && len(field.Options) == 0 {
 				return ValidationError{Field: fmt.Sprintf("settings.fields[%d].options", i), Message: "is required for option settings"}
 			}
@@ -472,14 +515,41 @@ func Validate(m Manifest) error {
 		}
 	}
 	if m.Storage != nil {
+		if len(m.Storage.Stores) > MaxStorageStores {
+			return ValidationError{Field: "storage.stores", Message: fmt.Sprintf("must contain at most %d stores", MaxStorageStores)}
+		}
+		stores := map[string]string{}
 		for i, store := range m.Storage.Stores {
+			field := fmt.Sprintf("storage.stores[%d]", i)
+			if strings.TrimSpace(store.StoreID) == "" {
+				return ValidationError{Field: field + ".store_id", Message: "is required"}
+			}
+			if _, ok := stores[store.StoreID]; ok {
+				return ValidationError{Field: field + ".store_id", Message: "must be unique"}
+			}
+			if !validStoreKind(store.Kind) {
+				return ValidationError{Field: field + ".kind", Message: "must be files, kv, or sqlite"}
+			}
+			stores[store.StoreID] = store.Kind
+			if store.Scope != "user" && store.Scope != "environment" {
+				return ValidationError{Field: field + ".scope", Message: "must be user or environment"}
+			}
+			if store.QuotaBytes <= 0 {
+				return ValidationError{Field: field + ".quota_bytes", Message: "must be positive"}
+			}
+			if store.QuotaBytes > MaxStoreQuotaBytes {
+				return ValidationError{Field: field + ".quota_bytes", Message: fmt.Sprintf("must not exceed %d", MaxStoreQuotaBytes)}
+			}
 			if store.QuotaFiles != nil && *store.QuotaFiles <= 0 {
-				return ValidationError{Field: fmt.Sprintf("storage.stores[%d].quota_files", i), Message: "must be positive"}
+				return ValidationError{Field: field + ".quota_files", Message: "must be positive"}
+			}
+			if store.QuotaFiles != nil && *store.QuotaFiles > MaxStoreQuotaFiles {
+				return ValidationError{Field: field + ".quota_files", Message: fmt.Sprintf("must not exceed %d", MaxStoreQuotaFiles)}
 			}
 			if store.SchemaVersion <= 0 {
-				return ValidationError{Field: fmt.Sprintf("storage.stores[%d].schema_version", i), Message: "must be positive"}
+				return ValidationError{Field: field + ".schema_version", Message: "must be positive"}
 			}
-			if err := validateMigrationSpec(fmt.Sprintf("storage.stores[%d].migration", i), store.SchemaVersion, store.Migration); err != nil {
+			if err := validateMigrationSpec(field+".migration", store.SchemaVersion, store.Migration); err != nil {
 				return err
 			}
 		}
@@ -503,6 +573,29 @@ func Validate(m Manifest) error {
 			if len(connector.Destinations) == 0 {
 				return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].destinations", i), Message: "must not be empty"}
 			}
+			for destinationIndex, destination := range connector.Destinations {
+				if strings.TrimSpace(destination) == "" {
+					return ValidationError{Field: fmt.Sprintf("network_access.connectors[%d].destinations[%d]", i, destinationIndex), Message: "must not be empty"}
+				}
+			}
+		}
+	}
+
+	storeKinds := map[string]string{}
+	if m.Storage != nil {
+		for _, store := range m.Storage.Stores {
+			storeKinds[store.StoreID] = store.Kind
+		}
+	}
+	connectorTransports := map[string]string{}
+	if m.NetworkAccess != nil {
+		for _, connector := range m.NetworkAccess.Connectors {
+			connectorTransports[connector.ConnectorID] = connector.Transport
+		}
+	}
+	for i, method := range m.Methods {
+		if err := validateMethodBrokerAccess(fmt.Sprintf("methods[%d].broker_access", i), method, storeKinds, connectorTransports); err != nil {
+			return err
 		}
 	}
 
@@ -511,7 +604,153 @@ func Validate(m Manifest) error {
 
 func capabilityMethodDeclaresUnsignedPolicy(method MethodSpec) bool {
 	return method.Effect != "" || method.Execution != "" || method.Dangerous || method.PreflightOnly ||
-		method.Confirmation != nil || method.CancelPolicy != nil || method.RequestSchema != nil || method.ResponseSchema != nil
+		method.Confirmation != nil || method.CancelPolicy != nil || method.RequestSchema != nil || method.ResponseSchema != nil || method.BrokerAccess != nil
+}
+
+func validateMethodBrokerAccess(field string, method MethodSpec, stores map[string]string, connectors map[string]string) error {
+	access := method.BrokerAccess
+	if access == nil {
+		return nil
+	}
+	if method.Route.Kind != MethodRouteWorker {
+		return ValidationError{Field: field, Message: "is only allowed for worker routes"}
+	}
+	seenStores := map[string]struct{}{}
+	for i, item := range access.Storage {
+		itemField := fmt.Sprintf("%s.storage[%d]", field, i)
+		kind, ok := stores[item.StoreID]
+		if !ok || strings.TrimSpace(item.StoreID) == "" {
+			return ValidationError{Field: itemField + ".store_id", Message: "must reference a declared store"}
+		}
+		if _, duplicate := seenStores[item.StoreID]; duplicate {
+			return ValidationError{Field: itemField + ".store_id", Message: "must be unique"}
+		}
+		seenStores[item.StoreID] = struct{}{}
+		if len(item.Operations) == 0 {
+			return ValidationError{Field: itemField + ".operations", Message: "must not be empty"}
+		}
+		seenOperations := map[string]struct{}{}
+		for operationIndex, operation := range item.Operations {
+			operationField := fmt.Sprintf("%s.operations[%d]", itemField, operationIndex)
+			if !validStorageOperation(kind, operation) {
+				return ValidationError{Field: operationField, Message: "is not valid for the declared store kind"}
+			}
+			if method.Effect == MethodEffectRead && !readOnlyStorageOperation(operation) {
+				return ValidationError{Field: operationField, Message: "must be read-only for a read effect method"}
+			}
+			if _, duplicate := seenOperations[operation]; duplicate {
+				return ValidationError{Field: operationField, Message: "must be unique"}
+			}
+			seenOperations[operation] = struct{}{}
+		}
+	}
+	seenConnectors := map[string]struct{}{}
+	for i, item := range access.Network {
+		itemField := fmt.Sprintf("%s.network[%d]", field, i)
+		transport, ok := connectors[item.ConnectorID]
+		if !ok || strings.TrimSpace(item.ConnectorID) == "" {
+			return ValidationError{Field: itemField + ".connector_id", Message: "must reference a declared connector"}
+		}
+		if _, duplicate := seenConnectors[item.ConnectorID]; duplicate {
+			return ValidationError{Field: itemField + ".connector_id", Message: "must be unique"}
+		}
+		seenConnectors[item.ConnectorID] = struct{}{}
+		if item.Transport != transport {
+			return ValidationError{Field: itemField + ".transport", Message: "must match the declared connector transport"}
+		}
+		if len(item.Operations) == 0 {
+			return ValidationError{Field: itemField + ".operations", Message: "must not be empty"}
+		}
+		seenOperations := map[string]struct{}{}
+		for operationIndex, operation := range item.Operations {
+			operationField := fmt.Sprintf("%s.operations[%d]", itemField, operationIndex)
+			if !validNetworkOperation(item.Transport, operation) {
+				return ValidationError{Field: operationField, Message: "is not valid for the declared transport"}
+			}
+			if method.Effect == MethodEffectRead && item.Transport != "http" {
+				return ValidationError{Field: operationField, Message: "requires a write, execute, delete, or admin effect"}
+			}
+			if _, duplicate := seenOperations[operation]; duplicate {
+				return ValidationError{Field: operationField, Message: "must be unique"}
+			}
+			seenOperations[operation] = struct{}{}
+		}
+		if item.Transport != "http" && len(item.HTTPMethods) > 0 {
+			return ValidationError{Field: itemField + ".http_methods", Message: "is only allowed for http connectors"}
+		}
+		if item.Transport == "http" && len(item.HTTPMethods) == 0 {
+			return ValidationError{Field: itemField + ".http_methods", Message: "must not be empty for http connectors"}
+		}
+		seenHTTPMethods := map[string]struct{}{}
+		for methodIndex, httpMethod := range item.HTTPMethods {
+			httpMethodField := fmt.Sprintf("%s.http_methods[%d]", itemField, methodIndex)
+			if !validHTTPMethod(httpMethod) {
+				return ValidationError{Field: httpMethodField, Message: "must be an uppercase supported HTTP method"}
+			}
+			if method.Effect == MethodEffectRead && !readOnlyHTTPMethod(httpMethod) {
+				return ValidationError{Field: httpMethodField, Message: "must be GET, HEAD, or OPTIONS for a read effect method"}
+			}
+			if _, duplicate := seenHTTPMethods[httpMethod]; duplicate {
+				return ValidationError{Field: httpMethodField, Message: "must be unique"}
+			}
+			seenHTTPMethods[httpMethod] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validStoreKind(kind string) bool {
+	return kind == "files" || kind == "kv" || kind == "sqlite"
+}
+
+func validStorageOperation(kind string, operation string) bool {
+	switch kind {
+	case "files":
+		return operation == "read" || operation == "write" || operation == "delete" || operation == "list"
+	case "kv":
+		return operation == "get" || operation == "put" || operation == "delete" || operation == "list"
+	case "sqlite":
+		return operation == "query" || operation == "exec"
+	default:
+		return false
+	}
+}
+
+func readOnlyStorageOperation(operation string) bool {
+	switch operation {
+	case "read", "list", "get", "query":
+		return true
+	default:
+		return false
+	}
+}
+
+func validNetworkOperation(transport string, operation string) bool {
+	switch transport {
+	case "http":
+		return operation == "http" || operation == "http_stream"
+	case "websocket":
+		return operation == "websocket_round_trip"
+	case "tcp":
+		return operation == "tcp_round_trip"
+	case "udp":
+		return operation == "udp_round_trip"
+	default:
+		return false
+	}
+}
+
+func validHTTPMethod(method string) bool {
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+		return true
+	default:
+		return false
+	}
+}
+
+func readOnlyHTTPMethod(method string) bool {
+	return method == "GET" || method == "HEAD" || method == "OPTIONS"
 }
 
 func validSurfaceKind(kind SurfaceKind) bool {

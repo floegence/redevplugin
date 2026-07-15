@@ -2,15 +2,16 @@ use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-pub const RUST_IPC_VERSION: &str = "rust-ipc-v1";
-pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v1";
+pub const RUST_IPC_VERSION: &str = "rust-ipc-v2";
+pub const WASM_ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
 pub const RUNTIME_LEASE_SIGNATURE_SCHEMA_VERSION: &str = "redevplugin.runtime_execution_lease.v1";
 pub const RUNTIME_LEASE_TOKEN_KIND: &str = "runtime_execution_lease";
 pub const RUNTIME_LEASE_SIGNATURE_ALGORITHM: &str = "ed25519";
 pub const WORKER_INVOCATION_TARGET_SCHEMA_VERSION: &str = "redevplugin.worker_invocation_target.v1";
+pub const MAX_RUNTIME_LEASE_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
 pub const FRAME_TYPE_HELLO: &str = "hello";
 pub const FRAME_TYPE_HELLO_ACK: &str = "hello_ack";
 pub const FRAME_TYPE_HEARTBEAT: &str = "heartbeat";
@@ -44,17 +45,19 @@ pub const ERR_RUNTIME_CONTROL_CHANNEL_STALE: &str = "RUNTIME_CONTROL_CHANNEL_STA
 pub const ERR_RUNTIME_LEASE_INVALID: &str = "RUNTIME_LEASE_INVALID";
 pub const ERR_RUNTIME_LEASE_SIGNATURE_INVALID: &str = "RUNTIME_LEASE_SIGNATURE_INVALID";
 pub const ERR_LEASE_REPLAYED: &str = "PLUGIN_LEASE_REPLAYED";
-pub const ERR_WASM_NOT_IMPLEMENTED: &str = "WASM_NOT_IMPLEMENTED";
 pub const ERR_WASM_WORKER_INVALID: &str = "WASM_WORKER_INVALID";
+pub const ERR_WASM_WORKER_FAILED: &str = "WASM_WORKER_FAILED";
 pub const ERR_WASM_HOSTCALL_FAILED: &str = "WASM_HOSTCALL_FAILED";
 pub const ERR_UNSUPPORTED_FRAME: &str = "UNSUPPORTED_FRAME";
+pub const ERROR_ORIGIN_RUNTIME: &str = "runtime";
+pub const ERROR_ORIGIN_HOSTCALL: &str = "hostcall";
+pub const ERROR_ORIGIN_PLUGIN: &str = "plugin";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameType {
     Hello,
     HelloAck,
     Heartbeat,
-    LeaseGrant,
     InvokeWorker,
     InvokeWorkerResult,
     OpenHandle,
@@ -64,10 +67,351 @@ pub enum FrameType {
     StorageSQLite,
     NetworkGrant,
     NetworkExecute,
-    CloseHandle,
     RevokeEpoch,
     RevokeEpochAck,
     Diagnostic,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIPCFrame {
+    ipc_version: String,
+    frame_type: String,
+    request_id: String,
+    runtime_generation_id: Option<String>,
+    payload: Box<serde_json::value::RawValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HelloPayload {
+    target: HelloTarget,
+    host_process_id: u64,
+    host_ipc_version: String,
+    host_wasm_abi: String,
+    started_unix_nano: u64,
+    channel_nonce: String,
+    runtime_lease_public_keys: Vec<RuntimeLeasePublicKeyPayload>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HelloTarget {
+    os: String,
+    arch: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeLeasePublicKeyPayload {
+    algorithm: String,
+    key_id: String,
+    public_key_base64: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerFramePayload {
+    lease: Box<serde_json::value::RawValue>,
+    method: String,
+    invocation: Box<serde_json::value::RawValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct WorkerLeasePayload {
+    lease_id: Option<String>,
+    token_id: Option<String>,
+    lease_token: Option<String>,
+    lease_nonce: Option<String>,
+    plugin_id: Option<String>,
+    plugin_version: Option<String>,
+    active_fingerprint: Option<String>,
+    surface_instance_id: Option<String>,
+    owner_session_hash: Option<String>,
+    owner_user_hash: Option<String>,
+    session_channel_id_hash: Option<String>,
+    bridge_channel_id: Option<String>,
+    runtime_generation_id: Option<String>,
+    plugin_instance_id: Option<String>,
+    method: Option<String>,
+    effect: Option<String>,
+    execution: Option<String>,
+    operation_id: Option<String>,
+    stream_id: Option<String>,
+    audit_correlation_id: Option<String>,
+    target_descriptor_hashes: Option<Vec<String>>,
+    limits: Option<WorkerLeaseLimitsPayload>,
+    policy_revision: Option<u64>,
+    management_revision: Option<u64>,
+    revoke_epoch: Option<u64>,
+    runtime_shard_id: Option<String>,
+    runtime_instance_id: Option<String>,
+    ipc_channel_id: Option<String>,
+    connection_nonce: Option<String>,
+    key_id: Option<String>,
+    signature: Option<String>,
+    issued_at: Option<String>,
+    issued_at_unix_ms: Option<i64>,
+    expires_at: Option<String>,
+    expires_at_unix_ms: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct WorkerLeaseLimitsPayload {
+    timeout_ms: Option<i64>,
+    memory_bytes: Option<u64>,
+    max_payload_bytes: Option<i64>,
+    max_stream_bytes_per_sec: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct WorkerInvocationPayload {
+    plugin_id: Option<String>,
+    plugin_instance_id: Option<String>,
+    active_fingerprint: Option<String>,
+    runtime_instance_id: Option<String>,
+    runtime_generation_id: Option<String>,
+    package_hash: Option<String>,
+    worker_id: Option<String>,
+    worker_mode: Option<String>,
+    worker_scope: Option<String>,
+    artifact: Option<String>,
+    artifact_sha256: Option<String>,
+    abi: Option<String>,
+    method: Option<String>,
+    export: Option<String>,
+    effect: Option<String>,
+    execution: Option<String>,
+    surface_instance_id: Option<String>,
+    owner_session_hash: Option<String>,
+    owner_user_hash: Option<String>,
+    session_channel_id_hash: Option<String>,
+    bridge_channel_id: Option<String>,
+    operation_id: Option<String>,
+    stream_id: Option<String>,
+    audit_correlation_id: Option<String>,
+    policy_revision: Option<u64>,
+    management_revision: Option<u64>,
+    revoke_epoch: Option<u64>,
+    params_sha256: Option<String>,
+    params: Option<Box<serde_json::value::RawValue>>,
+    storage_handle_grants: Option<HashMap<String, String>>,
+    broker_access: Option<Box<serde_json::value::RawValue>>,
+    broker_access_sha256: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerBrokerAccessPayload {
+    #[serde(default)]
+    storage: Vec<WorkerStorageBrokerAccessPayload>,
+    #[serde(default)]
+    network: Vec<WorkerNetworkBrokerAccessPayload>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerStorageBrokerAccessPayload {
+    store_id: String,
+    operations: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerNetworkBrokerAccessPayload {
+    connector_id: String,
+    transport: String,
+    operations: Vec<String>,
+    #[serde(default)]
+    http_methods: Vec<String>,
+}
+
+struct ClosedWorkerFrame {
+    lease: WorkerLeasePayload,
+    invocation: WorkerInvocationPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerInvocationContext {
+    pub plugin_id: String,
+    pub plugin_instance_id: String,
+    pub active_fingerprint: String,
+    pub runtime_instance_id: String,
+    pub runtime_generation_id: String,
+    pub method: String,
+    pub effect: String,
+    pub execution: String,
+    pub surface_instance_id: String,
+    pub owner_session_hash: String,
+    pub owner_user_hash: String,
+    pub session_channel_id_hash: String,
+    pub bridge_channel_id: String,
+    pub operation_id: String,
+    pub stream_id: String,
+    pub policy_revision: u64,
+    pub management_revision: u64,
+    pub revoke_epoch: u64,
+    pub storage_handle_grants: HashMap<String, String>,
+    pub broker_access_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatRequest {
+    pub sent_unix_nano: u64,
+    pub max_staleness_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeEpochRequest {
+    pub plugin_instance_id: String,
+    pub revoke_epoch: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HeartbeatRequestPayload {
+    sent_unix_nano: u64,
+    max_staleness_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeEpochRequestPayload {
+    plugin_instance_id: String,
+    revoke_epoch: u64,
+}
+
+fn parse_raw_frame(input: &str) -> Result<RawIPCFrame, String> {
+    serde_json::from_str(input).map_err(|err| format!("decode IPC frame: {err}"))
+}
+
+fn parse_hello_payload(frame: &RawIPCFrame) -> Result<HelloPayload, String> {
+    serde_json::from_str(frame.payload.get()).map_err(|err| format!("decode hello payload: {err}"))
+}
+
+fn parse_closed_worker_frame(input: &str) -> Result<ClosedWorkerFrame, String> {
+    let frame = parse_raw_frame(input)?;
+    if frame.ipc_version != RUST_IPC_VERSION {
+        return Err("unsupported ipc_version".to_string());
+    }
+    if frame.frame_type != FRAME_TYPE_INVOKE_WORKER {
+        return Err("expected invoke_worker frame".to_string());
+    }
+    if frame.request_id.trim().is_empty() {
+        return Err("request_id is empty".to_string());
+    }
+    if frame
+        .runtime_generation_id
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err("runtime_generation_id is empty".to_string());
+    }
+    let payload: WorkerFramePayload = serde_json::from_str(frame.payload.get())
+        .map_err(|err| format!("decode worker frame payload: {err}"))?;
+    if payload.method.trim().is_empty() {
+        return Err("worker frame method is empty".to_string());
+    }
+    let lease: WorkerLeasePayload = serde_json::from_str(payload.lease.get())
+        .map_err(|err| format!("decode worker lease payload: {err}"))?;
+    let invocation: WorkerInvocationPayload = serde_json::from_str(payload.invocation.get())
+        .map_err(|err| format!("decode worker invocation payload: {err}"))?;
+    if let Some(broker_access) = invocation.broker_access.as_ref() {
+        serde_json::from_str::<WorkerBrokerAccessPayload>(broker_access.get())
+            .map_err(|err| format!("decode worker broker access: {err}"))?;
+    }
+    if invocation
+        .method
+        .as_deref()
+        .is_some_and(|method| method.trim() != payload.method.trim())
+    {
+        return Err("worker invocation method does not match the frame envelope".to_string());
+    }
+    Ok(ClosedWorkerFrame { lease, invocation })
+}
+
+fn required_string(value: &Option<String>, field: &str) -> Result<String, String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing {field}"))
+}
+
+pub fn parse_worker_invocation_context(input: &str) -> Result<WorkerInvocationContext, String> {
+    let parsed = parse_closed_worker_frame(input)?;
+    let invocation = &parsed.invocation;
+    Ok(WorkerInvocationContext {
+        plugin_id: required_string(&invocation.plugin_id, "plugin_id")?,
+        plugin_instance_id: required_string(&invocation.plugin_instance_id, "plugin_instance_id")?,
+        active_fingerprint: required_string(&invocation.active_fingerprint, "active_fingerprint")?,
+        runtime_instance_id: required_string(
+            &invocation.runtime_instance_id,
+            "runtime_instance_id",
+        )?,
+        runtime_generation_id: required_string(
+            &invocation.runtime_generation_id,
+            "runtime_generation_id",
+        )?,
+        method: required_string(&invocation.method, "method")?,
+        effect: invocation.effect.clone().unwrap_or_default(),
+        execution: invocation.execution.clone().unwrap_or_default(),
+        surface_instance_id: invocation.surface_instance_id.clone().unwrap_or_default(),
+        owner_session_hash: invocation.owner_session_hash.clone().unwrap_or_default(),
+        owner_user_hash: invocation.owner_user_hash.clone().unwrap_or_default(),
+        session_channel_id_hash: invocation
+            .session_channel_id_hash
+            .clone()
+            .unwrap_or_default(),
+        bridge_channel_id: invocation.bridge_channel_id.clone().unwrap_or_default(),
+        operation_id: invocation.operation_id.clone().unwrap_or_default(),
+        stream_id: invocation.stream_id.clone().unwrap_or_default(),
+        policy_revision: parsed.lease.policy_revision.unwrap_or_default(),
+        management_revision: parsed.lease.management_revision.unwrap_or_default(),
+        revoke_epoch: parsed.lease.revoke_epoch.unwrap_or_default(),
+        storage_handle_grants: invocation.storage_handle_grants.clone().unwrap_or_default(),
+        broker_access_json: invocation
+            .broker_access
+            .as_ref()
+            .map(|value| value.get().to_string())
+            .unwrap_or_else(|| "{}".to_string()),
+    })
+}
+
+pub fn parse_heartbeat_request(input: &str) -> Result<HeartbeatRequest, String> {
+    let frame = parse_raw_frame(input)?;
+    if frame.frame_type != FRAME_TYPE_HEARTBEAT {
+        return Err("expected heartbeat frame".to_string());
+    }
+    let payload: HeartbeatRequestPayload = serde_json::from_str(frame.payload.get())
+        .map_err(|err| format!("decode heartbeat payload: {err}"))?;
+    Ok(HeartbeatRequest {
+        sent_unix_nano: payload.sent_unix_nano,
+        max_staleness_ms: payload.max_staleness_ms,
+    })
+}
+
+pub fn parse_revoke_epoch_request(input: &str) -> Result<RevokeEpochRequest, String> {
+    let frame = parse_raw_frame(input)?;
+    if frame.frame_type != FRAME_TYPE_REVOKE_EPOCH {
+        return Err("expected revoke_epoch frame".to_string());
+    }
+    let payload: RevokeEpochRequestPayload = serde_json::from_str(frame.payload.get())
+        .map_err(|err| format!("decode revoke_epoch payload: {err}"))?;
+    if payload.plugin_instance_id.trim().is_empty() {
+        return Err("plugin_instance_id is empty".to_string());
+    }
+    Ok(RevokeEpochRequest {
+        plugin_instance_id: payload.plugin_instance_id,
+        revoke_epoch: payload.revoke_epoch,
+    })
 }
 
 pub fn extract_json_string(input: &str, key: &str) -> Option<String> {
@@ -130,44 +474,27 @@ pub struct RuntimeLeasePublicKey {
 }
 
 pub fn parse_runtime_lease_public_keys(input: &str) -> Result<Vec<RuntimeLeasePublicKey>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(input).map_err(|err| format!("decode hello frame: {err}"))?;
-    let payload = value
-        .get("payload")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| "missing hello payload".to_string())?;
-    let keys_value = payload
-        .get("runtime_lease_public_keys")
-        .ok_or_else(|| "runtime_lease_public_keys are required".to_string())?;
-    let keys = keys_value
-        .as_array()
-        .ok_or_else(|| "runtime_lease_public_keys must be an array".to_string())?;
+    let frame = parse_raw_frame(input)?;
+    let payload = parse_hello_payload(&frame)?;
+    let keys = payload.runtime_lease_public_keys;
     let mut seen = HashSet::new();
     let mut parsed = Vec::with_capacity(keys.len());
     if keys.is_empty() {
         return Err("runtime_lease_public_keys must not be empty".to_string());
     }
     for key in keys {
-        let key = key
-            .as_object()
-            .ok_or_else(|| "runtime lease public key must be an object".to_string())?;
-        let key_id = json_object_string(key, "key_id")?;
+        let key_id = key.key_id.trim().to_string();
         if key_id.trim().is_empty() {
             return Err("runtime lease public key key_id is empty".to_string());
         }
         if !seen.insert(key_id.clone()) {
             return Err("runtime lease public key key_id is duplicated".to_string());
         }
-        let algorithm = key
-            .get("algorithm")
-            .and_then(|value| value.as_str())
-            .unwrap_or(RUNTIME_LEASE_SIGNATURE_ALGORITHM);
-        if algorithm != RUNTIME_LEASE_SIGNATURE_ALGORITHM {
+        if key.algorithm != RUNTIME_LEASE_SIGNATURE_ALGORITHM {
             return Err("runtime lease public key algorithm is unsupported".to_string());
         }
-        let encoded_key = json_object_string(key, "public_key_base64")?;
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(encoded_key.as_bytes())
+            .decode(key.public_key_base64.as_bytes())
             .map_err(|_| "runtime lease public key is not valid base64".to_string())?;
         let public_key: [u8; 32] = decoded
             .try_into()
@@ -184,6 +511,7 @@ pub fn verify_worker_runtime_lease_signature(
     if public_keys.is_empty() {
         return Err("runtime lease public keys are required".to_string());
     }
+    parse_closed_worker_frame(input)?;
     let value: serde_json::Value =
         serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
     let payload = value
@@ -210,6 +538,7 @@ pub fn verify_worker_runtime_lease_signature(
 }
 
 pub fn validate_worker_runtime_lease(input: &str, now_unix_ms: i64) -> Result<(), String> {
+    parse_closed_worker_frame(input)?;
     let value: serde_json::Value =
         serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
     let frame = value
@@ -301,9 +630,12 @@ struct RawWorkerInvocationEnvelope {
 #[derive(Deserialize)]
 struct RawWorkerInvocation {
     params: Box<serde_json::value::RawValue>,
+    broker_access: Box<serde_json::value::RawValue>,
+    broker_access_sha256: String,
 }
 
 pub fn worker_invocation_target_hash(input: &str) -> Result<String, String> {
+    parse_closed_worker_frame(input)?;
     let value: serde_json::Value =
         serde_json::from_str(input).map_err(|err| format!("decode worker invocation: {err}"))?;
     let invocation = value
@@ -321,6 +653,17 @@ pub fn worker_invocation_target_hash(input: &str) -> Result<String, String> {
     );
     if json_object_string(invocation, "params_sha256")? != params_hash {
         return Err("worker invocation params_sha256 does not match params".to_string());
+    }
+    let broker_access_hash = format!(
+        "sha256:{}",
+        lowercase_hex(&Sha256::digest(
+            raw.payload.invocation.broker_access.get().as_bytes()
+        ))
+    );
+    if raw.payload.invocation.broker_access_sha256 != broker_access_hash {
+        return Err(
+            "worker invocation broker_access_sha256 does not match broker_access".to_string(),
+        );
     }
     let required = |field: &str| json_object_string(invocation, field);
     let optional = |field: &str| {
@@ -353,6 +696,7 @@ pub fn worker_invocation_target_hash(input: &str) -> Result<String, String> {
         optional("stream_id")?,
         required("audit_correlation_id")?,
         params_hash,
+        broker_access_hash,
     ];
     let mut canonical = Vec::new();
     for field in fields {
@@ -819,35 +1163,75 @@ pub fn response_frame(
             None => "{\"ok\":true}".to_string(),
         }
     } else {
-        format!(
-            "{{\"ok\":false,\"code\":\"{}\",\"message\":\"{}\"}}",
-            escape_json_string(code.unwrap_or("RUNTIME_REQUEST_FAILED")),
-            escape_json_string(message.unwrap_or("runtime request failed"))
-        )
+        render_error_payload(ResponseError {
+            code: code.unwrap_or("RUNTIME_REQUEST_FAILED"),
+            message: message.unwrap_or("runtime request failed"),
+            origin: ERROR_ORIGIN_RUNTIME,
+        })
     };
+    render_response_frame(frame_type, request_id, runtime_generation_id, &payload)
+}
+
+pub struct ResponseError<'a> {
+    pub code: &'a str,
+    pub message: &'a str,
+    pub origin: &'a str,
+}
+
+pub fn response_error_frame(
+    frame_type: &str,
+    request_id: &str,
+    runtime_generation_id: &str,
+    error: ResponseError<'_>,
+) -> String {
+    let payload = render_error_payload(error);
+    render_response_frame(frame_type, request_id, runtime_generation_id, &payload)
+}
+
+fn render_error_payload(error: ResponseError<'_>) -> String {
+    let error_origin = if matches!(
+        error.origin,
+        ERROR_ORIGIN_RUNTIME | ERROR_ORIGIN_HOSTCALL | ERROR_ORIGIN_PLUGIN
+    ) {
+        error.origin
+    } else {
+        ERROR_ORIGIN_RUNTIME
+    };
+    format!(
+        "{{\"ok\":false,\"code\":\"{}\",\"message\":\"{}\",\"error_origin\":\"{}\"}}",
+        escape_json_string(error.code),
+        escape_json_string(error.message),
+        error_origin,
+    )
+}
+
+fn render_response_frame(
+    frame_type: &str,
+    request_id: &str,
+    runtime_generation_id: &str,
+    payload: &str,
+) -> String {
     format!(
         "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{}}}",
         RUST_IPC_VERSION,
         escape_json_string(frame_type),
         escape_json_string(request_id),
         escape_json_string(runtime_generation_id),
-        payload
+        payload,
     )
 }
 
 pub fn revoke_epoch_ack_result_json(
     plugin_instance_id: &str,
     revoke_epoch: u64,
-    closed_actor_count: u64,
     closed_socket_count: u64,
     closed_stream_count: u64,
     closed_storage_handle_count: u64,
 ) -> String {
     format!(
-        "{{\"plugin_instance_id\":\"{}\",\"revoke_epoch\":{},\"closed_actor_count\":{},\"closed_socket_count\":{},\"closed_stream_count\":{},\"closed_storage_handle_count\":{}}}",
+        "{{\"plugin_instance_id\":\"{}\",\"revoke_epoch\":{},\"closed_socket_count\":{},\"closed_stream_count\":{},\"closed_storage_handle_count\":{}}}",
         escape_json_string(plugin_instance_id),
         revoke_epoch,
-        closed_actor_count,
         closed_socket_count,
         closed_stream_count,
         closed_storage_handle_count
@@ -904,11 +1288,7 @@ pub fn validate_open_handle_response(
         return Err("open_handle runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code = extract_json_string(input, "code")
-            .unwrap_or_else(|| ERR_ARTIFACT_HANDLE_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "artifact handle request failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     let package_hash = extract_json_string(input, "package_hash").ok_or("missing package_hash")?;
     let artifact = extract_json_string(input, "artifact").ok_or("missing artifact")?;
@@ -1195,11 +1575,7 @@ pub fn validate_handle_grant_response(
         return Err("validate_handle_grant runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code = extract_json_string(input, "code")
-            .unwrap_or_else(|| ERR_HANDLE_GRANT_VALIDATION_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "handle grant validation failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     let handle_id = extract_json_string(input, "handle_id").ok_or("missing handle_id")?;
     let method = extract_json_string(input, "method").ok_or("missing method")?;
@@ -1280,11 +1656,7 @@ pub fn validate_storage_file_response(
         return Err("storage_file runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code = extract_json_string(input, "code")
-            .unwrap_or_else(|| ERR_STORAGE_FILE_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "storage file request failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     Ok(())
 }
@@ -1360,11 +1732,7 @@ pub fn validate_storage_kv_response(
         return Err("storage_kv runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code =
-            extract_json_string(input, "code").unwrap_or_else(|| ERR_STORAGE_KV_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "storage kv request failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     Ok(())
 }
@@ -1447,11 +1815,7 @@ pub fn validate_storage_sqlite_response(
         return Err("storage_sqlite runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code = extract_json_string(input, "code")
-            .unwrap_or_else(|| ERR_STORAGE_SQLITE_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "storage sqlite request failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     Ok(())
 }
@@ -1517,11 +1881,7 @@ pub fn validate_network_grant_response(
         return Err("network_grant runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code = extract_json_string(input, "code")
-            .unwrap_or_else(|| ERR_NETWORK_GRANT_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "network grant request failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     let grant_id = extract_json_string(input, "grant_id").ok_or("missing grant_id")?;
     if !grant_id.starts_with("netgrant_") || grant_id.len() != "netgrant_".len() + 32 {
@@ -1553,6 +1913,7 @@ pub struct NetworkExecuteRequest {
     pub operation: String,
     pub method: String,
     pub path: String,
+    pub query_json: String,
     pub headers_json: String,
     pub message_type: String,
     pub body_base64: String,
@@ -1579,13 +1940,18 @@ pub fn network_execute_frame(
     runtime_generation_id: &str,
     req: &NetworkExecuteRequest,
 ) -> String {
+    let query_json = if req.query_json.trim().is_empty() {
+        "{}"
+    } else {
+        req.query_json.trim()
+    };
     let headers_json = if req.headers_json.trim().is_empty() {
         "{}"
     } else {
         req.headers_json.trim()
     };
     format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_id\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"max_chunk_bytes\":{},\"max_buffered_bytes\":{},\"timeout_ms\":{},\"stream_id\":\"{}\",\"stream_method\":\"{}\",\"stream_effect\":\"{}\",\"stream_execution\":\"{}\",\"surface_instance_id\":\"{}\",\"owner_session_hash\":\"{}\",\"owner_user_hash\":\"{}\",\"session_channel_id_hash\":\"{}\",\"bridge_channel_id\":\"{}\",\"content_type\":\"{}\"}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"plugin_id\":\"{}\",\"plugin_instance_id\":\"{}\",\"active_fingerprint\":\"{}\",\"runtime_instance_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"runtime_shard_id\":\"{}\",\"policy_revision\":{},\"management_revision\":{},\"revoke_epoch\":{},\"connector_id\":\"{}\",\"transport\":\"{}\",\"destination\":\"{}\",\"ttl_ms\":{},\"operation\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"query\":{},\"headers\":{},\"message_type\":\"{}\",\"body_base64\":\"{}\",\"payload_base64\":\"{}\",\"max_request_bytes\":{},\"max_response_bytes\":{},\"max_chunk_bytes\":{},\"max_buffered_bytes\":{},\"timeout_ms\":{},\"stream_id\":\"{}\",\"stream_method\":\"{}\",\"stream_effect\":\"{}\",\"stream_execution\":\"{}\",\"surface_instance_id\":\"{}\",\"owner_session_hash\":\"{}\",\"owner_user_hash\":\"{}\",\"session_channel_id_hash\":\"{}\",\"bridge_channel_id\":\"{}\",\"content_type\":\"{}\"}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_NETWORK_EXECUTE,
         escape_json_string(request_id),
@@ -1606,6 +1972,7 @@ pub fn network_execute_frame(
         escape_json_string(&req.operation),
         escape_json_string(&req.method),
         escape_json_string(&req.path),
+        query_json,
         headers_json,
         escape_json_string(&req.message_type),
         escape_json_string(&req.body_base64),
@@ -1647,11 +2014,7 @@ pub fn validate_network_execute_response(
         return Err("network_execute runtime_generation_id mismatch".to_string());
     }
     if !extract_json_bool(input, "ok").unwrap_or(false) {
-        let code = extract_json_string(input, "code")
-            .unwrap_or_else(|| ERR_NETWORK_EXECUTE_FAILED.to_string());
-        let message = extract_json_string(input, "message")
-            .unwrap_or_else(|| "network execute request failed".to_string());
-        return Err(format!("{code}: {message}"));
+        return Err(validated_hostcall_failure(input)?);
     }
     let connector_id = extract_json_string(input, "connector_id").ok_or("missing connector_id")?;
     let transport = extract_json_string(input, "transport").ok_or("missing transport")?;
@@ -1661,48 +2024,112 @@ pub fn validate_network_execute_response(
     Ok(())
 }
 
+fn validated_hostcall_failure(input: &str) -> Result<String, String> {
+    let origin = extract_json_string(input, "error_origin")
+        .ok_or_else(|| "hostcall response error_origin is missing".to_string())?;
+    if origin != ERROR_ORIGIN_HOSTCALL {
+        return Err("hostcall response error_origin must be hostcall".to_string());
+    }
+    let code = extract_json_string(input, "code")
+        .filter(|value| is_stable_worker_error_code(value))
+        .ok_or_else(|| "hostcall response code is missing or invalid".to_string())?;
+    let message = extract_json_string(input, "message")
+        .filter(|value| !value.trim().is_empty() && value.len() <= 4096)
+        .ok_or_else(|| "hostcall response message is missing or invalid".to_string())?;
+    Ok(format!("{code}: {message}"))
+}
+
 pub fn validate_hello_frame(input: &str) -> Result<(String, String, String), &'static str> {
-    let ipc_version = extract_json_string(input, "ipc_version").ok_or("missing ipc_version")?;
-    if ipc_version != RUST_IPC_VERSION {
+    let frame: RawIPCFrame = serde_json::from_str(input).map_err(|err| {
+        if err.to_string().contains("missing field `request_id`") {
+            "missing request_id"
+        } else if err
+            .to_string()
+            .contains("missing field `runtime_generation_id`")
+        {
+            "missing runtime_generation_id"
+        } else {
+            "invalid hello frame"
+        }
+    })?;
+    if frame.ipc_version != RUST_IPC_VERSION {
         return Err("unsupported ipc_version");
     }
-    let frame_type = extract_json_string(input, "frame_type").ok_or("missing frame_type")?;
-    if frame_type != FRAME_TYPE_HELLO {
+    if frame.frame_type != FRAME_TYPE_HELLO {
         return Err("expected hello frame");
     }
-    let request_id = extract_json_string(input, "request_id").ok_or("missing request_id")?;
-    if request_id.trim().is_empty() {
+    if frame.request_id.trim().is_empty() {
         return Err("empty request_id");
     }
-    let runtime_generation_id = extract_json_string(input, "runtime_generation_id")
+    let runtime_generation_id = frame
+        .runtime_generation_id
+        .as_deref()
         .ok_or("missing runtime_generation_id")?;
     if runtime_generation_id.trim().is_empty() {
         return Err("empty runtime_generation_id");
     }
-    let channel_nonce =
-        extract_json_string(input, "channel_nonce").ok_or("missing channel_nonce")?;
-    if channel_nonce.trim().is_empty() {
+    let payload: HelloPayload = serde_json::from_str(frame.payload.get()).map_err(|err| {
+        if err.to_string().contains("missing field `channel_nonce`") {
+            "missing channel_nonce"
+        } else {
+            "invalid hello payload"
+        }
+    })?;
+    if payload.target.os.trim().is_empty() || payload.target.arch.trim().is_empty() {
+        return Err("invalid hello target");
+    }
+    if payload.host_process_id == 0 || payload.started_unix_nano == 0 {
+        return Err("invalid hello process metadata");
+    }
+    if payload.host_ipc_version != RUST_IPC_VERSION {
+        return Err("unsupported host_ipc_version");
+    }
+    if payload.host_wasm_abi != WASM_ABI_VERSION {
+        return Err("unsupported host_wasm_abi");
+    }
+    if payload.channel_nonce.trim().is_empty() {
         return Err("empty channel_nonce");
     }
-    Ok((request_id, runtime_generation_id, channel_nonce))
+    Ok((
+        frame.request_id,
+        runtime_generation_id.to_string(),
+        payload.channel_nonce,
+    ))
 }
 
 pub fn parse_frame_identity(input: &str) -> Result<(String, String, String), &'static str> {
-    let ipc_version = extract_json_string(input, "ipc_version").ok_or("missing ipc_version")?;
-    if ipc_version != RUST_IPC_VERSION {
+    let frame: RawIPCFrame = serde_json::from_str(input).map_err(|err| {
+        let message = err.to_string();
+        if message.contains("missing field `ipc_version`") {
+            "missing ipc_version"
+        } else if message.contains("missing field `frame_type`") {
+            "missing frame_type"
+        } else if message.contains("missing field `request_id`") {
+            "missing request_id"
+        } else if message.contains("missing field `runtime_generation_id`") {
+            "missing runtime_generation_id"
+        } else if message.contains("missing field `payload`") {
+            "missing payload"
+        } else {
+            "invalid IPC frame"
+        }
+    })?;
+    if frame.ipc_version != RUST_IPC_VERSION {
         return Err("unsupported ipc_version");
     }
-    let frame_type = extract_json_string(input, "frame_type").ok_or("missing frame_type")?;
-    let request_id = extract_json_string(input, "request_id").ok_or("missing request_id")?;
-    if request_id.trim().is_empty() {
+    if frame.frame_type.trim().is_empty() {
+        return Err("empty frame_type");
+    }
+    if frame.request_id.trim().is_empty() {
         return Err("empty request_id");
     }
-    let runtime_generation_id = extract_json_string(input, "runtime_generation_id")
+    let runtime_generation_id = frame
+        .runtime_generation_id
         .ok_or("missing runtime_generation_id")?;
     if runtime_generation_id.trim().is_empty() {
         return Err("empty runtime_generation_id");
     }
-    Ok((frame_type, request_id, runtime_generation_id))
+    Ok((frame.frame_type, frame.request_id, runtime_generation_id))
 }
 
 pub fn extract_json_bool(input: &str, key: &str) -> Option<bool> {
@@ -1730,6 +2157,198 @@ pub struct WorkerInvocationIdentity {
     pub export: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerResponseV2 {
+    Success(String),
+    Failure { code: String, message: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWorkerSuccessV2 {
+    ok: bool,
+    data: Box<serde_json::value::RawValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWorkerFailureV2 {
+    ok: bool,
+    error_code: String,
+    message: String,
+}
+
+pub fn worker_request_json_v2(input: &str) -> Result<String, String> {
+    let parsed = parse_closed_worker_frame(input)?;
+    let method = required_string(&parsed.invocation.method, "worker invocation method")?;
+    let params = parsed
+        .invocation
+        .params
+        .as_ref()
+        .ok_or_else(|| "worker invocation params are missing".to_string())?;
+    if method.trim().is_empty() {
+        return Err("worker invocation method is empty".to_string());
+    }
+    let params_value: serde_json::Value = serde_json::from_str(params.get())
+        .map_err(|err| format!("decode worker invocation params: {err}"))?;
+    if !params_value.is_object() {
+        return Err("worker invocation params must be an object".to_string());
+    }
+    Ok(format!(
+        "{{\"schema_version\":\"redevplugin.worker_request.v2\",\"method\":\"{}\",\"params\":{}}}",
+        escape_json_string(&method),
+        params.get()
+    ))
+}
+
+pub fn runtime_lease_memory_limit_bytes(input: &str) -> Result<usize, String> {
+    let parsed = parse_closed_worker_frame(input)?;
+    let memory_bytes = parsed
+        .lease
+        .limits
+        .as_ref()
+        .and_then(|limits| limits.memory_bytes)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "runtime lease memory_bytes limit is missing or invalid".to_string())?;
+    if memory_bytes > MAX_RUNTIME_LEASE_MEMORY_BYTES {
+        return Err(format!(
+            "runtime lease memory_bytes limit exceeds {MAX_RUNTIME_LEASE_MEMORY_BYTES} bytes"
+        ));
+    }
+    usize::try_from(memory_bytes)
+        .map_err(|_| "runtime lease memory_bytes limit exceeds this runtime".to_string())
+}
+
+pub fn worker_storage_handle_grant(input: &str, store_id: &str) -> Result<String, String> {
+    let parsed = parse_closed_worker_frame(input)?;
+    let grants = parsed
+        .invocation
+        .storage_handle_grants
+        .as_ref()
+        .ok_or_else(|| "worker invocation storage_handle_grants are missing".to_string())?;
+    let grant = grants
+        .get(store_id)
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("worker invocation has no storage grant for {store_id:?}"))?;
+    Ok(grant.to_string())
+}
+
+pub fn validate_worker_storage_broker_access(
+    input: &str,
+    store_id: &str,
+    operation: &str,
+) -> Result<(), String> {
+    let parsed = parse_closed_worker_frame(input)?;
+    let effect = required_string(&parsed.invocation.effect, "effect")?;
+    if effect == "read" && !matches!(operation, "read" | "list" | "get" | "query") {
+        return Err(format!(
+            "worker method with read effect is not allowed to perform storage operation {operation:?}"
+        ));
+    }
+    let broker_access = parsed
+        .invocation
+        .broker_access
+        .as_ref()
+        .ok_or_else(|| "worker method has no storage broker access".to_string())?;
+    let broker_access: WorkerBrokerAccessPayload = serde_json::from_str(broker_access.get())
+        .map_err(|err| format!("decode worker broker access: {err}"))?;
+    let allowed = broker_access.storage.iter().any(|entry| {
+        entry.store_id == store_id && entry.operations.iter().any(|value| value == operation)
+    });
+    if !allowed {
+        return Err(format!(
+            "worker method is not allowed to perform storage operation {operation:?} on {store_id:?}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_worker_network_broker_access(
+    input: &str,
+    connector_id: &str,
+    transport: &str,
+    operation: &str,
+    http_method: &str,
+) -> Result<(), String> {
+    let parsed = parse_closed_worker_frame(input)?;
+    let broker_access = parsed
+        .invocation
+        .broker_access
+        .as_ref()
+        .ok_or_else(|| "worker method has no network broker access".to_string())?;
+    let broker_access: WorkerBrokerAccessPayload = serde_json::from_str(broker_access.get())
+        .map_err(|err| format!("decode worker broker access: {err}"))?;
+    let allowed = broker_access.network.iter().any(|entry| {
+        if entry.connector_id != connector_id
+            || entry.transport != transport
+            || !entry.operations.iter().any(|value| value == operation)
+        {
+            return false;
+        }
+        transport != "http" || entry.http_methods.iter().any(|value| value == http_method)
+    });
+    if !allowed {
+        return Err(format!(
+            "worker method is not allowed to perform network operation {operation:?} with {http_method:?} on {connector_id:?}/{transport:?}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn parse_worker_response_v2(input: &str) -> Result<WorkerResponseV2, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(input).map_err(|err| format!("decode worker response: {err}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "worker response must be a closed object".to_string())?;
+    let ok = object
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| "worker response ok must be a boolean".to_string())?;
+    if ok {
+        if object.len() != 2 || !object.contains_key("data") {
+            return Err("worker success response must be a closed object".to_string());
+        }
+        let raw: RawWorkerSuccessV2 = serde_json::from_str(input)
+            .map_err(|err| format!("decode worker success response: {err}"))?;
+        if !raw.ok {
+            return Err("worker success response ok must be true".to_string());
+        }
+        return Ok(WorkerResponseV2::Success(raw.data.get().to_string()));
+    }
+    if object.len() != 3 || !object.contains_key("error_code") || !object.contains_key("message") {
+        return Err("worker failure response must be a closed object".to_string());
+    }
+    let raw: RawWorkerFailureV2 = serde_json::from_str(input)
+        .map_err(|err| format!("decode worker failure response: {err}"))?;
+    if raw.ok {
+        return Err("worker failure response ok must be false".to_string());
+    }
+    if !is_stable_worker_error_code(&raw.error_code) {
+        return Err("worker failure response error_code is invalid".to_string());
+    }
+    if raw.message.trim().is_empty() || raw.message.len() > 4096 {
+        return Err("worker failure response message is invalid".to_string());
+    }
+    Ok(WorkerResponseV2::Failure {
+        code: raw.error_code,
+        message: raw.message,
+    })
+}
+
+fn is_stable_worker_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.chars().enumerate().all(|(index, ch)| {
+            ch.is_ascii_uppercase() || ch.is_ascii_digit() || (index > 0 && ch == '_')
+        })
+        && value
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_uppercase())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkerLeaseReplayKey {
     pub lease_id: String,
@@ -1738,23 +2357,22 @@ pub struct WorkerLeaseReplayKey {
 }
 
 pub fn parse_worker_lease_replay_key(input: &str) -> Result<WorkerLeaseReplayKey, &'static str> {
-    let value: serde_json::Value = serde_json::from_str(input).map_err(|_| "invalid invocation")?;
-    let lease = value
-        .get("payload")
-        .and_then(|value| value.get("lease"))
-        .and_then(|value| value.as_object())
-        .ok_or("missing runtime execution lease")?;
-    let lease_id = json_object_string(lease, "lease_id").map_err(|_| "missing lease_id")?;
+    let parsed = parse_closed_worker_frame(input).map_err(|_| "invalid invocation")?;
+    let lease_id = parsed.lease.lease_id.ok_or("missing lease_id")?;
     if lease_id.trim().is_empty() {
         return Err("empty lease_id");
     }
-    let lease_nonce =
-        json_object_string(lease, "lease_nonce").map_err(|_| "missing lease_nonce")?;
+    let lease_nonce = parsed.lease.lease_nonce.ok_or("missing lease_nonce")?;
     if lease_nonce.trim().is_empty() {
         return Err("empty lease_nonce");
     }
-    let expires_at_unix_ms = runtime_lease_expires_at_unix_ms(lease)
-        .map_err(|_| "missing or invalid expires_at_unix_ms")?;
+    let expires_at_unix_ms = match (parsed.lease.expires_at_unix_ms, parsed.lease.expires_at) {
+        (Some(value), _) => value,
+        (None, Some(value)) => OffsetDateTime::parse(value.trim(), &Rfc3339)
+            .map(|parsed| (parsed.unix_timestamp_nanos() / 1_000_000) as i64)
+            .map_err(|_| "missing or invalid expires_at_unix_ms")?,
+        (None, None) => return Err("missing or invalid expires_at_unix_ms"),
+    };
     Ok(WorkerLeaseReplayKey {
         lease_id,
         lease_nonce,
@@ -1765,32 +2383,32 @@ pub fn parse_worker_lease_replay_key(input: &str) -> Result<WorkerLeaseReplayKey
 pub fn parse_worker_invocation_identity(
     input: &str,
 ) -> Result<WorkerInvocationIdentity, &'static str> {
-    let package_hash = extract_json_string(input, "package_hash").ok_or("missing package_hash")?;
+    let parsed = parse_closed_worker_frame(input).map_err(|_| "invalid worker invocation")?;
+    let invocation = parsed.invocation;
+    let package_hash = invocation.package_hash.ok_or("missing package_hash")?;
     if !is_sha256_ref(&package_hash) {
         return Err("invalid package_hash");
     }
-    let artifact = extract_json_string(input, "artifact").ok_or("missing artifact")?;
+    let artifact = invocation.artifact.ok_or("missing artifact")?;
     if !is_worker_artifact_path(&artifact) {
         return Err("invalid artifact");
     }
-    let artifact_sha256 =
-        extract_json_string(input, "artifact_sha256").ok_or("missing artifact_sha256")?;
+    let artifact_sha256 = invocation
+        .artifact_sha256
+        .ok_or("missing artifact_sha256")?;
     if !is_sha256_ref(&artifact_sha256) {
         return Err("invalid artifact_sha256");
     }
-    let worker_id = extract_json_string(input, "worker_id").ok_or("missing worker_id")?;
+    let worker_id = invocation.worker_id.ok_or("missing worker_id")?;
     if worker_id.trim().is_empty() {
         return Err("empty worker_id");
     }
-    let method = extract_json_string(input, "method").ok_or("missing method")?;
+    let method = invocation.method.ok_or("missing method")?;
     if method.trim().is_empty() {
         return Err("empty method");
     }
-    let export = extract_json_string(input, "export").ok_or("missing export")?;
-    if !matches!(
-        export.as_str(),
-        "redevplugin_worker_invoke" | "redevplugin_actor_start" | "redevplugin_actor_stop"
-    ) {
+    let export = invocation.export.ok_or("missing export")?;
+    if export != "redevplugin_worker_invoke" {
         return Err("invalid export");
     }
     Ok(WorkerInvocationIdentity {
@@ -1840,27 +2458,90 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    fn closed_worker_frame(lease: &str, invocation: &str) -> String {
+        format!(
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{lease},"method":"worker.echo","invocation":{invocation}}}}}"#
+        )
+    }
+
+    fn hello_frame(channel_nonce: Option<&str>, public_keys: &str) -> String {
+        let channel_nonce = channel_nonce
+            .map(|value| format!(",\"channel_nonce\":\"{value}\""))
+            .unwrap_or_default();
+        format!(
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"test","arch":"test"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v2","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys}}}}}"#
+        )
+    }
+
     #[test]
     fn validates_hello_frame() {
-        let input = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{"channel_nonce":"nonce_1"}}"#;
+        let input = hello_frame(Some("nonce_1234567890"), "[]");
         let (request_id, generation_id, channel_nonce) =
-            validate_hello_frame(input).expect("valid hello");
+            validate_hello_frame(&input).expect("valid hello");
         assert_eq!(request_id, "r1");
         assert_eq!(generation_id, "g1");
-        assert_eq!(channel_nonce, "nonce_1");
+        assert_eq!(channel_nonce, "nonce_1234567890");
+    }
+
+    #[test]
+    fn closed_ipc_decoding_rejects_ambiguous_or_extended_frames() {
+        let valid = r#"{"ipc_version":"rust-ipc-v2","frame_type":"heartbeat","request_id":"outer","runtime_generation_id":"g1","payload":{"request_id":"nested"}}"#;
+        let (_, request_id, _) = parse_frame_identity(valid).expect("top-level frame identity");
+        assert_eq!(request_id, "outer");
+
+        for invalid in [
+            format!("{valid}{{}}"),
+            valid.replace(r#""payload""#, r#""unknown":true,"payload""#),
+            valid.replace(
+                r#""request_id":"outer""#,
+                r#""request_id":"outer","request_id":"replayed""#,
+            ),
+        ] {
+            assert!(parse_frame_identity(&invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn closed_worker_decoding_rejects_unknown_duplicate_and_trailing_fields() {
+        let valid = closed_worker_frame(
+            r#"{"plugin_instance_id":"plugini_1","revoke_epoch":1}"#,
+            r#"{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","method":"worker.echo"}"#,
+        );
+        parse_worker_invocation_context(&valid).expect("closed worker invocation");
+
+        for invalid in [
+            format!("{valid}{{}}"),
+            valid.replace(
+                r#""method":"worker.echo"}}}"#,
+                r#""method":"worker.echo","unknown":true}}}"#,
+            ),
+            valid.replace(
+                r#""plugin_instance_id":"plugini_1","active_fingerprint""#,
+                r#""plugin_instance_id":"plugini_1","plugin_instance_id":"plugini_2","active_fingerprint""#,
+            ),
+            valid.replace(
+                r#""revoke_epoch":1}"#,
+                r#""revoke_epoch":1,"unknown":true}"#,
+            ),
+        ] {
+            assert!(parse_worker_invocation_context(&invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
     fn rejects_hello_frame_without_channel_nonce() {
-        let input = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{}}"#;
-        assert_eq!(validate_hello_frame(input), Err("missing channel_nonce"));
+        let input = hello_frame(None, "[]");
+        assert_eq!(validate_hello_frame(&input), Err("missing channel_nonce"));
     }
 
     #[test]
     fn parses_runtime_lease_public_keys_from_hello() {
         let public_key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
-        let input = format!(
-            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"channel_nonce":"nonce_1234567890","runtime_lease_public_keys":[{{"algorithm":"ed25519","key_id":"host_ephemeral_key_1","public_key_base64":"{public_key}"}}]}}}}"#
+        let input = hello_frame(
+            Some("nonce_1234567890"),
+            &format!(
+                r#"[{{"algorithm":"ed25519","key_id":"host_ephemeral_key_1","public_key_base64":"{public_key}"}}]"#
+            ),
         );
         let keys = parse_runtime_lease_public_keys(&input).expect("keys");
         assert_eq!(
@@ -1874,10 +2555,10 @@ mod tests {
 
     #[test]
     fn rejects_hello_without_runtime_lease_public_keys() {
-        let missing = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{"channel_nonce":"nonce_1234567890"}}"#;
-        assert!(parse_runtime_lease_public_keys(missing).is_err());
-        let empty = r#"{"ipc_version":"rust-ipc-v1","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{"channel_nonce":"nonce_1234567890","runtime_lease_public_keys":[]}}"#;
-        assert!(parse_runtime_lease_public_keys(empty).is_err());
+        let missing = hello_frame(Some("nonce_1234567890"), "null");
+        assert!(parse_runtime_lease_public_keys(&missing).is_err());
+        let empty = hello_frame(Some("nonce_1234567890"), "[]");
+        assert!(parse_runtime_lease_public_keys(&empty).is_err());
     }
 
     #[test]
@@ -1908,7 +2589,7 @@ mod tests {
     #[test]
     fn rejects_unsigned_worker_runtime_lease_when_keys_are_configured() {
         let signing_key = runtime_lease_signing_key_for_test(7);
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{"lease":{"lease_id":"rel_1","lease_token":"token_1","lease_nonce":"nonce_1234567890","runtime_generation_id":"rtgen_1","plugin_instance_id":"plugini_1","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","key_id":"host_ephemeral_key_1","expires_at":"2026-07-04T10:45:30Z"},"method":"worker.echo","invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{"lease":{"lease_id":"rel_1","lease_token":"token_1","lease_nonce":"nonce_1234567890","runtime_generation_id":"rtgen_1","plugin_instance_id":"plugini_1","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","key_id":"host_ephemeral_key_1","expires_at":"2026-07-04T10:45:30Z"},"method":"worker.echo","invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
         let err = verify_worker_runtime_lease_signature(
             frame,
             &[RuntimeLeasePublicKey {
@@ -2084,7 +2765,7 @@ mod tests {
         assert!(frame.contains(r#""frame_type":"hello_ack""#));
         assert!(frame.contains(r#""request_id":"r1""#));
         assert!(frame.contains(r#""runtime_generation_id":"g1""#));
-        assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v1""#));
+        assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v2""#));
         assert!(frame.contains(r#""channel_nonce":"nonce_1""#));
     }
 
@@ -2096,12 +2777,25 @@ mod tests {
             "g1",
             false,
             None,
-            Some(ERR_WASM_NOT_IMPLEMENTED),
-            Some("runtime worker execution is not implemented"),
+            Some(ERR_WASM_WORKER_FAILED),
+            Some("runtime worker execution failed"),
         );
         assert!(frame.contains(r#""frame_type":"invoke_worker_result""#));
         assert!(frame.contains(r#""ok":false"#));
-        assert!(frame.contains(r#""code":"WASM_NOT_IMPLEMENTED""#));
+        assert!(frame.contains(r#""code":"WASM_WORKER_FAILED""#));
+        assert!(frame.contains(r#""error_origin":"runtime""#));
+
+        let plugin_frame = response_error_frame(
+            FRAME_TYPE_INVOKE_WORKER_RESULT,
+            "r2",
+            "g1",
+            ResponseError {
+                code: "NOTE_NOT_FOUND",
+                message: "note was not found",
+                origin: ERROR_ORIGIN_PLUGIN,
+            },
+        );
+        assert!(plugin_frame.contains(r#""error_origin":"plugin""#));
     }
 
     #[test]
@@ -2241,10 +2935,9 @@ mod tests {
 
     #[test]
     fn renders_revoke_epoch_ack_result_json() {
-        let result = revoke_epoch_ack_result_json("plugini_1", 7, 1, 2, 3, 4);
+        let result = revoke_epoch_ack_result_json("plugini_1", 7, 2, 3, 4);
         assert!(result.contains(r#""plugin_instance_id":"plugini_1""#));
         assert!(result.contains(r#""revoke_epoch":7"#));
-        assert!(result.contains(r#""closed_actor_count":1"#));
         assert!(result.contains(r#""closed_socket_count":2"#));
         assert!(result.contains(r#""closed_stream_count":3"#));
         assert!(result.contains(r#""closed_storage_handle_count":4"#));
@@ -2290,9 +2983,13 @@ mod tests {
             method: "worker.echo".to_string(),
             export: "redevplugin_worker_invoke".to_string(),
         };
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":true,"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","content_base64":"AAE="}}"#;
         validate_open_handle_response(frame, "r1:artifact", "g1", &identity)
             .expect("valid open_handle");
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{"ok":false,"code":"ARTIFACT_HANDLE_FAILED","message":"unavailable","error_origin":"hostcall"}}"#;
+        let err = validate_open_handle_response(failed, "r1:artifact", "g1", &identity)
+            .expect_err("failed open_handle response");
+        assert!(err.contains("ARTIFACT_HANDLE_FAILED"));
     }
 
     #[test]
@@ -2316,9 +3013,19 @@ mod tests {
 
     #[test]
     fn validates_handle_grant_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":true,"handle_grant_id":"h1","handle_id":"storage:db","method":"storage.sqlite","runtime_generation_id":"g1","max_total_bytes":4096}}"#;
         validate_handle_grant_response(frame, "r1:handle", "g1", "storage:db", "storage.sqlite")
             .expect("valid handle grant");
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"validate_handle_grant","request_id":"r1:handle","runtime_generation_id":"g1","payload":{"ok":false,"code":"HANDLE_GRANT_VALIDATION_FAILED","message":"denied","error_origin":"hostcall"}}"#;
+        let err = validate_handle_grant_response(
+            failed,
+            "r1:handle",
+            "g1",
+            "storage:db",
+            "storage.sqlite",
+        )
+        .expect_err("failed handle grant response");
+        assert!(err.contains("HANDLE_GRANT_VALIDATION_FAILED"));
     }
 
     #[test]
@@ -2352,15 +3059,23 @@ mod tests {
 
     #[test]
     fn validates_storage_file_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/today.txt","data_base64":"aGVsbG8=","size_bytes":5}}"#;
         validate_storage_file_response(frame, "r1:storage_file", "g1")
             .expect("valid storage file response");
         let payload = storage_file_payload_json(frame).expect("storage file payload");
         assert!(payload.contains(r#""path":"notes/today.txt""#));
-        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
         let err = validate_storage_file_response(failed, "r1:storage_file", "g1")
             .expect_err("failed storage file response");
         assert!(err.contains("STORAGE_FILE_NOT_FOUND"));
+        let missing_origin = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing"}}"#;
+        let err = validate_storage_file_response(missing_origin, "r1:storage_file", "g1")
+            .expect_err("hostcall origin is required");
+        assert!(err.contains("error_origin"));
+        let spoofed_origin = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_FILE_NOT_FOUND","message":"missing","error_origin":"plugin"}}"#;
+        let err = validate_storage_file_response(spoofed_origin, "r1:storage_file", "g1")
+            .expect_err("hostcall origin cannot be spoofed");
+        assert!(err.contains("must be hostcall"));
     }
 
     #[test]
@@ -2395,12 +3110,12 @@ mod tests {
 
     #[test]
     fn validates_storage_kv_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","size_bytes":5}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":true,"key":"demo/last_broker_run","size_bytes":5}}"#;
         validate_storage_kv_response(frame, "r1:storage_kv", "g1")
             .expect("valid storage kv response");
         let payload = storage_kv_payload_json(frame).expect("storage kv payload");
         assert!(payload.contains(r#""key":"demo/last_broker_run""#));
-        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_kv","request_id":"r1:storage_kv","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_KV_NOT_FOUND","message":"missing","error_origin":"hostcall"}}"#;
         let err = validate_storage_kv_response(failed, "r1:storage_kv", "g1")
             .expect_err("failed storage kv response");
         assert!(err.contains("STORAGE_KV_NOT_FOUND"));
@@ -2468,12 +3183,12 @@ mod tests {
 
     #[test]
     fn validates_storage_sqlite_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]]}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":true,"database":"plugin.sqlite","columns":["title"],"rows":[[{"text":"stored from wasm"}]]}}"#;
         validate_storage_sqlite_response(frame, "r1:storage_sqlite", "g1")
             .expect("valid storage sqlite response");
         let payload = storage_sqlite_payload_json(frame).expect("storage sqlite payload");
         assert!(payload.contains(r#""database":"plugin.sqlite""#));
-        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_SQLITE_RESULT_TOO_LARGE","message":"too large"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_sqlite","request_id":"r1:storage_sqlite","runtime_generation_id":"g1","payload":{"ok":false,"code":"STORAGE_SQLITE_RESULT_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
         let err = validate_storage_sqlite_response(failed, "r1:storage_sqlite", "g1")
             .expect_err("failed storage sqlite response");
         assert!(err.contains("STORAGE_SQLITE_RESULT_TOO_LARGE"));
@@ -2515,10 +3230,10 @@ mod tests {
 
     #[test]
     fn validates_network_grant_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v1","expires_at":"2026-06-30T10:00:30Z"}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":true,"grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"runtime_generation_id":"g1","target_classifier_version":"target-classifier-v1","expires_at":"2026-06-30T10:00:30Z"}}"#;
         validate_network_grant_response(frame, "r1:network_grant", "g1", "api", "http")
             .expect("valid network grant response");
-        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"network_grant","request_id":"r1:network_grant","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_TARGET_DENIED","message":"blocked","error_origin":"hostcall"}}"#;
         let err = validate_network_grant_response(failed, "r1:network_grant", "g1", "api", "http")
             .expect_err("failed network grant response");
         assert!(err.contains("NETWORK_TARGET_DENIED"));
@@ -2543,6 +3258,7 @@ mod tests {
             operation: "http".to_string(),
             method: "POST".to_string(),
             path: "/v1/worker".to_string(),
+            query_json: r#"{"lang":["en"],"units":["metric"]}"#.to_string(),
             headers_json: r#"{"X-Test":["ok"]}"#.to_string(),
             message_type: "".to_string(),
             body_base64: "e30=".to_string(),
@@ -2567,6 +3283,7 @@ mod tests {
         assert!(frame.contains(r#""frame_type":"network_execute""#));
         assert!(frame.contains(r#""operation":"http""#));
         assert!(frame.contains(r#""headers":{"X-Test":["ok"]}"#));
+        assert!(frame.contains(r#""query":{"lang":["en"],"units":["metric"]}"#));
         assert!(frame.contains(r#""body_base64":"e30=""#));
         assert!(frame.contains(r#""stream_id":"stream_1""#));
         assert!(frame.contains(r#""owner_session_hash":"session_hash""#));
@@ -2576,10 +3293,10 @@ mod tests {
 
     #[test]
     fn validates_network_execute_response() {
-        let frame = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":201,"headers":{"X-Worker":["ok"]},"body_base64":"e30=","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#;
         validate_network_execute_response(frame, "r1:network_execute", "g1", "api", "http")
             .expect("valid network execute response");
-        let failed = r#"{"ipc_version":"rust-ipc-v1","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large"}}"#;
+        let failed = r#"{"ipc_version":"rust-ipc-v2","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":false,"code":"NETWORK_RESPONSE_TOO_LARGE","message":"too large","error_origin":"hostcall"}}"#;
         let err =
             validate_network_execute_response(failed, "r1:network_execute", "g1", "api", "http")
                 .expect_err("failed network execute response");
@@ -2588,8 +3305,11 @@ mod tests {
 
     #[test]
     fn parses_worker_invocation_identity() {
-        let frame = r#"{"payload":{"invocation":{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}"#;
-        let identity = parse_worker_invocation_identity(frame).expect("valid invocation");
+        let frame = closed_worker_frame(
+            "{}",
+            r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}"#,
+        );
+        let identity = parse_worker_invocation_identity(&frame).expect("valid invocation");
         assert_eq!(
             identity.package_hash,
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -2599,21 +3319,105 @@ mod tests {
     }
 
     #[test]
-    fn rejects_worker_invocation_without_artifact_identity() {
-        let err = parse_worker_invocation_identity(
-            r#"{"payload":{"invocation":{"artifact":"../backend.wasm"}}}"#,
+    fn projects_secret_free_worker_request_v2() {
+        let frame = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"lease_token":"secret"},"method":"notes.save","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","storage_handle_grants":{"notes":"handle-secret"},"method":"notes.save","params":{"title":"Launch notes","body":"Ship the examples"}}}}"#;
+
+        let request = worker_request_json_v2(frame).expect("worker request projection");
+
+        assert_eq!(
+            request,
+            r#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.save","params":{"title":"Launch notes","body":"Ship the examples"}}"#
+        );
+        assert!(!request.contains("lease_token"));
+        assert!(!request.contains("handle-secret"));
+        assert!(!request.contains("plugin_instance_id"));
+    }
+
+    #[test]
+    fn reads_positive_worker_memory_limit_from_signed_lease() {
+        let frame = closed_worker_frame(
+            r#"{"limits":{"memory_bytes":33554432}}"#,
+            r#"{"method":"worker.echo"}"#,
+        );
+        assert_eq!(
+            runtime_lease_memory_limit_bytes(&frame).expect("memory limit"),
+            33_554_432
+        );
+        for lease in [
+            r#"{"limits":{}}"#,
+            r#"{"limits":{"memory_bytes":0}}"#,
+            r#"{"limits":{"memory_bytes":268435457}}"#,
+        ] {
+            assert!(
+                runtime_lease_memory_limit_bytes(&closed_worker_frame(
+                    lease,
+                    r#"{"method":"worker.echo"}"#,
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn read_effect_rejects_mutating_storage_broker_operations() {
+        for operation in ["write", "delete", "put", "exec"] {
+            let frame = format!(
+                r#"{{"effect":"read","broker_access":{{"storage":[{{"store_id":"store","operations":["{operation}"]}}]}}}}"#
+            );
+            let frame = closed_worker_frame("{}", &frame);
+            let err = validate_worker_storage_broker_access(&frame, "store", operation)
+                .expect_err("read methods must not mutate storage");
+            assert!(err.contains("read effect"), "{err}");
+        }
+    }
+
+    #[test]
+    fn read_effect_allows_declared_http_post_network_request() {
+        let frame = closed_worker_frame(
+            "{}",
+            r#"{"effect":"read","broker_access":{"network":[{"connector_id":"search","transport":"http","operations":["http"],"http_methods":["POST"]}]}}"#,
+        );
+        validate_worker_network_broker_access(&frame, "search", "http", "http", "POST")
+            .expect("HTTP verbs do not define method effect");
+    }
+
+    #[test]
+    fn parses_worker_response_v2_success_and_rejects_extra_authority() {
+        let success =
+            parse_worker_response_v2(r#"{"ok":true,"data":{"saved":true,"id":"note_1"}}"#)
+                .expect("worker success response");
+        assert_eq!(
+            success,
+            WorkerResponseV2::Success(r#"{"saved":true,"id":"note_1"}"#.to_string())
+        );
+
+        let error = parse_worker_response_v2(
+            r#"{"ok":true,"data":{"saved":true},"gateway_token":"secret"}"#,
         )
-        .expect_err("invalid invocation");
+        .expect_err("extra response authority must fail closed");
+        assert!(error.contains("closed object"), "{error}");
+    }
+
+    #[test]
+    fn rejects_worker_invocation_without_artifact_identity() {
+        let frame = closed_worker_frame("{}", r#"{"artifact":"../backend.wasm"}"#);
+        let err = parse_worker_invocation_identity(&frame).expect_err("invalid invocation");
         assert_eq!(err, "missing package_hash");
-        let err = parse_worker_invocation_identity(r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}"#)
-            .expect_err("invalid artifact");
+        let frame = closed_worker_frame(
+            "{}",
+            r#"{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/../backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}"#,
+        );
+        let err = parse_worker_invocation_identity(&frame).expect_err("invalid artifact");
         assert_eq!(err, "invalid artifact");
     }
 
     #[test]
     fn parses_worker_lease_replay_key() {
-        let input = r#"{"payload":{"lease":{"lease_id":"lease_1","lease_nonce":"nonce_1","expires_at_unix_ms":2000}}}"#;
-        let key = parse_worker_lease_replay_key(input).expect("valid replay key");
+        let input = closed_worker_frame(
+            r#"{"lease_id":"lease_1","lease_nonce":"nonce_1","expires_at_unix_ms":2000}"#,
+            r#"{"method":"worker.echo"}"#,
+        );
+        let key = parse_worker_lease_replay_key(&input).expect("valid replay key");
         assert_eq!(key.lease_id, "lease_1");
         assert_eq!(key.lease_nonce, "nonce_1");
         assert_eq!(key.expires_at_unix_ms, 2_000);
@@ -2621,8 +3425,8 @@ mod tests {
 
     #[test]
     fn rejects_worker_lease_replay_key_without_nonce() {
-        let err = parse_worker_lease_replay_key(r#"{"payload":{"lease":{"lease_id":"lease_1"}}}"#)
-            .expect_err("missing nonce should fail");
+        let input = closed_worker_frame(r#"{"lease_id":"lease_1"}"#, r#"{"method":"worker.echo"}"#);
+        let err = parse_worker_lease_replay_key(&input).expect_err("missing nonce should fail");
         assert_eq!(err, "missing lease_nonce");
     }
 
@@ -2689,7 +3493,7 @@ mod tests {
             lease[key] = serde_json::Value::Number(parsed.into());
         }
         format!(
-            r#"{{"ipc_version":"rust-ipc-v1","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#,
+            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"rtgen_1","payload":{{"lease":{},"method":"worker.echo","invocation":{{"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","worker_id":"backend","method":"worker.echo","export":"redevplugin_worker_invoke"}}}}}}"#,
             serde_json::to_string(&lease).expect("lease json")
         )
     }

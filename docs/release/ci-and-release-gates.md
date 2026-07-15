@@ -2,8 +2,8 @@
 
 ReDevPlugin release artifacts are the only supported integration surface for
 host products. A host product should consume a matching published Go module,
-npm package, Rust runtime bundle, compatibility manifest, contract hashes, and
-release evidence set.
+npm package, versioned Rust Worker SDK, Rust runtime bundle, compatibility
+manifest, contract hashes, and release evidence set.
 
 ## Local And CI Gates
 
@@ -16,7 +16,8 @@ CI actions are pinned to immutable commit SHAs and top-level permissions default
 to `contents: read`. The Go job checks `gofmt`, `GOWORK=off go list ./...`,
 `GOWORK=off go test ./...`, and
 the pinned `golangci-lint` version. The TypeScript job runs ESLint, typecheck,
-build, unit/demo/browser tests, plus the bridge replay/cancellation gate.
+build, UI unit tests, Examples generation checks, browser harness tests, plus
+the bridge replay/cancellation gate.
 
 Core local checks:
 
@@ -27,6 +28,7 @@ GOWORK=off golangci-lint run ./...
 npm ci
 npx playwright install chromium
 npm run check
+node scripts/check_redevplugin_release_metadata.mjs --source
 ./scripts/check_redevplugin_runtime_contract.sh --ci
 ./scripts/check_redevplugin_platform.sh --ci
 REDEVPLUGIN_INSTALL_AUDIT_TOOLS=1 ./scripts/check_redevplugin_release_audit.sh
@@ -38,11 +40,19 @@ cargo test --workspace
 
 The tagged release workflow has one `quality-release` dependency shared by npm
 packing, native runtime packing, npm publication, and GitHub Release
-publication. It repeats the complete Go format/test/lint, TypeScript unit/demo/
-browser and bridge-boundary, Rust format/clippy/test/deny, runtime-contract, and
+publication. It repeats the complete Go format/test/lint, TypeScript UI unit,
+Examples, browser-harness and bridge-boundary, Rust format/clippy/test/deny, runtime-contract, and
 platform-contract gates before any immutable package or public release is
 created. Release audit and release-mode stress remain independent mandatory
 dependencies so neither can be hidden by the aggregate quality job.
+
+`scripts/check_redevplugin_release_metadata.mjs` keeps the source release
+coordinate closed before packaging. Local and branch CI derive the intended
+version from the first `CHANGELOG.md` release section, then require the Go
+development compatibility floor and the canonical `redevplugin-worker-sdk`
+Cargo metadata to match. Tagged preflight repeats the same check against the
+actual `vX.Y.Z` tag. Mutation tests reject tag, changelog, Go compatibility,
+Worker SDK version, and canonical manifest-path drift.
 
 `check_redevplugin_platform.sh` and
 `check_redevplugin_runtime_contract.sh` explicitly accept `--ci`, support
@@ -76,6 +86,8 @@ the same command shape.
   terminal reconciliation across SQLite reopen;
 - release artifact verifier fixture behavior, including exact four-target and
   signed-file sets plus rejection of every extra tar or non-tar asset;
+- release manifest v3 Worker SDK identity, safe `.crate` structure, immutable
+  tag documentation, and rejection of cross-target SDK byte drift;
 - npm registry readback mutation fixtures for tarball SHA-512, SLSA subject,
   repository, workflow path/ref, tag, and source commit;
 - Rust IPC, runtime, target classifier, and WASM ABI tests when Cargo is
@@ -93,7 +105,7 @@ the same command shape.
 - compatibility manifest verification;
 - bridge SDK checks;
 - TypeScript typecheck;
-- browser demo tests;
+- browser harness contract and smoke tests;
 - real runtime browser smoke through the Go Host library, HTTP adapter, Rust
   runtime, opaque iframe, classic Dedicated Worker, parent-only asset/stream
   transport, storage broker, and network broker.
@@ -104,7 +116,7 @@ the same command shape.
 and `--summary PATH`.
 
 - `--fast` runs race-sensitive Go packages and `pkg/stress`.
-- `--full` starts from a clean `npm ci`, then adds browser demo, runtime
+- `--full` starts from a clean `npm ci`, then adds browser harness, runtime
   contract, release bundle smoke, and a four-target published-release verifier
   fixture.
 - `--release` adds validation of the exact generated release summary through
@@ -133,6 +145,7 @@ adapter sink boundary. Direct stream stores do not emit Host audit events.
 - `compatibility.json`;
 - contract artifacts under `contracts/`;
 - npm package tarball under `npm/`;
+- versioned Rust Worker SDK crate under `sdk/`;
 - `release-manifest.json`;
 - `SHA256SUMS`;
 - generated third-party notices and lockfile evidence;
@@ -144,17 +157,20 @@ adapter sink boundary. Direct stream stores do not emit Host audit events.
 - `notices/THIRD_PARTY_LICENSES.json` plus actual redistributed license, notice,
   and copyright texts under `notices/licenses/`.
 
-The release workflow builds the npm tarball once and passes that immutable file
-to every runtime matrix build through `--npm-package`. The build stamps one
-release version into the Go compatibility matrix, npm package, and Rust runtime
-hello handshake. Release manifest v2 records the source commit, compatibility
-digest, and the npm tarball path, SHA-256, SRI, and size. The bundle verifier
+The release workflow builds the npm tarball and Rust Worker SDK crate once and
+passes those immutable files to every runtime matrix build through
+`--npm-package` and `--worker-sdk-package`. The build stamps one release version
+into the Go compatibility matrix, npm package, Worker SDK crate, and Rust
+runtime hello handshake. Release manifest v3 records the source commit,
+compatibility digest, npm tarball path/SHA-256/SRI/size, and Worker SDK
+path/SHA-256/size. The bundle verifier
 checks compatibility, release manifest hashes, `SHA256SUMS`, executable target
 format, runtime hello, npm package version/license, every declared root and
 subpath export target, actual self-referenced imports from the unpacked package,
-required contract files, the A3 sample pin, per-file hashes, signed manifest,
-generated-client identity, host-neutral vocabulary, and generated license
-evidence. License verification checks the exact legal-file
+the Worker SDK package name/version/license/source/README and link-free archive
+structure, required contract files, the A3 sample pin, per-file hashes, signed
+manifest, generated-client identity, host-neutral vocabulary, and generated
+license evidence. License verification checks the exact legal-file
 set and each manifest SHA-256; a dependency entry that names a license without
 redistributed legal text fails the build. Each runtime matrix runner executes
 its own Go and Rust binaries. The post-publication aggregate runner uses structural-only
@@ -166,8 +182,15 @@ from each bundle's `notices/package-lock.json`, verifies the temporary
 consumer's generated lock identity, and never depends on checkout-root
 `node_modules` state. Ordinary branch release-bundle CI runs the complete
 four-target isolation regression from a copied verifier root with an invalid
-ambient npm registry, so the tag workflow is not the first place that detects
-an accidental checkout dependency.
+ambient npm registry. It also mutates one otherwise valid Worker SDK crate and
+requires aggregate verification to reject the cross-bundle byte drift, so the
+tag workflow is not the first place that detects an accidental checkout or
+artifact identity dependency.
+
+The SDK package job installs `wasm32-unknown-unknown` before packing. The
+package builder extracts the final `.crate` into a clean directory and runs
+`cargo check --locked --target wasm32-unknown-unknown`, so publication cannot
+ship a source artifact that only compiles inside the repository workspace.
 
 ## npm Package Publishing
 
@@ -194,10 +217,10 @@ packed tarball into a standalone temporary consumer and runs `tsc --noEmit` on
 the released host-capability sample without source aliases.
 
 Ordinary branch CI builds a synthetic `0.0.0-ci.<run-number>` bundle. Only the
-tagged release workflow builds and publishes the immutable tag-derived identity;
-v0.3.2 is intended to be the first A3 release coordinate whose signed artifacts
-and complete public-readback workflow are independent of ambient checkout
-dependencies.
+tagged release workflow builds and publishes the immutable tag-derived identity.
+The published-release verifier remains independent of ambient checkout
+dependencies and validates the final npm and Worker SDK artifacts from their
+standalone consumer directories.
 
 Tagged release workflows also publish `@floegence/redevplugin-ui` to the npm
 registry with the same version as the Git tag. The publish job downloads the
@@ -213,11 +236,12 @@ ambient npm version.
 
 ## Release Manifest And Compatibility
 
-`release-manifest-v2.schema.json` is the machine contract for release bundle
+`release-manifest-v3.schema.json` is the machine contract for release bundle
 provenance, file lists, and checksums. Release manifests exclude themselves and
 `SHA256SUMS`, require the full source commit, compatibility digest, one npm
-tarball identity, safe sorted paths, lowercase SHA-256 hashes, byte sizes,
-nullable runtime targets, and ISO date-time generation metadata.
+tarball identity, one Rust Worker SDK crate identity, safe sorted paths,
+lowercase SHA-256 hashes, byte sizes, nullable runtime targets, and ISO
+date-time generation metadata.
 
 The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,
@@ -275,8 +299,8 @@ release or replacing an asset.
 
 After publication, `scripts/verify_published_release.mjs` downloads the
 immutable release and verifies all four runtime targets, source commit,
-compatibility bytes, identical embedded npm bytes, bundle manifests, and
-runtime presence. The workflow downloads the npm registry tarball, verifies it
+compatibility bytes, identical embedded npm and Worker SDK bytes, bundle
+manifests, and runtime presence. The workflow downloads the npm registry tarball, verifies it
 against the exact bytes embedded in every bundle, and validates SLSA DSSE source
 identity from the npm attestation endpoint. It also downloads the Go module independently
 from VCS and `proxy.golang.org`, requires the direct origin hash/ref to match the

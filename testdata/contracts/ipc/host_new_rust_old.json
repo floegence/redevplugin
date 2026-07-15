@@ -7,14 +7,14 @@
   "want_error": true,
   "error_contains": "ipc_version",
   "frame": {
-    "ipc_version": "rust-ipc-v0",
+    "ipc_version": "rust-ipc-v1",
     "frame_type": "hello_ack",
     "request_id": "runtime_gen_fixture:hello",
     "runtime_generation_id": "runtime_gen_fixture",
     "payload": {
       "runtime_version": "0.0.0-dev",
-      "rust_ipc_version": "rust-ipc-v0",
-      "wasm_abi_version": "redevplugin-wasm-worker-v1",
+      "rust_ipc_version": "rust-ipc-v1",
+      "wasm_abi_version": "redevplugin-wasm-worker-v2",
       "channel_nonce": "nonce_fixture"
     }
   }

@@ -28,10 +28,12 @@ const outFile = resolve(rawOutFile);
 const rustPackages = readRustPackages(rootDir);
 const npmPackages = readNpmPackages(join(rootDir, "package-lock.json"));
 const goModules = readGoModules(rootDir);
+const bundledAssets = readBundledAssets(rootDir);
 const licenseManifest = writeRedistributedLegalTexts(dirname(outFile), [
   ...rustPackages.map((pkg) => legalPackage("rust", pkg)),
   ...npmPackages.map((pkg) => legalPackage("npm", pkg)),
   ...goModules.map((pkg) => legalPackage("go", pkg)),
+  ...bundledAssets.map((pkg) => legalPackage("asset", pkg)),
 ]);
 
 const notice = [
@@ -85,6 +87,13 @@ const notice = [
       mod.version || "(main)",
       detectLicense(mod.legal_files),
     ]),
+  ),
+  "",
+  "## Bundled Assets",
+  "",
+  table(
+    ["Name", "Version", "License", "Use"],
+    bundledAssets.map((pkg) => [pkg.name, pkg.version, pkg.license, pkg.use]),
   ),
   "",
 ].join("\n");
@@ -206,6 +215,18 @@ function readGoModules(root) {
       };
     })
     .sort(compareBy("path", "version"));
+}
+
+function readBundledAssets(root) {
+  return [
+    {
+      name: "kenney-space-shooter-remastered",
+      version: "remastered",
+      license: "CC0-1.0",
+      use: "Sky Strike example plugin graphics",
+      legal_files: scanLegalFiles(join(root, "third_party", "legal", "kenney-space-shooter-remastered")),
+    },
+  ];
 }
 
 function readGoModuleDownloads(root) {
@@ -368,6 +389,7 @@ function safeSegment(value) {
 
 function detectLicense(files) {
   const text = (files || []).map((file) => readFileSync(file, "utf8")).join("\n");
+  if (/Creative Commons CC0|License \(CC0\)|publicdomain\/zero\/1\.0/i.test(text)) return "CC0-1.0";
   if (/Apache License[\s\S]{0,80}Version 2\.0/i.test(text)) return "Apache-2.0";
   if (/Permission is hereby granted, free of charge/i.test(text)) return "MIT";
   if (/Redistribution and use in source and binary forms/i.test(text)) {

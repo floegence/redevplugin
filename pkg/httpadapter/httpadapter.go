@@ -1939,6 +1939,8 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
 	case isCapabilityBusinessError(err):
 		return security.ErrCapabilityError
+	case isWorkerExecutionError(err):
+		return errorCodeForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrMethodResponseContract):
@@ -1982,10 +1984,18 @@ func publicPluginErrorMessage(code security.ErrorCode) string {
 		return "plugin stream credential is invalid"
 	case security.ErrStreamCancelled:
 		return "plugin stream was cancelled"
+	case security.ErrLeaseInvalid:
+		return "plugin execution lease is invalid"
+	case security.ErrGrantInvalid:
+		return "plugin capability grant is invalid"
 	case security.ErrRuntimeUnavailable:
 		return "plugin runtime is unavailable"
+	case security.ErrRuntimeVersionMismatch:
+		return "plugin runtime version is incompatible"
 	case security.ErrCapabilityError:
 		return "host capability request failed"
+	case security.ErrWorkerError:
+		return "plugin operation failed"
 	case security.ErrContractMismatch:
 		return "plugin contract validation failed"
 	default:
@@ -2164,6 +2174,8 @@ func httpStatusForRPCError(err error) int {
 	switch {
 	case isCapabilityBusinessError(err):
 		return http.StatusUnprocessableEntity
+	case isWorkerExecutionError(err):
+		return httpStatusForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrMethodResponseContract):
@@ -2187,6 +2199,8 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
 	case isCapabilityBusinessError(err):
 		return security.ErrCapabilityError
+	case isWorkerExecutionError(err):
+		return errorCodeForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrMethodResponseContract):
@@ -2208,19 +2222,30 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 
 func errorDetailsForRPCError(err error) map[string]any {
 	var businessError *capability.BusinessError
-	if !errors.As(err, &businessError) {
-		return nil
+	if errors.As(err, &businessError) {
+		details := map[string]any{
+			"capability_id":        businessError.CapabilityID,
+			"capability_version":   businessError.CapabilityVersion,
+			"detail_schema_sha256": businessError.DetailSchemaSHA256,
+			"business_error_code":  businessError.Code,
+		}
+		if businessError.Details != nil {
+			details["business_error_details"] = businessError.Details
+		}
+		return details
 	}
-	details := map[string]any{
-		"capability_id":        businessError.CapabilityID,
-		"capability_version":   businessError.CapabilityVersion,
-		"detail_schema_sha256": businessError.DetailSchemaSHA256,
-		"business_error_code":  businessError.Code,
+	var workerError *runtimeclient.WorkerExecutionError
+	if errors.As(err, &workerError) {
+		if errorCodeForWorkerExecutionError(err) != security.ErrWorkerError {
+			return nil
+		}
+		return map[string]any{
+			"worker_error_code":    workerError.Code,
+			"worker_error_message": publicWorkerErrorMessage(workerError.Message),
+			"worker_error_origin":  string(workerError.Origin),
+		}
 	}
-	if businessError.Details != nil {
-		details["business_error_details"] = businessError.Details
-	}
-	return details
+	return nil
 }
 
 func isCapabilityBusinessError(err error) bool {
@@ -2228,10 +2253,81 @@ func isCapabilityBusinessError(err error) bool {
 	return errors.As(err, &businessError)
 }
 
+func isWorkerExecutionError(err error) bool {
+	var workerError *runtimeclient.WorkerExecutionError
+	return errors.As(err, &workerError)
+}
+
+func errorCodeForWorkerExecutionError(err error) security.ErrorCode {
+	var workerError *runtimeclient.WorkerExecutionError
+	if !errors.As(err, &workerError) {
+		return security.ErrRuntimeUnavailable
+	}
+	if workerError.Origin == runtimeclient.WorkerErrorOriginPlugin {
+		return security.ErrWorkerError
+	}
+	if workerError.Origin != runtimeclient.WorkerErrorOriginRuntime && workerError.Origin != runtimeclient.WorkerErrorOriginHostcall {
+		return security.ErrRuntimeUnavailable
+	}
+	switch workerError.Code {
+	case "INVALID_REQUEST":
+		return security.ErrInvalidRequest
+	case "NETWORK_TARGET_DENIED":
+		return security.ErrNetworkTargetDenied
+	case "NETWORK_RATE_LIMITED":
+		return security.ErrNetworkRateLimited
+	case "STORAGE_QUOTA_EXCEEDED", "STORAGE_FILE_QUOTA_EXCEEDED", "STORAGE_KV_QUOTA_EXCEEDED", "STORAGE_SQLITE_QUOTA_EXCEEDED":
+		return security.ErrStorageQuotaExceeded
+	case "RUNTIME_CAPABILITY_REVOKED":
+		return security.ErrGrantInvalid
+	case "RUNTIME_LEASE_INVALID", "RUNTIME_LEASE_SIGNATURE_INVALID":
+		return security.ErrLeaseInvalid
+	case "RUNTIME_CONTROL_CHANNEL_STALE", "WASM_WORKER_FAILED", "WASM_HOSTCALL_FAILED", "HOSTCALL_FAILED":
+		return security.ErrRuntimeUnavailable
+	case "WASM_WORKER_INVALID":
+		return security.ErrContractMismatch
+	default:
+		return security.ErrRuntimeUnavailable
+	}
+}
+
+func httpStatusForWorkerExecutionError(err error) int {
+	switch errorCodeForWorkerExecutionError(err) {
+	case security.ErrInvalidRequest:
+		return http.StatusBadRequest
+	case security.ErrNetworkTargetDenied, security.ErrGrantInvalid, security.ErrLeaseInvalid:
+		return http.StatusForbidden
+	case security.ErrNetworkRateLimited:
+		return http.StatusTooManyRequests
+	case security.ErrStorageQuotaExceeded:
+		return http.StatusRequestEntityTooLarge
+	case security.ErrContractMismatch:
+		return http.StatusBadGateway
+	case security.ErrRuntimeUnavailable, security.ErrRuntimeVersionMismatch:
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusUnprocessableEntity
+	}
+}
+
+func publicWorkerErrorMessage(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "plugin worker operation failed"
+	}
+	runes := []rune(value)
+	if len(runes) > 512 {
+		return string(runes[:512])
+	}
+	return value
+}
+
 func httpStatusForIntentError(err error) int {
 	switch {
 	case isCapabilityBusinessError(err):
 		return http.StatusUnprocessableEntity
+	case isWorkerExecutionError(err):
+		return httpStatusForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
 		return http.StatusBadRequest
 	case errors.Is(err, host.ErrMethodResponseContract):

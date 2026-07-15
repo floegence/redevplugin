@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, createPublicKey, generateKeyPairSync, verify as verifySignature } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -21,6 +21,7 @@ const releaseManifestPath = join(bundleDir, "release-manifest.json");
 const sha256SumsPath = join(bundleDir, "SHA256SUMS");
 const manifest = readJSON(releaseManifestPath);
 const expectedVersion = rawExpectedVersion || manifest.version;
+const rustToolchain = resolveRustToolchain();
 
 verifyReleaseManifestShape(manifest, expectedVersion);
 verifyManifestFiles(bundleDir, manifest);
@@ -29,8 +30,10 @@ verifyExecutableTargets(bundleDir, manifest.runtime_target);
 verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);
 verifyRuntimeHello(bundleDir, expectedVersion, structuralOnly);
 await verifyNpmTarball(bundleDir, expectedVersion, manifest);
+verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest);
 verifyNoticeEvidence(bundleDir);
 verifyHostCapabilitySample(bundleDir, manifest, structuralOnly);
+await verifyExamplesServer(bundleDir, structuralOnly);
 
 console.log(`release bundle verified: ${bundleDir}`);
 
@@ -44,9 +47,10 @@ function verifyReleaseManifestShape(manifest, expectedVersion) {
     "generated_at",
     "compatibility_sha256",
     "npm_package",
+    "worker_sdk",
     "files",
   ], "release manifest");
-  assertEqual(manifest.schema_version, "redevplugin.release_manifest.v2", "release manifest schema_version");
+  assertEqual(manifest.schema_version, "redevplugin.release_manifest.v3", "release manifest schema_version");
   assertEqual(manifest.version, expectedVersion, "release manifest version");
   assertGitCommit(manifest.source_commit, "release manifest source_commit");
   if (manifest.runtime_target !== null && typeof manifest.runtime_target !== "string") {
@@ -57,6 +61,7 @@ function verifyReleaseManifestShape(manifest, expectedVersion) {
   }
   assertHexSHA256(manifest.compatibility_sha256, "release manifest compatibility_sha256");
   verifyNpmManifestEntry(manifest.npm_package, expectedVersion);
+  verifyWorkerSDKManifestEntry(manifest.worker_sdk, expectedVersion);
   if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
     fail("release manifest files must be a non-empty array");
   }
@@ -102,9 +107,9 @@ function verifyRequiredArtifacts(bundleDir) {
     "bin/redevplugin",
     "bin/redevplugin-runtime",
     "compatibility.json",
-    "contracts/spec/openapi/plugin-platform-v2.yaml",
-    "contracts/spec/plugin/bridge-v2.schema.json",
-    "contracts/spec/plugin/compatibility-manifest-v2.schema.json",
+    "contracts/spec/openapi/plugin-platform-v3.yaml",
+    "contracts/spec/plugin/bridge-v3.schema.json",
+    "contracts/spec/plugin/compatibility-manifest-v3.schema.json",
     "contracts/spec/plugin/error-codes-v1.schema.json",
     "contracts/spec/plugin/host-capability-contract-v1.schema.json",
     "contracts/spec/plugin/host-capability-pin-v1.schema.json",
@@ -112,16 +117,16 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/host-capability-compatibility-v1.schema.json",
     "contracts/spec/plugin/host-capability-signature-v1.schema.json",
     "contracts/spec/plugin/host-capability-notices-v1.schema.json",
-    "contracts/spec/plugin/ipc-v1.schema.json",
-    "contracts/spec/plugin/manifest-v2.schema.json",
-    "contracts/spec/plugin/opaque-surface-document-v1.schema.json",
-    "contracts/spec/plugin/opaque-surface-transport-v1.schema.json",
-    "contracts/spec/plugin/release-metadata-v2.schema.json",
-    "contracts/spec/plugin/release-manifest-v2.schema.json",
+    "contracts/spec/plugin/ipc-v2.schema.json",
+    "contracts/spec/plugin/manifest-v3.schema.json",
+    "contracts/spec/plugin/opaque-surface-document-v2.schema.json",
+    "contracts/spec/plugin/opaque-surface-transport-v2.schema.json",
+    "contracts/spec/plugin/release-metadata-v3.schema.json",
+    "contracts/spec/plugin/release-manifest-v3.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
     "contracts/spec/plugin/token-ticket-v2.schema.json",
-    "contracts/spec/plugin/worker-invocation-v1.schema.json",
+    "contracts/spec/plugin/worker-invocation-v2.schema.json",
     "examples/host-capability/sample-documents-v1/example-documents.public.json",
     "examples/host-capability/sample-documents-v1/host-capability.pin.json",
     "examples/host-capability/sample-documents-v1/plugin-consumer.ts",
@@ -131,6 +136,37 @@ function verifyRequiredArtifacts(bundleDir) {
     "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.notices.json",
     "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.schema.json",
     "examples/host-capability/sample-documents-v1/capabilities/example.documents/v1.0.0/example.documents.v1.sig",
+    "examples/showcase/index.html",
+    "examples/showcase/styles.css",
+    "examples/showcase/app.js",
+    "examples/showcase/assets/memos-v2.webp",
+    "examples/showcase/assets/weather-v2.webp",
+    "examples/showcase/assets/sky-strike-v2.webp",
+    "examples/plugins/weather/ui/assets/weather-scene-v2.webp",
+    "examples/plugins/sky-strike/ui/assets/starfield-v2.webp",
+    "examples/plugins/memos/manifest.json",
+    "examples/plugins/memos/ui/index.html",
+    "examples/plugins/memos/ui/assets/app.js",
+    "examples/plugins/memos/ui/assets/styles.css",
+    "examples/plugins/memos/workers/abi.json",
+    "examples/plugins/memos/workers/memos.wasm",
+    "examples/plugins/weather/manifest.json",
+    "examples/plugins/weather/ui/index.html",
+    "examples/plugins/weather/ui/assets/app.js",
+    "examples/plugins/weather/ui/assets/styles.css",
+    "examples/plugins/weather/workers/abi.json",
+    "examples/plugins/weather/workers/weather.wasm",
+    "examples/plugins/sky-strike/THIRD_PARTY_NOTICES.md",
+    "examples/plugins/sky-strike/manifest.json",
+    "examples/plugins/sky-strike/ui/index.html",
+    "examples/plugins/sky-strike/ui/assets/app.js",
+    "examples/plugins/sky-strike/ui/assets/styles.css",
+    "examples/plugins/sky-strike/ui/assets/player.png",
+    "examples/plugins/sky-strike/ui/assets/enemy.png",
+    "examples/plugins/sky-strike/ui/assets/laser.png",
+    "examples/plugins/sky-strike/ui/assets/meteor.png",
+    "examples/plugins/sky-strike/workers/abi.json",
+    "examples/plugins/sky-strike/workers/sky-strike.wasm",
     "notices/Cargo.lock",
     "notices/THIRD_PARTY_LICENSES.json",
     "notices/go.sum",
@@ -154,7 +190,7 @@ function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution
   const compatibility = readJSON(compatibilityPath);
   assertObject(compatibility, "compatibility.json");
   assertExactKeys(compatibility, ["schema_version", "matrix", "contracts"], "compatibility manifest");
-  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v2", "compatibility schema_version");
+  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v3", "compatibility schema_version");
   assertObject(compatibility.matrix, "compatibility matrix");
   for (const key of ["redevplugin_go_version", "redevplugin_ui_version", "redevplugin_runtime_version"]) {
     assertEqual(compatibility.matrix?.[key], expectedVersion, `compatibility matrix ${key}`);
@@ -210,11 +246,16 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
   }
   const hello =
     JSON.stringify({
-      ipc_version: "rust-ipc-v1",
+      ipc_version: "rust-ipc-v2",
       frame_type: "hello",
       request_id: "hello-1",
       runtime_generation_id: "gen-1",
       payload: {
+        target: { os: process.platform, arch: process.arch },
+        host_process_id: process.pid,
+        host_ipc_version: "rust-ipc-v2",
+        host_wasm_abi: "redevplugin-wasm-worker-v2",
+        started_unix_nano: 1,
         channel_nonce: channelNonce,
         runtime_lease_public_keys: [
           {
@@ -225,15 +266,26 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
         ],
       },
     }) + "\n";
-  const output = execFileSync(join(bundleDir, "bin/redevplugin-runtime"), {
+  const runtime = spawnSync(join(bundleDir, "bin/redevplugin-runtime"), {
     input: hello,
     encoding: "utf8",
-  }).trim().split("\n")[0];
+    env: {
+      ...process.env,
+      REDEVPLUGIN_CONTROL_READ_FD: "3",
+      REDEVPLUGIN_CONTROL_WRITE_FD: "4",
+    },
+    stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
+  });
+  if (runtime.error) fail(`release runtime hello failed: ${runtime.error.message}`);
+  if (runtime.status !== 0) {
+    fail(`release runtime hello exited with ${runtime.status}: ${String(runtime.stderr || "").trim()}`);
+  }
+  const output = String(runtime.stdout).trim().split("\n")[0];
   const ack = JSON.parse(output);
   assertEqual(ack.frame_type, "hello_ack", "runtime hello frame_type");
   assertEqual(ack.payload?.runtime_version, expectedVersion, "runtime hello version");
-  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v1", "runtime hello rust_ipc_version");
-  assertEqual(ack.payload?.wasm_abi_version, "redevplugin-wasm-worker-v1", "runtime hello wasm_abi_version");
+  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v2", "runtime hello rust_ipc_version");
+  assertEqual(ack.payload?.wasm_abi_version, "redevplugin-wasm-worker-v2", "runtime hello wasm_abi_version");
   assertEqual(ack.payload?.channel_nonce, channelNonce, "runtime hello channel_nonce");
 }
 
@@ -279,6 +331,96 @@ function verifyNpmManifestEntry(npmPackage, expectedVersion) {
   if (!Number.isSafeInteger(npmPackage.size) || npmPackage.size < 1) {
     fail("release manifest npm package size must be a positive safe integer");
   }
+}
+
+function verifyWorkerSDKManifestEntry(workerSDK, expectedVersion) {
+  assertObject(workerSDK, "release manifest worker_sdk");
+  assertExactKeys(workerSDK, ["name", "version", "path", "sha256", "size"], "release manifest worker_sdk");
+  assertEqual(workerSDK.name, "redevplugin-worker-sdk", "release manifest worker SDK name");
+  assertEqual(workerSDK.version, expectedVersion, "release manifest worker SDK version");
+  if (typeof workerSDK.path !== "string" || !/^sdk\/redevplugin-worker-sdk-[A-Za-z0-9._+-]+\.crate$/.test(workerSDK.path)) {
+    fail("release manifest worker SDK path is invalid");
+  }
+  assertHexSHA256(workerSDK.sha256, "release manifest worker SDK sha256");
+  if (!Number.isSafeInteger(workerSDK.size) || workerSDK.size < 1) {
+    fail("release manifest worker SDK size must be a positive safe integer");
+  }
+}
+
+function verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest) {
+  const cratePath = join(bundleDir, manifest.worker_sdk.path);
+  const crateBytes = readFileSync(cratePath);
+  assertEqual(createHash("sha256").update(crateBytes).digest("hex"), manifest.worker_sdk.sha256, "worker SDK crate sha256");
+  assertEqual(crateBytes.length, manifest.worker_sdk.size, "worker SDK crate size");
+
+  const packageRoot = `redevplugin-worker-sdk-${expectedVersion}/`;
+  const entries = execFileSync("tar", ["-tzf", cratePath], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  if (entries.length === 0 || new Set(entries).size !== entries.length) {
+    fail("worker SDK crate must contain a non-empty unique file list");
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(packageRoot) || entry.includes("\\") || entry.split("/").includes("..")) {
+      fail(`worker SDK crate contains unsafe path ${entry}`);
+    }
+  }
+  const detailedEntries = execFileSync("tar", ["-tvzf", cratePath], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  if (detailedEntries.some((entry) => !entry.startsWith("-") && !entry.startsWith("d"))) {
+    fail("worker SDK crate must not contain links or special files");
+  }
+  for (const path of ["Cargo.lock", "Cargo.toml", "Cargo.toml.orig", "README.md", "src/lib.rs"]) {
+    if (!entries.includes(packageRoot + path)) {
+      fail(`worker SDK crate is missing ${path}`);
+    }
+  }
+
+  const cargoManifest = execFileSync("tar", ["-xOzf", cratePath, packageRoot + "Cargo.toml"], { encoding: "utf8" });
+  for (const snippet of [
+    'name = "redevplugin-worker-sdk"',
+    `version = "${expectedVersion}"`,
+    'license = "MIT"',
+    'publish = false',
+    'path = "src/lib.rs"',
+  ]) {
+    if (!cargoManifest.includes(snippet)) fail(`worker SDK Cargo.toml is missing ${snippet}`);
+  }
+  const readme = execFileSync("tar", ["-xOzf", cratePath, packageRoot + "README.md"], { encoding: "utf8" });
+  if (!readme.includes("# ReDevPlugin Worker SDK") || !readme.includes(`tag = "v${expectedVersion}"`)) {
+    fail("worker SDK README does not document the immutable release dependency");
+  }
+  const source = execFileSync("tar", ["-xOzf", cratePath, packageRoot + "src/lib.rs"], { encoding: "utf8" });
+  for (const snippet of [
+    'WORKER_ABI_VERSION: &str = "redevplugin-wasm-worker-v2"',
+    "macro_rules! export_worker",
+    "pub use hostcalls::{network, storage}",
+  ]) {
+    if (!source.includes(snippet)) fail(`worker SDK source is missing ${snippet}`);
+  }
+
+	const unpackRoot = mkdtempSync(join(tmpdir(), "redevplugin-worker-sdk-check-"));
+	try {
+		execFileSync("tar", ["-xzf", cratePath, "-C", unpackRoot]);
+		execFileSync("cargo", ["check", "--locked", "--target", "wasm32-unknown-unknown"], {
+			cwd: join(unpackRoot, packageRoot),
+			encoding: "utf8",
+			env: { ...process.env, RUSTUP_TOOLCHAIN: rustToolchain, CARGO_TARGET_DIR: join(unpackRoot, "target") },
+		});
+	} finally {
+		rmSync(unpackRoot, { recursive: true, force: true });
+	}
+}
+
+function resolveRustToolchain() {
+  const configured = process.env.RUSTUP_TOOLCHAIN;
+  if (configured && /^[A-Za-z0-9_.-]+$/.test(configured)) return configured;
+  const result = spawnSync("rustup", ["show", "active-toolchain"], {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) fail(`rustup show active-toolchain failed: ${result.stderr || result.stdout || result.error}`);
+  const active = String(result.stdout).trim().split(/\s+/, 1)[0];
+  if (!/^[A-Za-z0-9_.-]+$/.test(active)) fail("rustup returned an invalid active toolchain");
+  return active;
 }
 
 async function verifyNpmTarball(bundleDir, expectedVersion, manifest) {
@@ -544,6 +686,103 @@ function verifyHostCapabilitySample(bundleDir, releaseManifest, skipExecution) {
   ], { encoding: "utf8" });
 }
 
+async function verifyExamplesServer(bundleDir, skipExecution) {
+  if (skipExecution || process.env.REDEVPLUGIN_SKIP_RUNTIME_EXEC === "1") return;
+  const stateRoot = mkdtempSync(join(tmpdir(), "redevplugin-release-examples-"));
+  const child = spawn(
+    join(bundleDir, "bin/redevplugin"),
+    ["examples-server", stateRoot, join(bundleDir, "bin/redevplugin-runtime")],
+    {
+      cwd: bundleDir,
+      env: { ...process.env, REDEVPLUGIN_EXAMPLES_PORT: "0" },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let output = "";
+  let failure;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { output += chunk; });
+  try {
+    const origin = await waitForExamplesOrigin(child, () => output);
+    const health = await waitForExamplesJSON(`${origin}/api/health`, (value) => value?.success === true && value?.data?.ready === true);
+    if (health.data.plugins !== 3) throw new Error(`health plugin count = ${health.data.plugins}`);
+    const catalog = await waitForExamplesJSON(`${origin}/api/catalog`, (value) => value?.success === true && Array.isArray(value?.data));
+    const slugs = catalog.data.map((item) => item.slug).sort();
+    if (JSON.stringify(slugs) !== JSON.stringify(["memos", "sky-strike", "weather"])) {
+      throw new Error(`catalog slugs = ${JSON.stringify(slugs)}`);
+    }
+    const page = await fetch(origin).then((response) => response.text());
+    if (!page.includes("ReDevPlugin Examples") || !page.includes("mobile-plugin-navigation") || !page.includes("plugin-dock")) {
+      throw new Error("showcase HTML is incomplete");
+    }
+    const opened = await fetch(`${origin}/api/open`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({ slug: "weather" }),
+    }).then((response) => response.json());
+    if (opened?.success !== true || opened?.data?.surface_id !== "weather.view") {
+      throw new Error(`weather surface open failed: ${JSON.stringify(opened)}`);
+    }
+  } catch (error) {
+    failure = error;
+  } finally {
+    await stopExamplesServer(child);
+    rmSync(stateRoot, { recursive: true, force: true });
+  }
+  if (failure) {
+    const message = failure instanceof Error ? failure.message : String(failure);
+    fail(`standalone Examples server smoke failed: ${message}\n${output}`);
+  }
+}
+
+function waitForExamplesOrigin(child, readOutput) {
+  return new Promise((resolveOrigin, rejectOrigin) => {
+    const deadline = Date.now() + 20_000;
+    const timer = setInterval(() => {
+      const match = readOutput().match(/ReDevPlugin examples: (http:\/\/127\.0\.0\.1:\d+)/);
+      if (match) {
+        clearInterval(timer);
+        resolveOrigin(match[1]);
+      } else if (child.exitCode !== null) {
+        clearInterval(timer);
+        rejectOrigin(new Error(`Examples server exited with code ${child.exitCode}`));
+      } else if (Date.now() >= deadline) {
+        clearInterval(timer);
+        rejectOrigin(new Error("Examples server did not report its origin"));
+      }
+    }, 50);
+  });
+}
+
+async function waitForExamplesJSON(url, predicate) {
+  const deadline = Date.now() + 20_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { headers: { Accept: "application/json" } });
+      const value = await response.json();
+      if (response.ok && predicate(value)) return value;
+      lastError = new Error(`HTTP ${response.status}: ${JSON.stringify(value)}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
+  }
+  throw lastError ?? new Error(`timed out reading ${url}`);
+}
+
+async function stopExamplesServer(child) {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  await Promise.race([
+    new Promise((resolveExit) => child.once("exit", resolveExit)),
+    new Promise((resolveDelay) => setTimeout(resolveDelay, 3_000)),
+  ]);
+  if (child.exitCode === null) child.kill("SIGKILL");
+}
+
 function verifyNoticeEvidence(bundleDir) {
   const notice = readFileSync(join(bundleDir, "THIRD_PARTY_NOTICES.md"), "utf8");
   for (const expected of [
@@ -556,10 +795,13 @@ function verifyNoticeEvidence(bundleDir) {
     "## Rust Crates",
     "## npm Packages",
     "## Go Modules",
+    "## Bundled Assets",
     "| wasmi |",
     "| typescript |",
     "| modernc.org/sqlite |",
+    "| kenney-space-shooter-remastered |",
     "Apache-2.0",
+    "CC0-1.0",
     "MIT",
   ]) {
     if (!notice.includes(expected)) {
@@ -588,7 +830,7 @@ function verifyNoticeEvidence(bundleDir) {
 	for (const [index, pkg] of licenseManifest.packages.entries()) {
 		assertObject(pkg, `third-party license packages[${index}]`);
 		assertExactKeys(pkg, ["ecosystem", "name", "version", "license", "files"], `third-party license packages[${index}]`);
-		if (!["go", "npm", "rust"].includes(pkg.ecosystem) || typeof pkg.name !== "string" || pkg.name.length === 0 || typeof pkg.version !== "string" || pkg.version.length === 0) {
+		if (!["asset", "go", "npm", "rust"].includes(pkg.ecosystem) || typeof pkg.name !== "string" || pkg.name.length === 0 || typeof pkg.version !== "string" || pkg.version.length === 0) {
 			fail(`third-party license packages[${index}] has invalid identity`);
 		}
 		if (typeof pkg.license !== "string" || pkg.license.length === 0 || pkg.license === "UNKNOWN") {
@@ -615,7 +857,7 @@ function verifyNoticeEvidence(bundleDir) {
 			referencedFiles.add(file.path);
 		}
 	}
-	for (const requiredPackage of ["rust:wasmi@", "npm:typescript@", "go:modernc.org/sqlite@"]) {
+	for (const requiredPackage of ["asset:kenney-space-shooter-remastered@", "rust:wasmi@", "npm:typescript@", "go:modernc.org/sqlite@"]) {
 		if (![...packageIDs].some((packageID) => packageID.startsWith(requiredPackage))) {
 			fail(`third-party license manifest must include ${requiredPackage}`);
 		}

@@ -1,0 +1,5 @@
+{
+  "abi_version": "redevplugin-wasm-worker-v2",
+  "exports": ["redevplugin_worker_invoke"],
+  "imports": ["redevplugin.storage"]
+}

@@ -1,0 +1,13 @@
+[package]
+name = "redevplugin-scaffold-worker"
+version = "0.0.0-dev"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+redevplugin-worker-sdk = { path = "../../crates/redevplugin-worker-sdk" }
+serde_json = "1.0"

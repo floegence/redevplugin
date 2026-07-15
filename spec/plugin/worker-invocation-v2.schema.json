@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/worker-invocation-v2.schema.json",
+  "title": "ReDevPlugin worker invocation payload v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plugin_id",
+    "plugin_instance_id",
+    "active_fingerprint",
+    "runtime_instance_id",
+    "runtime_generation_id",
+    "package_hash",
+    "worker_id",
+    "worker_mode",
+    "worker_scope",
+    "artifact",
+    "artifact_sha256",
+    "abi",
+    "method",
+    "export",
+    "effect",
+    "execution",
+    "audit_correlation_id",
+    "broker_access",
+    "broker_access_sha256",
+    "params_sha256",
+    "params"
+  ],
+  "properties": {
+    "plugin_id": { "type": "string", "minLength": 1 },
+    "plugin_instance_id": { "type": "string", "minLength": 1 },
+    "active_fingerprint": { "type": "string", "minLength": 1 },
+    "runtime_instance_id": { "type": "string", "minLength": 1 },
+    "runtime_generation_id": { "type": "string", "minLength": 1 },
+    "package_hash": { "$ref": "#/$defs/sha256" },
+    "worker_id": { "type": "string", "minLength": 1 },
+    "worker_mode": { "const": "job" },
+    "worker_scope": { "type": "string", "minLength": 1 },
+    "artifact": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^workers/[A-Za-z0-9._/-]+\\.wasm$"
+    },
+    "artifact_sha256": { "$ref": "#/$defs/sha256" },
+    "abi": { "const": "redevplugin-wasm-worker-v2" },
+    "method": { "type": "string", "minLength": 1 },
+    "export": { "const": "redevplugin_worker_invoke" },
+    "effect": { "enum": ["read", "write", "execute", "delete", "admin"] },
+    "execution": { "enum": ["sync", "operation", "subscription"] },
+    "operation_id": { "type": "string", "minLength": 1 },
+    "stream_id": { "type": "string", "minLength": 1 },
+    "audit_correlation_id": { "type": "string", "minLength": 1 },
+    "params_sha256": { "$ref": "#/$defs/sha256" },
+    "surface_instance_id": { "type": "string" },
+    "owner_session_hash": { "type": "string" },
+    "owner_user_hash": { "type": "string" },
+    "session_channel_id_hash": { "type": "string" },
+    "bridge_channel_id": { "type": "string" },
+    "storage_handle_grants": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "broker_access": { "$ref": "#/$defs/broker_access" },
+    "broker_access_sha256": { "$ref": "#/$defs/sha256" },
+    "params": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "broker_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storage": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["store_id", "operations"],
+            "properties": {
+              "store_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "operations": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["read", "write", "delete", "list", "get", "put", "query", "exec"] }
+              }
+            }
+          }
+        },
+        "network": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["connector_id", "transport", "operations"],
+            "properties": {
+              "connector_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "transport": { "enum": ["http", "websocket", "tcp", "udp"] },
+              "operations": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["http", "http_stream", "websocket_round_trip", "tcp_round_trip", "udp_round_trip"] }
+              },
+              "http_methods": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] }
+              }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "transport": { "const": "http" } }, "required": ["transport"] },
+                "then": { "required": ["http_methods"] },
+                "else": { "not": { "required": ["http_methods"] } }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "execution": { "const": "sync" } }, "required": ["execution"] },
+      "then": { "not": { "anyOf": [{ "required": ["operation_id"] }, { "required": ["stream_id"] }] } }
+    },
+    {
+      "if": { "properties": { "execution": { "const": "operation" } }, "required": ["execution"] },
+      "then": { "required": ["operation_id"], "not": { "required": ["stream_id"] } }
+    },
+    {
+      "if": { "properties": { "execution": { "const": "subscription" } }, "required": ["execution"] },
+      "then": { "required": ["operation_id", "stream_id"] }
+    }
+  ]
+}

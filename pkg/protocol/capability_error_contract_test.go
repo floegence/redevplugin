@@ -14,7 +14,7 @@ import (
 func TestBridgeCapabilityBusinessErrorDetailsAreClosedAndMatchFixture(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	schema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "bridge-v2.schema.json"))
+	schema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "bridge-v3.schema.json"))
 	detailsSchema := requireNestedObject(t, schema, "$defs", "capability_business_error_details")
 	if detailsSchema["additionalProperties"] != false {
 		t.Fatalf("capability business error details must be closed: %#v", detailsSchema)
@@ -67,7 +67,7 @@ func TestBridgeCapabilityBusinessErrorDetailsAreClosedAndMatchFixture(t *testing
 func TestOpenAPICapabilityErrorsAndSubscriptionResultsMatchBridgeContract(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v3.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

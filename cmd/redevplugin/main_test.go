@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/bridge"
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
-	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/permissions"
@@ -31,29 +29,35 @@ import (
 	"github.com/floegence/redevplugin/pkg/version"
 )
 
-func TestGeneratedWorkerResponseSchemaAcceptsRuntimeMetadata(t *testing.T) {
+func TestScaffoldEchoResponseSchemaIsClosedAndMinimal(t *testing.T) {
 	compiled, err := manifest.CompileMethodSchemas(manifest.MethodSpec{
 		Method:         "worker.echo",
 		RequestSchema:  closedMethodObjectSchema(nil),
-		ResponseSchema: generatedWorkerResponseSchema(),
+		ResponseSchema: scaffoldEchoResponseSchema(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := compiled.ValidateResponse(map[string]any{
-		"method":                    "worker.echo",
-		"worker_id":                 "backend",
-		"backend":                   "executed wasm worker scaffold",
-		"transport":                 "rust runtime ipc",
-		"wasm_abi":                  "redevplugin-wasm-worker-v1",
-		"wasm_byte_len":             float64(128),
-		"network_execute":           map[string]any{"transport": "http"},
-		"network_execute_websocket": map[string]any{"transport": "websocket"},
-		"network_execute_tcp":       map[string]any{"transport": "tcp"},
-		"network_execute_udp":       map[string]any{"transport": "udp"},
-		"stream_id":                 "stream_1",
+		"method":    "worker.echo",
+		"worker_id": "backend",
+		"backend":   "executed wasm worker scaffold",
+		"transport": "rust runtime ipc",
+		"wasm_abi":  "redevplugin-wasm-worker-v2",
+		"message":   "hello",
 	}); err != nil {
-		t.Fatalf("generated worker response schema rejected runtime metadata: %v", err)
+		t.Fatalf("scaffold echo response schema rejected valid data: %v", err)
+	}
+	if err := compiled.ValidateResponse(map[string]any{
+		"method":          "worker.echo",
+		"worker_id":       "backend",
+		"backend":         "executed wasm worker scaffold",
+		"transport":       "rust runtime ipc",
+		"wasm_abi":        "redevplugin-wasm-worker-v2",
+		"message":         "hello",
+		"network_execute": map[string]any{},
+	}); err == nil {
+		t.Fatal("scaffold echo response schema accepted undeclared network data")
 	}
 }
 
@@ -61,7 +65,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "plugin")
 	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.cli",
@@ -69,7 +73,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html"}
@@ -159,40 +163,35 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if err := json.Unmarshal(output, &summary); err != nil {
 		t.Fatalf("scaffold output decode error = %v: %s", err, output)
 	}
-	if summary.PluginID != "com.example.generated" || len(summary.Files) != 9 {
+	if summary.PluginID != "com.example.generated" || len(summary.Files) != 16 {
 		t.Fatalf("scaffold summary mismatch: %#v", summary)
 	}
 
-	if _, err := captureCLIOutput(t, "validate", filepath.Join(scaffoldDir, "manifest.json")); err != nil {
+	if _, err := captureCLIOutput(t, "validate", filepath.Join(scaffoldDir, "dist", "manifest.json")); err != nil {
 		t.Fatalf("validate scaffold manifest error = %v", err)
 	}
 	manifestRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`"workers"`,
-		`"backend"`,
-		`"broker_backend"`,
-		`"worker.echo"`,
-		`"worker.brokerDemo"`,
-		`"storage"`,
-		`"workspace"`,
-		`"settings"`,
-		`"kv"`,
-		`"db"`,
-		`"sqlite"`,
-		`"network_access"`,
-		`"api"`,
-	} {
+	for _, want := range []string{`"workers"`, `"backend"`, `"worker.echo"`} {
 		if !bytes.Contains(manifestRaw, []byte(want)) {
 			t.Fatalf("scaffold manifest missing %q: %s", want, manifestRaw)
 		}
 	}
-	if !bytes.Contains(manifestRaw, []byte(`"workers"`)) || !bytes.Contains(manifestRaw, []byte(`"worker.echo"`)) {
-		t.Fatalf("scaffold manifest missing worker contract: %s", manifestRaw)
+	for _, forbidden := range []string{`"worker.brokerSample"`, `"broker_access"`, `"storage"`, `"network_access"`, `"sqlite_bootstrap"`, `"storage_handle_grant_token"`} {
+		if bytes.Contains(manifestRaw, []byte(forbidden)) {
+			t.Fatalf("minimal scaffold manifest retained forbidden capability %q: %s", forbidden, manifestRaw)
+		}
 	}
-	indexRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "ui", "index.html"))
+	distManifestRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(manifestRaw, distManifestRaw) {
+		t.Fatal("editable and distributable scaffold manifests differ")
+	}
+	indexRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "dist", "ui", "index.html"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,50 +203,34 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 			t.Fatalf("scaffold index retained browser bootstrap field %q: %s", forbidden, indexRaw)
 		}
 	}
-	appRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "ui", "assets", "app.js"))
+	appRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "dist", "ui", "assets", "app.js"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "worker.brokerDemo", "invoke-broker", "tokenLeakCheck"} {
+	for _, want := range []string{"PluginBridgeClient", "redevplugin.bridge.call", "worker.echo", "echo-message", "Generated Plugin"} {
 		if !bytes.Contains(appRaw, []byte(want)) {
 			t.Fatalf("scaffold app.js missing %q: %s", want, appRaw)
 		}
 	}
-	for _, forbidden := range []string{"window.parent.postMessage", "parent_origin", "redevplugin.bridge.handshake", "asset_ticket", "plugin_gateway_token", "stream_ticket"} {
+	for _, forbidden := range []string{"window.parent.postMessage", "parent_origin", "redevplugin.bridge.handshake", "asset_ticket", "plugin_gateway_token", "stream_ticket", "worker.brokerSample"} {
 		if bytes.Contains(appRaw, []byte(forbidden)) {
 			t.Fatalf("scaffold app.js retained parent-only or hand-written bridge field %q", forbidden)
 		}
 	}
-	wasmRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "backend.wasm"))
+	for _, sourcePath := range []string{"ui/src/app.ts", "worker/src/lib.rs", "worker/Cargo.toml", "package.json", "scripts/build.mjs", "README.md"} {
+		if _, err := os.Stat(filepath.Join(scaffoldDir, filepath.FromSlash(sourcePath))); err != nil {
+			t.Fatalf("editable scaffold source %s is missing: %v", sourcePath, err)
+		}
+	}
+	wasmRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "dist", "workers", "backend.wasm"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(wasmRaw) < 8 || !bytes.Equal(wasmRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
 		t.Fatalf("scaffold wasm artifact is invalid: %x", wasmRaw[:prefixLen(len(wasmRaw), 8)])
 	}
-	brokerWASMRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "broker.wasm"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(brokerWASMRaw) < 8 || !bytes.Equal(brokerWASMRaw[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
-		t.Fatalf("scaffold broker wasm artifact is invalid: %x", brokerWASMRaw[:prefixLen(len(brokerWASMRaw), 8)])
-	}
-	brokerWATRaw, err := os.ReadFile(filepath.Join(scaffoldDir, "workers", "broker.wat"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"files"`, `"kv"`, `"sqlite"`, `"execute"`, `(memory (export "memory") 1)`} {
-		if !bytes.Contains(brokerWATRaw, []byte(want)) {
-			t.Fatalf("scaffold broker wat missing %q: %s", want, brokerWATRaw)
-		}
-	}
-	for _, legacy := range []string{"files_write_demo", "kv_put_demo", "sqlite_exec_demo", "http_request_demo", `"http_request"`} {
-		if bytes.Contains(brokerWATRaw, []byte(legacy)) || bytes.Contains(brokerWASMRaw, []byte(legacy)) {
-			t.Fatalf("scaffold broker worker still references legacy hostcall %q", legacy)
-		}
-	}
 	packageFile := filepath.Join(dir, "generated.redevplugin")
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package scaffold error = %v", err)
 	}
 	generatedPackage, err := pluginpkg.ReadFile(context.Background(), packageFile, pluginpkg.DefaultReadOptions())
@@ -273,6 +256,11 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	}
 	if _, err := captureCLIOutput(t, "install-local", packageFile); err != nil {
 		t.Fatalf("install-local scaffold package error = %v", err)
+	}
+	for _, action := range []string{"enable", "disable", "uninstall"} {
+		if _, err := captureCLIOutput(t, action, packageFile); err != nil {
+			t.Fatalf("%s scaffold package error = %v", action, err)
+		}
 	}
 
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated", "Generated Plugin", scaffoldDir); err == nil || !strings.Contains(err.Error(), "not empty") {
@@ -302,7 +290,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.runtime", "Generated Runtime Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 	packageBytes, err := os.ReadFile(packageFile)
@@ -311,26 +299,10 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	storageBroker, err := storage.NewFileBroker(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileBroker() error = %v", err)
-	}
-	connectivityBroker := connectivity.NewMemoryBroker()
-	networkExecutor := &cliRecordingNetworkExecutor{
-		httpStatus:  http.StatusAccepted,
-		httpBody:    []byte(`{"ok":true,"source":"cli-scaffold"}`),
-		httpHeaders: http.Header{"Content-Type": []string{"application/json"}},
-		wsPayload:   []byte("websocket:generated websocket round trip"),
-		tcpPayload:  []byte("tcp:generated tcp round trip"),
-		udpPayload:  []byte("udp:generated udp round trip"),
-	}
 	h, err := host.New(host.Adapters{
 		SessionResolver:         staticSessionResolver{},
 		Policy:                  staticPolicyAdapter{},
 		RuntimeArtifactResolver: cliRuntimeResolver{path: runtimePath},
-		Storage:                 storageBroker,
-		Connectivity:            connectivityBroker,
-		NetworkExecutor:         networkExecutor,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +373,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 	gateway, err := h.MintBridgeToken(ctx, host.MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -442,165 +414,6 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Fatalf("generated scaffold runtime result mismatch: %#v", data)
 	}
 
-	storageGrant, err := h.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "workspace",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		Now:                 now.Add(5 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant(workspace) error = %v", err)
-	}
-	kvGrant, err := h.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "settings",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		Now:                 now.Add(5 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant(settings) error = %v", err)
-	}
-	sqliteGrant, err := h.MintStorageHandleGrant(ctx, host.MintStorageHandleGrantRequest{
-		PluginInstanceID:    installed.PluginInstanceID,
-		StoreID:             "db",
-		RuntimeInstanceID:   health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		Now:                 now.Add(5 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("MintStorageHandleGrant(db) error = %v", err)
-	}
-
-	brokerResult, err := h.CallPluginMethod(ctx, host.CallMethodRequest{
-		PluginInstanceID:     installed.PluginInstanceID,
-		SurfaceInstanceID:    bootstrap.SurfaceInstanceID,
-		SessionChannelIDHash: "session_channel_hash",
-		OwnerSessionHash:     "owner_session_hash",
-		OwnerUserHash:        "owner_user_hash",
-		BridgeChannelID:      "bridge_generated_runtime",
-		GatewayToken:         gateway.GatewayToken,
-		Method:               "worker.brokerDemo",
-		Params: map[string]any{
-			"storage_handle_grant_token":        storageGrant.HandleGrant.HandleGrantToken,
-			"storage_kv_handle_grant_token":     kvGrant.HandleGrant.HandleGrantToken,
-			"storage_sqlite_handle_grant_token": sqliteGrant.HandleGrant.HandleGrantToken,
-		},
-		Now: now.Add(6 * time.Second),
-	})
-	if err != nil {
-		t.Fatalf("CallPluginMethod() with generated broker worker error = %v", err)
-	}
-	brokerData, ok := brokerResult.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("broker worker result data = %#v, want map", brokerResult.Data)
-	}
-	storageFile, ok := brokerData["storage_file"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker storage_file result missing: %#v", brokerData)
-	}
-	storageFileUsage, ok := storageFile["usage"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker storage_file usage missing: %#v", storageFile)
-	}
-	if storageFile["ok"] != true ||
-		storageFile["path"] != "notes/generated-broker-demo.txt" ||
-		storageFile["size_bytes"] != float64(31) ||
-		storageFileUsage["store_id"] != "workspace" ||
-		storageFileUsage["usage_bytes"] != float64(31) {
-		t.Fatalf("broker storage_file result mismatch: %#v", storageFile)
-	}
-	storageKV, ok := brokerData["storage_kv"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker storage_kv result missing: %#v", brokerData)
-	}
-	storageKVUsage, ok := storageKV["usage"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker storage_kv usage missing: %#v", storageKV)
-	}
-	if storageKV["ok"] != true ||
-		storageKV["key"] != "demo/last_broker_run" ||
-		storageKV["size_bytes"] != float64(27) ||
-		storageKVUsage["store_id"] != "settings" ||
-		storageKVUsage["usage_bytes"] != float64(27) {
-		t.Fatalf("broker storage_kv result mismatch: %#v", storageKV)
-	}
-	storageSQLite, ok := brokerData["storage_sqlite"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker storage_sqlite result missing: %#v", brokerData)
-	}
-	storageSQLiteUsage, ok := storageSQLite["usage"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker storage_sqlite usage missing: %#v", storageSQLite)
-	}
-	if storageSQLite["ok"] != true ||
-		storageSQLite["database"] != "plugin.sqlite" ||
-		storageSQLiteUsage["store_id"] != "db" {
-		t.Fatalf("broker storage_sqlite result mismatch: %#v", storageSQLite)
-	}
-	networkExecute, ok := brokerData["network_execute"].(map[string]any)
-	if !ok {
-		t.Fatalf("broker network_execute result missing: %#v", brokerData)
-	}
-	if networkExecute["ok"] != true ||
-		networkExecute["connector_id"] != "api" ||
-		networkExecute["transport"] != "http" ||
-		networkExecute["status_code"] != float64(http.StatusAccepted) {
-		t.Fatalf("broker network_execute result mismatch: %#v", networkExecute)
-	}
-	if networkExecutor.httpCalls != 1 ||
-		networkExecutor.lastHTTP.Grant.PluginInstanceID != installed.PluginInstanceID ||
-		networkExecutor.lastHTTP.Grant.ConnectorID != "api" ||
-		networkExecutor.lastHTTP.Grant.Destination.Host != "api.example.com" ||
-		networkExecutor.lastHTTP.Method != http.MethodPost ||
-		networkExecutor.lastHTTP.Path != "/v1/worker" ||
-		string(networkExecutor.lastHTTP.Body) != "generated brokered http request" {
-		t.Fatalf("broker network executor call mismatch: calls=%d req=%#v", networkExecutor.httpCalls, networkExecutor.lastHTTP)
-	}
-	if networkWebSocket, ok := brokerData["network_execute_websocket"].(map[string]any); !ok ||
-		networkWebSocket["ok"] != true ||
-		networkWebSocket["connector_id"] != "stream" ||
-		networkWebSocket["transport"] != "websocket" ||
-		networkWebSocket["message_type"] != "text" {
-		t.Fatalf("broker websocket network result mismatch: %#v", brokerData["network_execute_websocket"])
-	}
-	if networkTCP, ok := brokerData["network_execute_tcp"].(map[string]any); !ok ||
-		networkTCP["ok"] != true ||
-		networkTCP["connector_id"] != "mysql" ||
-		networkTCP["transport"] != "tcp" {
-		t.Fatalf("broker tcp network result mismatch: %#v", brokerData["network_execute_tcp"])
-	}
-	if networkUDP, ok := brokerData["network_execute_udp"].(map[string]any); !ok ||
-		networkUDP["ok"] != true ||
-		networkUDP["connector_id"] != "metrics" ||
-		networkUDP["transport"] != "udp" {
-		t.Fatalf("broker udp network result mismatch: %#v", brokerData["network_execute_udp"])
-	}
-	if networkExecutor.wsCalls != 1 ||
-		networkExecutor.lastWS.Grant.ConnectorID != "stream" ||
-		string(networkExecutor.lastWS.Payload) != "generated websocket round trip" {
-		t.Fatalf("broker websocket executor call mismatch: calls=%d req=%#v", networkExecutor.wsCalls, networkExecutor.lastWS)
-	}
-	if networkExecutor.tcpCalls != 1 ||
-		networkExecutor.lastTCP.Grant.ConnectorID != "mysql" ||
-		string(networkExecutor.lastTCP.Payload) != "generated tcp round trip" {
-		t.Fatalf("broker tcp executor call mismatch: calls=%d req=%#v", networkExecutor.tcpCalls, networkExecutor.lastTCP)
-	}
-	if networkExecutor.udpCalls != 1 ||
-		networkExecutor.lastUDP.Grant.ConnectorID != "metrics" ||
-		string(networkExecutor.lastUDP.Payload) != "generated udp round trip" {
-		t.Fatalf("broker udp executor call mismatch: calls=%d req=%#v", networkExecutor.udpCalls, networkExecutor.lastUDP)
-	}
-	rawBrokerData, err := json.Marshal(brokerData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, secret := range []string{gateway.GatewayToken, storageGrant.HandleGrant.HandleGrantToken, kvGrant.HandleGrant.HandleGrantToken, sqliteGrant.HandleGrant.HandleGrantToken} {
-		if secret != "" && bytes.Contains(rawBrokerData, []byte(secret)) {
-			t.Fatalf("broker result leaked token %q in %s", secret, rawBrokerData)
-		}
-	}
 }
 
 func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
@@ -614,8 +427,8 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 
@@ -665,7 +478,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if err := json.Unmarshal(inspectOutput, &inspectSummary); err != nil {
 		t.Fatalf("inspect-storage output decode error = %v: %s", err, inspectOutput)
 	}
-	if inspectSummary.NamespaceCount != 3 {
+	if inspectSummary.NamespaceCount != 1 {
 		t.Fatalf("storage namespace mismatch after enable: %#v", inspectSummary)
 	}
 	namespacesByStoreID := map[string]storage.NamespaceRecord{}
@@ -674,12 +487,6 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	}
 	if namespacesByStoreID["workspace"].State != storage.NamespaceActive || namespacesByStoreID["workspace"].Kind != storage.StoreFiles {
 		t.Fatalf("workspace storage namespace mismatch after enable: %#v", inspectSummary)
-	}
-	if namespacesByStoreID["settings"].State != storage.NamespaceActive || namespacesByStoreID["settings"].Kind != storage.StoreKV {
-		t.Fatalf("settings storage namespace mismatch after enable: %#v", inspectSummary)
-	}
-	if namespacesByStoreID["db"].State != storage.NamespaceActive || namespacesByStoreID["db"].Kind != storage.StoreSQLite {
-		t.Fatalf("db storage namespace mismatch after enable: %#v", inspectSummary)
 	}
 	storageBroker, err := storage.NewFileBroker(filepath.Join(stateRoot, devStorageDir))
 	if err != nil {
@@ -772,8 +579,8 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.settings", "Generated Settings Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
@@ -972,9 +779,9 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.data", "Generated Data Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
-	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "manifest.json"))
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 	installOutput, err := captureCLIOutput(t, "dev-install", stateRoot, packageFile)
@@ -1110,8 +917,8 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.permissions", "Generated Permissions Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
-	capabilityRoot, capabilityPin, capabilityPublicKey := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "manifest.json"))
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	capabilityRoot, capabilityPin, capabilityPublicKey := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
 
@@ -1306,8 +1113,8 @@ func TestCLIDevInstallCapabilityFailureLeavesNoState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.atomic", "Generated Atomic Plugin", scaffoldDir); err != nil {
 		t.Fatal(err)
 	}
-	artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "manifest.json"))
-	if _, err := captureCLIOutput(t, "package", scaffoldDir, packageFile); err != nil {
+	artifactRoot, pinFile, publicKeyFile := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatal(err)
 	}
 	var pin capabilitycontract.Pin
@@ -1346,7 +1153,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		contracts[contract.ID] = contract
 	}
 	bridge := contracts["iframe-bridge-schema"]
-	if bridge.Path != "spec/plugin/bridge-v2.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
+	if bridge.Path != "spec/plugin/bridge-v3.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
 		t.Fatalf("bridge contract mismatch: %#v", bridge)
 	}
 	openapi := contracts["plugin-platform-openapi"]
@@ -1358,7 +1165,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		path    string
 		version string
 	}{
-		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v2.schema.json", version: version.ReleaseMetadataSchemaVersion},
+		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v3.schema.json", version: version.ReleaseMetadataSchemaVersion},
 		{id: "source-policy-schema", path: "spec/plugin/source-policy-v1.schema.json", version: version.SourcePolicySchemaVersion},
 		{id: "source-revocations-schema", path: "spec/plugin/source-revocations-v1.schema.json", version: version.SourceRevocationsSchemaVersion},
 	} {
@@ -1516,74 +1323,6 @@ type cliRuntimeResolver struct {
 
 func (r cliRuntimeResolver) RuntimePath(context.Context, host.RuntimeTarget) (string, error) {
 	return r.path, nil
-}
-
-type cliRecordingNetworkExecutor struct {
-	httpCalls   int
-	wsCalls     int
-	tcpCalls    int
-	udpCalls    int
-	lastHTTP    connectivity.HTTPRequest
-	lastWS      connectivity.WebSocketRoundTripRequest
-	lastTCP     connectivity.TCPRoundTripRequest
-	lastUDP     connectivity.UDPRoundTripRequest
-	httpStatus  int
-	httpBody    []byte
-	httpHeaders http.Header
-	wsPayload   []byte
-	tcpPayload  []byte
-	udpPayload  []byte
-}
-
-func (e *cliRecordingNetworkExecutor) DoHTTP(_ context.Context, req connectivity.HTTPRequest) (connectivity.HTTPResponse, error) {
-	e.httpCalls++
-	e.lastHTTP = req
-	status := e.httpStatus
-	if status == 0 {
-		status = http.StatusOK
-	}
-	return connectivity.HTTPResponse{StatusCode: status, Headers: e.httpHeaders.Clone(), Body: append([]byte(nil), e.httpBody...)}, nil
-}
-
-func (e *cliRecordingNetworkExecutor) StreamHTTP(_ context.Context, req connectivity.HTTPRequest, onChunk func(connectivity.HTTPResponseChunk) error) (connectivity.HTTPStreamResponse, error) {
-	e.httpCalls++
-	e.lastHTTP = req
-	status := e.httpStatus
-	if status == 0 {
-		status = http.StatusOK
-	}
-	if len(e.httpBody) > 0 {
-		if err := onChunk(connectivity.HTTPResponseChunk{Data: append([]byte(nil), e.httpBody...)}); err != nil {
-			return connectivity.HTTPStreamResponse{}, err
-		}
-	}
-	chunkCount := 0
-	if len(e.httpBody) > 0 {
-		chunkCount = 1
-	}
-	return connectivity.HTTPStreamResponse{StatusCode: status, BytesRead: int64(len(e.httpBody)), ChunkCount: chunkCount}, nil
-}
-
-func (e *cliRecordingNetworkExecutor) WebSocketRoundTrip(_ context.Context, req connectivity.WebSocketRoundTripRequest) (connectivity.WebSocketRoundTripResponse, error) {
-	e.wsCalls++
-	e.lastWS = req
-	messageType := req.MessageType
-	if messageType == "" {
-		messageType = connectivity.WebSocketMessageText
-	}
-	return connectivity.WebSocketRoundTripResponse{MessageType: messageType, Payload: append([]byte(nil), e.wsPayload...)}, nil
-}
-
-func (e *cliRecordingNetworkExecutor) TCPRoundTrip(_ context.Context, req connectivity.TCPRoundTripRequest) (connectivity.TCPRoundTripResponse, error) {
-	e.tcpCalls++
-	e.lastTCP = req
-	return connectivity.TCPRoundTripResponse{Payload: append([]byte(nil), e.tcpPayload...)}, nil
-}
-
-func (e *cliRecordingNetworkExecutor) UDPRoundTrip(_ context.Context, req connectivity.UDPRoundTripRequest) (connectivity.UDPRoundTripResponse, error) {
-	e.udpCalls++
-	e.lastUDP = req
-	return connectivity.UDPRoundTripResponse{Payload: append([]byte(nil), e.udpPayload...)}, nil
 }
 
 func writeCLITestFile(t *testing.T, filename string, content string) {

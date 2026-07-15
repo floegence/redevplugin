@@ -1,10 +1,41 @@
 package host
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 )
+
+func TestSurfaceDocumentCachePreservesRequiredEmptyCollections(t *testing.T) {
+	cache := newSurfaceDocumentCache(2, 1<<20)
+	document := pluginpkg.OpaqueSurfaceDocument{
+		EntryPath:   "ui/index.html",
+		EntrySHA256: "sha256:entry",
+		Styles:      []pluginpkg.OpaqueSurfaceStyle{},
+		Assets:      []pluginpkg.OpaqueSurfaceAsset{},
+	}
+	cache.Put("sha256:fingerprint", document.EntryPath, document.EntrySHA256, document)
+
+	got, ok := cache.Get("sha256:fingerprint", document.EntryPath, document.EntrySHA256)
+	if !ok {
+		t.Fatal("required empty collection document was not cached")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal cached surface document: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode cached surface document: %v", err)
+	}
+	for _, field := range []string{"styles", "assets"} {
+		values, ok := decoded[field].([]any)
+		if !ok || len(values) != 0 {
+			t.Fatalf("cached surface document %s must remain an explicit empty array: %s", field, raw)
+		}
+	}
+}
 
 func TestSurfaceDocumentCacheUsesFingerprintEntryPathAndDigest(t *testing.T) {
 	cache := newSurfaceDocumentCache(2, 1<<20)

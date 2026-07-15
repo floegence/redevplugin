@@ -18,7 +18,7 @@ import (
 
 func TestWASMWorkerSchemaMatchesRuntimeContracts(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "wasm-worker-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "wasm-worker-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,14 +48,12 @@ func TestWASMWorkerSchemaMatchesRuntimeContracts(t *testing.T) {
 
 	exports := requireNestedObject(t, props, "exports")
 	assertArrayUniqueItems(t, exports, "exports")
-	exportEnum := requireStringSlice(t, requireNestedObject(t, exports, "items")["enum"], "wasm worker export enum")
+	exportEnum := []string{requireNestedObject(t, exports, "items")["const"].(string)}
 	goExports := goStringMapKeysFromReturn(t, filepath.Join(root, "pkg", "pluginpkg", "package.go"), "allowedWorkerABIExports")
 	assertStringSet(t, exportEnum, goExports, "wasm worker export enum")
 	rustExports := []string{
 		rustABIConstants["EXPORT_WORKER_INVOKE"],
 		rustABIConstants["REQUIRED_EXPORT_INVOKE"],
-		rustABIConstants["EXPORT_ACTOR_START"],
-		rustABIConstants["EXPORT_ACTOR_STOP"],
 	}
 	assertAllStringsPresent(t, exportEnum, rustExports, "rust wasm abi exports")
 
@@ -69,11 +67,8 @@ func TestWASMWorkerSchemaMatchesRuntimeContracts(t *testing.T) {
 	goImports := goStringMapKeysFromReturn(t, filepath.Join(root, "pkg", "pluginpkg", "package.go"), "allowedWorkerABIImports")
 	assertStringSet(t, importEnum, goImports, "wasm worker import enum")
 	rustImports := []string{
-		rustABIConstants["IMPORT_LOG"],
 		rustABIConstants["IMPORT_STORAGE"],
 		rustABIConstants["IMPORT_NETWORK"],
-		rustABIConstants["IMPORT_OPERATION"],
-		rustABIConstants["IMPORT_CLOCK"],
 	}
 	assertStringSet(t, importEnum, rustImports, "rust wasm abi imports")
 
@@ -93,7 +88,7 @@ func assertArrayUniqueItems(t *testing.T, schema map[string]any, label string) {
 
 func workerInvocationExportEnum(t *testing.T, root string) []string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v1.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "worker-invocation-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +96,11 @@ func workerInvocationExportEnum(t *testing.T, root string) []string {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		t.Fatal(err)
 	}
-	return requireStringSlice(t, requireNestedObject(t, schema, "properties", "export")["enum"], "worker invocation export enum")
+	exportSchema := requireNestedObject(t, schema, "properties", "export")
+	if value, ok := exportSchema["const"].(string); ok {
+		return []string{value}
+	}
+	return requireStringSlice(t, exportSchema["enum"], "worker invocation export enum")
 }
 
 func goStringMapKeysFromReturn(t *testing.T, path string, funcName string) []string {
@@ -164,13 +163,8 @@ func rustStringConstants(t *testing.T, path string) map[string]string {
 		"WASM_WORKER_ABI_VERSION",
 		"EXPORT_WORKER_INVOKE",
 		"REQUIRED_EXPORT_INVOKE",
-		"EXPORT_ACTOR_START",
-		"EXPORT_ACTOR_STOP",
-		"IMPORT_LOG",
 		"IMPORT_STORAGE",
 		"IMPORT_NETWORK",
-		"IMPORT_OPERATION",
-		"IMPORT_CLOCK",
 	} {
 		if out[name] == "" {
 			t.Fatalf("missing rust wasm abi string constant %s in %s", name, path)

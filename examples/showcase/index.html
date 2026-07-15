@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ReDevPlugin Examples</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="gallery-shell">
+      <aside class="gallery-navigation plugin-dock" aria-label="Example plugins">
+        <div class="dock-brand" aria-label="ReDevPlugin examples">
+          <span class="dock-brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        </div>
+        <nav id="plugin-list" class="plugin-list" aria-label="Plugins"></nav>
+        <div class="dock-tools">
+          <button id="inspector-toggle" class="dock-tool" type="button" title="App details" aria-label="App details" aria-expanded="false" aria-controls="plugin-inspector"><span class="icon-info" aria-hidden="true"></span></button>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <section id="surface-stage" class="surface-stage" aria-label="Plugin surface" aria-busy="true">
+          <div id="surface-placeholder" class="surface-placeholder" data-state="loading" role="status" aria-live="polite">
+            <img id="loading-icon" alt="" width="64" height="64">
+            <div class="loading-ring" aria-hidden="true"></div>
+            <strong id="loading-title">Opening app</strong>
+            <p id="loading-message">Preparing your plugin...</p>
+            <button id="retry-plugin" type="button" hidden>Try again</button>
+          </div>
+        </section>
+
+        <button id="inspector-scrim" class="inspector-scrim" type="button" aria-label="Close app details" hidden></button>
+        <aside id="plugin-inspector" class="plugin-inspector" role="dialog" aria-modal="true" aria-label="App details" aria-hidden="true" data-open="false" inert>
+          <header class="inspector-header">
+            <div class="inspector-identity">
+              <img id="detail-icon" alt="" width="48" height="48">
+              <div><p class="eyebrow">App details</p><h2 id="detail-title">ReDevPlugin Examples</h2></div>
+            </div>
+            <button id="inspector-close" class="inspector-close" type="button" title="Close app details" aria-label="Close app details"><span class="icon-close" aria-hidden="true"></span></button>
+          </header>
+          <p id="detail-description" class="detail-description">Opening the selected app.</p>
+          <div class="trust-summary"><span><span class="meta-dot"></span>Protected app</span><span>Permissions on demand</span></div>
+          <button id="reload-plugin" class="reload-app" type="button"><span class="icon-reload" aria-hidden="true"></span><span>Reload app</span></button>
+          <section class="capability-section" aria-labelledby="capability-title">
+            <p id="capability-title" class="eyebrow">Access used by this app</p>
+            <ul id="capability-list" class="capability-list"></ul>
+          </section>
+          <details class="developer-details">
+            <summary>Developer details</summary>
+            <dl class="detail-meta">
+              <div><dt>Version</dt><dd id="detail-version">-</dd></div>
+              <div><dt>App frame</dt><dd>Private sandbox</dd></div>
+              <div><dt>Worker</dt><dd>Isolated module</dd></div>
+              <div class="runtime-status"><dt>Runtime</dt><dd><span id="runtime-dot" class="meta-dot"></span><span id="runtime-label">Connecting</span></dd></div>
+              <div id="detail-error-row" hidden><dt>Last issue</dt><dd id="detail-error">None</dd></div>
+            </dl>
+          </details>
+        </aside>
+      </section>
+
+      <nav class="mobile-plugin-navigation" aria-label="Example plugins">
+        <div id="mobile-plugin-list" class="mobile-plugin-list"></div>
+        <button id="mobile-inspector-toggle" class="mobile-details-button" type="button" title="App details" aria-label="App details" aria-expanded="false" aria-controls="plugin-inspector"><span class="icon-info" aria-hidden="true"></span><small>Details</small></button>
+      </nav>
+    </main>
+
+    <dialog id="confirmation-dialog" class="confirmation-dialog">
+      <form method="dialog">
+        <p class="eyebrow">Confirmation required</p>
+        <h2 id="confirmation-title">Allow this action?</h2>
+        <p id="confirmation-summary"></p>
+        <div class="dialog-actions"><button value="deny" class="secondary">Cancel</button><button value="approve">Allow</button></div>
+      </form>
+    </dialog>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

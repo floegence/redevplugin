@@ -9,7 +9,7 @@ import (
 )
 
 func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
-	schema := readPluginSchema(t, "opaque-surface-document-v1.schema.json")
+	schema := readPluginSchema(t, "opaque-surface-document-v2.schema.json")
 	if schema["additionalProperties"] != false {
 		t.Fatalf("opaque document additionalProperties = %#v, want false", schema["additionalProperties"])
 	}
@@ -24,7 +24,7 @@ func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
 		"critical_bytes",
 	}, "opaque document required fields")
 	props := requireNestedObject(t, schema, "properties")
-	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.opaque_surface_document.v1" {
+	if got := requireNestedObject(t, props, "schema_version")["const"]; got != "redevplugin.opaque_surface_document.v2" {
 		t.Fatalf("opaque document schema_version = %#v", got)
 	}
 	if got := requireNestedObject(t, props, "entry_sha256")["$ref"]; got != "#/$defs/sha256" {
@@ -44,11 +44,16 @@ func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
 	}
 	assertStringSet(t, requireStringSlice(t, asset["required"], "opaque asset required"), []string{
 		"binding_id",
+		"logical_ids",
 		"path",
 		"sha256",
 		"size",
 		"content_type",
 	}, "opaque asset required fields")
+	logicalIDs := requireNestedObject(t, asset, "properties", "logical_ids")
+	if logicalIDs["uniqueItems"] != true || logicalIDs["minItems"] != float64(1) || logicalIDs["maxItems"] != float64(16) {
+		t.Fatalf("opaque asset logical id bounds = %#v", logicalIDs)
+	}
 	assets := requireNestedObject(t, props, "assets")
 	if assets["maxItems"] != float64(128) {
 		t.Fatalf("opaque document assets maxItems = %#v, want 128", assets["maxItems"])
@@ -63,7 +68,7 @@ func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
 }
 
 func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
-	schema := readPluginSchema(t, "opaque-surface-transport-v1.schema.json")
+	schema := readPluginSchema(t, "opaque-surface-transport-v2.schema.json")
 	refs := requireObjectArray(t, schema["oneOf"], "opaque transport oneOf")
 	wantRefs := map[string]bool{
 		"#/$defs/port_envelope":     false,
@@ -109,7 +114,7 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 		}
 	}
 	initialize := requireNestedObject(t, defs, "initialize")
-	if got := requireNestedObject(t, initialize, "properties", "document")["$ref"]; got != "https://schemas.redevplugin.dev/plugin/opaque-surface-document-v1.schema.json" {
+	if got := requireNestedObject(t, initialize, "properties", "document")["$ref"]; got != "https://schemas.redevplugin.dev/plugin/opaque-surface-document-v2.schema.json" {
 		t.Fatalf("opaque initialize document ref = %#v", got)
 	}
 	assetResponse := requireNestedObject(t, defs, "asset_response")

@@ -2,17 +2,24 @@ package runtimeclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +42,76 @@ func TestMain(m *testing.M) {
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func TestReadBoundedIPCLineRejectsOversizedFrame(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("123456789\n"))
+	_, err := readBoundedIPCLine(reader, 8)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 8 bytes") {
+		t.Fatalf("readBoundedIPCLine() error = %v, want size limit", err)
+	}
+}
+
+func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantCode string
+		write    func(*bytes.Buffer) error
+	}{
+		{
+			name:     "storage file",
+			wantCode: "STORAGE_FILE_TOO_LARGE",
+			write: func(buffer *bytes.Buffer) error {
+				return (&ProcessSupervisor{}).writeStorageFileResponse(buffer, "g1", "r1", storageFileResponsePayload{
+					OK: true, DataBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
+				})
+			},
+		},
+		{
+			name:     "storage kv",
+			wantCode: "STORAGE_KV_VALUE_TOO_LARGE",
+			write: func(buffer *bytes.Buffer) error {
+				return (&ProcessSupervisor{}).writeStorageKVResponse(buffer, "g1", "r1", storageKVResponsePayload{
+					OK: true, ValueBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
+				})
+			},
+		},
+		{
+			name:     "storage sqlite",
+			wantCode: "STORAGE_SQLITE_RESULT_TOO_LARGE",
+			write: func(buffer *bytes.Buffer) error {
+				large := strings.Repeat("x", maxWASMHostcallResponseBytes+1)
+				rows := [][]storageSQLiteValueIPC{{{Text: &large}}}
+				return (&ProcessSupervisor{}).writeStorageSQLiteResponse(buffer, "g1", "r1", storageSQLiteResponsePayload{
+					OK: true, Rows: &rows,
+				})
+			},
+		},
+		{
+			name:     "network",
+			wantCode: "NETWORK_RESPONSE_TOO_LARGE",
+			write: func(buffer *bytes.Buffer) error {
+				return (&ProcessSupervisor{}).writeNetworkExecuteResponse(buffer, "g1", "r1", networkExecuteResponsePayload{
+					OK: true, BodyBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
+				})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := tc.write(&output); err != nil {
+				t.Fatalf("write response error = %v", err)
+			}
+			if output.Len() > maxWASMHostcallResponseBytes {
+				t.Fatalf("bounded response length = %d, want <= %d", output.Len(), maxWASMHostcallResponseBytes)
+			}
+			if !strings.Contains(output.String(), tc.wantCode) || !strings.Contains(output.String(), `"error_origin":"hostcall"`) {
+				t.Fatalf("bounded response = %s, want %s hostcall error", output.String(), tc.wantCode)
+			}
+		})
+	}
 }
 
 func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
@@ -91,7 +168,6 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	}
 	if revokeResult.PluginInstanceID != "plugini_1" ||
 		revokeResult.RevokeEpoch != 3 ||
-		revokeResult.ClosedActorCount != 1 ||
 		revokeResult.ClosedSocketCount != 2 ||
 		revokeResult.ClosedStreamCount != 3 ||
 		revokeResult.ClosedStorageHandleCount != 4 {
@@ -173,12 +249,39 @@ func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	stopRuntimeSupervisor(t, supervisor)
 }
 
-func TestProcessSupervisorInvalidatesRuntimeOnCanceledIPC(t *testing.T) {
+func TestWorkerExecutionErrorPreservesStableWorkerFailure(t *testing.T) {
+	err := (runtimeResponsePayload{Code: "NOTE_NOT_FOUND", Message: "note was not found", ErrorOrigin: WorkerErrorOriginPlugin}).workerExecutionError()
+	var workerErr *WorkerExecutionError
+	if !errors.As(err, &workerErr) {
+		t.Fatalf("worker execution error type = %T, want *WorkerExecutionError", err)
+	}
+	if workerErr.Code != "NOTE_NOT_FOUND" || workerErr.Message != "note was not found" || workerErr.Origin != WorkerErrorOriginPlugin {
+		t.Fatalf("worker execution error = %#v", workerErr)
+	}
+	if !errors.Is(err, ErrRuntimeRequestFailed) {
+		t.Fatalf("worker execution error must remain a runtime request failure: %v", err)
+	}
+}
+
+func TestWorkerExecutionErrorRejectsMissingOrUnknownOrigin(t *testing.T) {
+	for _, origin := range []WorkerErrorOrigin{"", "worker"} {
+		err := (runtimeResponsePayload{Code: "RUNTIME_CAPABILITY_REVOKED", Message: "spoofed", ErrorOrigin: origin}).workerExecutionError()
+		var workerErr *WorkerExecutionError
+		if errors.As(err, &workerErr) {
+			t.Fatalf("origin %q produced trusted worker error %#v", origin, workerErr)
+		}
+		if !errors.Is(err, ErrRuntimeIPCUnavailable) {
+			t.Fatalf("origin %q error = %v, want ErrRuntimeIPCUnavailable", origin, err)
+		}
+	}
+}
+
+func TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime(t *testing.T) {
 	store := observability.NewMemoryStore()
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],
 		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE=1"),
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_DELAY_INVOKE_MILLIS=80"),
 		Diagnostics: store,
 	})
 	if err != nil {
@@ -200,22 +303,71 @@ func TestProcessSupervisorInvalidatesRuntimeOnCanceledIPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.Ready {
-		t.Fatalf("runtime should be marked not ready after canceled IPC: %#v", health)
+	if !health.Ready {
+		t.Fatalf("runtime should remain ready after draining a canceled invocation: %#v", health)
 	}
-	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_2"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeNotReady) {
-		t.Fatalf("InvokeWorker(after canceled IPC) error = %v, want %v", err, ErrRuntimeNotReady)
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
+		LeaseID:             "lease_2",
+		LeaseToken:          "token_2",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+	}, "worker.echo", workerInvocationFixture()); err != nil {
+		t.Fatalf("InvokeWorker(after canceled invocation) error = %v", err)
 	}
-	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
 	stopRuntimeSupervisor(t, supervisor)
 }
 
-func TestProcessSupervisorRevokeInvalidatesRuntimeWhenIPCLockIsBusy(t *testing.T) {
+func TestProcessSupervisorCanceledInvocationWaitingForIPCLockDoesNotInvalidateRuntime(t *testing.T) {
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor.ipcMu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	_, invokeErr := supervisor.invokeWorkerForTest(ctx, Lease{
+		LeaseID:             "lease_waiting",
+		LeaseToken:          "token_waiting",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_waiting",
+	}, "worker.echo", workerInvocationFixture())
+	cancel()
+	supervisor.ipcMu.Unlock()
+	if !errors.Is(invokeErr, context.DeadlineExceeded) {
+		t.Fatalf("InvokeWorker(waiting for IPC lock) error = %v, want %v", invokeErr, context.DeadlineExceeded)
+	}
+	health, err = supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !health.Ready {
+		t.Fatalf("runtime should remain ready when a queued invocation is canceled before writing IPC: %#v", health)
+	}
+	if _, err := supervisor.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("Heartbeat(after queued cancellation) error = %v", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t *testing.T) {
 	store := observability.NewMemoryStore()
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],
 		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE=1"),
+		Env: append(os.Environ(),
+			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE=1",
+		),
 		Diagnostics: store,
 	})
 	if err != nil {
@@ -238,25 +390,31 @@ func TestProcessSupervisorRevokeInvalidatesRuntimeWhenIPCLockIsBusy(t *testing.T
 		}, "worker.echo", workerInvocationFixture())
 		done <- err
 	}()
-	time.Sleep(25 * time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	if _, err := supervisor.Revoke(ctx, "plugini_1", 4); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Revoke(busy IPC) error = %v, want %v", err, context.DeadlineExceeded)
+	result, err := supervisor.Revoke(ctx, "plugini_1", 4)
+	if err != nil {
+		t.Fatalf("Revoke(during invocation) error = %v", err)
+	}
+	if result.PluginInstanceID != "plugini_1" || result.RevokeEpoch != 4 {
+		t.Fatalf("Revoke(during invocation) result = %#v", result)
 	}
 	select {
-	case <-done:
+	case err := <-done:
+		if !errors.Is(err, ErrRuntimeRequestFailed) {
+			t.Fatalf("InvokeWorker(after revoke) error = %v, want %v", err, ErrRuntimeRequestFailed)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("busy InvokeWorker did not return after runtime invalidation")
+		t.Fatal("InvokeWorker did not observe the concurrent revoke")
 	}
 	health, err = supervisor.Health(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if health.Ready {
-		t.Fatalf("runtime should be marked not ready after busy revoke timeout: %#v", health)
+	if !health.Ready {
+		t.Fatalf("runtime should remain ready after a successful concurrent revoke: %#v", health)
 	}
-	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -287,6 +445,63 @@ func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing.T) {
+	store := observability.NewMemoryStore()
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath: os.Args[0],
+		Args:        []string{"-test.run=TestMain"},
+		Env: append(os.Environ(),
+			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_DELAY_INVOKE_MILLIS=200",
+			"REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_HEARTBEAT_DURING_INVOKE=1",
+		),
+		Diagnostics:           store,
+		HeartbeatInterval:     10 * time.Millisecond,
+		MaxHeartbeatStaleness: 30 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	invokeDone := make(chan error, 1)
+	go func() {
+		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{
+			LeaseID:             "lease_heartbeat_busy",
+			LeaseToken:          "token_heartbeat_busy",
+			RuntimeGenerationID: health.RuntimeGenerationID,
+			PluginInstanceID:    "plugini_heartbeat_busy",
+		}, "worker.echo", workerInvocationFixture())
+		invokeDone <- invokeErr
+	}()
+	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
+	time.Sleep(3 * supervisor.maxHeartbeatStaleness)
+	health, err = supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !health.Ready {
+		t.Fatalf("runtime should remain ready while a valid IPC request is in flight: %#v", health)
+	}
+	select {
+	case err := <-invokeDone:
+		if err != nil {
+			t.Fatalf("InvokeWorker() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("InvokeWorker() did not finish")
+	}
+	if _, err := supervisor.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("Heartbeat(after in-flight request) error = %v", err)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorRevokeIsNoopWhenRuntimeIsNotReady(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath: os.Args[0],
@@ -305,18 +520,18 @@ func TestDecodeRevokeResultRequiresStructuredCounters(t *testing.T) {
 	if !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("decodeRevokeResult(missing counters) error = %v, want ErrRuntimeRequestFailed", err)
 	}
-	_, err = decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"other","revoke_epoch":3,"closed_actor_count":0,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0}`), "plugini_1", 3)
+	_, err = decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"other","revoke_epoch":3,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0}`), "plugini_1", 3)
 	if !errors.Is(err, ErrRuntimeRequestFailed) {
 		t.Fatalf("decodeRevokeResult(plugin mismatch) error = %v, want ErrRuntimeRequestFailed", err)
 	}
-	if _, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_actor_count":0,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0,"extra":true}`), "plugini_1", 3); err == nil {
+	if _, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_socket_count":0,"closed_stream_count":0,"closed_storage_handle_count":0,"extra":true}`), "plugini_1", 3); err == nil {
 		t.Fatal("decodeRevokeResult(extra field) expected fail-closed error")
 	}
-	result, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_actor_count":1,"closed_socket_count":2,"closed_stream_count":3,"closed_storage_handle_count":4}`), "plugini_1", 3)
+	result, err := decodeRevokeResult(json.RawMessage(`{"plugin_instance_id":"plugini_1","revoke_epoch":3,"closed_socket_count":2,"closed_stream_count":3,"closed_storage_handle_count":4}`), "plugini_1", 3)
 	if err != nil {
 		t.Fatalf("decodeRevokeResult() error = %v", err)
 	}
-	if result.ClosedActorCount != 1 || result.ClosedSocketCount != 2 || result.ClosedStreamCount != 3 || result.ClosedStorageHandleCount != 4 {
+	if result.ClosedSocketCount != 2 || result.ClosedStreamCount != 3 || result.ClosedStorageHandleCount != 4 {
 		t.Fatalf("decodeRevokeResult() result mismatch: %#v", result)
 	}
 }
@@ -406,6 +621,35 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		return err
 	default:
 		return fmt.Errorf("unsupported ipc fixture kind %q", fixture.Kind)
+	}
+}
+
+func TestWorkerInvocationContextBindsBrokerAccessHash(t *testing.T) {
+	payload := workerInvocationFixtureWithAccess(workerBrokerAccess{
+		Storage: []workerStorageBrokerAccess{{StoreID: "notes", Operations: []string{"query"}}},
+		Network: []workerNetworkBrokerAccess{{ConnectorID: "forecast", Transport: "http", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
+	})
+	invocation, err := workerInvocationContextFromInvocation(payload)
+	if err != nil {
+		t.Fatalf("workerInvocationContextFromInvocation() error = %v", err)
+	}
+	if !invocation.BrokerAccess.allowsStorage("notes", "query") || invocation.BrokerAccess.allowsStorage("notes", "exec") {
+		t.Fatalf("storage broker access mismatch: %#v", invocation.BrokerAccess.Storage)
+	}
+	if !invocation.BrokerAccess.allowsNetwork("forecast", "http", "http", "GET") || invocation.BrokerAccess.allowsNetwork("forecast", "http", "http", "POST") {
+		t.Fatalf("network broker access mismatch: %#v", invocation.BrokerAccess.Network)
+	}
+	var tampered map[string]any
+	if err := json.Unmarshal(payload, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	tampered["broker_access_sha256"] = "sha256:" + strings.Repeat("0", 64)
+	rawTampered, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workerInvocationContextFromInvocation(rawTampered); !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("tampered broker access error = %v", err)
 	}
 }
 
@@ -568,6 +812,46 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorDeniesStorageOperationOutsideMethodBrokerAccess(t *testing.T) {
+	validator := &recordingHandleGrantValidator{}
+	files := &recordingStorageFilesBroker{}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:  os.Args[0],
+		Args:         []string{"-test.run=TestMain"},
+		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
+		HandleGrants: validator,
+		StorageFiles: files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixtureWithAccess(workerBrokerAccess{
+		Storage: []workerStorageBrokerAccess{{StoreID: "workspace", Operations: []string{"write"}}},
+	}))
+	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "STORAGE_FILE_REQUEST_DENIED") {
+		t.Fatalf("InvokeWorker() error = %v, want method-scoped storage denial", err)
+	}
+	if validator.calls != 0 || files.readCalls != 0 {
+		t.Fatalf("denied storage request reached broker: validator=%d reads=%d", validator.calls, files.readCalls)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testing.T) {
 	validator := &recordingHandleGrantValidator{
 		result: HandleGrantValidationResult{
@@ -715,6 +999,57 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 		t.Fatalf("storage sqlite args mismatch: %#v", sqlite.lastQuery.Args)
 	}
 	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestStorageSQLiteQueryResponsePreservesEmptyRows(t *testing.T) {
+	broker := &recordingStorageSQLiteBroker{
+		queryResult: storage.SQLiteQueryResult{
+			Database: "plugin.sqlite",
+			Columns:  []string{"id"},
+			Rows:     [][]storage.SQLiteValue{},
+		},
+	}
+	payload := dispatchStorageSQLiteRequest(context.Background(), broker, storageSQLiteRequestPayload{
+		Operation: "query",
+		StoreID:   "db",
+		Database:  "plugin.sqlite",
+		SQL:       "SELECT id FROM notes WHERE 1 = 0",
+	})
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal empty SQLite query response: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode empty SQLite query response: %v", err)
+	}
+	rows, ok := decoded["rows"].([]any)
+	if !ok || len(rows) != 0 {
+		t.Fatalf("empty SQLite query rows must remain an explicit array: %s", raw)
+	}
+}
+
+func TestStorageSQLiteExecResponsePreservesZeroRowsAffected(t *testing.T) {
+	broker := &recordingStorageSQLiteBroker{
+		execResult: storage.SQLiteExecResult{Database: "plugin.sqlite", RowsAffected: 0},
+	}
+	payload := dispatchStorageSQLiteRequest(context.Background(), broker, storageSQLiteRequestPayload{
+		Operation: "exec",
+		StoreID:   "db",
+		Database:  "plugin.sqlite",
+		SQL:       "CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY)",
+	})
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal zero-row SQLite exec response: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode zero-row SQLite exec response: %v", err)
+	}
+	if rowsAffected, ok := decoded["rows_affected"].(float64); !ok || rowsAffected != 0 {
+		t.Fatalf("zero-row SQLite exec response must preserve rows_affected: %s", raw)
+	}
 }
 
 func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) {
@@ -915,6 +1250,7 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 		executor.lastHTTP.Grant.GrantID != broker.grant.GrantID ||
 		executor.lastHTTP.Method != http.MethodPost ||
 		executor.lastHTTP.Path != "/v1/worker" ||
+		executor.lastHTTP.Query.Encode() != "lang=en&units=metric" ||
 		string(executor.lastHTTP.Body) != `{"hello":"network"}` ||
 		executor.lastHTTP.Headers.Get("X-Test") != "ok" ||
 		executor.lastHTTP.MaxResponseBytes != 1024 ||
@@ -923,6 +1259,48 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 	}
 	assertBoundedDeadline(t, "network grant mint", broker.lastCalledAt, broker.lastDeadline, broker.lastDeadlineOK, 2*time.Second)
 	assertBoundedDeadline(t, "network http execute", executor.lastHTTPCalledAt, executor.lastHTTPDeadline, executor.lastHTTPDeadlineOK, 2*time.Second)
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestProcessSupervisorDeniesHTTPMethodOutsideMethodBrokerAccess(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	broker := &recordingConnectivityBroker{}
+	executor := &recordingNetworkExecutor{}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:     os.Args[0],
+		Args:            []string{"-test.run=TestMain"},
+		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+		Connectivity:    broker,
+		NetworkExecutor: executor,
+		Now:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = supervisor.invokeWorkerForTest(context.Background(), Lease{
+		LeaseID:             "lease_1",
+		LeaseToken:          "token_1",
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		PluginInstanceID:    "plugini_1",
+		PolicyRevision:      1,
+		ManagementRevision:  2,
+		RevokeEpoch:         3,
+	}, "worker.echo", workerInvocationFixtureWithAccess(workerBrokerAccess{
+		Network: []workerNetworkBrokerAccess{{ConnectorID: "api", Transport: "http", Operations: []string{"http"}, HTTPMethods: []string{"GET"}}},
+	}))
+	if !errors.Is(err, ErrRuntimeRequestFailed) || !strings.Contains(err.Error(), "NETWORK_EXECUTE_REQUEST_DENIED") {
+		t.Fatalf("InvokeWorker() error = %v, want method-scoped HTTP method denial", err)
+	}
+	if broker.calls != 0 || executor.httpCalls != 0 {
+		t.Fatalf("denied network request reached broker: grants=%d http=%d", broker.calls, executor.httpCalls)
+	}
 	stopRuntimeSupervisor(t, supervisor)
 }
 
@@ -1650,6 +2028,29 @@ func runRuntimeClientHelper() {
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload:             payload,
 	})
+	controlReadFD, err := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_READ_FD"))
+	if err != nil || controlReadFD < 3 {
+		os.Exit(64)
+	}
+	controlWriteFD, err := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_WRITE_FD"))
+	if err != nil || controlWriteFD < 3 {
+		os.Exit(65)
+	}
+	controlReadFile := os.NewFile(uintptr(controlReadFD), "redevplugin-control-read")
+	controlWriteFile := os.NewFile(uintptr(controlWriteFD), "redevplugin-control-write")
+	if controlReadFile == nil || controlWriteFile == nil {
+		os.Exit(66)
+	}
+	revoked := make(chan struct{})
+	var revokeOnce sync.Once
+	var heartbeatCount atomic.Int64
+	go runRuntimeClientControlHelper(
+		bufio.NewReader(controlReadFile),
+		json.NewEncoder(controlWriteFile),
+		revoked,
+		&revokeOnce,
+		&heartbeatCount,
+	)
 	encoder := json.NewEncoder(os.Stdout)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -1661,32 +2062,44 @@ func runRuntimeClientHelper() {
 			os.Exit(5)
 		}
 		switch request.FrameType {
-		case ipcFrameTypeHeartbeat:
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_HEARTBEAT") == "1" {
-				time.Sleep(10 * time.Second)
-				continue
-			}
-			var heartbeatReq heartbeatRequestPayload
-			_ = json.Unmarshal(request.Payload, &heartbeatReq)
-			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
-				"runtime_generation_id": request.RuntimeGenerationID,
-				"runtime_unix_nano":     time.Now().UnixNano(),
-				"max_staleness_ms":      heartbeatReq.MaxStalenessMillis,
-				"host_sent_unix_nano":   heartbeatReq.SentUnixNano,
-			})})
-			_ = encoder.Encode(ipcFrame{
-				IPCVersion:          version.RustIPCVersion,
-				FrameType:           ipcFrameTypeHeartbeat,
-				RequestID:           request.RequestID,
-				RuntimeGenerationID: request.RuntimeGenerationID,
-				Payload:             raw,
-			})
 		case ipcFrameTypeInvokeWorker:
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_SIGNED_LEASE") == "1" && !verifySignedLeaseFromHelper(request, hello) {
 				os.Exit(62)
 			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_INVOKE") == "1" {
 				time.Sleep(10 * time.Second)
+				continue
+			}
+			if rawDelay := strings.TrimSpace(os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_DELAY_INVOKE_MILLIS")); rawDelay != "" {
+				delayMillis, parseErr := strconv.Atoi(rawDelay)
+				if parseErr != nil || delayMillis <= 0 {
+					os.Exit(63)
+				}
+				time.Sleep(time.Duration(delayMillis) * time.Millisecond)
+			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE") == "1" {
+				<-revoked
+				resultPayload := runtimeResponsePayload{OK: false, Code: "RUNTIME_CAPABILITY_REVOKED", Message: "runtime capability was revoked", ErrorOrigin: WorkerErrorOriginRuntime}
+				raw, _ := json.Marshal(resultPayload)
+				_ = encoder.Encode(ipcFrame{
+					IPCVersion:          version.RustIPCVersion,
+					FrameType:           ipcFrameTypeInvokeWorkerResult,
+					RequestID:           request.RequestID,
+					RuntimeGenerationID: request.RuntimeGenerationID,
+					Payload:             raw,
+				})
+				continue
+			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_HEARTBEAT_DURING_INVOKE") == "1" && heartbeatCount.Load() == 0 {
+				resultPayload := runtimeResponsePayload{OK: false, Code: "RUNTIME_CONTROL_CHANNEL_STALE", Message: "heartbeat did not run during invocation", ErrorOrigin: WorkerErrorOriginRuntime}
+				raw, _ := json.Marshal(resultPayload)
+				_ = encoder.Encode(ipcFrame{
+					IPCVersion:          version.RustIPCVersion,
+					FrameType:           ipcFrameTypeInvokeWorkerResult,
+					RequestID:           request.RequestID,
+					RuntimeGenerationID: request.RuntimeGenerationID,
+					Payload:             raw,
+				})
 				continue
 			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT") == "1" {
@@ -1726,7 +2139,7 @@ func runRuntimeClientHelper() {
 			}
 			resultPayload := runtimeResponsePayload{OK: true, Result: json.RawMessage(`{"data":{"from_runtime":true}}`)}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE") == "1" {
-				resultPayload = runtimeResponsePayload{OK: false, Code: "WASM_NOT_IMPLEMENTED", Message: "runtime worker execution is not implemented"}
+				resultPayload = runtimeResponsePayload{OK: false, Code: "WASM_WORKER_FAILED", Message: "runtime worker execution failed", ErrorOrigin: WorkerErrorOriginRuntime}
 			}
 			raw, _ := json.Marshal(resultPayload)
 			_ = encoder.Encode(ipcFrame{
@@ -1736,33 +2149,60 @@ func runRuntimeClientHelper() {
 				RuntimeGenerationID: request.RuntimeGenerationID,
 				Payload:             raw,
 			})
+		default:
+			os.Exit(6)
+		}
+	}
+}
+
+func runRuntimeClientControlHelper(
+	reader *bufio.Reader,
+	encoder *json.Encoder,
+	revoked chan struct{},
+	revokeOnce *sync.Once,
+	heartbeatCount *atomic.Int64,
+) {
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
+		}
+		var request ipcFrame
+		if err := json.Unmarshal(line, &request); err != nil {
+			os.Exit(67)
+		}
+		switch request.FrameType {
+		case ipcFrameTypeHeartbeat:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BLOCK_HEARTBEAT") == "1" {
+				time.Sleep(10 * time.Second)
+				continue
+			}
+			heartbeatCount.Add(1)
+			var heartbeatReq heartbeatRequestPayload
+			_ = json.Unmarshal(request.Payload, &heartbeatReq)
+			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
+				"runtime_generation_id": request.RuntimeGenerationID,
+				"runtime_unix_nano":     time.Now().UnixNano(),
+				"max_staleness_ms":      heartbeatReq.MaxStalenessMillis,
+				"host_sent_unix_nano":   heartbeatReq.SentUnixNano,
+			})})
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           ipcFrameTypeHeartbeat,
+				RequestID:           request.RequestID,
+				RuntimeGenerationID: request.RuntimeGenerationID,
+				Payload:             raw,
+			})
 		case ipcFrameTypeRevokeEpoch:
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE") == "1" {
-				if !requestNetworkGrantFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE") != "" {
-				if !requestStorageFileFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE") != "" {
-				if !requestStorageKVFromHelper(reader, encoder, request) {
-					continue
-				}
-			}
-			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE") == "1" {
-				if !validateHandleGrantFromHelper(reader, encoder, request) {
-					continue
-				}
+			if writeUnexpectedControlHostcall(encoder, request) {
+				continue
 			}
 			var revokeReq revokeEpochRequestPayload
 			_ = json.Unmarshal(request.Payload, &revokeReq)
+			revokeOnce.Do(func() { close(revoked) })
 			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
 				"plugin_instance_id":          revokeReq.PluginInstanceID,
 				"revoke_epoch":                revokeReq.RevokeEpoch,
-				"closed_actor_count":          1,
 				"closed_socket_count":         2,
 				"closed_stream_count":         3,
 				"closed_storage_handle_count": 4,
@@ -1775,9 +2215,56 @@ func runRuntimeClientHelper() {
 				Payload:             raw,
 			})
 		default:
-			os.Exit(6)
+			os.Exit(68)
 		}
 	}
+}
+
+func writeUnexpectedControlHostcall(encoder *json.Encoder, request ipcFrame) bool {
+	var frameType string
+	var payload any
+	switch {
+	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE") != "":
+		frameType = ipcFrameTypeStorageFile
+		payload = storageFileRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE"))
+	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE") != "":
+		frameType = ipcFrameTypeStorageKV
+		payload = storageKVRequestFromInvoke(request, os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE"))
+	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE") == "1":
+		frameType = ipcFrameTypeNetworkGrant
+		payload = networkGrantRequestFromInvoke(request)
+	case os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE") == "1":
+		frameType = ipcFrameTypeValidateHandleGrant
+		payload = handleGrantValidationRequestFromInvoke(request)
+	default:
+		return false
+	}
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           frameType,
+		RequestID:           request.RequestID + ":unexpected-hostcall",
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload:             mustMarshalRaw(payload),
+	})
+	return true
+}
+
+func waitForSustainedIPCLock(t *testing.T, supervisor *ProcessSupervisor, duration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	var occupiedSince time.Time
+	for time.Now().Before(deadline) {
+		if supervisor.ipcMu.TryLock() {
+			supervisor.ipcMu.Unlock()
+			occupiedSince = time.Time{}
+		} else if occupiedSince.IsZero() {
+			occupiedSince = time.Now()
+		} else if time.Since(occupiedSince) >= duration {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("IPC lock did not remain occupied by the invocation")
 }
 
 func verifySignedLeaseFromHelper(request ipcFrame, hello helloRequestPayload) bool {
@@ -1833,7 +2320,7 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		os.Exit(10)
 	}
 	if !artifact.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: artifact.Code, Message: artifact.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: artifact.Code, Message: artifact.Message, ErrorOrigin: artifact.ErrorOrigin})
 		_ = encoder.Encode(ipcFrame{
 			IPCVersion:          version.RustIPCVersion,
 			FrameType:           ipcFrameTypeInvokeWorkerResult,
@@ -1897,7 +2384,7 @@ func validateHandleGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 		os.Exit(16)
 	}
 	if !grant.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: grant.Code, Message: grant.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: grant.Code, Message: grant.Message, ErrorOrigin: grant.ErrorOrigin})
 		resultFrameType := ipcFrameTypeInvokeWorkerResult
 		if request.FrameType == ipcFrameTypeRevokeEpoch {
 			resultFrameType = ipcFrameTypeRevokeEpochAck
@@ -1956,7 +2443,7 @@ func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, r
 		os.Exit(20)
 	}
 	if !storageFile.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageFile.Code, Message: storageFile.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageFile.Code, Message: storageFile.Message, ErrorOrigin: storageFile.ErrorOrigin})
 		resultFrameType := ipcFrameTypeInvokeWorkerResult
 		if request.FrameType == ipcFrameTypeRevokeEpoch {
 			resultFrameType = ipcFrameTypeRevokeEpochAck
@@ -2008,7 +2495,7 @@ func requestStorageKVFromHelper(reader *bufio.Reader, encoder *json.Encoder, req
 		os.Exit(44)
 	}
 	if !storageKV.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageKV.Code, Message: storageKV.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageKV.Code, Message: storageKV.Message, ErrorOrigin: storageKV.ErrorOrigin})
 		resultFrameType := ipcFrameTypeInvokeWorkerResult
 		if request.FrameType == ipcFrameTypeRevokeEpoch {
 			resultFrameType = ipcFrameTypeRevokeEpochAck
@@ -2060,7 +2547,7 @@ func requestStorageSQLiteFromHelper(reader *bufio.Reader, encoder *json.Encoder,
 		os.Exit(54)
 	}
 	if !storageSQLite.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageSQLite.Code, Message: storageSQLite.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: storageSQLite.Code, Message: storageSQLite.Message, ErrorOrigin: storageSQLite.ErrorOrigin})
 		resultFrameType := ipcFrameTypeInvokeWorkerResult
 		if request.FrameType == ipcFrameTypeRevokeEpoch {
 			resultFrameType = ipcFrameTypeRevokeEpochAck
@@ -2112,7 +2599,7 @@ func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 		os.Exit(24)
 	}
 	if !networkGrant.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkGrant.Code, Message: networkGrant.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkGrant.Code, Message: networkGrant.Message, ErrorOrigin: networkGrant.ErrorOrigin})
 		resultFrameType := ipcFrameTypeInvokeWorkerResult
 		if request.FrameType == ipcFrameTypeRevokeEpoch {
 			resultFrameType = ipcFrameTypeRevokeEpochAck
@@ -2164,7 +2651,7 @@ func requestNetworkExecuteFromHelper(reader *bufio.Reader, encoder *json.Encoder
 		os.Exit(28)
 	}
 	if !networkExecute.OK {
-		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkExecute.Code, Message: networkExecute.Message})
+		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: networkExecute.Code, Message: networkExecute.Message, ErrorOrigin: networkExecute.ErrorOrigin})
 		_ = encoder.Encode(ipcFrame{
 			IPCVersion:          version.RustIPCVersion,
 			FrameType:           ipcFrameTypeInvokeWorkerResult,
@@ -2310,6 +2797,7 @@ func networkExecuteRequestFromInvoke(request ipcFrame, operation string) network
 		Operation:           operation,
 		Method:              http.MethodPost,
 		Path:                "/v1/worker",
+		Query:               url.Values{"units": []string{"metric"}, "lang": []string{"en"}},
 		Headers:             http.Header{"X-Test": []string{"ok"}},
 		BodyBase64:          base64.StdEncoding.EncodeToString([]byte(`{"hello":"network"}`)),
 		MaxRequestBytes:     2048,
@@ -2765,7 +3253,29 @@ func assertBoundedDeadline(t *testing.T, label string, calledAt time.Time, deadl
 }
 
 func workerInvocationFixture() []byte {
-	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v1","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","operation_id":"operation_runtime_1","stream_id":"stream_runtime_1","audit_correlation_id":"audit_runtime_1","params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA))
+	return workerInvocationFixtureWithAccess(workerBrokerAccess{
+		Storage: []workerStorageBrokerAccess{
+			{StoreID: "workspace", Operations: []string{"read", "write", "delete", "list"}},
+			{StoreID: "settings", Operations: []string{"get", "put", "delete", "list"}},
+			{StoreID: "db", Operations: []string{"exec", "query"}},
+		},
+		Network: []workerNetworkBrokerAccess{
+			{ConnectorID: "api", Transport: "http", Operations: []string{"http", "http_stream"}, HTTPMethods: []string{"GET", "POST"}},
+			{ConnectorID: "api", Transport: "websocket", Operations: []string{"websocket_round_trip"}},
+			{ConnectorID: "api", Transport: "tcp", Operations: []string{"tcp_round_trip"}},
+			{ConnectorID: "api", Transport: "udp", Operations: []string{"udp_round_trip"}},
+		},
+	})
+}
+
+func workerInvocationFixtureWithAccess(access workerBrokerAccess) []byte {
+	rawAccess, err := json.Marshal(access)
+	if err != nil {
+		panic(err)
+	}
+	accessSum := sha256.Sum256(rawAccess)
+	accessHash := "sha256:" + hex.EncodeToString(accessSum[:])
+	return []byte(fmt.Sprintf(`{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"runtime_gen_test","package_hash":%q,"worker_id":"echo_worker","worker_mode":"job","worker_scope":"default","artifact":%q,"artifact_sha256":%q,"abi":"redevplugin-wasm-worker-v2","method":"worker.echo","export":"redevplugin_worker_invoke","effect":"read","execution":"subscription","surface_instance_id":"surface_runtime","owner_session_hash":"session_hash","owner_user_hash":"user_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_runtime","operation_id":"operation_runtime_1","stream_id":"stream_runtime_1","audit_correlation_id":"audit_runtime_1","broker_access":%s,"broker_access_sha256":%q,"params":{"message":"hello"}}`, fixturePackageHash, fixtureArtifact, fixtureArtifactSHA, rawAccess, accessHash))
 }
 
 func (s *ProcessSupervisor) invokeWorkerForTest(ctx context.Context, lease Lease, method string, payload []byte) ([]byte, error) {

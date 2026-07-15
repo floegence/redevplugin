@@ -6,6 +6,7 @@ OUT_DIR="$ROOT_DIR/dist/redevplugin-release"
 VERSION=""
 RUNTIME_TARGET=""
 NPM_PACKAGE=""
+WORKER_SDK_PACKAGE=""
 SOURCE_COMMIT=""
 
 while [[ $# -gt 0 ]]; do
@@ -24,6 +25,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --npm-package)
       NPM_PACKAGE="$2"
+      shift 2
+      ;;
+    --worker-sdk-package)
+      WORKER_SDK_PACKAGE="$2"
       shift 2
       ;;
     --source-commit)
@@ -57,6 +62,9 @@ fi
 if [[ -n "$NPM_PACKAGE" && "$NPM_PACKAGE" != /* ]]; then
   NPM_PACKAGE="$ROOT_DIR/$NPM_PACKAGE"
 fi
+if [[ -n "$WORKER_SDK_PACKAGE" && "$WORKER_SDK_PACKAGE" != /* ]]; then
+  WORKER_SDK_PACKAGE="$ROOT_DIR/$WORKER_SDK_PACKAGE"
+fi
 
 if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
   PATH="$HOME/.cargo/bin:$PATH"
@@ -78,13 +86,15 @@ fi
 GENERATED_AT=$(node --input-type=module -e 'process.stdout.write(new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z"))')
 
 rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/docs/release" "$OUT_DIR/examples/host-capability" "$OUT_DIR/npm" "$OUT_DIR/notices"
+mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/docs/release" "$OUT_DIR/examples/host-capability" "$OUT_DIR/npm" "$OUT_DIR/notices" "$OUT_DIR/sdk"
 
 go_version_pkg="github.com/floegence/redevplugin/pkg/version"
 ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UIPackageVersion=${VERSION} -X ${go_version_pkg}.RuntimeVersion=${VERSION}"
 
 (
   cd "$ROOT_DIR"
+  rustup target add wasm32-unknown-unknown >/dev/null
+  npm run examples:check
   GOWORK=off go build -trimpath -ldflags "$ldflags" -o "$OUT_DIR/bin/redevplugin" ./cmd/redevplugin
   "$OUT_DIR/bin/redevplugin" version >"$OUT_DIR/compatibility.json"
   if [[ -n "$NPM_PACKAGE" ]]; then
@@ -96,6 +106,19 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
   else
     npm run build
     node "$ROOT_DIR/scripts/build_redevplugin_ui_package.mjs" "$VERSION" "$OUT_DIR/npm" >/dev/null
+  fi
+  if [[ -n "$WORKER_SDK_PACKAGE" ]]; then
+    if [[ ! -f "$WORKER_SDK_PACKAGE" ]]; then
+      echo "prebuilt worker SDK package not found: $WORKER_SDK_PACKAGE" >&2
+      exit 1
+    fi
+    if [[ "$(basename "$WORKER_SDK_PACKAGE")" != "redevplugin-worker-sdk-${VERSION}.crate" ]]; then
+      echo "prebuilt worker SDK package filename does not match release version: $WORKER_SDK_PACKAGE" >&2
+      exit 1
+    fi
+    cp "$WORKER_SDK_PACKAGE" "$OUT_DIR/sdk/$(basename "$WORKER_SDK_PACKAGE")"
+  else
+    node "$ROOT_DIR/scripts/build_redevplugin_worker_sdk_package.mjs" "$VERSION" "$OUT_DIR/sdk" >/dev/null
   fi
   if [[ -n "$RUNTIME_TARGET" ]]; then
     rustup target add "$RUNTIME_TARGET" >/dev/null
@@ -117,6 +140,8 @@ ldflags="-X ${go_version_pkg}.GoModuleVersion=${VERSION} -X ${go_version_pkg}.UI
   cp "$ROOT_DIR/AGENTS.md" "$OUT_DIR/AGENTS.md"
   cp "$ROOT_DIR/docs/release/a2-tdd-evidence.md" "$OUT_DIR/docs/release/a2-tdd-evidence.md"
   cp "$ROOT_DIR/docs/release/a3-tdd-evidence.md" "$OUT_DIR/docs/release/a3-tdd-evidence.md"
+  cp -R "$ROOT_DIR/examples/showcase" "$OUT_DIR/examples/showcase"
+  cp -R "$ROOT_DIR/examples/plugins" "$OUT_DIR/examples/plugins"
   sample_root="$OUT_DIR/examples/host-capability/sample-documents-v1"
   sample_config="$OUT_DIR/examples/host-capability/sample-documents-v1.build.json"
   node --input-type=module - \
@@ -195,17 +220,30 @@ const npmPackage = {
   integrity: `sha512-${createHash("sha512").update(npmBytes).digest("base64")}`,
   size: npmFile.size,
 };
+const workerSDKFiles = files.filter((file) => file.path.startsWith("sdk/") && file.path.endsWith(".crate"));
+if (workerSDKFiles.length !== 1) {
+  throw new Error(`release bundle must contain exactly one worker SDK crate, found ${workerSDKFiles.length}`);
+}
+const workerSDKFile = workerSDKFiles[0];
+const workerSDK = {
+  name: "redevplugin-worker-sdk",
+  version,
+  path: workerSDKFile.path,
+  sha256: workerSDKFile.sha256,
+  size: workerSDKFile.size,
+};
 writeFileSync(
   join(outDir, "release-manifest.json"),
   JSON.stringify(
     {
-      schema_version: "redevplugin.release_manifest.v2",
+      schema_version: "redevplugin.release_manifest.v3",
       version,
       source_commit: sourceCommit,
       runtime_target: runtimeTarget || null,
       generated_at: generatedAt,
       compatibility_sha256: compatibilitySHA256,
       npm_package: npmPackage,
+      worker_sdk: workerSDK,
       files,
     },
     null,

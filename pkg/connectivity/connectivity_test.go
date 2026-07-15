@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -327,6 +328,57 @@ func TestExecutorPerformsBoundedHTTPWithGrant(t *testing.T) {
 		response.Headers.Get("X-Test") != "ok" ||
 		string(response.Body) != "POST /v1/resource payload" {
 		t.Fatalf("HTTP response mismatch: %#v body=%q", response, response.Body)
+	}
+}
+
+func TestExecutorCanonicalizesStructuredHTTPQuery(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.URL.RawQuery))
+	})}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Close()
+
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	response, err := NewExecutor(ExecutorOptions{DialContext: mapDialer(listener.Addr().String())}).DoHTTP(context.Background(), HTTPRequest{
+		Grant: grant,
+		Path:  "/v1/forecast",
+		Query: url.Values{
+			"current":   []string{"temperature_2m", "weather_code"},
+			"latitude":  []string{"52.52"},
+			"longitude": []string{"13.41"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoHTTP() error = %v", err)
+	}
+	const want = "current=temperature_2m&current=weather_code&latitude=52.52&longitude=13.41"
+	if string(response.Body) != want {
+		t.Fatalf("query = %q, want %q", response.Body, want)
+	}
+}
+
+func TestExecutorRejectsHTTPPathWithEmbeddedQueryOrFragmentBeforeDial(t *testing.T) {
+	grant := testGrant(t, TransportHTTP, "http://api.example.com", time.Minute)
+	for _, path := range []string{"/v1/forecast?latitude=52.52", "/v1/forecast#current"} {
+		t.Run(path, func(t *testing.T) {
+			dialed := false
+			_, err := NewExecutor(ExecutorOptions{DialContext: func(context.Context, string, string) (net.Conn, error) {
+				dialed = true
+				return nil, errors.New("dial should not be called for an invalid path")
+			}}).DoHTTP(context.Background(), HTTPRequest{Grant: grant, Path: path})
+			if !errors.Is(err, ErrInvalidConnector) {
+				t.Fatalf("DoHTTP(%q) error = %v, want ErrInvalidConnector", path, err)
+			}
+			if dialed {
+				t.Fatalf("DoHTTP(%q) dialed before rejecting the path", path)
+			}
+		})
 	}
 }
 
@@ -1244,6 +1296,29 @@ func TestExecutorDefaultDialerAllowsPublicResolvedAddress(t *testing.T) {
 	_, err := executor.TCPRoundTrip(ctx, TCPRoundTripRequest{Grant: grant, Timeout: time.Millisecond})
 	if errors.Is(err, ErrTargetDenied) {
 		t.Fatalf("TCPRoundTrip(public resolved address) error = %v, want non-classifier dial failure", err)
+	}
+}
+
+func TestGuardedDialerPinsValidatedAddressWithoutSecondDNSLookup(t *testing.T) {
+	resolverDialed := false
+	dialer := &net.Dialer{
+		Timeout: time.Millisecond,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(context.Context, string, string) (net.Conn, error) {
+				resolverDialed = true
+				return nil, errors.New("unexpected second DNS lookup")
+			},
+		},
+	}
+	dial := guardedDialContext(dialer, func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	_, _ = dial(ctx, "tcp", "weather.example.com:443")
+	if resolverDialed {
+		t.Fatal("validated hostname was resolved again during dial")
 	}
 }
 

@@ -178,6 +178,15 @@ async function readRenderPolicy(registry) {
     "max_text_length",
     "max_attribute_value_length",
     "max_form_fields",
+    "max_canvas_count",
+    "max_canvas_dimension",
+    "max_canvas_total_pixels",
+    "max_canvas_pointer_events_per_second",
+    "max_image_count",
+    "max_image_dimension",
+    "max_image_total_pixels",
+    "worker_heartbeat_interval_ms",
+    "worker_heartbeat_timeout_ms",
     "global_attributes",
     "tag_attributes",
     "safe_input_types",
@@ -186,7 +195,8 @@ async function readRenderPolicy(registry) {
     throw new Error("bridge render policy must be a closed object");
   }
   const limits = {};
-  for (const key of expectedKeys.filter((key) => key.startsWith("max_"))) {
+  const numericKeys = expectedKeys.filter((key) => key.startsWith("max_") || key.endsWith("_ms"));
+  for (const key of numericKeys) {
     if (!Number.isSafeInteger(policy[key]) || policy[key] <= 0) {
       throw new Error(`bridge render policy ${key} must be a positive integer`);
     }
@@ -226,6 +236,15 @@ function renderGoRenderPolicy(policy) {
     max_text_length: "opaqueSurfaceMaxTextLength",
     max_attribute_value_length: "opaqueSurfaceMaxAttributeValueLength",
     max_form_fields: "opaqueSurfaceMaxFormFields",
+    max_canvas_count: "opaqueSurfaceMaxCanvasCount",
+    max_canvas_dimension: "opaqueSurfaceMaxCanvasDimension",
+    max_canvas_total_pixels: "opaqueSurfaceMaxCanvasTotalPixels",
+    max_canvas_pointer_events_per_second: "opaqueSurfaceMaxCanvasPointerEventsPerSecond",
+    max_image_count: "opaqueSurfaceMaxImageCount",
+    max_image_dimension: "opaqueSurfaceMaxImageDimension",
+    max_image_total_pixels: "opaqueSurfaceMaxImageTotalPixels",
+    worker_heartbeat_interval_ms: "opaqueSurfaceWorkerHeartbeatIntervalMS",
+    worker_heartbeat_timeout_ms: "opaqueSurfaceWorkerHeartbeatTimeoutMS",
   };
   const constants = Object.entries(constantNames)
     .map(([key, name]) => `\t${name} = ${policy.limits[key]}`)

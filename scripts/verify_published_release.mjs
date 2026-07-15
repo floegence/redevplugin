@@ -40,6 +40,10 @@ try {
   if (npmIdentities.size !== 1) {
     throw new Error("runtime archives do not contain the same npm tarball bytes");
   }
+  const workerSDKIdentities = new Set(bundles.map((bundle) => JSON.stringify(bundle.workerSDK)));
+  if (workerSDKIdentities.size !== 1) {
+    throw new Error("runtime archives do not contain the same worker SDK crate bytes");
+  }
   const compatibilityHashes = new Set(bundles.map((bundle) => bundle.compatibilitySHA256));
   if (compatibilityHashes.size !== 1) {
     throw new Error("runtime archives do not contain identical compatibility metadata");
@@ -106,6 +110,25 @@ function inspectArchive(archivePath) {
   if (npm.sha256 !== npmMetadata.sha256 || npm.integrity !== npmMetadata.integrity || npm.size !== npmMetadata.size) {
     throw new Error(`${basename(archivePath)} npm package bytes do not match release-manifest.json`);
   }
+  const workerSDKMetadata = manifest.worker_sdk;
+  if (workerSDKMetadata?.name !== "redevplugin-worker-sdk" || typeof workerSDKMetadata.path !== "string") {
+    throw new Error(`${basename(archivePath)} has invalid worker SDK metadata`);
+  }
+  if (!integrityOnly && workerSDKMetadata.version !== expectedVersion) {
+    throw new Error(`${basename(archivePath)} worker SDK version mismatch`);
+  }
+  const workerSDKPath = join(bundleRoot, workerSDKMetadata.path);
+  const workerSDKBytes = readFileSync(workerSDKPath);
+  const workerSDK = {
+    name: workerSDKMetadata.name,
+    version: workerSDKMetadata.version,
+    filename: basename(workerSDKMetadata.path),
+    sha256: createHash("sha256").update(workerSDKBytes).digest("hex"),
+    size: workerSDKBytes.length,
+  };
+  if (workerSDK.sha256 !== workerSDKMetadata.sha256 || workerSDK.size !== workerSDKMetadata.size) {
+    throw new Error(`${basename(archivePath)} worker SDK bytes do not match release-manifest.json`);
+  }
   const compatibilityBytes = readFileSync(join(bundleRoot, "compatibility.json"));
   const compatibilitySHA256 = createHash("sha256").update(compatibilityBytes).digest("hex");
   if (compatibilitySHA256 !== manifest.compatibility_sha256) {
@@ -114,5 +137,5 @@ function inspectArchive(archivePath) {
   if (!statSync(join(bundleRoot, "bin", "redevplugin-runtime")).isFile()) {
     throw new Error(`${basename(archivePath)} is missing redevplugin-runtime`);
   }
-  return { runtimeTarget: manifest.runtime_target, compatibilitySHA256, npm };
+  return { runtimeTarget: manifest.runtime_target, compatibilitySHA256, npm, workerSDK };
 }

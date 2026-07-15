@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1337,7 +1338,6 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 		}
 		if result.PluginInstanceID != "plugini_stress_runtime" ||
 			result.RevokeEpoch != uint64(i+1) ||
-			result.ClosedActorCount != 1 ||
 			result.ClosedSocketCount != 2 ||
 			result.ClosedStreamCount != 3 ||
 			result.ClosedStorageHandleCount != 4 {
@@ -1361,7 +1361,6 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 			"max_ms":          durationMillisCeil(durations[len(durations)-1]),
 			"threshold_ms":    durationMillisCeil(p95Threshold),
 			"hard_timeout_ms": durationMillisCeil(hardTimeout),
-			"closed_actor":    1,
 			"closed_socket":   2,
 			"closed_stream":   3,
 			"closed_storage":  4,
@@ -1878,6 +1877,15 @@ func runStressRuntimeHelper() {
 	}); err != nil {
 		os.Exit(6)
 	}
+	controlRead := stressRuntimeControlFile("REDEVPLUGIN_CONTROL_READ_FD", "stress-runtime-control-read")
+	controlWrite := stressRuntimeControlFile("REDEVPLUGIN_CONTROL_WRITE_FD", "stress-runtime-control-write")
+	if controlRead == nil || controlWrite == nil {
+		os.Exit(7)
+	}
+	defer controlRead.Close()
+	defer controlWrite.Close()
+	reader = bufio.NewReader(controlRead)
+	encoder = json.NewEncoder(controlWrite)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -1885,7 +1893,7 @@ func runStressRuntimeHelper() {
 		}
 		var request stressIPCFrame
 		if err := json.Unmarshal(line, &request); err != nil {
-			os.Exit(7)
+			os.Exit(8)
 		}
 		switch request.FrameType {
 		case "heartbeat":
@@ -1908,7 +1916,6 @@ func runStressRuntimeHelper() {
 				Result: stressRawJSON(map[string]any{
 					"plugin_instance_id":          revoke.PluginInstanceID,
 					"revoke_epoch":                revoke.RevokeEpoch,
-					"closed_actor_count":          1,
 					"closed_socket_count":         2,
 					"closed_stream_count":         3,
 					"closed_storage_handle_count": 4,
@@ -1922,6 +1929,14 @@ func runStressRuntimeHelper() {
 			}))
 		}
 	}
+}
+
+func stressRuntimeControlFile(environmentVariable string, name string) *os.File {
+	fileDescriptor, err := strconv.Atoi(os.Getenv(environmentVariable))
+	if err != nil || fileDescriptor < 0 {
+		return nil
+	}
+	return os.NewFile(uintptr(fileDescriptor), name)
 }
 
 func respondStressRuntime(encoder *json.Encoder, request stressIPCFrame, frameType string, payload json.RawMessage) {

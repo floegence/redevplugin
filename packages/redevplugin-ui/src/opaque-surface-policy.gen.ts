@@ -58,7 +58,8 @@ export const opaqueSurfaceAllowedTags = [
   "source",
   "audio",
   "video",
-  "track"
+  "track",
+  "canvas"
 ] as const;
 export type OpaqueSurfaceAllowedTag = (typeof opaqueSurfaceAllowedTags)[number];
 
@@ -69,9 +70,11 @@ export const opaqueSurfaceGlobalAttributes = [
   "title",
   "hidden",
   "tabindex",
+  "autofocus",
   "lang",
   "dir",
   "data-redevplugin-action",
+  "data-redevplugin-escape-action",
   "data-redevplugin-asset-binding",
   "data-redevplugin-asset-attr"
 ] as const;
@@ -186,6 +189,11 @@ export const opaqueSurfaceTagAttributes = {
   ],
   "time": [
     "datetime"
+  ],
+  "canvas": [
+    "width",
+    "height",
+    "data-redevplugin-canvas"
   ]
 } as const;
 
@@ -209,5 +217,14 @@ export const opaqueSurfaceRenderLimits = {
   "max_attributes_per_element": 64,
   "max_text_length": 65536,
   "max_attribute_value_length": 4096,
-  "max_form_fields": 128
+  "max_form_fields": 128,
+  "max_canvas_count": 4,
+  "max_canvas_dimension": 4096,
+  "max_canvas_total_pixels": 16777216,
+  "max_canvas_pointer_events_per_second": 120,
+  "max_image_count": 32,
+  "max_image_dimension": 4096,
+  "max_image_total_pixels": 33554432,
+  "worker_heartbeat_interval_ms": 10000,
+  "worker_heartbeat_timeout_ms": 5000
 } as const;

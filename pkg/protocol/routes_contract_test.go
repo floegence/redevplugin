@@ -194,7 +194,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	requestBodies, err := readOpenAPIRequestBodyRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
+	requestBodies, err := readOpenAPIRequestBodyRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v3.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v3.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,13 +222,13 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"plugin_gateway_token: { type: string, minLength: 1 }",
 		"delete_data: { type: boolean }",
 		"asset_ticket: { type: string, minLength: 1 }",
-		"ui_protocol_version: { const: plugin-ui-v2 }",
+		"ui_protocol_version: { const: plugin-ui-v3 }",
 		"plugin_state_version: { type: integer, minimum: 1 }",
 		"revoke_epoch: { type: integer, minimum: 1 }",
 		"DisposeSurfaceRequest:",
 		"required: [bridge_nonce]",
 		"SurfacePreparation:",
-		"../plugin/opaque-surface-document-v1.schema.json",
+		"../plugin/opaque-surface-document-v2.schema.json",
 		"ReadSurfaceAssetRequest:",
 		"ReadSurfaceStreamRequest:",
 		"DisposeSurfaceRequest:",
@@ -281,7 +281,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 
 func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v2.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v3.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,10 +333,10 @@ func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
 		snippets []string
 	}{
 		{
-			path: "release-metadata-v2.schema.json",
+			path: "release-metadata-v3.schema.json",
 			snippets: []string{
 				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_metadata.v2" }`,
+				`"schema_version": { "const": "redevplugin.release_metadata.v3" }`,
 				`"release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" }`,
 				`"package_signature": { "$ref": "#/$defs/package_release_signature" }`,
 				`"$ref": "host-capability-pin-v1.schema.json"`,
@@ -539,7 +539,7 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/{surface_instance_id}/dispose"},
 			Owner:        "PluginSurfaceHost.close",
-			Snippets:     []string{"async close(): Promise<void>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`},
+			Snippets:     []string{"close(): Promise<void>", "async #closeSurface(): Promise<void>", `/_redevplugin/api/plugins/surfaces/${encodeURIComponent(this.bootstrap.surfaceInstanceId)}/dispose`},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/rpc"},

@@ -113,6 +113,30 @@ early rejection for direct identifier, optional-chain, and bracket references;
 runtime removal of the API is the authoritative boundary for dynamically
 constructed source references.
 
+Renderer resource ownership is bounded by the generated bridge policy. It
+permits at most four transferred canvases, 4096 pixels per dimension,
+16,777,216 aggregate canvas pixels, and 120 pointer events per second. Raster
+type is derived from PNG, JPEG, GIF, or WebP bytes rather than a filename or
+declared MIME, and dimensions are parsed before decode. At most 32 images and
+33,554,432 decoded pixels are allowed. The worker global removes
+`OffscreenCanvas` construction and `createImageBitmap`, so plugin code cannot
+allocate an unaccounted secondary graphics surface. Resizing an already
+transferred canvas is checked against the same budget.
+
+The renderer sends a private ping every 10 seconds and requires the matching
+worker pong within 5 seconds. A stalled or replaced worker fails the surface
+closed. Disposal uses a unique quiesce id: the plugin bridge waits for all async
+lifecycle observers, including persistence flushes, before acknowledging. The
+trusted parent waits at most 1.5 seconds and then continues server revocation and
+local teardown, so a plugin can finish bounded state writes but cannot hold the
+surface open indefinitely.
+
+Allowed forms are interaction containers, not navigation primitives. The
+renderer captures submit events and nested submit-button clicks, calls
+`preventDefault`, serializes at most 128 bounded string fields, and sends one
+typed action over the private worker port. CSP `form-action 'none'` remains the
+browser-level backstop.
+
 One aggregate opening deadline bounds frame load, prepare, transferred-port
 acknowledgement, initial lease minting, first paint, and worker readiness.
 Timeout aborts in-flight parent requests, revokes the server-side surface,
@@ -241,7 +265,7 @@ The Host evaluates security policy before permission grants. Policy stores can
 cap allowed permission IDs and deny method execution. Policy updates bump
 revision and revoke epochs, refresh connectivity policy, and revoke runtime
 capabilities. Runtime revocation ACKs are decoded as structured evidence, and
-Host audit events include the closed actor/socket/stream/storage-handle counters
+Host audit events include the closed socket/stream/storage-handle counters
 reported by the runtime.
 
 Permission grants are lifecycle-bound. Uninstall removes grants even when plugin
@@ -310,8 +334,17 @@ consumed `lease_id + lease_nonce` hash across runtime restarts until the lease
 expires. A duplicate lease is rejected before worker IPC or artifact reads and
 records a `plugin.runtime.lease.replayed` diagnostic. The stores do not persist
 the raw lease token or raw nonce.
-Hosts can additionally configure an Ed25519 runtime lease verifier on the Go
-supervisor. The verifier checks a canonical `runtime_execution_lease` payload
+
+WASM binary validation is duplicated across the process boundary by design.
+The Go package validator compiles the entire module with Wazero before accepting
+its memory and export contract. The Rust ABI crate independently runs
+`wasmparser::Validator::validate_all` before export inspection or Wasmi
+execution. A syntactically valid worker still receives the signed invocation
+memory ceiling, and `memory.grow` beyond that budget fails closed at runtime.
+The manifest cannot request more than 256 MiB per worker, and a Host package
+trust policy may enforce a lower ceiling. Hosts can additionally configure an
+Ed25519 runtime lease verifier on the Go supervisor. The verifier checks a
+canonical `runtime_execution_lease` payload
 that excludes the bearer `lease_token` and the signature itself, while covering
 the display token ID, plugin metadata, active package fingerprint, issued
 timestamp, worker method, effect, execution mode, surface and owner context,
@@ -345,9 +378,8 @@ Host IO.
 Successful runtime revocation ACKs include structured close counters so the
 audit trail can distinguish a control-plane revoke from the runtime resources
 that were actually closed. The current Rust runtime backs these counters with
-an in-process registry for worker actor entries, brokered storage handles,
-network socket leases, and Host stream-store bridge stream IDs; counters remain
-zero for resource classes that do not have runtime-owned handles.
+an in-process registry for brokered storage handles, network socket leases, and
+Host stream-store bridge stream IDs.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
 compatibility manifests are versioned contracts. Drift must fail closed through

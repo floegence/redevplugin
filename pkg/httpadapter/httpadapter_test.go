@@ -214,10 +214,10 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility")
 
-	if got.SchemaVersion != "redevplugin.compatibility.v2" {
+	if got.SchemaVersion != "redevplugin.compatibility.v3" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v2" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v2" {
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v2" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v3" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -234,7 +234,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v2.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v3.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -1093,7 +1093,10 @@ func TestHandlerPrepareAndPrivateAssetFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if asset.Path != preparedAsset.Path || asset.SHA256 != preparedAsset.SHA256 || string(content) != "http-status" {
+	if asset.Path != preparedAsset.Path ||
+		asset.SHA256 != preparedAsset.SHA256 ||
+		asset.ContentType != "image/png" ||
+		!bytes.Equal(content, minimalHTTPPNGForTest()) {
 		t.Fatalf("asset response mismatch: %#v content=%q", asset, string(content))
 	}
 
@@ -2083,6 +2086,103 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 	}
 }
 
+func TestHandlerWorkerBusinessErrorPreservesWorkerCode(t *testing.T) {
+	runtime := &httpRecordingRuntimeSupervisor{
+		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
+		err:    &runtimeclient.WorkerExecutionError{Code: "NOTE_NOT_FOUND", Message: "note was not found", Origin: runtimeclient.WorkerErrorOriginPlugin},
+	}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeSupervisor: runtime})
+	installed, err := host.ImportLocalPackageBytes(context.Background(), h, buildHTTPWorkerFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(context.Background(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, PluginStateVersion: mustPluginStateVersion(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.worker.view", "surface_http_worker_error", "bridge_http_worker_error")
+
+	raw, err := json.Marshal(map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_worker_error",
+		"bridge_channel_id":    "bridge_http_worker_error",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "worker.echo",
+		"params":               map[string]any{"message": "hello"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/rpc", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("worker business error status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.ErrorCode != string(security.ErrWorkerError) || envelope.Error != "plugin operation failed" {
+		t.Fatalf("worker business error envelope = %#v", envelope)
+	}
+	if envelope.ErrorDetails["worker_error_code"] != "NOTE_NOT_FOUND" || envelope.ErrorDetails["worker_error_message"] != "note was not found" || envelope.ErrorDetails["worker_error_origin"] != "plugin" {
+		t.Fatalf("worker business error details = %#v", envelope.ErrorDetails)
+	}
+}
+
+func TestWorkerExecutionErrorsSeparatePlatformFailuresFromPluginDomainErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		workerCode string
+		origin     runtimeclient.WorkerErrorOrigin
+		wantCode   security.ErrorCode
+		wantStatus int
+		wantDetail bool
+	}{
+		{name: "plugin domain", workerCode: "NOTE_NOT_FOUND", origin: runtimeclient.WorkerErrorOriginPlugin, wantCode: security.ErrWorkerError, wantStatus: http.StatusUnprocessableEntity, wantDetail: true},
+		{name: "plugin cannot spoof invalid request", workerCode: "INVALID_REQUEST", origin: runtimeclient.WorkerErrorOriginPlugin, wantCode: security.ErrWorkerError, wantStatus: http.StatusUnprocessableEntity, wantDetail: true},
+		{name: "plugin cannot spoof network target", workerCode: "NETWORK_TARGET_DENIED", origin: runtimeclient.WorkerErrorOriginPlugin, wantCode: security.ErrWorkerError, wantStatus: http.StatusUnprocessableEntity, wantDetail: true},
+		{name: "plugin cannot spoof runtime failure", workerCode: "RUNTIME_FUTURE_FAILURE", origin: runtimeclient.WorkerErrorOriginPlugin, wantCode: security.ErrWorkerError, wantStatus: http.StatusUnprocessableEntity, wantDetail: true},
+		{name: "hostcall invalid request", workerCode: "INVALID_REQUEST", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrInvalidRequest, wantStatus: http.StatusBadRequest},
+		{name: "network target", workerCode: "NETWORK_TARGET_DENIED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrNetworkTargetDenied, wantStatus: http.StatusForbidden},
+		{name: "network rate", workerCode: "NETWORK_RATE_LIMITED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrNetworkRateLimited, wantStatus: http.StatusTooManyRequests},
+		{name: "storage quota", workerCode: "STORAGE_QUOTA_EXCEEDED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrStorageQuotaExceeded, wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "file storage quota", workerCode: "STORAGE_FILE_QUOTA_EXCEEDED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrStorageQuotaExceeded, wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "key value storage quota", workerCode: "STORAGE_KV_QUOTA_EXCEEDED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrStorageQuotaExceeded, wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "sqlite storage quota", workerCode: "STORAGE_SQLITE_QUOTA_EXCEEDED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrStorageQuotaExceeded, wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "hostcall failure", workerCode: "HOSTCALL_FAILED", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "unknown hostcall infrastructure", workerCode: "NETWORK_RESPONSE_TOO_LARGE", origin: runtimeclient.WorkerErrorOriginHostcall, wantCode: security.ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "revoked capability", workerCode: "RUNTIME_CAPABILITY_REVOKED", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrGrantInvalid, wantStatus: http.StatusForbidden},
+		{name: "stale control channel", workerCode: "RUNTIME_CONTROL_CHANNEL_STALE", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "invalid lease", workerCode: "RUNTIME_LEASE_INVALID", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrLeaseInvalid, wantStatus: http.StatusForbidden},
+		{name: "invalid lease signature", workerCode: "RUNTIME_LEASE_SIGNATURE_INVALID", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrLeaseInvalid, wantStatus: http.StatusForbidden},
+		{name: "invalid worker artifact", workerCode: "WASM_WORKER_INVALID", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrContractMismatch, wantStatus: http.StatusBadGateway},
+		{name: "worker trap", workerCode: "WASM_WORKER_FAILED", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "unknown runtime infrastructure", workerCode: "RUNTIME_FUTURE_FAILURE", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable},
+		{name: "unknown WASM infrastructure", workerCode: "WASM_FUTURE_FAILURE", origin: runtimeclient.WorkerErrorOriginRuntime, wantCode: security.ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &runtimeclient.WorkerExecutionError{Code: tt.workerCode, Message: "worker supplied failure\nwith details", Origin: tt.origin}
+			if got := errorCodeForWorkerExecutionError(err); got != tt.wantCode {
+				t.Fatalf("error code = %q, want %q", got, tt.wantCode)
+			}
+			if got := httpStatusForWorkerExecutionError(err); got != tt.wantStatus {
+				t.Fatalf("HTTP status = %d, want %d", got, tt.wantStatus)
+			}
+			details := errorDetailsForRPCError(err)
+			if tt.wantDetail {
+				if details["worker_error_code"] != tt.workerCode || details["worker_error_message"] != "worker supplied failure with details" || details["worker_error_origin"] != "plugin" {
+					t.Fatalf("worker domain details = %#v", details)
+				}
+			} else if details != nil {
+				t.Fatalf("platform infrastructure error exposed worker details: %#v", details)
+			}
+		})
+	}
+}
+
 func TestHandlerSettingsFlow(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{secrets: &httpRecordingSecretStore{}})
 	handler := Handler{Host: h, WebSecurity: allowHTTPTestGuard()}
@@ -2625,8 +2725,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v2.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v2.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v3.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v3.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -3036,9 +3136,17 @@ func writeHTTPFile(t *testing.T, filename string, content string) {
 	if filepath.Base(filename) == "index.html" && filepath.Base(filepath.Dir(filename)) == "ui" {
 		content += `<body><main>Fixture</main><img src="status.png" alt="Status"><script type="text/redevplugin-worker" src="app.js"></script></body>`
 		writeHTTPBytes(t, filepath.Join(filepath.Dir(filename), "app.js"), []byte(`globalThis.__redevpluginFixture = true;`))
-		writeHTTPBytes(t, filepath.Join(filepath.Dir(filename), "status.png"), []byte("http-status"))
+		writeHTTPBytes(t, filepath.Join(filepath.Dir(filename), "status.png"), minimalHTTPPNGForTest())
 	}
 	writeHTTPBytes(t, filename, []byte(content))
+}
+
+func minimalHTTPPNGForTest() []byte {
+	raw, err := hex.DecodeString("89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082")
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
 func writeHTTPBytes(t *testing.T, filename string, content []byte) {
@@ -3052,20 +3160,39 @@ func writeHTTPBytes(t *testing.T, filename string, content []byte) {
 }
 
 func minimalHTTPWorkerWASMForTest(exportName string) []byte {
-	exportNameBytes := []byte(exportName)
 	module := []byte{
 		0x00, 0x61, 0x73, 0x6d,
 		0x01, 0x00, 0x00, 0x00,
-		0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-		0x03, 0x02, 0x01, 0x00,
-		0x07,
+		0x01, 0x11, 0x03,
+		0x60, 0x01, 0x7f, 0x01, 0x7f,
+		0x60, 0x02, 0x7f, 0x7f, 0x00,
+		0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e,
+		0x03, 0x04, 0x03, 0x00, 0x01, 0x02,
+		0x05, 0x03, 0x01, 0x00, 0x01,
 	}
-	exportPayload := []byte{0x01, byte(len(exportNameBytes))}
-	exportPayload = append(exportPayload, exportNameBytes...)
-	exportPayload = append(exportPayload, 0x00, 0x00)
-	module = append(module, byte(len(exportPayload)))
+	exportPayload := []byte{0x04}
+	for _, export := range []struct {
+		name  string
+		kind  byte
+		index byte
+	}{
+		{name: "memory", kind: 0x02, index: 0x00},
+		{name: "redevplugin_worker_alloc", kind: 0x00, index: 0x00},
+		{name: "redevplugin_worker_dealloc", kind: 0x00, index: 0x01},
+		{name: exportName, kind: 0x00, index: 0x02},
+	} {
+		exportPayload = append(exportPayload, byte(len(export.name)))
+		exportPayload = append(exportPayload, export.name...)
+		exportPayload = append(exportPayload, export.kind, export.index)
+	}
+	module = append(module, 0x07, byte(len(exportPayload)))
 	module = append(module, exportPayload...)
-	module = append(module, 0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b)
+	module = append(module,
+		0x0a, 0x0f, 0x03,
+		0x05, 0x00, 0x41, 0x80, 0x08, 0x0b,
+		0x02, 0x00, 0x0b,
+		0x04, 0x00, 0x42, 0x00, 0x0b,
+	)
 	return module
 }
 
@@ -3075,9 +3202,9 @@ func httpWorkerFixtureABIJSON(exports ...string) string {
 		panic(err)
 	}
 	return "{\n" +
-		"  \"abi_version\": \"redevplugin-wasm-worker-v1\",\n" +
+		"  \"abi_version\": \"redevplugin-wasm-worker-v2\",\n" +
 		"  \"exports\": " + string(rawExports) + ",\n" +
-		"  \"imports\": [\"redevplugin.log\", \"redevplugin.storage\", \"redevplugin.network\", \"redevplugin.operation\", \"redevplugin.clock\"]\n" +
+		"  \"imports\": []\n" +
 		"}\n"
 }
 
@@ -3090,7 +3217,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 		title = "HTTP"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http",
@@ -3098,7 +3225,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.view", "kind": "view", "label": "HTTP", "entry": "ui/index.html"}
@@ -3108,7 +3235,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 
 func httpStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.storage",
@@ -3116,7 +3243,7 @@ func httpStorageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.storage.view", "kind": "view", "label": "HTTP Storage", "entry": "ui/index.html"}
@@ -3147,7 +3274,7 @@ func httpStorageFixtureManifestJSON() string {
 
 func httpRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.rpc",
@@ -3155,7 +3282,7 @@ func httpRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.rpc.view", "kind": "view", "label": "HTTP RPC", "entry": "ui/index.html"}
@@ -3174,7 +3301,7 @@ func httpRPCFixtureManifestJSON() string {
 
 func httpDangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.danger",
@@ -3182,7 +3309,7 @@ func httpDangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.danger.view", "kind": "view", "label": "HTTP Danger", "entry": "ui/index.html"}
@@ -3201,7 +3328,7 @@ func httpDangerousRPCFixtureManifestJSON() string {
 
 func httpOperationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.operation",
@@ -3209,7 +3336,7 @@ func httpOperationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.operation.view", "kind": "view", "label": "HTTP Operation", "entry": "ui/index.html"}
@@ -3228,7 +3355,7 @@ func httpOperationRPCFixtureManifestJSON() string {
 
 func httpSubscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.subscription",
@@ -3236,7 +3363,7 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.subscription.view", "kind": "view", "label": "HTTP Subscription", "entry": "ui/index.html"}
@@ -3255,7 +3382,7 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 
 func httpCoreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.core",
@@ -3263,7 +3390,7 @@ func httpCoreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.core.view", "kind": "view", "label": "HTTP Core", "entry": "ui/index.html"}
@@ -3291,7 +3418,7 @@ func httpCoreActionFixtureManifestJSON() string {
 
 func httpWorkerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.worker",
@@ -3299,13 +3426,13 @@ func httpWorkerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.worker.view", "kind": "view", "label": "HTTP Worker", "entry": "ui/index.html"}
 		],
 		"workers": [
-			{"worker_id": "echo_worker", "mode": "job", "artifact": "workers/echo.wasm", "abi": "redevplugin-wasm-worker-v1", "scope": "user", "memory_limit_bytes": 1048576}
+			{"worker_id": "echo_worker", "mode": "job", "artifact": "workers/echo.wasm", "abi": "redevplugin-wasm-worker-v2", "scope": "user", "memory_limit_bytes": 1048576}
 		],
 		"methods": [
 			{
@@ -3326,7 +3453,7 @@ func httpWorkerFixtureManifestJSON() string {
 
 func httpSettingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.settings",
@@ -3334,7 +3461,7 @@ func httpSettingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.settings.view", "kind": "view", "label": "HTTP Settings", "entry": "ui/index.html"}
@@ -3362,7 +3489,7 @@ func httpSettingsFixtureManifestJSON() string {
 
 func httpBlockedNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v2",
+		"schema_version": "redevplugin.manifest.v3",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.network",
@@ -3370,7 +3497,7 @@ func httpBlockedNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v2"
+			"ui_protocol_version": "plugin-ui-v3"
 		},
 		"surfaces": [
 			{"surface_id": "http.network.view", "kind": "view", "label": "HTTP Network", "entry": "ui/index.html"}
@@ -3612,7 +3739,7 @@ func httpReleaseMetadataBytesForPackage(t *testing.T, ref host.PluginReleaseRef,
 	t.Helper()
 	release := httpReleaseForPackage(ref, pkg)
 	raw, err := json.Marshal(map[string]any{
-		"schema_version":             "redevplugin.release_metadata.v2",
+		"schema_version":             "redevplugin.release_metadata.v3",
 		"source_id":                  release.SourceID,
 		"release_metadata_ref":       ref.ReleaseMetadataRef,
 		"publisher_id":               release.PublisherID,
@@ -3830,7 +3957,7 @@ func bridgeHandshakeFromBootstrap(openResp bridge.SurfaceBootstrap) bridge.Hands
 		AssetSessionNonce:  openResp.AssetSessionNonce,
 		PluginStateVersion: openResp.PluginStateVersion,
 		RevokeEpoch:        openResp.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v2",
+		UIProtocolVersion:  "plugin-ui-v3",
 	}
 }
 

@@ -1,5 +1,96 @@
 # Changelog
 
+## v0.4.0
+
+### Added
+
+- A product-quality Examples Showcase that runs three installable plugins
+  through the real Go Host, HTTP adapter, Rust runtime, opaque sandbox surface,
+  and typed bridge: persistent Memos, saved-location Weather with brokered
+  external HTTP, and the canvas-based Sky Strike game with keyboard, pointer,
+  score, high-score, and FPS behavior.
+- A public Rust worker SDK for ABI v2 request decoding, closed success/error
+  responses, base64 helpers, storage file/KV/SQLite hostcalls, network
+  hostcalls, and canonical worker exports. Every runtime bundle includes the
+  same versioned `.crate` source artifact with first-class release-manifest
+  identity and an immutable Git tag dependency guide.
+- Host-mediated canvas and image surface primitives, with generated render
+  policy limits and tests covering pointer input, animation, asset decoding,
+  and deterministic disposal.
+- Dedicated internal browser-harness and testdata trees so user-facing examples
+  contain only usable plugins while conformance fixtures remain clearly
+  separated from product demonstrations.
+
+### Changed
+
+- Worker execution now uses `redevplugin-wasm-worker-v2`: exported linear
+  memory, allocator/deallocator functions, JSON request/response envelopes, and
+  `(request_ptr, request_len) -> packed(response_ptr, response_len)` invocation.
+- Storage handle grants are minted and injected by the Host for declared stores;
+  plugins no longer receive or submit grant tokens through method parameters.
+- The UI protocol, bridge schema, opaque surface document/transport schemas,
+  and OpenAPI contract advance together to `plugin-ui-v3`, `bridge-v3`, opaque
+  surface v2, and `plugin-platform-v3`.
+- `redevplugin examples-server` replaces the retired browser demo commands.
+  URL state preserves the selected example across refresh and browser history,
+  while desktop and mobile layouts share the same runtime behavior.
+- The CLI scaffold now emits one ABI v2 Rust worker and generated browser
+  worker, removing the old WAT and duplicate broker-worker paths.
+- Platform release bundles now use `redevplugin.release_manifest.v3`. The npm
+  tarball and Rust worker SDK crate are each built once, embedded byte-for-byte
+  in every runtime target bundle, and verified for cross-bundle identity.
+
+### Fixed
+
+- Sandboxed form submission now resolves nested content inside submit buttons,
+  prevents native navigation, and dispatches one typed form action with bounded
+  form data.
+- Memos no longer exposes a completed save state before the active persistence
+  promise has settled, preventing rapid new-note navigation from editing the
+  previous memo.
+- Memos now keeps a failed draft in the editor until persistence succeeds,
+  Weather replaces the selected place only after a fresh forecast succeeds,
+  and compact layouts keep primary controls within reachable touch targets.
+- Sky Strike owns one cancellable frame timer, stops drawing while its surface
+  is hidden, resumes from a fresh frame timestamp, and publishes phase, score,
+  lives, FPS, and controls through the typed canvas accessibility contract.
+- Showcase navigation retains focus while the previous sandbox surface
+  quiesces, and Sky Strike releases stale pointer targets when keyboard control
+  takes ownership.
+- Release preflight now fails before packaging when the Git tag, first
+  changelog release, Go compatibility floor, or canonical Worker SDK Cargo
+  version disagree. The SDK package runner also compiles the extracted crate
+  for `wasm32-unknown-unknown` before publication.
+
+### Security
+
+- Plugin UI remains in a unique opaque-origin `sandbox="allow-scripts"` iframe;
+  plugin code cannot access the parent DOM, cookies, browser storage, direct
+  network APIs, or bearer credentials.
+- Broker hostcalls accept only bounded request/response memory ranges, and the
+  Rust runtime validates closed ABI v2 worker responses before returning data
+  to the Host.
+- Package validation compiles the complete WASM module with Wazero, while the
+  Rust runtime independently validates all sections with `wasmparser` before
+  export inspection or execution. Runtime `memory.grow` remains fenced by the
+  signed invocation memory budget, and manifests cannot request more than the
+  256 MiB platform ceiling.
+- Surface shutdown sends a bounded quiesce request and waits up to 1.5 seconds
+  for async plugin lifecycle observers to finish persistence before revoking
+  the frame. A private 10-second renderer-worker heartbeat with a 5-second ACK
+  deadline fails closed on a stalled worker.
+- The trusted renderer enforces generated Canvas and decoded-image budgets:
+  four canvases, 4096 pixels per dimension, 16,777,216 total canvas pixels, 120
+  pointer events per second, 32 images, and 33,554,432 decoded image pixels.
+  Raster images are identified from their bytes rather than filenames or MIME
+  declarations. Plugin workers cannot construct extra `OffscreenCanvas` or
+  image bitmaps.
+- File, KV, and SQLite quota failures map to the same stable
+  `PLUGIN_STORAGE_QUOTA_EXCEEDED` platform error and HTTP 413 status.
+- `wasmi` uses portable dispatch for stable native debug and CI execution while
+  retaining fuel limits, memory limits, signed leases, revoke epochs, and
+  broker policy enforcement.
+
 ## v0.3.2
 
 ### Fixed

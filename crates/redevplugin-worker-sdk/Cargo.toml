@@ -1,0 +1,16 @@
+[package]
+name = "redevplugin-worker-sdk"
+version = "0.4.0"
+edition = "2024"
+license = "MIT"
+description = "Rust SDK for ReDevPlugin WASM workers"
+repository = "https://github.com/floegence/redevplugin"
+readme = "README.md"
+keywords = ["plugin", "wasm", "sandbox"]
+categories = ["api-bindings", "wasm"]
+publish = false
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

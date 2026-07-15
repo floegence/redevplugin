@@ -3,15 +3,24 @@
 package pluginpkg
 
 const (
-	opaqueSurfaceMaxMessageBytes         = 262144
-	opaqueSurfaceMaxInFlightRequests     = 256
-	opaqueSurfaceMaxRendersPerSecond     = 30
-	opaqueSurfaceMaxRenderDepth          = 32
-	opaqueSurfaceMaxRenderNodes          = 4096
-	opaqueSurfaceMaxAttributesPerElement = 64
-	opaqueSurfaceMaxTextLength           = 65536
-	opaqueSurfaceMaxAttributeValueLength = 4096
-	opaqueSurfaceMaxFormFields           = 128
+	opaqueSurfaceMaxMessageBytes                 = 262144
+	opaqueSurfaceMaxInFlightRequests             = 256
+	opaqueSurfaceMaxRendersPerSecond             = 30
+	opaqueSurfaceMaxRenderDepth                  = 32
+	opaqueSurfaceMaxRenderNodes                  = 4096
+	opaqueSurfaceMaxAttributesPerElement         = 64
+	opaqueSurfaceMaxTextLength                   = 65536
+	opaqueSurfaceMaxAttributeValueLength         = 4096
+	opaqueSurfaceMaxFormFields                   = 128
+	opaqueSurfaceMaxCanvasCount                  = 4
+	opaqueSurfaceMaxCanvasDimension              = 4096
+	opaqueSurfaceMaxCanvasTotalPixels            = 16777216
+	opaqueSurfaceMaxCanvasPointerEventsPerSecond = 120
+	opaqueSurfaceMaxImageCount                   = 32
+	opaqueSurfaceMaxImageDimension               = 4096
+	opaqueSurfaceMaxImageTotalPixels             = 33554432
+	opaqueSurfaceWorkerHeartbeatIntervalMS       = 10000
+	opaqueSurfaceWorkerHeartbeatTimeoutMS        = 5000
 )
 
 var opaqueSurfaceAllowedTags = map[string]struct{}{
@@ -73,6 +82,7 @@ var opaqueSurfaceAllowedTags = map[string]struct{}{
 	"audio":    {},
 	"video":    {},
 	"track":    {},
+	"canvas":   {},
 }
 
 var opaqueSurfaceGlobalAttributes = map[string]struct{}{
@@ -82,9 +92,11 @@ var opaqueSurfaceGlobalAttributes = map[string]struct{}{
 	"title":                          {},
 	"hidden":                         {},
 	"tabindex":                       {},
+	"autofocus":                      {},
 	"lang":                           {},
 	"dir":                            {},
 	"data-redevplugin-action":        {},
+	"data-redevplugin-escape-action": {},
 	"data-redevplugin-asset-binding": {},
 	"data-redevplugin-asset-attr":    {},
 }
@@ -199,6 +211,11 @@ var opaqueSurfaceTagAttributes = map[string]map[string]struct{}{
 	},
 	"time": {
 		"datetime": {},
+	},
+	"canvas": {
+		"width":                   {},
+		"height":                  {},
+		"data-redevplugin-canvas": {},
 	},
 }
 

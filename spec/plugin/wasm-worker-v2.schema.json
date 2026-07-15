@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.redevplugin.dev/plugin/wasm-worker-v2.schema.json",
+  "title": "ReDevPlugin WASM worker ABI v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["abi_version", "exports", "imports"],
+  "properties": {
+    "abi_version": { "const": "redevplugin-wasm-worker-v2" },
+    "exports": {
+      "type": "array",
+      "items": { "const": "redevplugin_worker_invoke" },
+      "uniqueItems": true
+    },
+    "imports": {
+      "type": "array",
+      "items": { "enum": ["redevplugin.storage", "redevplugin.network"] },
+      "uniqueItems": true
+    }
+  }
+}
