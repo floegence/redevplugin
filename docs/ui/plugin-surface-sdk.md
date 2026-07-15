@@ -189,6 +189,13 @@ button, and emits one `submit` action whose `form_data` contains at most 128
 bounded string fields. Plugin UI should treat the action message as the only
 submission path.
 
+ARIA boolean attributes are serialized as explicit `true` or `false` values.
+When a render tree contains one active `role="dialog"` with
+`aria-modal="true"`, the trusted renderer keeps Tab and Shift+Tab focus within
+that dialog. Plugin UI must still disable or remove background controls while
+the modal is open and provide an autofocus target plus an Escape action so the
+complete keyboard lifecycle remains deliberate.
+
 Each lazy asset has an opaque, package-builder-derived `binding_id` in the
 prepared document. The worker may request only that binding. `PluginSurfaceHost`
 looks up the corresponding prepared asset and sends the parent-only HTTP request
@@ -288,6 +295,11 @@ fixtures live separately under `internal/browserharness` and
   broker end to end for persistent Memos, saved Weather locations and external
   HTTP, plus the Sky Strike canvas, images, input, animation, FPS display, and
   semantic canvas status;
+- Memos presents a consumer notebook rather than a platform test surface: a
+  grouped library, stale-safe instant search, pinning, a readable full-height
+  editor, explicit save status, modal deletion with focus containment and
+  failure recovery, and compact list/editor navigation all run through the same
+  typed render and lifecycle contracts used by third-party plugins;
 - compact-view acceptance rejects memo navigation while an autosave is failing,
   proves retry preserves the draft, verifies Weather retains the previous city
   until a replacement forecast succeeds, and enforces minimum touch targets;

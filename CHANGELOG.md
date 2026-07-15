@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.3
+
+### Changed
+
+- Memos is redesigned as a focused consumer notebook instead of an internal
+  dashboard. It now uses a calm library-and-editor layout, pinned and recent
+  groups, cancellable instant search, a distraction-free writing canvas,
+  mobile-first list/editor navigation, and deliberate deletion confirmation.
+- The Memos example now uses debounced autosave with immediate unsaved, saving,
+  saved, and failure states. Failed persistence keeps the draft editable and
+  blocks navigation, surface quiesce flushes the active draft, and destructive
+  actions serialize with in-flight saves so notes cannot reappear after delete.
+- The trusted renderer now serializes ARIA boolean attributes explicitly and
+  keeps keyboard focus inside an active `aria-modal` dialog. Memos disables its
+  background controls while deletion confirmation is open and restores focus
+  when the user cancels.
+- Browser acceptance coverage now verifies desktop and compact Memos layouts,
+  title focus, readable editor width, stale-search rejection, search and pin
+  behavior, deletion focus containment and failure recovery, autosave failure
+  recovery, quiesce persistence, and removal of the retired dashboard overview
+  and metadata rail.
+
 ## v0.4.2
 
 ### Fixed

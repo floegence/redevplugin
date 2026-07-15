@@ -4,7 +4,7 @@
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.memos",
     "display_name": "Memos",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.4.0",
     "ui_protocol_version": "plugin-ui-v3"

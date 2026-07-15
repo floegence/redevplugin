@@ -1240,13 +1240,15 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (value.attributes !== undefined) {
       if (!isRecord(value.attributes) || Object.keys(value.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
       for (const [name, attributeValue] of Object.entries(value.attributes)) {
+        const lower = name.toLowerCase();
         if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
-        if (name.toLowerCase() === "autofocus") {
+        if (lower === "autofocus") {
           if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
           continue;
         }
         if (typeof attributeValue === "boolean") {
-          if (attributeValue) element.setAttribute(name, "");
+          const serialized = lower.startsWith("aria-") ? String(attributeValue) : "";
+          if (attributeValue || serialized) element.setAttribute(name, serialized);
         } else {
           element.setAttribute(name, String(attributeValue));
         }
@@ -1368,7 +1370,31 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     sendWorker(actionPayload(event, element));
   };
   for (const eventType of ["click", "input", "change", "submit"]) document.addEventListener(eventType, handleAction, true);
+  const focusableModalElements = (modal) => Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+    .filter((element) => element instanceof HTMLElement && element.tabIndex >= 0 && element.getClientRects().length > 0);
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Tab" && !event.defaultPrevented && !event.repeat) {
+      const modal = document.body.querySelector('[role="dialog"][aria-modal="true"]');
+      if (modal instanceof HTMLElement) {
+        const focusable = focusableModalElements(modal);
+        if (focusable.length === 0) {
+          event.preventDefault();
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        const target = event.shiftKey
+          ? (active === first || !modal.contains(active) ? last : undefined)
+          : (active === last || !modal.contains(active) ? first : undefined);
+        if (target instanceof HTMLElement) {
+          event.preventDefault();
+          event.stopPropagation();
+          try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+        }
+      }
+      return;
+    }
     if (event.key !== "Escape" || event.defaultPrevented || event.repeat) return;
     const origin = event.target instanceof Element ? event.target : document.activeElement instanceof Element ? document.activeElement : null;
     const owner = origin ? origin.closest("[data-redevplugin-escape-action]") : null;

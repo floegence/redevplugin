@@ -60,41 +60,72 @@ try {
 
   let memos = await pluginFrame(desktop, "Memos");
   const memosLibraryStyle = await waitForComputedStyles(
-    memos.locator(".memos-sidebar"),
+    memos.locator(".memos-library"),
     ["backgroundColor", "color"],
-    (style) => style.backgroundColor === "rgb(242, 247, 246)" && style.color === "rgb(25, 50, 58)",
+    (style) => style.backgroundColor === "rgb(247, 248, 250)" && style.color === "rgb(21, 23, 26)",
     "stable Memos library styles",
   );
-  assert.equal(memosLibraryStyle.backgroundColor, "rgb(242, 247, 246)", "Memos must use a bright consumer library instead of a dark developer rail");
-  assert.equal(memosLibraryStyle.color, "rgb(25, 50, 58)");
-  await memos.locator(".library-overview").waitFor();
-  const desktopMemoWorkspace = await waitForComputedStyles(
-    memos.locator(".editor-workspace"),
-    ["gridTemplateColumns", "backgroundColor"],
-    (style) => /\d+px \d+px/.test(style.gridTemplateColumns),
-    "stable Memos desktop workspace styles",
-  );
-  assert.match(desktopMemoWorkspace.gridTemplateColumns, /\d+px \d+px/, "Memos desktop must pair the writing surface with a useful context rail");
-  assert.notEqual(desktopMemoWorkspace.backgroundColor, "rgba(0, 0, 0, 0)");
-  await waitForComputedStyles(memos.locator(".memo-context-rail"), ["display"], (style) => style.display === "flex", "visible Memos context rail");
-  assert.equal(await memos.locator(".editor-paper").evaluate((element) => element.getBoundingClientRect().width <= 821), true, "Memos desktop writing canvas must remain comfortably readable");
+  assert.equal(memosLibraryStyle.backgroundColor, "rgb(247, 248, 250)", "Memos must use a calm consumer library surface");
+  assert.equal(memosLibraryStyle.color, "rgb(21, 23, 26)");
+  await memos.locator(".empty-welcome").waitFor();
+  assert.equal(await memos.locator(".memo-title").count(), 0, "an empty library must not open a duplicate blank editor");
+  assert.equal(await memos.locator(".library-overview, .memo-context-rail").count(), 0, "dashboard overview and permanent metadata rail must be removed");
   await memos.getByRole("button", { name: "New memo" }).click();
-  await memos.getByPlaceholder("Memo title").fill("Smoke memo");
-  await memos.getByPlaceholder("Write something worth remembering...").fill("This memo survives a full Showcase reload.");
+  const desktopMemoTitle = memos.getByPlaceholder("Untitled");
+  await desktopMemoTitle.waitFor();
+  assert.equal(await desktopMemoTitle.evaluate((element) => document.activeElement === element), true, "creating a memo must focus the title");
+  assert.equal(await memos.locator(".editor-canvas").evaluate((element) => element.getBoundingClientRect().width <= 781), true, "Memos desktop writing canvas must remain comfortably readable");
+  await desktopMemoTitle.fill("Smoke memo");
+  await memos.getByPlaceholder("Start writing...").fill("This memo survives a full Showcase reload.");
+  await memos.getByText("Unsaved", { exact: true }).waitFor();
   await memos.getByRole("button", { name: "Pin memo" }).click();
-  await memos.locator(".note-list").getByText("Smoke memo", { exact: true }).waitFor({ timeout: 10_000 });
-  await memos.getByText("Saved just now", { exact: true }).waitFor();
+  await memos.locator(".memo-list").getByText("Smoke memo", { exact: true }).waitFor({ timeout: 10_000 });
+  await memos.getByText("Saved", { exact: true }).waitFor();
 
   await desktop.reload({ waitUntil: "domcontentloaded" });
   memos = await pluginFrame(desktop, "Memos");
-  await memos.locator(".note-list").getByText("Smoke memo", { exact: true }).waitFor();
-  await memos.locator(".note-list").getByText("Smoke memo", { exact: true }).click();
-  await memos.getByPlaceholder("Memo title").fill("Persistent smoke memo");
-  await memos.locator(".note-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
-  await memos.getByText("Saved just now", { exact: true }).waitFor();
+  await memos.locator(".memo-list").getByText("Smoke memo", { exact: true }).waitFor();
+  await memos.locator(".memo-list").getByText("Smoke memo", { exact: true }).click();
+  await memos.getByPlaceholder("Untitled").fill("Persistent smoke memo");
+  await memos.getByText("Unsaved", { exact: true }).waitFor();
+  await memos.locator(".memo-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
+  await memos.getByText("Saved", { exact: true }).waitFor();
+  const listCallsBeforeSearch = methodCalls.filter((body) => body.includes('"method":"memos.list"')).length;
+  await memos.getByPlaceholder("Search memos").fill("Persistent");
+  await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.list"')).length > listCallsBeforeSearch, 5_000, "debounced Memos search call");
+  await memos.locator(".memo-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
+  let releaseStaleSearch;
+  const staleSearchGate = new Promise((resolveGate) => { releaseStaleSearch = resolveGate; });
+  let staleSearchIntercepted = false;
+  await desktop.route("**/_redevplugin/api/plugins/rpc", async (route) => {
+    const requestBody = route.request().postDataJSON();
+    if (requestBody?.method === "memos.list" && requestBody?.params?.query === "Stale request") {
+      staleSearchIntercepted = true;
+      await staleSearchGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error_code: "PLUGIN_RUNTIME_UNAVAILABLE", error: "PLUGIN_RUNTIME_UNAVAILABLE" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await memos.getByPlaceholder("Search memos").fill("Stale request");
+  await waitFor(() => staleSearchIntercepted, 5_000, "stale Memos search request");
+  await memos.getByPlaceholder("Search memos").fill("Persistent");
+  await memos.locator(".memo-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
+  releaseStaleSearch();
+  await desktop.waitForTimeout(100);
+  assert.equal(await memos.getByText("Memos need a moment", { exact: true }).count(), 0, "a stale search failure must not replace the latest result");
+  await desktop.unroute("**/_redevplugin/api/plugins/rpc");
+  const listCallsBeforeClear = methodCalls.filter((body) => body.includes('"method":"memos.list"')).length;
+  await memos.getByPlaceholder("Search memos").fill("");
+  await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.list"')).length > listCallsBeforeClear, 5_000, "cleared Memos search call");
 
-  await memos.getByPlaceholder("Memo title").fill("Quiesced smoke memo");
-  await memos.getByPlaceholder("Write something worth remembering...").fill("This edit is persisted by the surface quiesce lifecycle.");
+  await memos.getByPlaceholder("Untitled").fill("Quiesced smoke memo");
+  await memos.getByPlaceholder("Start writing...").fill("This edit is persisted by the surface quiesce lifecycle.");
+  await memos.getByText("Unsaved", { exact: true }).waitFor();
   const saveCallsBeforeQuiesce = methodCalls.filter((body) => body.includes('"method":"memos.save"')).length;
   const weatherNavigation = desktop.locator('#plugin-list button[data-slug="weather"]');
   await weatherNavigation.click();
@@ -102,13 +133,13 @@ try {
   assert.equal(await weatherNavigation.evaluate((element) => document.activeElement === element), true, "switching apps must preserve navigation focus");
   await desktop.locator('#plugin-list button[data-slug="memos"]').click();
   memos = await pluginFrame(desktop, "Memos");
-  await memos.locator(".note-list").getByText("Quiesced smoke memo", { exact: true }).waitFor({ timeout: 10_000 });
+  await memos.locator(".memo-list").getByText("Quiesced smoke memo", { exact: true }).waitFor({ timeout: 10_000 });
 
   await memos.getByRole("button", { name: "New memo" }).click();
-  await memos.getByText("New private memo", { exact: true }).waitFor();
-  await memos.getByPlaceholder("Memo title").fill("Delete confirmation memo");
-  await memos.getByPlaceholder("Write something worth remembering...").fill("This note verifies that deletion is deliberate.");
-  await memos.getByText("Saved just now", { exact: true }).waitFor();
+  await memos.getByPlaceholder("Untitled").fill("Delete confirmation memo");
+  await memos.getByPlaceholder("Start writing...").fill("This note verifies that deletion is deliberate.");
+  await memos.getByText("Unsaved", { exact: true }).waitFor();
+  await memos.getByText("Saved", { exact: true }).waitFor();
   await memos.getByRole("button", { name: "More memo actions" }).click();
   const memoDeleteMenuItem = memos.getByRole("menuitem", { name: "Delete memo" });
   await memoDeleteMenuItem.waitFor();
@@ -117,17 +148,50 @@ try {
   await waitFor(async () => memos.getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "memo menu focus restoration");
   await memos.getByRole("button", { name: "More memo actions" }).click();
   await memos.getByRole("menuitem", { name: "Delete memo" }).click();
-  await memos.getByRole("group", { name: "Delete memo confirmation" }).waitFor();
+  const deleteMemoDialog = memos.getByRole("dialog", { name: "Delete memo" });
+  await deleteMemoDialog.waitFor();
   await waitFor(async () => memos.getByRole("button", { name: "Keep memo" }).evaluate((element) => document.activeElement === element), 2_000, "delete dialog safe-action focus");
+  await memos.getByRole("button", { name: "Keep memo" }).press("Shift+Tab");
+  const reverseFocusState = await deleteMemoDialog.evaluate((dialog) => ({
+    ariaModal: dialog.getAttribute("aria-modal"),
+    activeLabel: document.activeElement?.getAttribute("aria-label") || document.activeElement?.textContent?.trim() || "",
+    controls: Array.from(dialog.querySelectorAll("button")).map((button) => ({ label: button.textContent?.trim() || "", disabled: button.disabled, tabIndex: button.tabIndex, rects: button.getClientRects().length })),
+  }));
+  assert.equal(reverseFocusState.activeLabel, "Delete memo", `delete dialog must wrap reverse tab focus: ${JSON.stringify(reverseFocusState)}`);
+  await deleteMemoDialog.getByRole("button", { name: "Delete memo" }).press("Tab");
+  assert.equal(await memos.getByRole("button", { name: "Keep memo" }).evaluate((element) => document.activeElement === element), true, "delete dialog must keep forward tab focus inside the modal");
   await memos.getByRole("button", { name: "Keep memo" }).press("Escape");
   await waitFor(async () => memos.getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "delete dialog focus restoration");
   await memos.getByRole("button", { name: "More memo actions" }).click();
   await memos.getByRole("menuitem", { name: "Delete memo" }).click();
   await memos.getByRole("button", { name: "Keep memo" }).click();
-  await memos.locator(".note-list").getByText("Delete confirmation memo", { exact: true }).waitFor();
+  await memos.locator(".memo-list").getByText("Delete confirmation memo", { exact: true }).waitFor();
+  await memos.getByPlaceholder("Start writing...").fill("This unsaved edit must survive a failed deletion.");
+  await memos.getByText("Unsaved", { exact: true }).waitFor();
+  let rejectMemoDelete = true;
+  await desktop.route("**/_redevplugin/api/plugins/rpc", async (route) => {
+    const requestBody = route.request().postDataJSON();
+    if (rejectMemoDelete && requestBody?.method === "memos.delete") {
+      rejectMemoDelete = false;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error_code: "PLUGIN_RUNTIME_UNAVAILABLE", error: "PLUGIN_RUNTIME_UNAVAILABLE" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
   await memos.getByRole("button", { name: "More memo actions" }).click();
   await memos.getByRole("menuitem", { name: "Delete memo" }).click();
-  await memos.getByRole("button", { name: "Delete permanently" }).click();
+  await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
+  await memos.getByText("Memos could not delete this note", { exact: true }).waitFor();
+  assert.equal(await memos.getByPlaceholder("Start writing...").inputValue(), "This unsaved edit must survive a failed deletion.", "failed deletion must preserve the active draft");
+  await desktop.unroute("**/_redevplugin/api/plugins/rpc");
+  await memos.getByText("Saved", { exact: true }).waitFor();
+  await memos.getByRole("button", { name: "More memo actions" }).click();
+  await memos.getByRole("menuitem", { name: "Delete memo" }).click();
+  await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
   await memos.getByText("Memo deleted", { exact: true }).waitFor();
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-memos-desktop.png"), fullPage: false });
 
@@ -252,22 +316,25 @@ try {
   await mobile.locator('#plugin-inspector[data-open="false"]').waitFor();
   await waitFor(async () => await mobile.locator("#plugin-inspector").evaluate((element) => getComputedStyle(element).visibility === "hidden"), 2_000, "closed mobile app details sheet to be hidden");
   await mobileMemos.getByRole("button", { name: "New memo" }).click();
-  await mobileMemos.getByText("New private memo", { exact: true }).waitFor();
-  const mobileMemoLayout = await waitForComputedStyles(mobileMemos.locator(".editor-workspace"), ["padding"], (style) => style.padding === "0px", "compact Memos workspace styles");
-  const mobileMemoPaper = await waitForComputedStyles(
-    mobileMemos.locator(".editor-paper"),
+  const mobileMemoTitle = mobileMemos.getByPlaceholder("Untitled");
+  await mobileMemoTitle.waitFor();
+  assert.equal(await mobileMemoTitle.evaluate((element) => document.activeElement === element), true, "mobile memo creation must focus the title");
+  const mobileMemoCanvas = await waitForComputedStyles(
+    mobileMemos.locator(".editor-canvas"),
     ["borderTopWidth", "borderRadius", "maxWidth"],
     (style) => style.borderTopWidth === "0px" && style.borderRadius === "0px" && style.maxWidth === "none",
-    "compact Memos paper styles",
+    "compact Memos canvas styles",
   );
-  assert.equal(mobileMemoLayout.padding, "0px");
-  assert.deepEqual(mobileMemoPaper, { borderTopWidth: "0px", borderRadius: "0px", maxWidth: "none" });
-  await mobileMemos.getByPlaceholder("Memo title").fill("Pocket memo");
-  await mobileMemos.getByPlaceholder("Write something worth remembering...").fill("Created from the compact mobile editor.");
-  await mobileMemos.getByText("Saved just now", { exact: true }).waitFor();
+  assert.deepEqual(mobileMemoCanvas, { borderTopWidth: "0px", borderRadius: "0px", maxWidth: "none" });
+  await mobileMemoTitle.fill("A quiet place for today");
+  await mobileMemos.getByPlaceholder("Start writing...").fill("Created from the compact mobile editor.");
+  assert.equal(await mobileMemoTitle.evaluate((element) => element.tagName), "TEXTAREA", "memo titles must use a wrapping editor control");
+  assert.equal(await mobileMemoTitle.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "mobile memo titles must not clip horizontally");
+  await mobileMemos.getByText("Unsaved", { exact: true }).waitFor();
+  await mobileMemos.getByText("Saved", { exact: true }).waitFor();
   await mobileMemos.getByRole("button", { name: "Back to memos" }).click();
-  await mobileMemos.locator(".note-list").getByText("Pocket memo", { exact: true }).waitFor();
-  await waitForComputedStyles(mobileMemos.locator(".memo-context-rail"), ["display"], (style) => style.display === "none", "hidden compact Memos context rail");
+  await mobileMemos.locator(".memo-list").getByText("A quiet place for today", { exact: true }).waitFor();
+  assert.equal(await mobileMemos.locator(".memo-context-rail").count(), 0, "mobile Memos must not carry a hidden legacy context rail");
   await mobile.screenshot({ path: resolve(evidenceDir, "examples-memos-mobile.png"), fullPage: false });
 
   await mobile.locator('#mobile-plugin-list button[data-slug="weather"]').click();
@@ -314,16 +381,16 @@ try {
     await route.continue();
   });
   await compactMemos.getByRole("button", { name: "New memo" }).click();
-  await compactMemos.getByPlaceholder("Memo title").fill("Protected pocket draft");
-  await compactMemos.getByPlaceholder("Write something worth remembering...").fill("This draft remains editable while persistence is unavailable.");
+  await compactMemos.getByPlaceholder("Untitled").fill("Protected pocket draft");
+  await compactMemos.getByPlaceholder("Start writing...").fill("This draft remains editable while persistence is unavailable.");
   await compactMemos.getByText("Memos could not save your changes", { exact: true }).waitFor({ timeout: 10_000 });
   await assertMinimumTouchSize(compactMemos.getByRole("button", { name: "More memo actions" }), 44);
   await compactMemos.getByRole("button", { name: "Back to memos" }).click();
-  await compactMemos.getByPlaceholder("Memo title").waitFor();
-  assert.equal(await compactMemos.getByPlaceholder("Memo title").inputValue(), "Protected pocket draft", "failed persistence must block navigation and preserve the draft");
+  await compactMemos.getByPlaceholder("Untitled").waitFor();
+  assert.equal(await compactMemos.getByPlaceholder("Untitled").inputValue(), "Protected pocket draft", "failed persistence must block navigation and preserve the draft");
   await compact.unroute("**/_redevplugin/api/plugins/rpc");
   await compactMemos.getByRole("button", { name: "Back to memos" }).click();
-  await compactMemos.locator(".note-list").getByText("Protected pocket draft", { exact: true }).waitFor({ timeout: 10_000 });
+  await compactMemos.locator(".memo-list").getByText("Protected pocket draft", { exact: true }).waitFor({ timeout: 10_000 });
   await compact.goto(`${baseURL}?plugin=weather`, { waitUntil: "domcontentloaded" });
   const compactWeather = await pluginFrame(compact, "Weather");
   await compactWeather.getByRole("heading", { name: "Paris" }).waitFor({ timeout: 20_000 });

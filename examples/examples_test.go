@@ -437,6 +437,7 @@ func TestExampleShowcaseShipsOptimizedConsumerArtwork(t *testing.T) {
 		maxSize int64
 	}{
 		{path: "examples/showcase/assets/memos-v2.webp", minSize: 4_000, maxSize: 80_000},
+		{path: "examples/plugins/memos/ui/assets/memos-mark-v2.webp", minSize: 4_000, maxSize: 80_000},
 		{path: "examples/showcase/assets/weather-v2.webp", minSize: 4_000, maxSize: 80_000},
 		{path: "examples/showcase/assets/sky-strike-v2.webp", minSize: 4_000, maxSize: 80_000},
 		{path: "examples/plugins/weather/ui/assets/weather-scene-v2.webp", minSize: 100_000, maxSize: 350_000},
@@ -475,87 +476,6 @@ func TestSkyStrikeRedistributesItsAssetLicenseEvidence(t *testing.T) {
 	}
 	if !strings.Contains(string(legalText), "Space Shooter (Remastered") || !strings.Contains(string(legalText), "License (CC0)") {
 		t.Fatal("redistributed Kenney license text is incomplete")
-	}
-}
-
-func TestMemosUsesOneAutosaveAndPinInteractionModel(t *testing.T) {
-	root := repositoryRoot(t)
-	source, err := os.ReadFile(filepath.Join(root, "examples", "plugin-ui", "memos.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	styles, err := os.ReadFile(filepath.Join(root, "examples", "plugins", "memos", "ui", "assets", "styles.css"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(source)
-	if !strings.Contains(content, `data-redevplugin-action": "set-pinned"`) {
-		t.Fatal("Memos must expose one explicit pin action")
-	}
-	for _, required := range []string{
-		`.memo-title`,
-		`.editor-pin`,
-		`.memo-menu`,
-		`cursor: pointer`,
-	} {
-		if !strings.Contains(string(styles), required) {
-			t.Fatalf("Memos styles are missing %q", required)
-		}
-	}
-	for _, forbidden := range []string{`save-now`, `toggle-pin`, `edit-pinned`, `Save now`, `children: ["Done"]`} {
-		if strings.Contains(content, forbidden) {
-			t.Fatalf("Memos still exposes duplicate save or pin interaction %q", forbidden)
-		}
-	}
-}
-
-func TestMemosUsesBoundedSummariesAndACompleteMobileEditingFlow(t *testing.T) {
-	root := repositoryRoot(t)
-	uiSource, err := os.ReadFile(filepath.Join(root, "examples", "plugin-ui", "memos.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	workerSource, err := os.ReadFile(filepath.Join(root, "examples", "workers", "memos", "src", "lib.rs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	styles, err := os.ReadFile(filepath.Join(root, "examples", "plugins", "memos", "ui", "assets", "styles.css"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	combined := string(uiSource) + string(workerSource) + string(styles)
-	for _, required := range []string{
-		`memos.get`,
-		`scheduleAutosave`,
-		`flushDraft`,
-		`if (!(await flushDraft())) return`,
-		`state.dirty && state.saveState === "error"`,
-		`confirm-delete`,
-		`cancel-delete`,
-		`back-to-list`,
-		`load-more-memos`,
-		`view-editor`,
-		`tag: "button", attributes: { class: "empty-list"`,
-		`toggle-memo-menu`,
-		`library-overview`,
-		`editor-workspace`,
-		`memo-context-rail`,
-		`--memos-ocean`,
-		`max-width: 820px`,
-		`max-width: none`,
-		`border-radius: 0`,
-		`context-stat`,
-		`document-kicker`,
-		`LIMIT ? OFFSET ?`,
-		`substr(body, 1, 180)`,
-		`@media (max-width: 760px)`,
-	} {
-		if !strings.Contains(combined, required) {
-			t.Fatalf("Memos complete-product flow is missing %q", required)
-		}
-	}
-	if strings.Contains(string(workerSource), `"max_rows": 500`) {
-		t.Fatal("Memos list must not expose an unbounded full-library worker response")
 	}
 }
 
@@ -689,9 +609,10 @@ func TestExampleInterfacesUseDistinctConsumerProductDesigns(t *testing.T) {
 			forbidden: []string{"grid-template-columns: minmax(0, 1fr) 274px"},
 		},
 		{
-			name:     "memos writing app",
-			paths:    []string{"examples/plugins/memos/ui/assets/styles.css", "examples/plugin-ui/memos.ts"},
-			required: []string{"memo-library", "library-overview", "editor-toolbar", "editor-workspace", "memo-context-rail", "editor-meta", "word-count", "memo-menu", "delete-confirmation", "mobile-editor-bar", "--memos-coral", "--memos-mint", "--memos-ocean"},
+			name:      "memos writing app",
+			paths:     []string{"examples/plugins/memos/ui/assets/styles.css", "examples/plugin-ui/memos.ts"},
+			required:  []string{"memos-library", "library-toolbar", "memo-list", "empty-welcome", "editor-toolbar", "editor-canvas", "editor-footer", "save-indicator", "memo-menu", "delete-dialog", "mobile-editor-bar", "--memos-coral", "--memos-cobalt", "--memos-green"},
+			forbidden: []string{"library-overview", "overview-stats", "memo-context-rail", "context-stat", "context-ribbon", "Private library", "At a glance"},
 		},
 		{
 			name:      "weather lifestyle app",

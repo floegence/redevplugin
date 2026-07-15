@@ -336,6 +336,9 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("setSelectionRange"), true);
   assert.equal(html.includes('querySelector("[data-redevplugin-renderer-autofocus]")'), true);
   assert.equal(html.includes('querySelector("[autofocus]")'), false);
+  assert.equal(html.includes('lower.startsWith("aria-") ? String(attributeValue)'), true);
+  assert.equal(html.includes('[role="dialog"][aria-modal="true"]'), true);
+  assert.equal(html.includes("focusableModalElements"), true);
   assert.equal(html.includes("redevplugin.ui.canvas.accessibility"), true);
   assert.equal(html.includes('event.key !== "Escape"'), true);
   assert.equal(html.includes("data-redevplugin-escape-action"), true);
