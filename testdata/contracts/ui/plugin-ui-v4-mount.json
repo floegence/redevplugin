@@ -1,0 +1,11 @@
+{
+  "type": "redevplugin.ui.mount",
+  "id": "render_1",
+  "revision": 1,
+  "tree": {
+    "type": "element",
+    "key": "root",
+    "tag": "main",
+    "children": ["legacy unkeyed text"]
+  }
+}

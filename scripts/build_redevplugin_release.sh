@@ -178,6 +178,14 @@ NODE
 
 node "$ROOT_DIR/scripts/generate_third_party_notices.mjs" "$ROOT_DIR" "$OUT_DIR/THIRD_PARTY_NOTICES.md"
 
+REDEVPLUGIN_PERFORMANCE_RUNTIME="$OUT_DIR/bin/redevplugin-runtime" \
+  "$ROOT_DIR/scripts/check_redevplugin_performance.sh" \
+  --release \
+  --output "$OUT_DIR/performance-evidence.json" \
+  --version "$VERSION" \
+  --source-commit "$SOURCE_COMMIT" \
+  --generated-at "$GENERATED_AT"
+
 node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" "$SOURCE_COMMIT" "$GENERATED_AT" <<'NODE'
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

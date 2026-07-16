@@ -189,7 +189,7 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	bridgeChannelID := "bridge_examples_weather_live_test"
 	gateway, err := pluginHost.MintBridgeToken(context.Background(), host.MintBridgeTokenRequest{

@@ -28,6 +28,7 @@ verifyManifestFiles(bundleDir, manifest);
 verifyRequiredArtifacts(bundleDir);
 verifyExecutableTargets(bundleDir, manifest.runtime_target);
 verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);
+verifyPerformanceEvidence(bundleDir, expectedVersion, manifest);
 verifyRuntimeHello(bundleDir, expectedVersion, structuralOnly);
 await verifyNpmTarball(bundleDir, expectedVersion, manifest);
 verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest);
@@ -106,21 +107,23 @@ function verifyRequiredArtifacts(bundleDir) {
     "bin/redevplugin",
     "bin/redevplugin-runtime",
     "compatibility.json",
-    "contracts/spec/openapi/plugin-platform-v4.yaml",
-    "contracts/spec/plugin/bridge-v4.schema.json",
-    "contracts/spec/plugin/compatibility-manifest-v4.schema.json",
-    "contracts/spec/plugin/error-codes-v2.schema.json",
+    "performance-evidence.json",
+    "contracts/spec/openapi/plugin-platform-v5.yaml",
+    "contracts/spec/plugin/bridge-v5.schema.json",
+    "contracts/spec/plugin/compatibility-manifest-v5.schema.json",
+    "contracts/spec/plugin/error-codes-v3.schema.json",
     "contracts/spec/plugin/host-capability-contract-v1.schema.json",
     "contracts/spec/plugin/host-capability-pin-v1.schema.json",
     "contracts/spec/plugin/host-capability-manifest-v1.schema.json",
     "contracts/spec/plugin/host-capability-compatibility-v1.schema.json",
     "contracts/spec/plugin/host-capability-signature-v1.schema.json",
     "contracts/spec/plugin/host-capability-notices-v1.schema.json",
-    "contracts/spec/plugin/ipc-v2.schema.json",
-    "contracts/spec/plugin/manifest-v4.schema.json",
-    "contracts/spec/plugin/opaque-surface-document-v2.schema.json",
-    "contracts/spec/plugin/opaque-surface-transport-v3.schema.json",
-    "contracts/spec/plugin/release-metadata-v4.schema.json",
+    "contracts/spec/plugin/ipc-v3.schema.json",
+    "contracts/spec/plugin/manifest-v5.schema.json",
+    "contracts/spec/plugin/opaque-surface-document-v3.schema.json",
+    "contracts/spec/plugin/opaque-surface-transport-v4.schema.json",
+    "contracts/spec/plugin/performance-evidence-v1.schema.json",
+    "contracts/spec/plugin/release-metadata-v5.schema.json",
     "contracts/spec/plugin/release-manifest-v3.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
@@ -186,7 +189,7 @@ function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution
   const compatibility = readJSON(compatibilityPath);
   assertObject(compatibility, "compatibility.json");
   assertExactKeys(compatibility, ["schema_version", "matrix", "contracts"], "compatibility manifest");
-  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v4", "compatibility schema_version");
+  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v5", "compatibility schema_version");
   assertObject(compatibility.matrix, "compatibility matrix");
   for (const key of ["redevplugin_go_version", "redevplugin_ui_version", "redevplugin_runtime_version"]) {
     assertEqual(compatibility.matrix?.[key], expectedVersion, `compatibility matrix ${key}`);
@@ -235,6 +238,13 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
     return;
   }
   const channelNonce = "release_bundle_nonce_1";
+  const limits = {
+    worker_count: 8,
+    queue_capacity: 32,
+    per_plugin_concurrency: 4,
+    module_cache_entries: 64,
+    module_cache_source_bytes: 134217728,
+  };
   const { publicKey } = generateKeyPairSync("ed25519");
   const publicJWK = publicKey.export({ format: "jwk" });
   if (typeof publicJWK.x !== "string") {
@@ -242,14 +252,14 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
   }
   const hello =
     JSON.stringify({
-      ipc_version: "rust-ipc-v2",
+      ipc_version: "rust-ipc-v3",
       frame_type: "hello",
       request_id: "hello-1",
       runtime_generation_id: "gen-1",
       payload: {
         target: { os: process.platform, arch: process.arch },
         host_process_id: process.pid,
-        host_ipc_version: "rust-ipc-v2",
+        host_ipc_version: "rust-ipc-v3",
         host_wasm_abi: "redevplugin-wasm-worker-v2",
         started_unix_nano: 1,
         channel_nonce: channelNonce,
@@ -260,6 +270,7 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
             public_key_base64: Buffer.from(publicJWK.x, "base64url").toString("base64"),
           },
         ],
+        limits,
       },
     }) + "\n";
   const runtime = spawnSync(join(bundleDir, "bin/redevplugin-runtime"), {
@@ -280,9 +291,93 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
   const ack = JSON.parse(output);
   assertEqual(ack.frame_type, "hello_ack", "runtime hello frame_type");
   assertEqual(ack.payload?.runtime_version, expectedVersion, "runtime hello version");
-  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v2", "runtime hello rust_ipc_version");
+  assertEqual(ack.payload?.rust_ipc_version, "rust-ipc-v3", "runtime hello rust_ipc_version");
   assertEqual(ack.payload?.wasm_abi_version, "redevplugin-wasm-worker-v2", "runtime hello wasm_abi_version");
   assertEqual(ack.payload?.channel_nonce, channelNonce, "runtime hello channel_nonce");
+  assertDeepEqual(ack.payload?.limits, limits, "runtime hello limits");
+}
+
+function verifyPerformanceEvidence(bundleDir, expectedVersion, manifest) {
+  const path = join(bundleDir, "performance-evidence.json");
+  const evidence = readJSON(path);
+  assertObject(evidence, "performance-evidence.json");
+  assertExactKeys(evidence, [
+    "schema_version",
+    "release_version",
+    "source_commit",
+    "generated_at",
+    "environment",
+    "scenarios",
+    "contract_hashes",
+  ], "performance evidence");
+  assertEqual(evidence.schema_version, "redevplugin.performance_evidence.v1", "performance evidence schema_version");
+  assertEqual(evidence.release_version, expectedVersion, "performance evidence release_version");
+  assertEqual(evidence.source_commit, manifest.source_commit, "performance evidence source_commit");
+  assertEqual(evidence.generated_at, manifest.generated_at, "performance evidence generated_at");
+  assertObject(evidence.environment, "performance evidence environment");
+  assertExactKeys(evidence.environment, [
+    "os",
+    "arch",
+    "logical_cpus",
+    "go_version",
+    "node_version",
+    "rustc_version",
+    "chromium_version",
+  ], "performance evidence environment");
+  for (const key of ["os", "arch", "go_version", "node_version", "rustc_version", "chromium_version"]) {
+    if (typeof evidence.environment[key] !== "string" || evidence.environment[key].length === 0) {
+      fail(`performance evidence environment ${key} must be a non-empty string`);
+    }
+  }
+  if (!Number.isSafeInteger(evidence.environment.logical_cpus) || evidence.environment.logical_cpus < 1) {
+    fail("performance evidence environment logical_cpus must be a positive integer");
+  }
+  const requiredScenarios = [
+    "runtime.blocked-hostcall-isolation",
+    "runtime.cache-single-flight",
+    "runtime.cancel-queued",
+    "runtime.cancel-running",
+    "runtime.warm-invocations",
+    "stream.event-backpressure",
+    "stream.idle-waiters",
+    "stream.sqlite-batch-read",
+    "ui.chromium-renderer",
+    "ui.keyed-reversal",
+    "ui.single-leaf-reconciliation",
+  ];
+  if (!Array.isArray(evidence.scenarios)) fail("performance evidence scenarios must be an array");
+  const scenarioIDs = evidence.scenarios.map((scenario) => scenario.id).sort();
+  assertDeepEqual(scenarioIDs, requiredScenarios, "performance evidence scenario IDs");
+  for (const [index, scenario] of evidence.scenarios.entries()) {
+    assertObject(scenario, `performance evidence scenarios[${index}]`);
+    assertExactKeys(scenario, ["id", "gate", "status", "sample_count", "metrics"], `performance evidence scenarios[${index}]`);
+    if (scenario.gate !== "release" || scenario.status !== "pass" || !Number.isSafeInteger(scenario.sample_count) || scenario.sample_count < 1) {
+      fail(`performance evidence scenario ${scenario.id} has invalid gate, status, or sample_count`);
+    }
+    if (!Array.isArray(scenario.metrics) || scenario.metrics.length === 0) fail(`performance evidence scenario ${scenario.id} has no metrics`);
+    const metricNames = new Set();
+    for (const [metricIndex, metric] of scenario.metrics.entries()) {
+      assertObject(metric, `performance evidence scenario ${scenario.id} metrics[${metricIndex}]`);
+      assertExactKeys(metric, ["name", "unit", "observed", "limit", "comparator"], `performance evidence scenario ${scenario.id} metrics[${metricIndex}]`);
+      if (typeof metric.name !== "string" || metricNames.has(metric.name)) fail(`performance evidence scenario ${scenario.id} has invalid or duplicate metric name`);
+      metricNames.add(metric.name);
+      if (!Number.isFinite(metric.observed) || metric.observed < 0 || !Number.isFinite(metric.limit) || metric.limit < 0) {
+        fail(`performance evidence scenario ${scenario.id} metric ${metric.name} is not finite and non-negative`);
+      }
+      if (metric.comparator === "eq" ? metric.observed !== metric.limit : metric.comparator === "lte" ? metric.observed > metric.limit : true) {
+        fail(`performance evidence scenario ${scenario.id} metric ${metric.name} failed its threshold`);
+      }
+    }
+  }
+  if (!Array.isArray(evidence.contract_hashes)) fail("performance evidence contract_hashes must be an array");
+  const compatibility = readJSON(join(bundleDir, "compatibility.json"));
+  const expectedHashes = compatibility.contracts
+    .map((contract) => ({ id: contract.id, sha256: contract.sha256 }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const actualHashes = evidence.contract_hashes
+    .map((contract) => ({ id: contract.id, sha256: contract.sha256 }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  assertDeepEqual(actualHashes, expectedHashes, "performance evidence contract hashes");
 }
 
 function verifyExecutableTargets(bundleDir, runtimeTarget) {

@@ -525,7 +525,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 		return scaffoldSummary{}, fmt.Errorf("output directory is required")
 	}
 	manifestDoc := manifest.Manifest{
-		SchemaVersion: "redevplugin.manifest.v4",
+		SchemaVersion: "redevplugin.manifest.v5",
 		Publisher: manifest.Publisher{
 			PublisherID: "local.generated",
 			DisplayName: "Local Generated",
@@ -536,7 +536,7 @@ func createPluginScaffold(pluginID string, displayName string, outDir string) (s
 			Version:           "0.1.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.5.0",
-			UIProtocolVersion: "plugin-ui-v4",
+			UIProtocolVersion: "plugin-ui-v5",
 		},
 		Surfaces: []manifest.SurfaceSpec{{
 			SurfaceID: pluginID + ".view",

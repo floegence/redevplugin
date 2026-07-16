@@ -1,11 +1,14 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
@@ -108,8 +111,13 @@ func TestBridgeSchemaDefinesRevisionedKeyedRendering(t *testing.T) {
 	if !containsStringValue(requireStringSlice(t, element["required"], "element vnode required"), "key") {
 		t.Fatal("element vnode must require an explicit key")
 	}
-	if got := requireNestedObject(t, element, "properties", "key")["$ref"]; got != "#/$defs/ui_identifier" {
+	if got := requireNestedObject(t, element, "properties", "key")["$ref"]; got != "#/$defs/element_identifier" {
 		t.Fatalf("element vnode key ref = %#v", got)
+	}
+	text := requireDef(t, defs, "text_vnode")
+	assertStringSet(t, requireStringSlice(t, text["required"], "text vnode required"), []string{"type", "key", "text"}, "text vnode required")
+	if got := requireNestedObject(t, text, "properties", "key")["$ref"]; got != "#/$defs/text_identifier" {
+		t.Fatalf("text vnode key ref = %#v", got)
 	}
 
 	operations := requireDef(t, defs, "patch_operation")
@@ -147,6 +155,14 @@ func TestBridgeSchemaDefinesRevisionedKeyedRendering(t *testing.T) {
 			t.Fatalf("patch operation missing %q", operation)
 		}
 	}
+	setText := findPatchOperation(t, variants, "set_text")
+	assertStringSet(t, requireStringSlice(t, setText["required"], "set_text required"), []string{"type", "target_key", "text"}, "set_text required")
+	insertChild := findPatchOperation(t, variants, "insert_child")
+	assertStringSet(t, requireStringSlice(t, insertChild["required"], "insert_child required"), []string{"type", "parent_key", "before_key", "node"}, "insert_child required")
+	removeChild := findPatchOperation(t, variants, "remove_child")
+	assertStringSet(t, requireStringSlice(t, removeChild["required"], "remove_child required"), []string{"type", "target_key"}, "remove_child required")
+	moveChild := findPatchOperation(t, variants, "move_child")
+	assertStringSet(t, requireStringSlice(t, moveChild["required"], "move_child required"), []string{"type", "target_key", "parent_key", "before_key"}, "move_child required")
 
 	action := requireDef(t, defs, "action")
 	actionRequired := requireStringSlice(t, action["required"], "action required")
@@ -157,9 +173,21 @@ func TestBridgeSchemaDefinesRevisionedKeyedRendering(t *testing.T) {
 	}
 }
 
+func findPatchOperation(t *testing.T, variants []any, operation string) map[string]any {
+	t.Helper()
+	for _, raw := range variants {
+		variant, ok := raw.(map[string]any)
+		if ok && requireNestedObject(t, variant, "properties", "type")["const"] == operation {
+			return variant
+		}
+	}
+	t.Fatalf("patch operation %q is missing", operation)
+	return nil
+}
+
 func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +252,9 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	if !ok || len(variants) != 2 {
 		t.Fatalf("vnode oneOf = %#v, want text and element variants", vnode["oneOf"])
 	}
+	if ref := variants[0].(map[string]any)["$ref"]; ref != "#/$defs/text_vnode" {
+		t.Fatalf("text vnode ref = %#v", ref)
+	}
 	element := requireDef(t, defs, "element_vnode")
 	if ref := variants[1].(map[string]any)["$ref"]; ref != "#/$defs/element_vnode" {
 		t.Fatalf("element vnode ref = %#v", ref)
@@ -258,10 +289,38 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	}
 }
 
+func TestBridgeV5RejectsPluginUIV4Fixture(t *testing.T) {
+	root := repoRoot(t)
+	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v5.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureRaw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v4-mount.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	if err := compiler.AddResource("urn:redevplugin:bridge-v5", bytes.NewReader(schemaRaw)); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := compiler.Compile("urn:redevplugin:bridge-v5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture any
+	if err := json.Unmarshal(fixtureRaw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(fixture); err == nil {
+		t.Fatal("plugin-ui-v4 mount fixture unexpectedly passed bridge-v5 validation")
+	}
+}
+
 func readBridgeSchema(t *testing.T) map[string]any {
 	t.Helper()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v4.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

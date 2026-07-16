@@ -5,7 +5,7 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
 
 MODE="fast"
 SUMMARY_PATH=""
-RELEASE_TEST_VERSION="0.4.0"
+RELEASE_TEST_VERSION="0.5.0"
 
 usage() {
   cat <<'USAGE'

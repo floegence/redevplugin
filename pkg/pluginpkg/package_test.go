@@ -1368,7 +1368,7 @@ func packageSignatureJSON(t *testing.T, pkg Package, signature string) []byte {
 
 func validManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.pkg",
@@ -1376,7 +1376,7 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "pkg.view", "kind": "view", "label": "Package", "entry": "ui/index.html"}
@@ -1386,7 +1386,7 @@ func validManifestJSON() string {
 
 func workerManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -1394,7 +1394,7 @@ func workerManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}

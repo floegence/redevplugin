@@ -93,11 +93,19 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.T) {
 	broker := connectivity.NewMemoryBroker()
 	executor := &recordingHostNetworkExecutor{}
+	limits := runtimeclient.RuntimeLimits{
+		WorkerCount:            8,
+		QueueCapacity:          32,
+		PerPluginConcurrency:   4,
+		ModuleCacheEntries:     64,
+		ModuleCacheSourceBytes: 128 << 20,
+	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
 		connectivityBroker: broker,
 		networkExecutor:    executor,
+		runtimeLimits:      limits,
 	})
 
 	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
@@ -106,7 +114,8 @@ func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.
 		options.HandleGrants == nil ||
 		options.Connectivity != broker ||
 		options.NetworkExecutor != executor ||
-		options.StreamSink == nil {
+		options.StreamSink == nil ||
+		options.Limits != limits {
 		t.Fatalf("process supervisor options mismatch: %#v", options)
 	}
 }

@@ -140,10 +140,17 @@ try {
   const provenanceNegative = bundles[1];
   const provenanceManifestPath = join(provenanceNegative.bundleRoot, "release-manifest.json");
   const provenanceManifest = JSON.parse(readFileSync(provenanceManifestPath, "utf8"));
-  provenanceManifest.source_commit = provenanceManifest.source_commit === "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  const alternateSourceCommit = provenanceManifest.source_commit === "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ? "cccccccccccccccccccccccccccccccccccccccc"
     : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  writeFileSync(provenanceManifestPath, JSON.stringify(provenanceManifest, null, 2) + "\n");
+  const performanceEvidencePath = join(provenanceNegative.bundleRoot, "performance-evidence.json");
+  const performanceEvidence = JSON.parse(readFileSync(performanceEvidencePath, "utf8"));
+  performanceEvidence.source_commit = alternateSourceCommit;
+  writeFileSync(performanceEvidencePath, JSON.stringify(performanceEvidence, null, 2) + "\n");
+  refreshReleaseManifest(provenanceNegative.bundleRoot, provenanceNegative.target.id);
+  const refreshedProvenanceManifest = JSON.parse(readFileSync(provenanceManifestPath, "utf8"));
+  refreshedProvenanceManifest.source_commit = alternateSourceCommit;
+  writeFileSync(provenanceManifestPath, JSON.stringify(refreshedProvenanceManifest, null, 2) + "\n");
   assertBundleVerifierRejects(
     provenanceNegative.bundleRoot,
     "host capability sample source_commit",

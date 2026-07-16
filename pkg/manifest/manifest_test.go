@@ -1034,7 +1034,7 @@ func stringPtr(value string) *string {
 
 func validManifest() Manifest {
 	return Manifest{
-		SchemaVersion: "redevplugin.manifest.v4",
+		SchemaVersion: "redevplugin.manifest.v5",
 		Publisher:     Publisher{PublisherID: "example", DisplayName: "Example"},
 		Plugin: Plugin{
 			PluginID:          "com.example.resources",
@@ -1042,7 +1042,7 @@ func validManifest() Manifest {
 			Version:           "1.0.0",
 			APIVersion:        "plugin-v1",
 			MinRuntimeVersion: "0.1.0",
-			UIProtocolVersion: "plugin-ui-v4",
+			UIProtocolVersion: "plugin-ui-v5",
 		},
 		Surfaces: []SurfaceSpec{
 			{SurfaceID: "resources.view", Kind: SurfaceView, Intent: SurfaceIntentPrimary, Label: "Resources", Entry: "ui/index.html"},
@@ -1081,7 +1081,7 @@ func validCapabilityManifest() Manifest {
 
 func validManifestJSON() string {
 	return fmt.Sprintf(`{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.resources",
@@ -1089,7 +1089,7 @@ func validManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "resources.view", "kind": "view", "label": "Resources", "entry": "ui/index.html"}

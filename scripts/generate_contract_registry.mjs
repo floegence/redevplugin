@@ -124,6 +124,7 @@ function renderGo(matrix, contracts) {
     ["HostCapabilitySignatureSchemaVersion", "host_capability_signature_schema_version"],
     ["HostCapabilityNoticesSchemaVersion", "host_capability_notices_schema_version"],
     ["ErrorCodesSchemaVersion", "error_codes_schema_version"],
+    ["PerformanceEvidenceSchemaVersion", "performance_evidence_schema_version"],
     ["ContractRegistryVersion", "contract_registry_version"],
   ];
   const constantLines = constants.map(([name, key]) => `\t${name} = ${JSON.stringify(matrix[key])}`).join("\n");

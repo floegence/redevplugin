@@ -1,6 +1,6 @@
 {
   "frame_type": "invoke_worker",
-  "ipc_version": "rust-ipc-v2",
+  "ipc_version": "rust-ipc-v3",
   "payload": {
     "invocation": {
       "abi": "redevplugin-wasm-worker-v2",

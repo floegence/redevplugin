@@ -145,7 +145,7 @@ export function createBrowserHarnessServer(options = {}) {
             issued_at: issuedAt.toISOString(),
             expires_at: new Date(issuedAt.getTime() + 10 * 60_000).toISOString(),
             document: {
-              schema_version: "redevplugin.opaque_surface_document.v2",
+              schema_version: "redevplugin.opaque_surface_document.v3",
               entry_path: "ui/index.html",
               entry_sha256: entrySHA256,
               title: "Opaque browser harness",

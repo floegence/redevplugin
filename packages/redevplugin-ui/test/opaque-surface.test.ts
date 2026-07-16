@@ -21,6 +21,7 @@ import {
 import { PluginBridgeClient } from "../src/plugin.js";
 import { createOpaquePluginBootstrapHTML, decodePluginStreamText } from "../src/surface.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
+import { validatePluginUITree, type PluginUIElementVNode } from "../src/ui-reconciler.js";
 
 test("trusted-parent handshake transcript has one stable current vector", async () => {
   const got = await trustedParentBridgeHandshakeTranscriptSHA256({
@@ -289,7 +290,7 @@ function preparation() {
     issued_at: "2026-07-12T00:00:00Z",
     expires_at: "2026-07-12T00:10:00Z",
     document: {
-      schema_version: "redevplugin.opaque_surface_document.v2",
+      schema_version: "redevplugin.opaque_surface_document.v3",
       entry_path: "ui/index.html",
       entry_sha256: digest("b"),
       title: "Plugin",
@@ -484,12 +485,13 @@ test("plugin bridge client exposes only a public handle and its private port", a
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_1", ok: true, data: { pong: true } });
   assert.deepEqual(await callPromise, { pong: true });
 
-  const renderPromise = client.render({ type: "element", key: "root", tag: "main", children: ["Ready"] });
+  const readyTree: PluginUIElementVNode = { type: "element", key: "root", tag: "main", children: ["Ready"] };
+  const renderPromise = client.render(readyTree);
   assert.deepEqual(pluginPort.sent[1], {
     type: "redevplugin.ui.mount",
     id: "render_2",
     revision: 1,
-    tree: { type: "element", key: "root", tag: "main", children: ["Ready"] },
+    tree: validatePluginUITree(readyTree),
   });
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
   await renderPromise;
@@ -833,6 +835,33 @@ test("plugin bridge client rejects non-canonical render trees before posting", a
   client.dispose();
 });
 
+test("plugin bridge sends UI trees up to the renderer node limit without RPC JSON truncation", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  const children = Array.from({ length: 1000 }, (_, index) => ({
+    type: "element" as const,
+    key: `item-${index}`,
+    tag: "div" as const,
+    children: [],
+  }));
+  const mounted = client.render({ type: "element", key: "root", tag: "main", children });
+  assert.equal((pluginPort.sent[0] as { tree?: { children?: unknown[] } }).tree?.children?.length, 1000);
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
+  await mounted;
+
+  const reversed = client.render({ type: "element", key: "root", tag: "main", children: [...children].reverse() });
+  await waitFor(() => pluginPort.sent.length === 2);
+  const patch = pluginPort.sent[1] as { operations?: Array<{ type?: string }> };
+  assert.equal(patch.operations?.length, 999);
+  assert.equal(patch.operations?.every((operation) => operation.type === "move_child"), true);
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
+  await reversed;
+  client.dispose();
+});
+
 test("plugin bridge keeps one UI commit in flight and coalesces to the latest tree", async () => {
   const { port1: rendererPort, port2: pluginPort } = fakeChannel();
   const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
@@ -846,12 +875,14 @@ test("plugin bridge keeps one UI commit in flight and coalesces to the latest tr
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
   await first;
   await waitFor(() => pluginPort.sent.length === 2);
+  const latestTree = validatePluginUITree({ type: "element", key: "root", tag: "main", children: ["C"] });
+  const latestTextKey = latestTree.children?.[0]?.key;
   assert.deepEqual(pluginPort.sent[1], {
     type: "redevplugin.ui.patch",
     id: "render_2",
     base_revision: 1,
     revision: 2,
-    operations: [{ type: "set_text", parent_key: "root", child_index: 0, text: "C" }],
+    operations: [{ type: "set_text", target_key: latestTextKey, text: "C" }],
   });
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
   await Promise.all([second, latest]);

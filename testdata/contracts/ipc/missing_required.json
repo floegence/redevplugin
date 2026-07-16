@@ -7,7 +7,7 @@
   "want_error": true,
   "error_contains": "request_id",
   "frame": {
-    "ipc_version": "rust-ipc-v2",
+    "ipc_version": "rust-ipc-v3",
     "frame_type": "invoke_worker_result",
     "runtime_generation_id": "runtime_gen_fixture",
     "payload": {

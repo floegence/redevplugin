@@ -23,7 +23,7 @@ import (
 	"golang.org/x/net/html"
 )
 
-const OpaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2"
+const OpaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v3"
 
 type OpaqueSurfaceWorkerType string
 

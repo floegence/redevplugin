@@ -28,7 +28,7 @@ test("browser harness exposes one same-origin opaque surface transport", async (
     body: JSON.stringify({ asset_ticket: opened.asset_ticket }),
   });
   const prepared = (await prepareResponse.json()).data;
-  assert.equal(prepared.document.schema_version, "redevplugin.opaque_surface_document.v2");
+  assert.equal(prepared.document.schema_version, "redevplugin.opaque_surface_document.v3");
   assert.equal(prepared.document.worker.type, "classic");
   assert.equal(prepared.document.assets.length, 1);
   assert.deepEqual(prepared.document.assets[0].logical_ids, ["harness.lazy-image"]);

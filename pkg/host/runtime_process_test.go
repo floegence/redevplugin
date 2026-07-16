@@ -975,19 +975,22 @@ type hostRuntimeIPCFrame struct {
 	IPCVersion          string          `json:"ipc_version"`
 	FrameType           string          `json:"frame_type"`
 	RequestID           string          `json:"request_id"`
+	ParentRequestID     string          `json:"parent_request_id,omitempty"`
 	RuntimeGenerationID string          `json:"runtime_generation_id,omitempty"`
 	Payload             json.RawMessage `json:"payload,omitempty"`
 }
 
 type hostRuntimeHelloAckPayload struct {
-	RuntimeVersion string `json:"runtime_version"`
-	RustIPCVersion string `json:"rust_ipc_version"`
-	WASMABIVersion string `json:"wasm_abi_version"`
-	ChannelNonce   string `json:"channel_nonce"`
+	RuntimeVersion string                      `json:"runtime_version"`
+	RustIPCVersion string                      `json:"rust_ipc_version"`
+	WASMABIVersion string                      `json:"wasm_abi_version"`
+	ChannelNonce   string                      `json:"channel_nonce"`
+	Limits         runtimeclient.RuntimeLimits `json:"limits"`
 }
 
 type hostRuntimeHelloPayload struct {
-	ChannelNonce string `json:"channel_nonce"`
+	ChannelNonce string                      `json:"channel_nonce"`
+	Limits       runtimeclient.RuntimeLimits `json:"limits"`
 }
 
 type hostRuntimeResponsePayload struct {
@@ -1084,6 +1087,7 @@ func runHostRuntimeProcessHelper() {
 				RustIPCVersion: version.RustIPCVersion,
 				WASMABIVersion: version.WASMABIVersion,
 				ChannelNonce:   hello.ChannelNonce,
+				Limits:         hello.Limits,
 			})
 			_ = encoder.Encode(hostRuntimeIPCFrame{
 				IPCVersion:          version.RustIPCVersion,
@@ -1094,7 +1098,7 @@ func runHostRuntimeProcessHelper() {
 			})
 			if !controlStarted {
 				controlStarted = true
-				go runHostRuntimeControlHelper()
+				go runHostRuntimeControlHelper(hello.Limits)
 			}
 		case "invoke_worker":
 			hostRuntimeProcessNetworkExecute(reader, encoder, frame)
@@ -1104,7 +1108,7 @@ func runHostRuntimeProcessHelper() {
 	}
 }
 
-func runHostRuntimeControlHelper() {
+func runHostRuntimeControlHelper(limits runtimeclient.RuntimeLimits) {
 	readFD, readErr := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_READ_FD"))
 	writeFD, writeErr := strconv.Atoi(os.Getenv("REDEVPLUGIN_CONTROL_WRITE_FD"))
 	if readErr != nil || writeErr != nil || readFD < 3 || writeFD < 3 {
@@ -1135,6 +1139,10 @@ func runHostRuntimeControlHelper() {
 				"runtime_unix_nano":     time.Now().UnixNano(),
 				"max_staleness_ms":      heartbeat.MaxStalenessMillis,
 				"host_sent_unix_nano":   heartbeat.SentUnixNano,
+				"active_invocations":    0,
+				"queued_invocations":    0,
+				"limits":                limits,
+				"module_cache":          runtimeclient.ModuleCacheMetrics{},
 			})
 			raw, _ := json.Marshal(hostRuntimeResponsePayload{OK: true, Result: result})
 			_ = encoder.Encode(hostRuntimeIPCFrame{IPCVersion: version.RustIPCVersion, FrameType: "heartbeat", RequestID: frame.RequestID, RuntimeGenerationID: frame.RuntimeGenerationID, Payload: raw})
@@ -1215,6 +1223,7 @@ func hostRuntimeProcessNetworkExecute(reader *bufio.Reader, encoder *json.Encode
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           "network_execute",
 		RequestID:           networkRequestID,
+		ParentRequestID:     frame.RequestID,
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload:             rawRequest,
 	})

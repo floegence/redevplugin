@@ -66,7 +66,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 	dir := t.TempDir()
 	srcDir := filepath.Join(dir, "plugin")
 	writeCLITestFile(t, filepath.Join(srcDir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.cli",
@@ -74,7 +74,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "cli.view", "kind": "view", "label": "CLI", "entry": "ui/index.html"}
@@ -394,7 +394,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	gateway, err := h.MintBridgeToken(ctx, host.MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -1080,7 +1080,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		contracts[contract.ID] = contract
 	}
 	bridge := contracts["iframe-bridge-schema"]
-	if bridge.Path != "spec/plugin/bridge-v4.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
+	if bridge.Path != "spec/plugin/bridge-v5.schema.json" || bridge.Version != version.BridgeSchemaVersion || bridge.SHA256 == "" {
 		t.Fatalf("bridge contract mismatch: %#v", bridge)
 	}
 	openapi := contracts["plugin-platform-openapi"]
@@ -1092,7 +1092,7 @@ func TestCLIVersionPrintsCompatibilityManifest(t *testing.T) {
 		path    string
 		version string
 	}{
-		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v4.schema.json", version: version.ReleaseMetadataSchemaVersion},
+		{id: "release-metadata-schema", path: "spec/plugin/release-metadata-v5.schema.json", version: version.ReleaseMetadataSchemaVersion},
 		{id: "source-policy-schema", path: "spec/plugin/source-policy-v1.schema.json", version: version.SourcePolicySchemaVersion},
 		{id: "source-revocations-schema", path: "spec/plugin/source-revocations-v1.schema.json", version: version.SourceRevocationsSchemaVersion},
 	} {

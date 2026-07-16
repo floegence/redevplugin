@@ -968,7 +968,8 @@ type stressIPCFrame struct {
 }
 
 type stressHelloPayload struct {
-	ChannelNonce string `json:"channel_nonce"`
+	ChannelNonce string                      `json:"channel_nonce"`
+	Limits       runtimeclient.RuntimeLimits `json:"limits"`
 }
 
 type stressHeartbeatPayload struct {
@@ -1019,6 +1020,7 @@ func runStressRuntimeHelper() {
 			"rust_ipc_version": version.RustIPCVersion,
 			"wasm_abi_version": version.WASMABIVersion,
 			"channel_nonce":    hello.ChannelNonce,
+			"limits":           hello.Limits,
 		}),
 	}); err != nil {
 		os.Exit(6)
@@ -1052,6 +1054,10 @@ func runStressRuntimeHelper() {
 					"runtime_unix_nano":     time.Now().UnixNano(),
 					"max_staleness_ms":      heartbeat.MaxStalenessMillis,
 					"host_sent_unix_nano":   heartbeat.SentUnixNano,
+					"active_invocations":    0,
+					"queued_invocations":    0,
+					"limits":                hello.Limits,
+					"module_cache":          runtimeclient.ModuleCacheMetrics{},
 				}),
 			}))
 		case "revoke_epoch":

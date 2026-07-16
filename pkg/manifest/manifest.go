@@ -282,8 +282,8 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if m.SchemaVersion != "redevplugin.manifest.v4" {
-		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v4"}
+	if m.SchemaVersion != "redevplugin.manifest.v5" {
+		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v5"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
