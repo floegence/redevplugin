@@ -19,7 +19,12 @@ capabilities.
   token/ticket schema, iframe bridge and render policy, opaque surface document
   and transport schemas, compatibility and release manifest schemas, IPC schema,
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
-  and target classifier fixture
+  performance-evidence schema, and target classifier fixture
+- Active coordinated contracts are `plugin-host-v3`, `rust-ipc-v3`,
+  `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v5`, `manifest-v5`, opaque
+  document v3, opaque transport v4, release metadata v5, compatibility manifest
+  v5, and error codes v3. WASM ABI v2, worker invocation v2, token/ticket v2,
+  package signature v1, and release manifest v3 remain unchanged.
 - Host-neutral Go package boundaries for manifest validation, package IO,
   registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.
@@ -33,15 +38,18 @@ capabilities.
   bundles. It resolves every request through the current registry binding,
   enforces quotas and filesystem boundaries, and publishes generation changes
   with semantic revision checks.
-- Stream stores include both in-memory and SQLite-backed implementations. The
-  SQLite store persists stream records and buffered events, enforces the same
-  backpressure behavior, drains read events from the buffer, marks streams
-  orphaned during plugin disable/uninstall transitions, and initializes its
-  single current schema idempotently across process restarts.
 - The settings package defines schema normalization and validation only.
   PluginData persists non-secret values with a values revision; the independent
   SecretStore contributes redacted binding metadata and never enters an export
   bundle.
+- Stream stores include both in-memory and SQLite-backed implementations with
+  required event notification through `Observe` and revision-aware `Wait`.
+  Records persist revision, next sequence, buffered event count, and separate
+  byte/event limits. The memory store uses per-stream locks and notifications;
+  SQLite schema v4 performs bounded reads and range deletes without sequence
+  scans. Both stores default to 4096 buffered events, enforce the 65536 platform
+  ceiling, mark streams orphaned during plugin disable/uninstall transitions,
+  and fail closed on newer schemas.
 - Observability stores include both in-memory and SQLite-backed implementations.
   Audit events are append-only through the host adapter contract. Owner-scoped
   diagnostic listing preserves filtering, defaults, newest-first ordering,
@@ -211,6 +219,23 @@ capabilities.
   Host/Rust IPC version mismatch, WASM ABI mismatch, missing required fields,
   replayed request IDs, unknown frame types, and runtime-generation mismatch
   fail-closed paths.
+- Rust IPC v3 multiplexes invocations over one runtime process with one reader,
+  one serialized writer, and a pending map keyed by `request_id`. Runtime-origin
+  artifact, grant, storage, and network frames carry `parent_request_id`, which
+  the Go supervisor resolves back to the signed invocation audience before Host
+  IO. `cancel_invoke` removes queued work or marks running work canceled without
+  invalidating the runtime generation.
+- `RuntimeLimits` is a Host-only Go configuration. Defaults derive 4-16 workers
+  from `GOMAXPROCS`, cap the queue at 64, cap each plugin at 2-8 concurrent
+  workers, and allow 64 compiled modules or 128 MiB of source WASM. Go waits for
+  capacity before consuming an execution lease; Rust independently enforces the
+  negotiated limits with a fair per-plugin scheduler.
+- One Wasmi engine is shared by the runtime generation. Validated modules are
+  single-flight compiled and retained in a deterministic content-addressed LRU
+  keyed by artifact SHA-256 and ABI version. Each invocation still receives an
+  independent Store, Linker, memory limiter, and fuel budget. Health reports
+  active/queued counts, effective limits, and cache hit/miss/compile/entry/byte
+  metrics.
 - Runtime lease replay stores let hosts extend the Rust in-process replay check
   across runtime restarts and the full lease TTL window. `runtimeclient` provides
   memory and SQLite stores that record only a hash of `lease_id + lease_nonce`;
@@ -306,13 +331,13 @@ capabilities.
   stream tickets bind both, while plugin workers receive only an opaque stream
   handle plus the operation id. Generated business-error guards also bind the
   capability id, capability version, and published details-schema SHA-256.
-- Stream reads are serialized per stream. Long polling uses non-destructive
-  `Peek`, then the final store read and single-use ticket commit run under one
-  authorization boundary. A failed read preserves both events and the current
-  ticket; an open stream atomically rotates to the next ticket; a fully drained
-  terminal stream consumes the current ticket without reserving a replacement.
-  Plugin revision and surface-session bindings are revalidated after waiting and
-  before the final mutation.
+- Stream reads are serialized per stream but wait without holding plugin
+  lifecycle locks. `Wait` uses `after_revision` to prevent lost wakeups. After an
+  event or terminal transition, the Host acquires the plugin lifecycle read
+  lock, revalidates registry and token audience, observes the batch, performs
+  one bounded read, and commits or rotates the single-use ticket. A failed read
+  preserves both events and the current ticket; a drained terminal stream
+  commits without allocating a replacement.
 - Operation and stream terminal states are reconciled as one paired lifecycle.
   The first terminal intent is latched before either durable store is written;
   a conflicting retry fails closed. Host startup terminates running or
@@ -347,7 +372,8 @@ capabilities.
   token/ticket, bridge, opaque-surface document and transport, compatibility,
   release-manifest, IPC, WASM,
   network-grant, worker invocation, all six host-capability artifact schemas,
-  error-code, and target-classifier contracts. Network grant schema, release manifest schema,
+  error-code, performance-evidence, and target-classifier contracts. Network
+  grant schema, release manifest schema,
   and target-classifier fixture versions are tracked independently so hosts can
   distinguish grant envelope drift, bundle manifest drift, and classifier rule
   drift. The target-classifier fixture now carries executable allow/deny cases
@@ -392,12 +418,11 @@ capabilities.
   WebSocket, TCP, and UDP executor request/response paths, and verifies that
   streamed HTTP responses return a Host-readable `stream_id` and stream ticket
   before returning the worker result.
-- The Rust runtime now performs the first executable worker slice: it requests
-  the bound WASM artifact from the Host over IPC, validates the WASM binary
-  header and required function export through `redevplugin-wasm-abi`, executes
-  the exported no-argument worker entrypoint with the embedded Wasmi engine, and
-  returns a successful scaffold worker result over `invoke_worker_result`. It
-  also exposes brokered storage and network hostcalls. Generated plugins now use
+- The Rust runtime requests a bound WASM artifact only on a compiled-module cache
+  miss, validates the module through `redevplugin-wasm-abi`, executes it through
+  the shared Wasmi engine and fair worker scheduler, and returns the result over
+  multiplexed `invoke_worker_result` frames. It exposes brokered storage and
+  network hostcalls bound to the parent invocation. Generated plugins use
   the real linear-memory ABI by default:
   `redevplugin.storage/files(req_ptr, req_len, out_ptr, out_len) -> i32`,
   `redevplugin.storage/kv(req_ptr, req_len, out_ptr, out_len) -> i32`,

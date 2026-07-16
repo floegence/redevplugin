@@ -74,11 +74,17 @@ and marked that exact asset session prepared.
   `ReleaseSourcePolicyResolver` and `ReleaseArtifactResolver` adapters; the Host
   still owns package reading, hash comparison, trust verification, staged
   install, registry mutation, audit, and diagnostics.
+  Lifecycle mutation uses a reference-counted per-plugin lock registry: install,
+  update, downgrade, enable, disable, and uninstall take the plugin write lock;
+  surface opening and final stream commits take the read lock. Release
+  resolution and package validation occur outside the lock and commit only after
+  the registry revision is revalidated.
 - `pkg/httpadapter` provides mountable host-neutral HTTP routes for platform
   management, surface prepare/token/dispose, parent-only POST asset and stream
   reads, compatibility, and diagnostics.
-- `pkg/runtimeclient` manages the Rust runtime subprocess and newline-delimited
-  JSON IPC frames.
+- `pkg/runtimeclient` manages the Rust runtime subprocess, negotiated capacity,
+  multiplexed newline-delimited JSON IPC, invocation cancellation, and runtime
+  health/cache metrics.
 - `pkg/plugindata` owns settings, storage generations, immutable exports, and
   retained bindings. `pkg/observability`, `pkg/secrets`, `pkg/stream`,
   `pkg/operation`, `pkg/installstage`, and `pkg/security` provide the remaining
@@ -105,6 +111,30 @@ the authority for identity, policy, grants, quotas, revocation, storage, and
 network access. The runtime validates WASM worker shape, executes the exported
 worker entrypoint with Wasmi, and performs brokered hostcalls through Host-owned
 IPC request/response frames.
+
+Rust IPC v3 uses one Go reader, one serialized pipe writer, and a pending map
+keyed by `request_id`; a worker invocation no longer holds a process-wide IPC
+mutex. Runtime-origin artifact, grant, storage, and network frames include
+`parent_request_id`. The supervisor accepts them only while the matching signed
+invocation is live and only within that invocation's audience and broker
+permissions. `cancel_invoke` removes queued work or marks running work canceled;
+the runtime acknowledges cancellation and remains ready for unrelated work.
+
+The Host-only `RuntimeLimits` defaults worker count to
+`clamp(GOMAXPROCS, 4, 16)`, queue capacity to `min(worker_count * 4, 64)`, and
+per-plugin concurrency to `min(max(worker_count / 2, 2), 8)`. Go admission waits
+before consuming the execution lease. Rust enforces the same hello-negotiated
+limits with a fixed worker pool and round-robin per-plugin queues. Capacity and
+cancellation are reported separately as `RUNTIME_CAPACITY_EXCEEDED` and
+`RUNTIME_INVOCATION_CANCELED`.
+
+One Wasmi Engine is shared for the runtime generation. Validated modules are
+single-flight compiled and cached by `(artifact_sha256, wasm_abi_version)` in a
+deterministic LRU, with default limits of 64 modules and 128 MiB source WASM.
+Cache hits do not request artifact bytes from the Host. Compilation failures are
+not cached, revocation does not remove content-addressed modules, and process
+restart clears the cache. Every invocation still creates a separate Store,
+Linker, memory limiter, and fuel budget.
 
 WASM validation is intentionally independent on both sides of the process
 boundary. Go package validation compiles the complete module with Wazero before
@@ -140,7 +170,9 @@ invocations before opening artifacts and rejects new storage/network hostcalls
 before dispatching Host IO.
 
 `Health` includes the Host-side runtime instance ID, runtime generation ID, IPC
-channel ID, and handshake `connection_nonce` needed to mint a
+channel ID, handshake `connection_nonce`, active and queued invocation counts,
+effective runtime limits, and module-cache hits, misses, compiles, entries, and
+source bytes. The runtime audience fields are needed to mint a
 `RuntimeExecutionLease` for the active process. `ProcessSupervisor` always
 creates an ephemeral Ed25519 keypair, sends its non-empty public-key set in the
 startup `hello` frame, overwrites any caller signature material, binds the lease
@@ -217,6 +249,16 @@ surface and stream handles. Asset tickets, sessions, gateway credentials,
 stream tickets, confirmation tokens, plugin identity bindings, and owner/session
 hashes remain in the trusted parent.
 
+Plugin UI v5 normalizes every string VNode into a deterministic keyed text node.
+Structural patches address keys and sibling anchors through `insert_child`,
+`remove_child`, and `move_child`; `set_text` addresses the text key directly.
+The SDK indexes the current and next trees once and uses longest-increasing-
+subsequence reconciliation for O(n log n) keyed movement. The renderer validates
+the complete patch in a copy-on-write key-graph overlay, then commits the DOM in
+one animation frame. Failed validation cannot partially mutate the DOM. Focus,
+selection, IME, scroll, canvas identity, edit revisions, and first-commit
+visibility retain their existing semantics.
+
 The renderer owns a private liveness channel to the plugin worker. It sends a
 ping every 10 seconds and requires the matching pong within 5 seconds; timeout
 fails the surface closed. During disposal the parent sends a unique quiesce id,
@@ -248,23 +290,24 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v4.yaml`;
-- `spec/plugin/manifest-v4.schema.json`;
+- `spec/openapi/plugin-platform-v5.yaml`;
+- `spec/plugin/manifest-v5.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v4.schema.json`;
+- `spec/plugin/release-metadata-v5.schema.json`;
 - `spec/plugin/source-policy-v1.schema.json`;
 - `spec/plugin/source-revocations-v1.schema.json`;
 - `spec/plugin/token-ticket-v2.schema.json`;
-- `spec/plugin/bridge-v4.schema.json`;
-- `spec/plugin/opaque-surface-document-v2.schema.json`;
-- `spec/plugin/opaque-surface-transport-v3.schema.json`;
-- `spec/plugin/compatibility-manifest-v4.schema.json`;
+- `spec/plugin/bridge-v5.schema.json`;
+- `spec/plugin/opaque-surface-document-v3.schema.json`;
+- `spec/plugin/opaque-surface-transport-v4.schema.json`;
+- `spec/plugin/compatibility-manifest-v5.schema.json`;
 - `spec/plugin/release-manifest-v3.schema.json`;
-- `spec/plugin/ipc-v2.schema.json`;
+- `spec/plugin/performance-evidence-v1.schema.json`;
+- `spec/plugin/ipc-v3.schema.json`;
 - `spec/plugin/wasm-worker-v2.schema.json`;
 - `spec/plugin/worker-invocation-v2.schema.json`;
 - `spec/plugin/network-grant-v1.schema.json`;
-- `spec/plugin/error-codes-v2.schema.json`;
+- `spec/plugin/error-codes-v3.schema.json`;
 - `spec/plugin/target-classifier-v2.json`;
 - `spec/plugin/contract-registry-v1.json`, the generated inventory and SHA-256
   identity for every public contract above.
@@ -377,12 +420,16 @@ exact match in `target_descriptor_hashes` before replay consumption or artifact
 access. The replay cache retains lease ids only until their signed expiry and
 has a fail-closed hard capacity.
 
-Stream reads use a per-stream serializer. Long polling observes events through
-non-destructive `Peek`, then revalidates the plugin revision and surface session
-before the final read. The store mutation and single-use ticket decision are
-guarded together: failure preserves the event queue and current ticket, an open
-stream rotates to exactly one next ticket, and a drained terminal stream commits
-the current ticket without allocating a replacement. Operation and stream
+Stream stores must implement non-destructive `Observe` and revision-aware
+`Wait`; polling-only stores are not accepted. Append, close, and plugin-state
+transitions increment the stream revision and notify waiters. Reads wait without
+holding the lifecycle lock, then acquire the plugin read lock, revalidate the
+registry and surface session, observe, perform one bounded read, and decide the
+single-use ticket from `ReadObservation`. Failure preserves the event queue and
+current ticket, an open or non-drained stream rotates to exactly one next ticket,
+and a drained terminal stream commits without allocating a replacement. Records
+track `next_sequence`, revision, buffered events, and both byte and event limits.
+Operation and stream
 terminal writes are independently durable; startup and later execution
 entrypoints reconcile either partial terminal state, including after reopening
 SQLite stores, before the live execution lease is released.

@@ -367,6 +367,20 @@ storage, or network hostcalls, the supervisor derives a bounded context before
 calling host adapters. Request-level `timeout_ms` controls storage SQLite and
 network execution within a platform cap; hostcalls without an explicit timeout
 use the default hostcall cap.
+Every runtime-origin request also carries `parent_request_id`. The supervisor
+requires a live matching invocation and reuses only that invocation's signed
+plugin, surface, session, target, grant, quota, revision, and revoke bindings.
+A runtime cannot attach a hostcall to another invocation or continue broker IO
+after cancellation. Queued cancellation removes work before execution; running
+cancellation is checked at hostcall and completion boundaries without killing
+the shared runtime process.
+
+Compiled modules are cached only by verified artifact SHA-256 and WASM ABI
+version. The cache contains no plugin grant or session authority, so revoke does
+not change module identity; every Store, Linker, memory limiter, fuel budget,
+lease check, and broker audience remains invocation-local. Artifact bytes are
+read and rehashed on cache miss, compilation failures are not retained, and a
+runtime restart clears the cache.
 The Go supervisor also maintains a default 2s heartbeat over the same runtime
 control channel. If the runtime cannot return a structured heartbeat ACK before
 the 5s max-staleness window expires, the supervisor marks that generation not
@@ -382,9 +396,10 @@ that were actually closed. The current Rust runtime backs these counters with
 an in-process registry for brokered storage handles, network socket leases, and
 Host stream-store bridge stream IDs.
 
-Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant, and
-compatibility manifests are versioned contracts. Drift must fail closed through
-tests, compatibility checks, or runtime diagnostics.
+Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant,
+performance evidence, and compatibility manifests are versioned contracts.
+IPC v2 and UI v4 are accepted only as negative fixtures; runtime drift must fail
+closed through tests, compatibility checks, or diagnostics.
 
 ## Surface Diagnostics
 

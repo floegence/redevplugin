@@ -2,9 +2,48 @@
 
 ## v0.5.0
 
-- Replace whole-tree plugin UI rendering with the keyed, revisioned
-  `plugin-ui-v4` mount/patch protocol, atomic animation-frame commits, local
-  control echo, and IME-safe edit revisions.
+### Added
+
+- Add `rust-ipc-v3` invocation cancellation, Host/Rust negotiated runtime
+  limits, per-plugin fair scheduling, capacity errors, and health metrics for
+  active and queued invocations plus the compiled-module cache.
+- Add a shared Wasmi engine and single-flight, deterministic LRU module cache
+  keyed by artifact SHA-256 and WASM ABI version. Cache hits no longer read or
+  transfer the worker artifact again within a runtime generation.
+- Add `performance-evidence-v1` as a released machine contract. Full and release
+  gates measure runtime concurrency, cache behavior, cancellation, event-driven
+  streams, SQLite reads, keyed reconciliation, real Chromium rendering, and
+  long tasks; every runtime bundle includes the resulting evidence before
+  manifest hashing and signing.
+
+### Changed
+
+- Replace serialized runtime invocation IPC with one reader, one serialized
+  writer, request routing by `request_id`, and runtime-origin hostcalls bound to
+  their signed invocation through `parent_request_id`.
+- Replace the global Host management lock with reference-counted per-plugin
+  lifecycle read/write locks and optimistic release resolution, so unrelated
+  plugins can install, update, open surfaces, and read streams concurrently.
+- Replace polling stream reads with required `Observe` and revision-aware `Wait`
+  store contracts. Memory streams now use per-stream locks and notifications;
+  SQLite schema v4 persists revision, next sequence, and event counters and
+  performs bounded batch reads without `MAX(sequence)` scans.
+- Bound every stream by both bytes and event count. The default event limit is
+  4096, the platform maximum is 65536, and either limit produces deterministic
+  backpressure.
+- Advance rendering to `plugin-ui-v5`: deterministic keyed text nodes,
+  key/anchor structural patches, O(n log n) LIS reconciliation, copy-on-write
+  validation, and atomic animation-frame DOM commits while preserving focus,
+  IME, scroll, canvas, edit-revision, and first-commit behavior.
+- Advance the coordinated public contract set to `plugin-host-v3`,
+  `rust-ipc-v3`, `plugin-ui-v5`, `bridge-v5`, `plugin-platform-v5`,
+  `manifest-v5`, opaque document v3, opaque transport v4,
+  `release-metadata-v5`, compatibility manifest v5, and `error-codes-v3`.
+  WASM ABI v2, worker invocation v2, token/ticket v2, package signature v1,
+  and release manifest v3 remain unchanged.
+- Regenerate the examples, scaffold, browser harness, Go DTOs, TypeScript
+  contracts, Rust constants, fixtures, compatibility hashes, and release
+  verification around the v5 platform contract.
 - Carry explicit mutation outcomes through trusted-parent bridge errors so a
   plugin can reconcile an unknown destructive result before enabling writes.
 - Validate worker VNode tags, attributes, input types, and render limits against
@@ -18,6 +57,12 @@
 - Require capability preflight plans to use the closed
   `redevplugin.capability.risk_plan.v1` contract, and resolve capability adapters
   only by exact signed contract pin.
+
+### Removed
+
+- Remove IPC v2 decoding, UI v4 rendering, polling stream stores, and legacy
+  renderer compatibility paths. Current schemas reject incompatible
+  Host/runtime/UI combinations without alternate decoders.
 
 ## v0.4.3
 

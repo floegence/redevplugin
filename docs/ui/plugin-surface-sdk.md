@@ -32,7 +32,7 @@ product session authority.
 
 ## Bridge Protocol
 
-The bridge protocol is described by `spec/plugin/bridge-v4.schema.json` and
+The bridge protocol is described by `spec/plugin/bridge-v5.schema.json` and
 implemented by the TypeScript package. Contract checks keep these frame names,
 the UI protocol version, and forbidden response fields aligned with the schema:
 
@@ -44,7 +44,7 @@ the UI protocol version, and forbidden response fields aligned with the schema:
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v4`.
+- `plugin-ui-v5`.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -76,7 +76,33 @@ asset-session nonce, management revision, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v4.schema.json` contract.
+`bridge-v5.schema.json` contract.
+
+## Keyed Renderer
+
+Plugin UI v5 keeps the authoring convenience of string text VNodes, but the SDK
+normalizes them into deterministic keys in a reserved namespace before sending
+the tree. Element keys remain explicit and globally unique.
+
+Structural operations are key and anchor based:
+
+- `insert_child(parent_key, before_key, node)`;
+- `remove_child(target_key)`;
+- `move_child(target_key, parent_key, before_key)`;
+- `set_text(target_key, text)` for normalized text nodes.
+
+Reconciliation indexes the current and next trees once, then uses keyed lookups
+and a longest-increasing-subsequence pass to minimize moves in O(n log n). The
+trusted renderer maintains a key graph, parent/sibling links, and DOM map. It
+validates a complete patch against a copy-on-write overlay and commits only after
+all operations pass, in one animation frame. Insertion and removal touch only
+the affected subtree, and sibling anchors make moves constant-time at the graph
+layer. Invalid patches never partially mutate the live DOM.
+
+Canvas identity, control edit revisions, focus, selection, IME composition,
+scroll position, and first-commit visibility retain their established behavior.
+IPC v2 and UI v4 fixtures are rejection tests only; there is no legacy renderer
+or dual-version decoder.
 
 ## Management Client
 

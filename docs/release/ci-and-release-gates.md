@@ -50,6 +50,7 @@ GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...
 npm ci
 npx playwright install chromium
 npm run check
+npm run performance:fast
 npm run canonical-wasm:test
 npm run examples:check:canonical
 npm run scaffold:check:canonical
@@ -96,8 +97,9 @@ the same command shape.
   package builder, and TypeScript trusted renderer;
 - compatibility manifest schema and emitted compatibility manifest shape;
 - manifest, package signature, token/ticket, bridge, error-code, release
-  manifest, IPC, WASM ABI, worker invocation, network grant, all six
-  host-capability artifact schemas, and target classifier contract snippets;
+  manifest, performance evidence, IPC, WASM ABI, worker invocation, network
+  grant, all six host-capability artifact schemas, and target classifier
+  contract snippets;
 - shared Go/TypeScript restricted-schema conformance fixtures, typed capability
   business-error identity, paired operation/stream subscription handles, and
   atomic surface-scoped confirmation rejection;
@@ -106,9 +108,10 @@ the same command shape.
   mismatch cases;
 - mandatory ephemeral runtime lease signing, non-empty Rust startup keyrings,
   Rust-side expiry and invocation-binding validation, and pre-artifact rejection;
-- serialized non-destructive stream polling, transactional ticket commit/rotate,
-  terminal reads at token capacity, failure retry, and durable operation/stream
-  terminal reconciliation across SQLite reopen;
+- event-driven stream observation and revision-aware waiting, bounded event and
+  byte backpressure, transactional ticket commit/rotate, terminal reads at token
+  capacity, failure retry, and durable operation/stream terminal reconciliation
+  across SQLite reopen;
 - release artifact verifier fixture behavior, including exact four-target and
   signed-file sets plus rejection of every extra tar or non-tar asset;
 - release manifest v3 Worker SDK identity, safe `.crate` structure, immutable
@@ -161,6 +164,27 @@ evidence chain.
 Host-owned stream terminal audit behavior is verified at the scoped adapter
 sink boundary.
 
+## Performance Gates
+
+`scripts/check_redevplugin_performance.sh` supports `--fast`, `--full`, and
+`--release`.
+
+- `--fast` runs deterministic admission, notification, backpressure, migration,
+  TypeScript type, and renderer reconciliation tests in normal CI.
+- `--full` runs the real Go Host and Rust runtime, 32-way invocation and cache
+  scenarios, blocking-hostcall isolation, queued and running cancellation, 500
+  stream waiters, SQLite batch reads, Node reconciliation measurements, and a
+  real Chromium opaque-surface renderer measurement. The weekly workflow uploads
+  `performance-evidence-full.json`.
+- `--release` runs the same acceptance set with release gate identity before a
+  bundle manifest or checksum is created.
+
+The generator requires the exact scenario set and rejects failed thresholds,
+duplicate metrics, invalid provenance, or contract-hash drift. The release
+bundle verifier validates `performance-evidence.json` against
+`performance-evidence-v1`, the selected release version and source commit, and
+the exact compatibility-manifest contract hashes.
+
 ## Release Bundle
 
 `scripts/build_redevplugin_release.sh` creates a release bundle containing:
@@ -168,6 +192,7 @@ sink boundary.
 - `bin/redevplugin`;
 - `bin/redevplugin-runtime`;
 - `compatibility.json`;
+- `performance-evidence.json`;
 - contract artifacts under `contracts/`;
 - npm package tarball under `npm/`;
 - versioned Rust Worker SDK crate under `sdk/`;
@@ -187,7 +212,8 @@ into the Go compatibility matrix, npm package, Worker SDK crate, and Rust
 runtime hello handshake. Release manifest v3 records the source commit,
 compatibility digest, npm tarball path/SHA-256/SRI/size, and Worker SDK
 path/SHA-256/size. The bundle verifier
-checks compatibility, release manifest hashes, `SHA256SUMS`, executable target
+checks compatibility, performance evidence, release manifest hashes,
+`SHA256SUMS`, executable target
 format, runtime hello, npm package version/license, every declared root and
 subpath export target, actual self-referenced imports from the unpacked package,
 the Worker SDK package name/version/license/source/README and link-free archive
@@ -270,7 +296,8 @@ date-time generation metadata.
 
 The compatibility manifest includes contract artifact IDs, versions, paths, and
 hashes for released OpenAPI, plugin schemas, release metadata, source policy,
-source revocations, IPC/WASM contracts, release manifest schema, error codes,
+source revocations, performance evidence, IPC/WASM contracts, release manifest
+schema, error codes,
 network grants, the host-capability contract/pin/manifest/compatibility/
 signature/notices schemas, worker invocation payloads, and target classifier
 fixtures.
