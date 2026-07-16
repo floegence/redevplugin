@@ -552,6 +552,7 @@ type Host struct {
 	methodSchemas       *methodSchemaCache
 	surfaceGenerationID string
 	managementMu        sync.Mutex
+	lifecycleLocks      *pluginLifecycleLockRegistry
 	executions          *executionLeaseRegistry
 	streamReads         *streamReadLockRegistry
 	detachedCancelJobs  sync.Map
@@ -1148,6 +1149,7 @@ func Open(ctx context.Context, adapters Adapters) (*Host, error) {
 		surfaceDocuments:    newSurfaceDocumentCache(defaultSurfaceDocumentCacheEntries, defaultSurfaceDocumentCacheBytes),
 		methodSchemas:       newMethodSchemaCache(defaultMethodSchemaCacheEntries),
 		surfaceGenerationID: surfaceGenerationID,
+		lifecycleLocks:      newPluginLifecycleLockRegistry(),
 		executions:          newExecutionLeaseRegistry(),
 		streamReads:         newStreamReadLockRegistry(),
 		lifecycleCtx:        lifecycleCtx,
@@ -1247,8 +1249,11 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
+	releaseLifecycle, err := h.lifecycleLocks.acquireRead(req.PluginInstanceID)
+	if err != nil {
+		return bridge.SurfaceBootstrap{}, err
+	}
+	defer releaseLifecycle()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
@@ -2172,8 +2177,6 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
@@ -2181,21 +2184,37 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" {
+		pluginInstanceID = defaultPluginInstanceID(pkg)
+	}
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(pluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
+	return h.installResolvedPackage(ctx, pkg, pluginInstanceID, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
 }
 
 func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefRequest) (registry.PluginRecord, error) {
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionInstall, req.ReleaseRef, nil, req.PluginInstanceID, req.Now)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" {
+		pluginInstanceID = defaultPluginInstanceID(pkg)
+	}
+	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(pluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer unlockLifecycle()
 	releaseRef := req.ReleaseRef
-	return h.installResolvedPackage(ctx, pkg, req.PluginInstanceID, packageTrustInput{
+	return h.installResolvedPackage(ctx, pkg, pluginInstanceID, packageTrustInput{
 		ReleaseRef:           &releaseRef,
 		Release:              &release,
 		SourcePolicySnapshot: &sourcePolicy,
@@ -2271,20 +2290,23 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 	if err := h.enforceUnsignedLocalPluginPolicy(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
-	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
-	if err != nil {
-		return registry.PluginRecord{}, err
-	}
-	if err := requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
-		return registry.PluginRecord{}, err
-	}
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
 	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadOptions())
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
+	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	return h.updateResolvedPackage(ctx, current, pkg, packageTrustInput{LocalImport: true}, req.Now, localImportMetadata(req.Now))
@@ -2294,8 +2316,6 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -2305,6 +2325,18 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 	}
 	pkg, release, sourcePolicy, metadata, err := h.resolveReleasePackage(ctx, PackageTrustActionUpdate, req.ReleaseRef, &current, current.PluginInstanceID, req.Now)
 	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer unlockLifecycle()
+	current, err = h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := requireManagementRevision(current, req.ExpectedManagementRevision); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	releaseRef := req.ReleaseRef
@@ -3644,8 +3676,11 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
 	current, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -4803,8 +4838,11 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 		}
 	}
 
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
+	releaseLifecycle, err := h.lifecycleLocks.acquireRead(record.PluginInstanceID)
+	if err != nil {
+		return ReadStreamResult{}, err
+	}
+	defer releaseLifecycle()
 	now = lifecycleNow(req.Now)
 	record, _, validation, err = h.resolveStreamReadAuthorization(ctx, req, session, now)
 	if err != nil {
@@ -5055,8 +5093,11 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -5118,8 +5159,11 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -5185,8 +5229,11 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
 	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
