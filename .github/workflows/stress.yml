@@ -24,10 +24,19 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: rustup show
+      - name: Full platform performance evidence
+        run: |
+          ./scripts/check_redevplugin_performance.sh \
+            --full \
+            --output dist/performance-evidence-full.json \
+            --version "0.0.0-weekly.${GITHUB_RUN_NUMBER}" \
+            --source-commit "$GITHUB_SHA"
       - run: ./scripts/check_redevplugin_stress.sh --full --summary dist/redevplugin-stress-full.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: redevplugin-stress-full
-          path: dist/redevplugin-stress-full.json
+          path: |
+            dist/redevplugin-stress-full.json
+            dist/performance-evidence-full.json
           if-no-files-found: ignore

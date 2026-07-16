@@ -123,6 +123,8 @@ export GOWORK=off
   grep -q 'Canonical WASM native and Docker parity' .github/workflows/ci.yml
   grep -q 'npm run examples:check:canonical && npm run scaffold:check:canonical' .github/workflows/ci.yml
   grep -q 'Bridge replay and cancellation gate' .github/workflows/ci.yml
+  grep -q 'npm run performance:fast' .github/workflows/ci.yml
+  grep -q -- '--output dist/performance-evidence-full.json' .github/workflows/stress.yml
   ! grep -Eq 'uses: [^ ]+@v[0-9]+' .github/workflows/ci.yml .github/workflows/stress.yml
   grep -q 'bash -n scripts/check_redevplugin_release_audit.sh' .github/workflows/ci.yml
   grep -q 'stress-release:' .github/workflows/release.yml
