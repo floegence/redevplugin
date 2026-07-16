@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.0
+
+- Replace whole-tree plugin UI rendering with the keyed, revisioned
+  `plugin-ui-v4` mount/patch protocol, atomic animation-frame commits, local
+  control echo, and IME-safe edit revisions.
+- Add deterministic parallel surface replacement, first-commit visibility,
+  structured quiesce timing, and reliable lifecycle persistence acknowledgments.
+- Disable enabled legacy UI records as `disabled_incompatible` while preserving
+  their packages and data for update, export, and uninstall.
+- Migrate the examples and scaffold to stable VNode keys, a single-call Memos
+  bootstrap, and an explicit fresh/stale/expired SQLite forecast cache.
+
 ## v0.4.3
 
 ### Changed

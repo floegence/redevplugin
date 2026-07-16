@@ -63,26 +63,28 @@ async function echoMessage(event: PluginUIActionEvent): Promise<void> {
 function render(): Promise<void> {
   return bridge.render({
     type: "element",
+    key: "plugin-root",
     tag: "main",
     attributes: { class: "plugin-surface" },
     children: [
-      { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: ["Sandboxed plugin"] },
-      { type: "element", tag: "h1", children: ["__REDEVPLUGIN_DISPLAY_NAME__"] },
-      { type: "element", tag: "p", attributes: { class: "intro" }, children: ["A minimal editable plugin with a TypeScript surface and Rust WASM worker."] },
+      { type: "element", key: "plugin-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Sandboxed plugin"] },
+      { type: "element", key: "plugin-title", tag: "h1", children: ["__REDEVPLUGIN_DISPLAY_NAME__"] },
+      { type: "element", key: "plugin-intro", tag: "p", attributes: { class: "intro" }, children: ["A minimal editable plugin with a TypeScript surface and Rust WASM worker."] },
       {
         type: "element",
+        key: "echo-form",
         tag: "form",
         attributes: { class: "echo-form", "data-redevplugin-action": "echo-message" },
         children: [
-          { type: "element", tag: "label", attributes: { for: "message" }, children: ["Message"] },
-          { type: "element", tag: "input", attributes: { id: "message", name: "message", value: state.message, maxlength: 4096, disabled: state.busy, autocomplete: "off" } },
-          { type: "element", tag: "button", attributes: { type: "submit", disabled: state.busy }, children: [state.busy ? "Sending..." : "Send to worker"] },
+          { type: "element", key: "message-label", tag: "label", attributes: { for: "message" }, children: ["Message"] },
+          { type: "element", key: "message-input", tag: "input", attributes: { id: "message", name: "message", value: state.message, maxlength: 4096, disabled: state.busy, autocomplete: "off" } },
+          { type: "element", key: "message-submit", tag: "button", attributes: { type: "submit", disabled: state.busy }, children: [state.busy ? "Sending..." : "Send to worker"] },
         ],
       },
-      { type: "element", tag: "p", attributes: { class: state.error ? "status error" : "status", role: "status" }, children: [state.status] },
-      { type: "element", tag: "section", attributes: { class: "response", "aria-label": "Worker response" }, children: [
-        { type: "element", tag: "span", children: ["Response"] },
-        { type: "element", tag: "strong", children: [state.response] },
+      { type: "element", key: "plugin-status", tag: "p", attributes: { class: state.error ? "status error" : "status", role: "status" }, children: [state.status] },
+      { type: "element", key: "worker-response", tag: "section", attributes: { class: "response", "aria-label": "Worker response" }, children: [
+        { type: "element", key: "worker-response-label", tag: "span", children: ["Response"] },
+        { type: "element", key: "worker-response-value", tag: "strong", children: [state.response] },
       ] },
     ],
   });

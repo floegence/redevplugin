@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)
-BRIDGE_SCHEMA="$ROOT_DIR/spec/plugin/bridge-v3.schema.json"
+BRIDGE_SCHEMA="$ROOT_DIR/spec/plugin/bridge-v4.schema.json"
 SURFACE_SRC="$ROOT_DIR/packages/redevplugin-ui/src/surface.ts"
 CONTRACTS_SRC="$ROOT_DIR/packages/redevplugin-ui/src/contracts.gen.ts"
 
@@ -21,7 +21,8 @@ const contracts = fs.readFileSync(contractsPath, "utf8");
 const requiredFrames = [
   "redevplugin.bridge.call",
   "redevplugin.bridge.stream.read",
-  "redevplugin.ui.render",
+  "redevplugin.ui.mount",
+  "redevplugin.ui.patch",
   "redevplugin.bridge.cancel",
   "redevplugin.ui.action",
   "redevplugin.bridge.response",
@@ -31,6 +32,9 @@ const schemaText = JSON.stringify(schema);
 for (const frame of requiredFrames) {
   if (!schemaText.includes(frame)) throw new Error(`bridge schema is missing ${frame}`);
   if (!surface.includes(frame)) throw new Error(`surface SDK is missing ${frame}`);
+}
+if (schemaText.includes("redevplugin.ui.render") || surface.includes("redevplugin.ui.render")) {
+  throw new Error("plugin-ui-v4 must not retain the full-tree render frame");
 }
 for (const forbidden of [
   "redevplugin.bridge.handshake",
@@ -46,8 +50,8 @@ for (const forbidden of [
     throw new Error(`plugin-visible bridge schema exposes trusted-parent field ${forbidden}`);
   }
 }
-if (!contracts.includes('"plugin_ui_protocol_version": "plugin-ui-v3"')) {
-  throw new Error("generated UI protocol version is not plugin-ui-v3");
+if (!contracts.includes('"plugin_ui_protocol_version": "plugin-ui-v4"')) {
+  throw new Error("generated UI protocol version is not plugin-ui-v4");
 }
 if (!schema["x-redevplugin-render-policy"]) {
   throw new Error("bridge schema is missing the generated renderer policy source");

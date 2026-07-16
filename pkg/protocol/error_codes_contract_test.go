@@ -14,7 +14,7 @@ import (
 
 func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	root := repoRoot(t)
-	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v1.schema.json"))
+	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v2.schema.json"))
 	defs := requireNestedObject(t, errorCodeSchema, "$defs")
 
 	platformCodes := errorCodesToStrings(security.PlatformErrorCodes())
@@ -25,7 +25,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "bridge_error_code"), bridgeCodes, "error-codes schema bridge_error_code")
 	assertStringSlicesEqual(t, schemaEnum(t, defs, "typescript_client_error_code"), clientCodes, "error-codes schema typescript_client_error_code")
 
-	openAPICodes, err := readOpenAPIErrorCodes(filepath.Join(root, "spec", "openapi", "plugin-platform-v3.yaml"))
+	openAPICodes, err := readOpenAPIErrorCodes(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestStableErrorCodeCatalogsMatchContracts(t *testing.T) {
 
 func TestRustIPCErrorCodesMatchSchemaAndSource(t *testing.T) {
 	root := repoRoot(t)
-	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v1.schema.json"))
+	errorCodeSchema := readJSONMap(t, filepath.Join(root, "spec", "plugin", "error-codes-v2.schema.json"))
 	want := schemaEnum(t, requireNestedObject(t, errorCodeSchema, "$defs"), "rust_ipc_error_code")
 	source, err := os.ReadFile(filepath.Join(root, "crates", "redevplugin-ipc", "src", "lib.rs"))
 	if err != nil {

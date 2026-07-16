@@ -123,8 +123,13 @@ try {
   await memos.getByPlaceholder("Search memos").fill("");
   await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.list"')).length > listCallsBeforeClear, 5_000, "cleared Memos search call");
 
-  await memos.getByPlaceholder("Untitled").fill("Quiesced smoke memo");
-  await memos.getByPlaceholder("Start writing...").fill("This edit is persisted by the surface quiesce lifecycle.");
+  const quiescedTitle = memos.getByPlaceholder("Untitled");
+  const quiescedBody = memos.getByPlaceholder("Start writing...");
+  await quiescedTitle.fill("Quiesced smoke memo");
+  assert.equal(await quiescedTitle.evaluate((element) => element.value), "Quiesced smoke memo", "title input must retain its local edit");
+  await quiescedBody.fill("This edit is persisted by the surface quiesce lifecycle.");
+  assert.equal(await quiescedTitle.evaluate((element) => element.value), "Quiesced smoke memo", "body input must not mutate the title control");
+  assert.equal(await quiescedBody.evaluate((element) => element.value), "This edit is persisted by the surface quiesce lifecycle.", "body input must retain its local edit");
   await memos.getByText("Unsaved", { exact: true }).waitFor();
   const saveCallsBeforeQuiesce = methodCalls.filter((body) => body.includes('"method":"memos.save"')).length;
   const weatherNavigation = desktop.locator('#plugin-list button[data-slug="weather"]');
@@ -249,6 +254,26 @@ try {
   await desktop.reload({ waitUntil: "domcontentloaded" });
   weather = await pluginFrame(desktop, "Weather");
   await weather.locator(".saved-strip").getByText("Paris", { exact: true }).waitFor({ timeout: 20_000 });
+
+  const pluginSwitchSamplesMs = [];
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    let startedAt = performance.now();
+    await desktop.locator('#plugin-list button[data-slug="memos"]').click();
+    const switchedMemos = await pluginFrame(desktop, "Memos");
+    await switchedMemos.locator(".memos-library").waitFor({ state: "visible", timeout: 10_000 });
+    pluginSwitchSamplesMs.push(performance.now() - startedAt);
+
+    startedAt = performance.now();
+    await desktop.locator('#plugin-list button[data-slug="weather"]').click();
+    const switchedWeather = await pluginFrame(desktop, "Weather");
+    await switchedWeather.locator(".weather-app").waitFor({ state: "visible", timeout: 10_000 });
+    pluginSwitchSamplesMs.push(performance.now() - startedAt);
+  }
+  const sortedPluginSwitchSamplesMs = [...pluginSwitchSamplesMs].sort((left, right) => left - right);
+  const pluginSwitchP95Ms = sortedPluginSwitchSamplesMs[Math.ceil(sortedPluginSwitchSamplesMs.length * 0.95) - 1];
+  const pluginSwitchMaxMs = sortedPluginSwitchSamplesMs.at(-1);
+  assert.equal(pluginSwitchP95Ms < 1_000, true, `plugin switch p95 ${pluginSwitchP95Ms.toFixed(1)}ms exceeded 1000ms`);
+  assert.equal(pluginSwitchMaxMs < 1_500, true, `plugin switch max ${pluginSwitchMaxMs.toFixed(1)}ms exceeded 1500ms`);
 
   await desktop.locator('#plugin-list button[data-slug="sky-strike"]').click();
   const game = await pluginFrame(desktop, "Sky Strike");
@@ -427,6 +452,9 @@ try {
     memos_delete_confirmation_verified: true,
     weather_location_persisted: true,
     weather_search_and_save_verified: true,
+    plugin_switch_samples_ms: pluginSwitchSamplesMs.map((sample) => Math.round(sample * 10) / 10),
+    plugin_switch_p95_ms: Math.round(pluginSwitchP95Ms * 10) / 10,
+    plugin_switch_max_ms: Math.round(pluginSwitchMaxMs * 10) / 10,
     game_canvas_nonblank: true,
     game_canvas_animated: true,
     game_restart_verified: true,

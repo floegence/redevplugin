@@ -4,6 +4,7 @@ type Memo = { id: string; title: string; body: string; pinned: boolean; created_
 type MemoSummary = { id: string; title: string; preview: string; pinned: boolean; created_at: string; updated_at: string };
 type MemoDraft = { id: string; title: string; body: string; pinned: boolean; created_at: string; updated_at: string };
 type MemoListResult = { notes: MemoSummary[]; total: number; offset: number; has_more: boolean };
+type MemosBootstrapResult = MemoListResult & { selected_note: Memo | null };
 type SaveState = "idle" | "unsaved" | "saving" | "saved" | "error";
 type SearchState = "idle" | "searching" | "error";
 type Overlay = "none" | "memo-actions" | "delete-confirmation";
@@ -109,9 +110,18 @@ async function initialize(): Promise<void> {
   state.ui.busy = true;
   await render();
   try {
-    await bridge.call("memos.initialize", {});
-    await refreshNotes(false);
-    if (state.library.notes[0]) await loadMemo(state.library.notes[0].id, false);
+    const response = await bridge.call<PluginMethodResult<MemosBootstrapResult>>("memos.bootstrap", {});
+    state.library.notes = response.data.notes;
+    state.library.total = response.data.total;
+    state.library.hasMore = response.data.has_more;
+    if (response.data.selected_note) {
+      const note = response.data.selected_note;
+      state.editor.mode = "saved";
+      state.editor.selectedId = note.id;
+      state.editor.returnId = note.id;
+      state.editor.draft = draftFrom(note);
+      state.editor.saveState = "saved";
+    }
   } catch (error) {
     state.library.searchState = "error";
     state.library.errorMessage = readableError(error, "Memos is temporarily unavailable");
@@ -482,6 +492,7 @@ async function renderWithFocus(target: FocusTarget): Promise<void> {
 function render(): Promise<void> {
   return bridge.render({
     type: "element",
+    key: "memos-root",
     tag: "main",
     attributes: { class: `memos-app view-${state.ui.screen}` },
     children: [libraryPane(), editorPane(), toast()],
@@ -492,37 +503,37 @@ function libraryPane(): PluginUIVNode {
   const groups = groupedNotes();
   const hasNotes = state.library.notes.length > 0;
   return {
-    type: "element", tag: "aside", attributes: { class: "memos-library", "aria-label": "Memo library" }, children: [
-      { type: "element", tag: "header", attributes: { class: "library-toolbar" }, children: [
-        { type: "element", tag: "div", attributes: { class: "brand-lockup" }, children: [
-          { type: "element", tag: "span", attributes: { class: "brand-mark", "aria-hidden": true }, children: [] },
-          { type: "element", tag: "div", children: [
-            { type: "element", tag: "h1", children: ["Memos"] },
-            { type: "element", tag: "p", children: [libraryCountLabel()] },
+    type: "element", key: "library-pane", tag: "aside", attributes: { class: "memos-library", "aria-label": "Memo library" }, children: [
+      { type: "element", key: "library-toolbar", tag: "header", attributes: { class: "library-toolbar" }, children: [
+        { type: "element", key: "library-brand", tag: "div", attributes: { class: "brand-lockup" }, children: [
+          { type: "element", key: "library-brand-mark", tag: "span", attributes: { class: "brand-mark", "aria-hidden": true }, children: [] },
+          { type: "element", key: "library-brand-copy", tag: "div", children: [
+            { type: "element", key: "library-title", tag: "h1", children: ["Memos"] },
+            { type: "element", key: "library-count", tag: "p", children: [libraryCountLabel()] },
           ] },
         ] },
-        { type: "element", tag: "button", attributes: { class: "new-memo-button", type: "button", title: "New memo", "aria-label": "New memo", disabled: backgroundDisabled(), "data-redevplugin-action": "new-memo" }, children: [
-          { type: "element", tag: "span", attributes: { class: "icon-plus", "aria-hidden": true }, children: [] },
+        { type: "element", key: "new-memo", tag: "button", attributes: { class: "new-memo-button", type: "button", title: "New memo", "aria-label": "New memo", disabled: backgroundDisabled(), "data-redevplugin-action": "new-memo" }, children: [
+          { type: "element", key: "new-memo-icon", tag: "span", attributes: { class: "icon-plus", "aria-hidden": true }, children: [] },
         ] },
       ] },
-      { type: "element", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
-        { type: "element", tag: "span", attributes: { class: "search-icon", "aria-hidden": true }, children: [] },
-        { type: "element", tag: "input", attributes: { type: "search", name: "query", value: state.library.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: backgroundDisabled(), "data-redevplugin-action": "search-query" } },
-        state.library.query ? { type: "element", tag: "button", attributes: { class: "clear-search", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: backgroundDisabled(), "data-redevplugin-action": "clear-search" }, children: [
-          { type: "element", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] },
+      { type: "element", key: "search-form", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
+        { type: "element", key: "search-icon", tag: "span", attributes: { class: "search-icon", "aria-hidden": true }, children: [] },
+        { type: "element", key: "search-query", tag: "input", attributes: { type: "search", name: "query", value: state.library.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: backgroundDisabled(), "data-redevplugin-action": "search-query" } },
+        state.library.query ? { type: "element", key: "clear-search", tag: "button", attributes: { class: "clear-search", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: backgroundDisabled(), "data-redevplugin-action": "clear-search" }, children: [
+          { type: "element", key: "clear-search-icon", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] },
         ] } : "",
       ] },
-      { type: "element", tag: "div", attributes: { class: "library-filters", role: "group", "aria-label": "Memo filter" }, children: [
+      { type: "element", key: "library-filters", tag: "div", attributes: { class: "library-filters", role: "group", "aria-label": "Memo filter" }, children: [
         filterButton("all", "All"),
         filterButton("pinned", "Pinned"),
       ] },
-      { type: "element", tag: "div", attributes: { class: "library-content" }, children: [
+      { type: "element", key: "library-content", tag: "div", attributes: { class: "library-content" }, children: [
         state.library.searchState === "searching" && !hasNotes ? libraryLoading() : "",
         state.library.searchState === "error" ? libraryError() : "",
         state.library.searchState !== "error" && !hasNotes ? libraryEmpty() : "",
         groups.pinned.length > 0 ? memoGroup("Pinned", "pinned-group", groups.pinned) : "",
         groups.recent.length > 0 ? memoGroup(state.library.filter === "pinned" ? "Pinned" : "Recent", "recent-group", groups.recent) : "",
-        state.library.hasMore ? { type: "element", tag: "button", attributes: { class: "load-more", type: "button", disabled: backgroundDisabled() || state.library.searchState === "searching", "data-redevplugin-action": "load-more-memos" }, children: [state.library.searchState === "searching" ? "Loading..." : "Load more"] } : "",
+        state.library.hasMore ? { type: "element", key: "load-more", tag: "button", attributes: { class: "load-more", type: "button", disabled: backgroundDisabled() || state.library.searchState === "searching", "data-redevplugin-action": "load-more-memos" }, children: [state.library.searchState === "searching" ? "Loading..." : "Load more"] } : "",
       ] },
     ],
   };
@@ -537,25 +548,25 @@ function groupedNotes(): { pinned: MemoSummary[]; recent: MemoSummary[] } {
 }
 
 function memoGroup(label: string, className: string, notes: MemoSummary[]): PluginUIVNode {
-  return { type: "element", tag: "section", attributes: { class: `memo-group ${className}`, "aria-label": label }, children: [
-    { type: "element", tag: "h2", children: [label] },
-    { type: "element", tag: "ul", attributes: { class: "memo-list" }, children: notes.map(noteItem) },
+  return { type: "element", key: `memo-group-${className}`, tag: "section", attributes: { class: `memo-group ${className}`, "aria-label": label }, children: [
+    { type: "element", key: `memo-group-${className}-title`, tag: "h2", children: [label] },
+    { type: "element", key: `memo-group-${className}-list`, tag: "ul", attributes: { class: "memo-list" }, children: notes.map(noteItem) },
   ] };
 }
 
 function noteItem(note: MemoSummary): PluginUIVNode {
-  return { type: "element", tag: "li", children: [
-    { type: "element", tag: "button", attributes: {
+  return { type: "element", key: `memo-${note.id}`, tag: "li", children: [
+    { type: "element", key: `memo-${note.id}-select`, tag: "button", attributes: {
       class: "memo-row", type: "button", value: note.id, disabled: backgroundDisabled(), "aria-pressed": note.id === state.editor.selectedId,
       "data-redevplugin-action": "select-memo",
     }, children: [
-      { type: "element", tag: "span", attributes: { class: "memo-copy" }, children: [
-        { type: "element", tag: "strong", children: [note.title] },
-        { type: "element", tag: "span", children: [preview(note.preview) || "A blank page"] },
-        { type: "element", tag: "small", children: [formatMemoDate(note.updated_at)] },
+      { type: "element", key: `memo-${note.id}-copy`, tag: "span", attributes: { class: "memo-copy" }, children: [
+        { type: "element", key: `memo-${note.id}-title`, tag: "strong", children: [note.title] },
+        { type: "element", key: `memo-${note.id}-preview`, tag: "span", children: [preview(note.preview) || "A blank page"] },
+        { type: "element", key: `memo-${note.id}-date`, tag: "small", children: [formatMemoDate(note.updated_at)] },
       ] },
-      note.pinned ? { type: "element", tag: "span", attributes: { class: "pinned-mark", title: "Pinned", "aria-label": "Pinned" }, children: [
-        { type: "element", tag: "span", attributes: { class: "icon-pin", "aria-hidden": true }, children: [] },
+      note.pinned ? { type: "element", key: `memo-${note.id}-pinned`, tag: "span", attributes: { class: "pinned-mark", title: "Pinned", "aria-label": "Pinned" }, children: [
+        { type: "element", key: `memo-${note.id}-pinned-icon`, tag: "span", attributes: { class: "icon-pin", "aria-hidden": true }, children: [] },
       ] } : "",
     ] },
   ] };
@@ -564,36 +575,36 @@ function noteItem(note: MemoSummary): PluginUIVNode {
 function editorPane(): PluginUIVNode {
   if (state.editor.mode === "none") return emptyWelcome();
   const words = wordCount(state.editor.draft.body);
-  return { type: "element", tag: "section", attributes: { class: "editor-pane", "aria-label": "Memo editor" }, children: [
-    { type: "element", tag: "header", attributes: { class: "editor-toolbar mobile-editor-bar" }, children: [
-      { type: "element", tag: "button", attributes: { class: "back-button", type: "button", title: "Back to memos", "aria-label": "Back to memos", disabled: backgroundDisabled(), "data-redevplugin-action": "back-to-list" }, children: [
-        { type: "element", tag: "span", attributes: { class: "icon-back", "aria-hidden": true }, children: [] },
+  return { type: "element", key: "editor-pane", tag: "section", attributes: { class: "editor-pane", "aria-label": "Memo editor" }, children: [
+    { type: "element", key: "editor-toolbar", tag: "header", attributes: { class: "editor-toolbar mobile-editor-bar" }, children: [
+      { type: "element", key: "editor-back", tag: "button", attributes: { class: "back-button", type: "button", title: "Back to memos", "aria-label": "Back to memos", disabled: backgroundDisabled(), "data-redevplugin-action": "back-to-list" }, children: [
+        { type: "element", key: "editor-back-icon", tag: "span", attributes: { class: "icon-back", "aria-hidden": true }, children: [] },
       ] },
       saveIndicator(),
-      { type: "element", tag: "div", attributes: { class: "editor-actions" }, children: [
-        { type: "element", tag: "button", attributes: { class: "editor-pin", type: "button", title: state.editor.draft.pinned ? "Unpin memo" : "Pin memo", "aria-label": state.editor.draft.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": state.editor.draft.pinned, disabled: backgroundDisabled(), "data-redevplugin-action": "set-pinned" }, children: [
-          { type: "element", tag: "span", attributes: { class: "icon-pin", "aria-hidden": true }, children: [] },
+      { type: "element", key: "editor-actions", tag: "div", attributes: { class: "editor-actions" }, children: [
+        { type: "element", key: "editor-pin", tag: "button", attributes: { class: "editor-pin", type: "button", title: state.editor.draft.pinned ? "Unpin memo" : "Pin memo", "aria-label": state.editor.draft.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": state.editor.draft.pinned, disabled: backgroundDisabled(), "data-redevplugin-action": "set-pinned" }, children: [
+          { type: "element", key: "editor-pin-icon", tag: "span", attributes: { class: "icon-pin", "aria-hidden": true }, children: [] },
         ] },
-        { type: "element", tag: "button", attributes: { class: "memo-more", type: "button", title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.overlay === "memo-actions", autofocus: state.ui.focusTarget === "menu-button", disabled: backgroundDisabled(), "data-redevplugin-action": "toggle-memo-menu" }, children: [
-          { type: "element", tag: "span", attributes: { class: "icon-more", "aria-hidden": true }, children: [] },
+        { type: "element", key: "editor-more", tag: "button", attributes: { class: "memo-more", type: "button", title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.overlay === "memo-actions", autofocus: state.ui.focusTarget === "menu-button", disabled: backgroundDisabled(), "data-redevplugin-action": "toggle-memo-menu" }, children: [
+          { type: "element", key: "editor-more-icon", tag: "span", attributes: { class: "icon-more", "aria-hidden": true }, children: [] },
         ] },
       ] },
       state.ui.overlay === "memo-actions" ? memoMenu() : "",
     ] },
-    { type: "element", tag: "div", attributes: { class: "editor-scroll" }, children: [
-      { type: "element", tag: "article", attributes: { class: "editor-canvas" }, children: [
-        { type: "element", tag: "p", attributes: { class: "memo-date" }, children: [formatDocumentDate(state.editor.draft.created_at)] },
-        { type: "element", tag: "textarea", attributes: {
+    { type: "element", key: "editor-scroll", tag: "div", attributes: { class: "editor-scroll" }, children: [
+      { type: "element", key: "editor-document", tag: "article", attributes: { class: "editor-canvas" }, children: [
+        { type: "element", key: "editor-date", tag: "p", attributes: { class: "memo-date" }, children: [formatDocumentDate(state.editor.draft.created_at)] },
+        { type: "element", key: "editor-title", tag: "textarea", attributes: {
           class: "memo-title", name: "title", placeholder: "Untitled", rows: 1, maxlength: 160,
-          autofocus: state.ui.focusTarget === "title", disabled: backgroundDisabled(), "aria-label": "Memo title", "data-redevplugin-action": "edit-title",
-        }, children: [state.editor.draft.title] },
-        { type: "element", tag: "textarea", attributes: {
-          class: "memo-body", name: "body", placeholder: "Start writing...", maxlength: 20000, disabled: backgroundDisabled(),
+          value: state.editor.draft.title, autofocus: state.ui.focusTarget === "title", disabled: backgroundDisabled(), "aria-label": "Memo title", "data-redevplugin-action": "edit-title",
+        } },
+        { type: "element", key: "editor-body", tag: "textarea", attributes: {
+          class: "memo-body", name: "body", value: state.editor.draft.body, placeholder: "Start writing...", maxlength: 20000, disabled: backgroundDisabled(),
           "aria-label": "Memo body", "data-redevplugin-action": "edit-body",
-        }, children: [state.editor.draft.body] },
-        { type: "element", tag: "footer", attributes: { class: "editor-footer" }, children: [
-          { type: "element", tag: "span", attributes: { class: "word-count" }, children: [`${words} ${words === 1 ? "word" : "words"}`] },
-          { type: "element", tag: "span", children: [state.editor.draft.updated_at ? `Updated ${formatMemoDate(state.editor.draft.updated_at).toLowerCase()}` : "Not saved yet"] },
+        } },
+        { type: "element", key: "editor-footer", tag: "footer", attributes: { class: "editor-footer" }, children: [
+          { type: "element", key: "editor-word-count", tag: "span", attributes: { class: "word-count" }, children: [`${words} ${words === 1 ? "word" : "words"}`] },
+          { type: "element", key: "editor-updated", tag: "span", children: [state.editor.draft.updated_at ? `Updated ${formatMemoDate(state.editor.draft.updated_at).toLowerCase()}` : "Not saved yet"] },
         ] },
       ] },
     ] },
@@ -602,24 +613,24 @@ function editorPane(): PluginUIVNode {
 }
 
 function emptyWelcome(): PluginUIVNode {
-  return { type: "element", tag: "section", attributes: { class: "editor-pane empty-welcome", "aria-label": "Start a memo" }, children: [
-    { type: "element", tag: "div", attributes: { class: "empty-artwork", "aria-hidden": true }, children: [] },
-    { type: "element", tag: "p", attributes: { class: "empty-kicker" }, children: [formatNotebookDate()] },
-    { type: "element", tag: "h2", children: ["Keep a thought close"] },
-    { type: "element", tag: "p", children: ["A private place for notes, plans, and passing ideas."] },
-    { type: "element", tag: "button", attributes: { class: "write-memo-button", type: "button", disabled: state.ui.busy, "data-redevplugin-action": "new-memo" }, children: [
-      { type: "element", tag: "span", attributes: { class: "icon-plus", "aria-hidden": true }, children: [] },
-      { type: "element", tag: "span", children: ["Write a memo"] },
+  return { type: "element", key: "editor-pane", tag: "section", attributes: { class: "editor-pane empty-welcome", "aria-label": "Start a memo" }, children: [
+    { type: "element", key: "welcome-artwork", tag: "div", attributes: { class: "empty-artwork", "aria-hidden": true }, children: [] },
+    { type: "element", key: "welcome-kicker", tag: "p", attributes: { class: "empty-kicker" }, children: [formatNotebookDate()] },
+    { type: "element", key: "welcome-title", tag: "h2", children: ["Keep a thought close"] },
+    { type: "element", key: "welcome-copy", tag: "p", children: ["A private place for notes, plans, and passing ideas."] },
+    { type: "element", key: "welcome-new", tag: "button", attributes: { class: "write-memo-button", type: "button", disabled: state.ui.busy, "data-redevplugin-action": "new-memo" }, children: [
+      { type: "element", key: "welcome-new-icon", tag: "span", attributes: { class: "icon-plus", "aria-hidden": true }, children: [] },
+      { type: "element", key: "welcome-new-label", tag: "span", children: ["Write a memo"] },
     ] },
   ] };
 }
 
 function saveIndicator(): PluginUIVNode {
   const label = saveLabel();
-  return { type: "element", tag: "div", attributes: { class: `save-indicator ${state.editor.saveState}`, role: "status" }, children: [
-    { type: "element", tag: "span", attributes: { class: "save-mark", "aria-hidden": true }, children: [] },
-    { type: "element", tag: "span", children: [label] },
-    state.editor.dirty && state.editor.saveState === "error" ? { type: "element", tag: "button", attributes: { class: "retry-save", type: "button", disabled: backgroundDisabled(), "data-redevplugin-action": "retry-save" }, children: ["Retry"] } : "",
+  return { type: "element", key: "save-indicator", tag: "div", attributes: { class: `save-indicator ${state.editor.saveState}`, role: "status" }, children: [
+    { type: "element", key: "save-indicator-mark", tag: "span", attributes: { class: "save-mark", "aria-hidden": true }, children: [] },
+    { type: "element", key: "save-indicator-label", tag: "span", children: [label] },
+    state.editor.dirty && state.editor.saveState === "error" ? { type: "element", key: "retry-save", tag: "button", attributes: { class: "retry-save", type: "button", disabled: backgroundDisabled(), "data-redevplugin-action": "retry-save" }, children: ["Retry"] } : "",
   ] };
 }
 
@@ -632,39 +643,39 @@ function saveLabel(): string {
 }
 
 function memoMenu(): PluginUIVNode {
-  return { type: "element", tag: "div", attributes: { class: "memo-menu", role: "menu", "aria-label": "Memo actions", "data-redevplugin-escape-action": "close-memo-menu" }, children: [
+  return { type: "element", key: "memo-menu", tag: "div", attributes: { class: "memo-menu", role: "menu", "aria-label": "Memo actions", "data-redevplugin-escape-action": "close-memo-menu" }, children: [
     state.editor.draft.id
-      ? { type: "element", tag: "button", attributes: { type: "button", role: "menuitem", autofocus: state.ui.focusTarget === "menu-item", disabled: state.ui.busy, "data-redevplugin-action": "delete-memo" }, children: [
-        { type: "element", tag: "span", attributes: { class: "icon-trash", "aria-hidden": true }, children: [] },
-        { type: "element", tag: "span", children: ["Delete memo"] },
+      ? { type: "element", key: "memo-menu-delete", tag: "button", attributes: { type: "button", role: "menuitem", autofocus: state.ui.focusTarget === "menu-item", disabled: state.ui.busy, "data-redevplugin-action": "delete-memo" }, children: [
+        { type: "element", key: "memo-menu-delete-icon", tag: "span", attributes: { class: "icon-trash", "aria-hidden": true }, children: [] },
+        { type: "element", key: "memo-menu-delete-label", tag: "span", children: ["Delete memo"] },
       ] }
-      : { type: "element", tag: "button", attributes: { type: "button", role: "menuitem", autofocus: state.ui.focusTarget === "menu-item", "data-redevplugin-action": "delete-memo" }, children: [
-        { type: "element", tag: "span", attributes: { class: "icon-trash", "aria-hidden": true }, children: [] },
-        { type: "element", tag: "span", children: ["Discard draft"] },
+      : { type: "element", key: "memo-menu-delete", tag: "button", attributes: { type: "button", role: "menuitem", autofocus: state.ui.focusTarget === "menu-item", "data-redevplugin-action": "delete-memo" }, children: [
+        { type: "element", key: "memo-menu-delete-icon", tag: "span", attributes: { class: "icon-trash", "aria-hidden": true }, children: [] },
+        { type: "element", key: "memo-menu-delete-label", tag: "span", children: ["Discard draft"] },
       ] },
   ] };
 }
 
 function deleteDialog(): PluginUIVNode {
   const draft = !state.editor.draft.id;
-  return { type: "element", tag: "div", attributes: { class: "dialog-layer" }, children: [
-    { type: "element", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": draft ? "Cancel discard" : "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
-    { type: "element", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": draft ? "Discard draft" : "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
-      { type: "element", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: ["!"] },
-      { type: "element", tag: "div", attributes: { class: "delete-copy" }, children: [
-        { type: "element", tag: "h2", children: [draft ? "Discard this draft?" : "Delete this memo?"] },
-        { type: "element", tag: "p", children: [draft ? "Your unsaved writing will be removed." : "This cannot be undone."] },
+  return { type: "element", key: "delete-layer", tag: "div", attributes: { class: "dialog-layer" }, children: [
+    { type: "element", key: "delete-scrim", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": draft ? "Cancel discard" : "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
+    { type: "element", key: "delete-dialog", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": draft ? "Discard draft" : "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
+      { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: ["!"] },
+      { type: "element", key: "delete-copy", tag: "div", attributes: { class: "delete-copy" }, children: [
+        { type: "element", key: "delete-title", tag: "h2", children: [draft ? "Discard this draft?" : "Delete this memo?"] },
+        { type: "element", key: "delete-message", tag: "p", children: [draft ? "Your unsaved writing will be removed." : "This cannot be undone."] },
       ] },
-      { type: "element", tag: "div", attributes: { class: "delete-actions" }, children: [
-        { type: "element", tag: "button", attributes: { class: "button quiet", type: "button", autofocus: true, "data-redevplugin-action": "cancel-delete" }, children: [draft ? "Keep writing" : "Keep memo"] },
-        { type: "element", tag: "button", attributes: { class: "button danger", type: "button", "data-redevplugin-action": "confirm-delete" }, children: [draft ? "Discard draft" : "Delete memo"] },
+      { type: "element", key: "delete-actions", tag: "div", attributes: { class: "delete-actions" }, children: [
+        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "button quiet", type: "button", autofocus: true, "data-redevplugin-action": "cancel-delete" }, children: [draft ? "Keep writing" : "Keep memo"] },
+        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "button danger", type: "button", "data-redevplugin-action": "confirm-delete" }, children: [draft ? "Discard draft" : "Delete memo"] },
       ] },
     ] },
   ] };
 }
 
 function filterButton(value: "all" | "pinned", label: string): PluginUIVNode {
-  return { type: "element", tag: "button", attributes: {
+  return { type: "element", key: `filter-${value}`, tag: "button", attributes: {
     type: "button", value, "aria-pressed": state.library.filter === value, disabled: backgroundDisabled() || state.library.searchState === "searching", "data-redevplugin-action": "filter-memos",
   }, children: [label] };
 }
@@ -674,16 +685,16 @@ function backgroundDisabled(): boolean {
 }
 
 function libraryLoading(): PluginUIVNode {
-  return { type: "element", tag: "div", attributes: { class: "library-message", role: "status" }, children: [
-    { type: "element", tag: "span", attributes: { class: "loading-mark", "aria-hidden": true }, children: [] },
-    { type: "element", tag: "strong", children: ["Finding your memos"] },
+  return { type: "element", key: "library-loading", tag: "div", attributes: { class: "library-message", role: "status" }, children: [
+    { type: "element", key: "library-loading-mark", tag: "span", attributes: { class: "loading-mark", "aria-hidden": true }, children: [] },
+    { type: "element", key: "library-loading-label", tag: "strong", children: ["Finding your memos"] },
   ] };
 }
 
 function libraryError(): PluginUIVNode {
-  return { type: "element", tag: "div", attributes: { class: "library-message error", role: "status" }, children: [
-    { type: "element", tag: "strong", children: ["Memos need a moment"] },
-    { type: "element", tag: "span", children: [state.library.errorMessage] },
+  return { type: "element", key: "library-error", tag: "div", attributes: { class: "library-message error", role: "status" }, children: [
+    { type: "element", key: "library-error-title", tag: "strong", children: ["Memos need a moment"] },
+    { type: "element", key: "library-error-message", tag: "span", children: [state.library.errorMessage] },
   ] };
 }
 
@@ -691,14 +702,14 @@ function libraryEmpty(): PluginUIVNode {
   const searching = Boolean(state.library.query);
   const pinned = state.library.filter === "pinned";
   const variant = searching ? "search-empty" : pinned ? "pinned-empty" : "default-empty";
-  return { type: "element", tag: "div", attributes: { class: `library-message library-empty ${variant}` }, children: [
-    { type: "element", tag: "strong", children: [searching ? "No matches" : pinned ? "Nothing pinned" : "No memos yet"] },
-    { type: "element", tag: "span", children: [searching ? "Try another phrase." : pinned ? "Pinned notes will stay within easy reach." : "Use the plus button to begin."] },
+  return { type: "element", key: "library-empty", tag: "div", attributes: { class: `library-message library-empty ${variant}` }, children: [
+    { type: "element", key: "library-empty-title", tag: "strong", children: [searching ? "No matches" : pinned ? "Nothing pinned" : "No memos yet"] },
+    { type: "element", key: "library-empty-message", tag: "span", children: [searching ? "Try another phrase." : pinned ? "Pinned notes will stay within easy reach." : "Use the plus button to begin."] },
   ] };
 }
 
 function toast(): PluginUIVNode | string {
-  return state.ui.toast ? { type: "element", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [state.ui.toast] } : "";
+  return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [state.ui.toast] } : "";
 }
 
 function libraryCountLabel(): string {

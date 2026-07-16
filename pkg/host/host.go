@@ -79,6 +79,7 @@ var (
 	ErrPluginStateVersionMismatch    = errors.New("plugin state version mismatch")
 	ErrPluginTrustUnavailable        = errors.New("plugin trust is unavailable")
 	ErrPluginTrustDenied             = errors.New("plugin trust does not allow execution")
+	ErrPluginUIProtocolUnsupported   = errors.New("plugin UI protocol is unsupported")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
 )
 
@@ -1065,7 +1066,69 @@ func New(adapters Adapters) (*Host, error) {
 	if err := host.reconcileDurableExecutionStates(reconcileCtx); err != nil {
 		return nil, fmt.Errorf("reconcile durable operation and stream state: %w", err)
 	}
+	if err := host.reconcileUIProtocolCompatibility(reconcileCtx, time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("reconcile plugin UI protocol compatibility: %w", err)
+	}
 	return host, nil
+}
+
+func (h *Host) reconcileUIProtocolCompatibility(ctx context.Context, now time.Time) error {
+	records, err := h.adapters.Registry.ListPlugins(ctx)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.Manifest.Plugin.UIProtocolVersion == version.PluginUIProtocolVersion {
+			continue
+		}
+		updated := record
+		transitioned := record.EnableState == registry.EnableEnabled
+		if transitioned {
+			updated, err = h.adapters.Registry.SetEnableState(
+				ctx,
+				record.PluginInstanceID,
+				registry.EnableDisabledIncompatible,
+				fmt.Sprintf("UI protocol %s is incompatible with %s", record.Manifest.Plugin.UIProtocolVersion, version.PluginUIProtocolVersion),
+				now,
+			)
+			if err != nil {
+				return err
+			}
+			details := map[string]any{
+				"installed_ui_protocol_version": record.Manifest.Plugin.UIProtocolVersion,
+				"required_ui_protocol_version":  version.PluginUIProtocolVersion,
+				"management_revision":           updated.ManagementRevision,
+				"revoke_epoch":                  updated.RevokeEpoch,
+			}
+			h.audit(ctx, AuditEvent{Type: "plugin.disabled_incompatible", PluginID: updated.PluginID, PluginInstanceID: updated.PluginInstanceID, Details: details})
+			h.diagnostic(ctx, DiagnosticEvent{
+				Type:              "plugin.ui_protocol.incompatible",
+				Severity:          "warning",
+				Message:           updated.DisabledReason,
+				PluginID:          updated.PluginID,
+				PluginInstanceID:  updated.PluginInstanceID,
+				ActiveFingerprint: updated.ActiveFingerprint,
+				Details:           details,
+			})
+		} else if record.EnableState != registry.EnableDisabledIncompatible {
+			continue
+		}
+		if h.adapters.SurfaceCatalog != nil {
+			if err := h.adapters.SurfaceCatalog.PublishSurfaces(ctx, SurfaceSnapshot{
+				PluginInstanceID:  updated.PluginInstanceID,
+				ActiveFingerprint: updated.ActiveFingerprint,
+				Surfaces:          []manifest.SurfaceSpec{},
+			}); err != nil {
+				return err
+			}
+		}
+		if h.adapters.Connectivity != nil {
+			if err := h.adapters.Connectivity.RemovePolicy(ctx, updated.PluginInstanceID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (h *Host) Capabilities() *capability.Registry {
@@ -1101,6 +1164,9 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 	}
 	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
 		return bridge.SurfaceBootstrap{}, err
+	}
+	if record.Manifest.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
+		return bridge.SurfaceBootstrap{}, fmt.Errorf("%w: installed %s, required %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion, version.PluginUIProtocolVersion)
 	}
 	if record.EnableState != registry.EnableEnabled {
 		return bridge.SurfaceBootstrap{}, errors.New("plugin is not enabled")
@@ -2325,7 +2391,7 @@ func parseSignedReleaseMetadata(ref PluginReleaseRef, metadataBytes []byte) (Plu
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata must contain exactly one JSON document", ErrReleaseRefVerificationFailed)
 	}
-	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v3" {
+	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v4" {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata schema_version is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if envelope.ReleaseMetadataRef != ref.ReleaseMetadataRef {
@@ -3747,6 +3813,11 @@ func prepareVersionSwitchRecord(current registry.PluginRecord, next registry.Plu
 	next.RevokeEpoch = current.RevokeEpoch
 	next.InstalledAt = current.InstalledAt
 	next.EnabledAt = cloneTimePtr(current.EnabledAt)
+	if current.EnableState == registry.EnableDisabledIncompatible && next.Manifest.Plugin.UIProtocolVersion == version.PluginUIProtocolVersion {
+		next.EnableState = registry.EnableDisabled
+		next.DisabledReason = "updated to the current UI protocol; explicit enable is required"
+		next.EnabledAt = nil
+	}
 	next.DeletedAt = cloneTimePtr(current.DeletedAt)
 	next.Metadata = mergeStringMap(current.Metadata, next.Metadata)
 	if previous.PackageHash != "" && previous.PackageHash != next.PackageHash {
@@ -4663,6 +4734,9 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	}
 	if err := requirePluginStateVersion(record, req.PluginStateVersion); err != nil {
 		return registry.PluginRecord{}, err
+	}
+	if record.Manifest.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
+		return registry.PluginRecord{}, fmt.Errorf("%w: installed %s, required %s", ErrPluginUIProtocolUnsupported, record.Manifest.Plugin.UIProtocolVersion, version.PluginUIProtocolVersion)
 	}
 	if err := h.canRun(ctx, record); err != nil {
 		return registry.PluginRecord{}, err

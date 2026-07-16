@@ -30,9 +30,10 @@ const (
 type EnableState string
 
 const (
-	EnableDisabled         EnableState = "disabled"
-	EnableEnabled          EnableState = "enabled"
-	EnableDisabledByPolicy EnableState = "disabled_by_policy"
+	EnableDisabled             EnableState = "disabled"
+	EnableEnabled              EnableState = "enabled"
+	EnableDisabledByPolicy     EnableState = "disabled_by_policy"
+	EnableDisabledIncompatible EnableState = "disabled_incompatible"
 )
 
 type RetainedDataState string

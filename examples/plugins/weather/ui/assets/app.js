@@ -39,6 +39,9 @@
     "PLUGIN_NETWORK_RATE_LIMITED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
     "PLUGIN_RUNTIME_VERSION_MISMATCH",
+    "PLUGIN_UI_PROTOCOL_UNSUPPORTED",
+    "PLUGIN_UI_PROTOCOL_VIOLATION",
+    "PLUGIN_SURFACE_QUIESCE_TIMEOUT",
     "PLUGIN_JSON_LIMIT_EXCEEDED",
     "PLUGIN_CAPABILITY_ERROR",
     "PLUGIN_WORKER_ERROR",
@@ -78,7 +81,7 @@
   var opaqueSurfaceRenderLimits = {
     "max_message_bytes": 262144,
     "max_in_flight_requests": 256,
-    "max_renders_per_second": 30,
+    "max_renders_per_second": 60,
     "max_render_depth": 32,
     "max_render_nodes": 4096,
     "max_attributes_per_element": 64,
@@ -125,6 +128,195 @@
   }
   var defaultPluginSurfaceScope = createPluginSurfaceScope();
 
+  // packages/redevplugin-ui/src/ui-reconciler.ts
+  var keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
+  var editableValueTags = /* @__PURE__ */ new Set(["input", "textarea", "select", "option"]);
+  var PluginUIReconcileError = class extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "PluginUIReconcileError";
+    }
+  };
+  function validatePluginUITree(tree) {
+    if (!isElement(tree)) {
+      throw new PluginUIReconcileError("Plugin UI root must be one keyed element");
+    }
+    const keys = /* @__PURE__ */ new Set();
+    const seen = /* @__PURE__ */ new Set();
+    let nodes = 0;
+    const visit = (node, depth) => {
+      nodes += 1;
+      if (nodes > 4096 || depth > 32) {
+        throw new PluginUIReconcileError("Plugin UI tree exceeds structural limits");
+      }
+      if (typeof node === "string") {
+        if (node.length > 65536) throw new PluginUIReconcileError("Plugin UI text exceeds limits");
+        return;
+      }
+      if (!isElement(node) || seen.has(node)) {
+        throw new PluginUIReconcileError("Plugin UI tree must contain plain acyclic VNodes");
+      }
+      seen.add(node);
+      try {
+        if (!keyPattern.test(node.key) || keys.has(node.key)) {
+          throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
+        }
+        keys.add(node.key);
+        if (node.attributes !== void 0) {
+          if (!isPlainRecord(node.attributes) || Object.keys(node.attributes).length > 64) {
+            throw new PluginUIReconcileError(`Plugin UI attributes are invalid for ${node.key}`);
+          }
+          for (const value of Object.values(node.attributes)) {
+            if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+              throw new PluginUIReconcileError(`Plugin UI attribute is invalid for ${node.key}`);
+            }
+            if (typeof value === "number" && !Number.isFinite(value)) {
+              throw new PluginUIReconcileError(`Plugin UI attribute must be finite for ${node.key}`);
+            }
+          }
+        }
+        if (node.children !== void 0) {
+          if (!Array.isArray(node.children)) throw new PluginUIReconcileError(`Plugin UI children are invalid for ${node.key}`);
+          for (const child of node.children) visit(child, depth + 1);
+        }
+      } finally {
+        seen.delete(node);
+      }
+    };
+    visit(tree, 1);
+    return tree;
+  }
+  function reconcilePluginUITrees(current, next, options = {}) {
+    validatePluginUITree(current);
+    validatePluginUITree(next);
+    if (current.key !== next.key || current.tag !== next.tag) {
+      throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
+    }
+    const operations = [];
+    const transferredCanvasKeys = options.transferredCanvasKeys ?? /* @__PURE__ */ new Set();
+    const maxOperations = options.maxOperations ?? 4096;
+    const append = (operation) => {
+      if (operations.length >= maxOperations) {
+        throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
+      }
+      operations.push(operation);
+    };
+    const ensureCanvasStable = (node, action) => {
+      if (typeof node === "string") return;
+      if (transferredCanvasKeys.has(node.key)) {
+        throw new PluginUIReconcileError(`Transferred canvas ${node.key} cannot be ${action}`);
+      }
+      for (const child of node.children ?? []) ensureCanvasStable(child, action);
+    };
+    const reconcileElement = (left, right) => {
+      if (left.key !== right.key || left.tag !== right.tag) {
+        throw new PluginUIReconcileError(`Plugin UI element identity changed for ${left.key}`);
+      }
+      reconcileAttributes(left, right, options.controlEditRevisions, append);
+      const working = [...left.children ?? []];
+      const desired = right.children ?? [];
+      for (let index = 0; index < working.length; index += 1) {
+        const child = working[index];
+        if (typeof child !== "string" && transferredCanvasKeys.has(child.key)) {
+          const nextIndex = desired.findIndex((candidate) => typeof candidate !== "string" && candidate.key === child.key);
+          if (nextIndex === -1) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be removed`);
+          if (nextIndex !== index) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be moved`);
+        }
+      }
+      for (let index = 0; index < desired.length; index += 1) {
+        const wanted = desired[index];
+        const present = working[index];
+        if (typeof wanted === "string") {
+          if (typeof present === "string") {
+            if (present !== wanted) append({ type: "set_text", parent_key: left.key, child_index: index, text: wanted });
+            working[index] = wanted;
+          } else {
+            append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
+            working.splice(index, 0, wanted);
+          }
+          continue;
+        }
+        const foundIndex = typeof present !== "string" && present?.key === wanted.key ? index : working.findIndex((candidate) => typeof candidate !== "string" && candidate.key === wanted.key);
+        if (foundIndex === -1) {
+          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
+          working.splice(index, 0, wanted);
+          continue;
+        }
+        const found = working[foundIndex];
+        if (typeof found === "string") throw new PluginUIReconcileError("Plugin UI keyed lookup became inconsistent");
+        if (found.tag !== wanted.tag) {
+          ensureCanvasStable(found, "replaced");
+          append({ type: "remove_child", parent_key: left.key, child_index: foundIndex, child_key: found.key });
+          working.splice(foundIndex, 1);
+          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
+          working.splice(index, 0, wanted);
+          continue;
+        }
+        if (foundIndex !== index) {
+          ensureCanvasStable(found, "moved");
+          append({ type: "move_child", parent_key: left.key, child_key: found.key, from_index: foundIndex, to_index: index });
+          working.splice(foundIndex, 1);
+          working.splice(index, 0, found);
+        }
+        reconcileElement(found, wanted);
+        working[index] = wanted;
+      }
+      for (let index = working.length - 1; index >= desired.length; index -= 1) {
+        const removed = working[index];
+        ensureCanvasStable(removed, "removed");
+        append({
+          type: "remove_child",
+          parent_key: left.key,
+          child_index: index,
+          ...typeof removed === "string" ? {} : { child_key: removed.key }
+        });
+        working.splice(index, 1);
+      }
+    };
+    reconcileElement(current, next);
+    return operations;
+  }
+  function reconcileAttributes(current, next, controlEditRevisions, append) {
+    const left = current.attributes ?? {};
+    const right = next.attributes ?? {};
+    const set = {};
+    const remove = [];
+    for (const [name, value] of Object.entries(right)) {
+      if (!isEditableControlAttribute(current.tag, name) && left[name] !== value) set[name] = value;
+    }
+    for (const name of Object.keys(left)) {
+      if (!isEditableControlAttribute(current.tag, name) && !(name in right)) remove.push(name);
+    }
+    if (Object.keys(set).length > 0 || remove.length > 0) {
+      append({ type: "patch_attributes", target_key: current.key, set, remove });
+    }
+    const valueChanged = editableValueTags.has(current.tag) && left.value !== right.value;
+    const checkedChanged = current.tag === "input" && left.checked !== right.checked;
+    if (valueChanged || checkedChanged) {
+      append({
+        type: "patch_control",
+        target_key: current.key,
+        edit_revision: controlEditRevisions?.get(current.key) ?? 0,
+        ...valueChanged ? { value: right.value === void 0 ? null : String(right.value) } : {},
+        ...checkedChanged ? { checked: right.checked === void 0 ? null : Boolean(right.checked) } : {}
+      });
+    }
+  }
+  function isEditableControlAttribute(tag, name) {
+    const normalized = name.toLowerCase();
+    return normalized === "value" && editableValueTags.has(tag) || normalized === "checked" && tag === "input";
+  }
+  function isElement(value) {
+    if (!isPlainRecord(value)) return false;
+    const keys = Object.keys(value);
+    return keys.every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) && value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
+  }
+  function isPlainRecord(value) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
   // packages/redevplugin-ui/src/surface.ts
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridgeV2";
   var maxPendingPluginBridgeRequests = 256;
@@ -148,7 +340,13 @@
     #readyPromise;
     #resolveReady;
     #rejectReady;
-    #disposed = false;
+    #lifecycleState = "active";
+    #handlingLifecycle = false;
+    #renderRevision = 0;
+    #committedTree;
+    #pendingRender;
+    #renderLoop;
+    #controlEditRevisions = /* @__PURE__ */ new Map();
     #onMessage = (event) => {
       void this.#handleMessage(event);
     };
@@ -214,11 +412,20 @@
     }
     render(tree) {
       this.#assertActive();
-      const id = this.#requestID("render");
-      return this.#request(id, {
-        type: "redevplugin.ui.render",
-        id,
-        tree
+      let validated;
+      try {
+        validated = validatePluginUITree(tree);
+      } catch (error) {
+        throw new PluginBridgeError(
+          "PLUGIN_UI_PROTOCOL_VIOLATION",
+          error instanceof Error ? error.message : "Plugin UI tree is invalid"
+        );
+      }
+      return new Promise((resolve, reject) => {
+        const waiters = this.#pendingRender?.waiters ?? [];
+        waiters.push({ resolve, reject });
+        this.#pendingRender = { tree: validated, waiters };
+        this.#startRenderLoop();
       });
     }
     openCanvas(canvasId) {
@@ -293,8 +500,8 @@
       };
     }
     dispose() {
-      if (this.#disposed) return;
-      this.#disposed = true;
+      if (this.#lifecycleState === "disposed") return;
+      this.#lifecycleState = "disposed";
       const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
       if (!this.#ready) this.#rejectReady(disposedError);
       this.#port.removeEventListener("message", this.#onMessage);
@@ -306,7 +513,64 @@
       this.#actionHandlers.clear();
       this.#canvasInputHandlers.clear();
       this.#lifecycleHandlers.clear();
+      for (const waiter of this.#pendingRender?.waiters ?? []) waiter.reject(disposedError);
+      this.#pendingRender = void 0;
+      this.#controlEditRevisions.clear();
       this.#port.close();
+    }
+    async #drainRenders() {
+      while (this.#pendingRender && this.#acceptsPluginWork()) {
+        const pending = this.#pendingRender;
+        this.#pendingRender = void 0;
+        const id = this.#requestID("render");
+        const nextRevision = this.#renderRevision + 1;
+        try {
+          if (!this.#committedTree) {
+            await this.#request(id, {
+              type: "redevplugin.ui.mount",
+              id,
+              revision: 1,
+              tree: pending.tree
+            });
+          } else {
+            const operations = reconcilePluginUITrees(this.#committedTree, pending.tree, {
+              controlEditRevisions: this.#controlEditRevisions
+            });
+            if (operations.length > 0) {
+              await this.#request(id, {
+                type: "redevplugin.ui.patch",
+                id,
+                base_revision: this.#renderRevision,
+                revision: nextRevision,
+                operations
+              });
+              this.#renderRevision = nextRevision;
+            }
+          }
+          this.#committedTree = pending.tree;
+          if (this.#renderRevision === 0) this.#renderRevision = 1;
+          for (const waiter of pending.waiters) waiter.resolve();
+        } catch (error) {
+          const bridgeError = error instanceof PluginUIReconcileError ? new PluginBridgeError("PLUGIN_UI_PROTOCOL_VIOLATION", error.message) : error;
+          for (const waiter of pending.waiters) waiter.reject(bridgeError);
+          const queued = this.#pendingRender;
+          for (const waiter of queued?.waiters ?? []) waiter.reject(bridgeError);
+          this.#pendingRender = void 0;
+          throw bridgeError;
+        }
+      }
+      if (this.#pendingRender) {
+        const error = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin UI cannot render after quiescing starts");
+        for (const waiter of this.#pendingRender.waiters) waiter.reject(error);
+        this.#pendingRender = void 0;
+      }
+    }
+    #startRenderLoop() {
+      if (this.#renderLoop) return;
+      this.#renderLoop = this.#drainRenders().catch(() => void 0).finally(() => {
+        this.#renderLoop = void 0;
+        if (this.#pendingRender) this.#startRenderLoop();
+      });
     }
     #request(id, message, kind = "json", identifier) {
       let normalizedMessage;
@@ -351,7 +615,7 @@
       return result;
     }
     async #handleMessage(event) {
-      if (this.#disposed) return;
+      if (this.#lifecycleState === "disposed") return;
       const data = event.data;
       if (isCanvasReadyCandidate(data)) {
         const pending = this.#pending.get(data.id);
@@ -404,23 +668,29 @@
           this.#ready = true;
           this.#resolveReady();
         }
+        if (data.quiesce_id) this.#lifecycleState = "quiescing";
+        this.#handlingLifecycle = true;
         await Promise.allSettled(Array.from(this.#lifecycleHandlers, async (handler) => {
           try {
             await handler(data.event);
           } catch {
           }
         }));
+        this.#handlingLifecycle = false;
         if (data.quiesce_id) {
           this.#port.postMessage({
             type: "redevplugin.bridge.lifecycle_ack",
             quiesce_id: data.quiesce_id
           });
+          this.#lifecycleState = "quiesced";
         }
-        if (data.event.type === "dispose") this.dispose();
+        if (data.event.type === "dispose" && !data.quiesce_id) this.dispose();
         return;
       }
       if (isActionMessage(data)) {
-        for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(data);
+        this.#controlEditRevisions.set(data.target_key, data.edit_revision);
+        const action = publicActionEvent(data);
+        for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(action);
         return;
       }
       const canvasInput = publicCanvasInputMessage(data);
@@ -432,9 +702,12 @@
       return `${prefix}_${this.#nextID++}`;
     }
     #assertActive() {
-      if (this.#disposed) {
+      if (!this.#acceptsPluginWork()) {
         throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
       }
+    }
+    #acceptsPluginWork() {
+      return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
     }
   };
   var pluginSurfaceHostConstructorToken = Symbol("redevplugin.surface-host.constructor");
@@ -527,7 +800,19 @@
     return hasAllowedKeys(value, ["type", "event", "quiesce_id"]) && value.type === "redevplugin.bridge.lifecycle" && hasExactKeys(value.event, ["type"]) && (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose") && (value.quiesce_id === void 0 || value.event.type === "dispose" && validOpaqueHandle(value.quiesce_id, "quiesce"));
   }
   function isActionMessage(value) {
-    return hasAllowedKeys(value, ["type", "action", "event", "value", "checked", "form_data"]) && value.type === "redevplugin.ui.action" && validActionID(value.action) && (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit" || value.event === "escape") && (value.value == null || typeof value.value === "string" && value.value.length <= 65536) && (value.checked == null || typeof value.checked === "boolean") && (value.form_data == null || isRecord(value.form_data) && Object.entries(value.form_data).every(([key, item]) => validActionID(key) && typeof item === "string" && item.length <= 65536));
+    return hasAllowedKeys(value, ["type", "action", "event", "target_key", "edit_revision", "is_composing", "value", "checked", "form_data"]) && value.type === "redevplugin.ui.action" && validActionID(value.action) && (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit" || value.event === "escape") && validUIIdentifier(value.target_key) && Number.isSafeInteger(value.edit_revision) && Number(value.edit_revision) >= 0 && typeof value.is_composing === "boolean" && (value.value == null || typeof value.value === "string" && value.value.length <= 65536) && (value.checked == null || typeof value.checked === "boolean") && (value.form_data == null || isRecord(value.form_data) && Object.entries(value.form_data).every(([key, item]) => validActionID(key) && typeof item === "string" && item.length <= 65536));
+  }
+  function publicActionEvent(value) {
+    return removeUndefined({
+      action: value.action,
+      event: value.event,
+      targetKey: value.target_key,
+      editRevision: value.edit_revision,
+      isComposing: value.is_composing,
+      value: value.value,
+      checked: value.checked,
+      form_data: value.form_data
+    });
   }
   function isCanvasReadyCandidate(value) {
     return isRecord(value) && value.type === "redevplugin.ui.canvas.ready" && typeof value.id === "string" && typeof value.canvas_id === "string";
@@ -775,7 +1060,7 @@
     }, "This saved place could not be removed");
   }
   async function retryWeather() {
-    await run(() => loadForecast(state.selected), `Live weather for ${state.selected.name} is unavailable`);
+    await run(() => loadForecast(state.selected, true), `Live weather for ${state.selected.name} is unavailable`);
   }
   function dismissResults() {
     state.results = [];
@@ -787,18 +1072,47 @@
     const response = await bridge.call("weather.locations.list", {});
     state.saved = response.data.locations;
   }
-  async function loadForecast(location) {
+  async function loadForecast(location, forceRefresh = false) {
     state.status = `Refreshing ${location.name}...`;
-    const response = await bridge.call("weather.forecast", {
-      latitude: location.latitude,
-      longitude: location.longitude,
-      timezone: location.timezone || "auto"
-    });
+    const response = await bridge.call(
+      "weather.forecast",
+      {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        timezone: location.timezone || "auto",
+        force_refresh: forceRefresh
+      }
+    );
     state.selected = location;
     state.forecast = response.data;
-    state.status = `Updated ${formatTime(response.data.current.time)}`;
+    state.status = response.data.cache_state === "stale" ? `Saved forecast from ${formatCacheAge(response.data.age_seconds)} ago; refreshing...` : `Updated ${formatTime(response.data.current.time)}`;
     state.error = false;
     state.errorMessage = "";
+    if (response.data.cache_state === "stale") {
+      await render();
+      setTimeout(() => void refreshStaleForecast(location), 0);
+    }
+  }
+  async function refreshStaleForecast(location) {
+    try {
+      const response = await bridge.call("weather.forecast", {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        timezone: location.timezone || "auto",
+        force_refresh: true
+      });
+      if (state.selected.id !== location.id) return;
+      state.forecast = response.data;
+      state.status = `Updated ${formatTime(response.data.current.time)}`;
+      state.error = false;
+      state.errorMessage = "";
+    } catch (error) {
+      if (state.selected.id !== location.id) return;
+      state.status = `Showing saved forecast for ${location.name}`;
+      state.error = true;
+      state.errorMessage = friendlyWeatherError(error);
+    }
+    await render();
   }
   async function run(action, fallback) {
     if (state.busy) return;
@@ -829,155 +1143,157 @@
     const atmosphere = current ? `${current.is_day ? "day" : "night"} ${conditionKind(current.weather_code)}` : "day partly";
     return bridge.render({
       type: "element",
+      key: "weather-root",
       tag: "main",
       attributes: { class: `weather-app ${atmosphere}` },
       children: [topbar(), layout()]
     });
   }
   function topbar() {
-    return { type: "element", tag: "header", attributes: { class: "weather-topbar" }, children: [
-      { type: "element", tag: "div", attributes: { class: "weather-brand" }, children: [
-        { type: "element", tag: "span", attributes: { class: "weather-brand-mark", "aria-hidden": true }, children: [] },
-        { type: "element", tag: "div", children: [
-          { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: ["Live local outlook"] },
-          { type: "element", tag: "h1", children: ["Weather"] }
+    return { type: "element", key: "weather-topbar", tag: "header", attributes: { class: "weather-topbar" }, children: [
+      { type: "element", key: "weather-brand", tag: "div", attributes: { class: "weather-brand" }, children: [
+        { type: "element", key: "weather-brand-mark", tag: "span", attributes: { class: "weather-brand-mark", "aria-hidden": true }, children: [] },
+        { type: "element", key: "weather-brand-copy", tag: "div", children: [
+          { type: "element", key: "weather-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Live local outlook"] },
+          { type: "element", key: "weather-title", tag: "h1", children: ["Weather"] }
         ] }
       ] },
-      { type: "element", tag: "form", attributes: { class: "location-search", "data-redevplugin-action": "search-weather" }, children: [
-        { type: "element", tag: "input", attributes: { type: "search", name: "query", value: state.query, placeholder: "Search city or place", autocomplete: "off", disabled: state.busy, "aria-label": "Search city or place" } },
-        { type: "element", tag: "button", attributes: { class: "search-button", type: "submit", title: "Search weather", "aria-label": "Search weather", disabled: state.busy }, children: [
-          { type: "element", tag: "span", attributes: { class: "search-button-icon", "aria-hidden": true }, children: [] }
+      { type: "element", key: "location-search", tag: "form", attributes: { class: "location-search", "data-redevplugin-action": "search-weather" }, children: [
+        { type: "element", key: "location-query", tag: "input", attributes: { type: "search", name: "query", value: state.query, placeholder: "Search city or place", autocomplete: "off", disabled: state.busy, "aria-label": "Search city or place" } },
+        { type: "element", key: "location-search-submit", tag: "button", attributes: { class: "search-button", type: "submit", title: "Search weather", "aria-label": "Search weather", disabled: state.busy }, children: [
+          { type: "element", key: "location-search-submit-icon", tag: "span", attributes: { class: "search-button-icon", "aria-hidden": true }, children: [] }
         ] }
       ] },
       state.results.length > 0 ? searchResults() : state.searchMessage ? searchNotice() : ""
     ] };
   }
   function layout() {
-    return { type: "element", tag: "section", attributes: { class: "weather-main" }, children: [
+    return { type: "element", key: "weather-main", tag: "section", attributes: { class: "weather-main" }, children: [
       forecastToolbar(),
       state.forecast ? forecastView(state.selected, state.forecast) : state.busy ? weatherLoading() : weatherError()
     ] };
   }
   function forecastToolbar() {
-    return { type: "element", tag: "div", attributes: { class: "forecast-toolbar" }, children: [
-      { type: "element", tag: "div", attributes: { class: state.error ? "weather-status error" : "weather-status", role: "status" }, children: [
-        { type: "element", tag: "span", attributes: { class: "status-dot", "aria-hidden": true }, children: [] },
-        { type: "element", tag: "span", children: [state.busy ? "Contacting weather services..." : state.status] }
+    return { type: "element", key: "forecast-toolbar", tag: "div", attributes: { class: "forecast-toolbar" }, children: [
+      { type: "element", key: "weather-status", tag: "div", attributes: { class: state.error ? "weather-status error" : "weather-status", role: "status" }, children: [
+        { type: "element", key: "weather-status-dot", tag: "span", attributes: { class: "status-dot", "aria-hidden": true }, children: [] },
+        { type: "element", key: "weather-status-label", tag: "span", children: [state.busy ? "Contacting weather services..." : state.status] }
       ] },
       state.saved.length > 0 ? savedStrip() : ""
     ] };
   }
   function savedStrip() {
-    return { type: "element", tag: "nav", attributes: { class: "saved-strip", "aria-label": "Saved places" }, children: [
-      { type: "element", tag: "span", attributes: { class: "saved-strip-label" }, children: [state.saved.length === 0 ? "Discover" : "My places"] },
-      { type: "element", tag: "ul", attributes: { class: "saved-list" }, children: [
+    return { type: "element", key: "saved-strip", tag: "nav", attributes: { class: "saved-strip", "aria-label": "Saved places" }, children: [
+      { type: "element", key: "saved-strip-label", tag: "span", attributes: { class: "saved-strip-label" }, children: [state.saved.length === 0 ? "Discover" : "My places"] },
+      { type: "element", key: "saved-list", tag: "ul", attributes: { class: "saved-list" }, children: [
         ...state.saved.length === 0 ? [savedLocation(DEFAULT_LOCATION, true)] : state.saved.map((location) => savedLocation(location, false))
       ] }
     ] };
   }
   function savedLocation(location, exploring) {
-    return { type: "element", tag: "li", children: [
-      { type: "element", tag: "button", attributes: { class: "saved-location", type: "button", value: location.id, disabled: state.busy, "aria-pressed": state.selected.id === location.id, "data-redevplugin-action": "open-location" }, children: [
-        { type: "element", tag: "strong", children: [exploring ? "Explore Berlin" : location.name] }
+    return { type: "element", key: `saved-${location.id}`, tag: "li", children: [
+      { type: "element", key: `saved-${location.id}-open`, tag: "button", attributes: { class: "saved-location", type: "button", value: location.id, disabled: state.busy, "aria-pressed": state.selected.id === location.id, "data-redevplugin-action": "open-location" }, children: [
+        { type: "element", key: `saved-${location.id}-label`, tag: "strong", children: [exploring ? "Explore Berlin" : location.name] }
       ] }
     ] };
   }
   function searchResults() {
-    return { type: "element", tag: "div", attributes: { class: "search-popover" }, children: [
-      { type: "element", tag: "div", attributes: { class: "search-popover-heading" }, children: [
-        { type: "element", tag: "div", children: [
-          { type: "element", tag: "strong", children: ["Places"] },
-          { type: "element", tag: "span", children: [`Results for ${state.query}`] }
+    return { type: "element", key: "search-results-popover", tag: "div", attributes: { class: "search-popover" }, children: [
+      { type: "element", key: "search-results-heading", tag: "div", attributes: { class: "search-popover-heading" }, children: [
+        { type: "element", key: "search-results-copy", tag: "div", children: [
+          { type: "element", key: "search-results-title", tag: "strong", children: ["Places"] },
+          { type: "element", key: "search-results-query", tag: "span", children: [`Results for ${state.query}`] }
         ] },
-        { type: "element", tag: "button", attributes: { class: "close-results", type: "button", title: "Close search results", "aria-label": "Close search results", "data-redevplugin-action": "dismiss-results" }, children: [
-          { type: "element", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] }
+        { type: "element", key: "search-results-close", tag: "button", attributes: { class: "close-results", type: "button", title: "Close search results", "aria-label": "Close search results", "data-redevplugin-action": "dismiss-results" }, children: [
+          { type: "element", key: "search-results-close-icon", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] }
         ] }
       ] },
-      { type: "element", tag: "ul", attributes: { class: "search-results" }, children: state.results.map(searchResult) }
+      { type: "element", key: "search-results-list", tag: "ul", attributes: { class: "search-results" }, children: state.results.map(searchResult) }
     ] };
   }
   function searchNotice() {
-    return { type: "element", tag: "div", attributes: { class: "search-popover search-notice", role: "status" }, children: [
-      { type: "element", tag: "span", attributes: { class: "result-pin", "aria-hidden": true }, children: [] },
-      { type: "element", tag: "p", children: [state.searchMessage] },
-      { type: "element", tag: "button", attributes: { class: "close-results", type: "button", title: "Close search message", "aria-label": "Close search message", "data-redevplugin-action": "dismiss-results" }, children: [
-        { type: "element", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] }
+    return { type: "element", key: "search-notice", tag: "div", attributes: { class: "search-popover search-notice", role: "status" }, children: [
+      { type: "element", key: "search-notice-pin", tag: "span", attributes: { class: "result-pin", "aria-hidden": true }, children: [] },
+      { type: "element", key: "search-notice-message", tag: "p", children: [state.searchMessage] },
+      { type: "element", key: "search-notice-close", tag: "button", attributes: { class: "close-results", type: "button", title: "Close search message", "aria-label": "Close search message", "data-redevplugin-action": "dismiss-results" }, children: [
+        { type: "element", key: "search-notice-close-icon", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] }
       ] }
     ] };
   }
   function searchResult(location) {
-    return { type: "element", tag: "li", attributes: { class: "search-result" }, children: [
-      { type: "element", tag: "span", attributes: { class: "result-pin", "aria-hidden": true }, children: [] },
-      { type: "element", tag: "div", attributes: { class: "result-copy" }, children: [
-        { type: "element", tag: "strong", children: [location.name] },
-        { type: "element", tag: "p", children: [placeSubtitle(location)] }
+    return { type: "element", key: `result-${location.id}`, tag: "li", attributes: { class: "search-result" }, children: [
+      { type: "element", key: `result-${location.id}-pin`, tag: "span", attributes: { class: "result-pin", "aria-hidden": true }, children: [] },
+      { type: "element", key: `result-${location.id}-copy`, tag: "div", attributes: { class: "result-copy" }, children: [
+        { type: "element", key: `result-${location.id}-name`, tag: "strong", children: [location.name] },
+        { type: "element", key: `result-${location.id}-place`, tag: "p", children: [placeSubtitle(location)] }
       ] },
-      { type: "element", tag: "div", attributes: { class: "result-actions" }, children: [
-        { type: "element", tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy, "aria-label": `View weather for ${location.name}`, "data-redevplugin-action": "preview-location" }, children: ["View"] },
-        { type: "element", tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy || isSaved(location.id), "aria-label": isSaved(location.id) ? `${location.name} is saved` : `Save ${location.name}`, "data-redevplugin-action": "save-location" }, children: [isSaved(location.id) ? "Saved" : "Save"] }
+      { type: "element", key: `result-${location.id}-actions`, tag: "div", attributes: { class: "result-actions" }, children: [
+        { type: "element", key: `result-${location.id}-view`, tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy, "aria-label": `View weather for ${location.name}`, "data-redevplugin-action": "preview-location" }, children: ["View"] },
+        { type: "element", key: `result-${location.id}-save`, tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy || isSaved(location.id), "aria-label": isSaved(location.id) ? `${location.name} is saved` : `Save ${location.name}`, "data-redevplugin-action": "save-location" }, children: [isSaved(location.id) ? "Saved" : "Save"] }
       ] }
     ] };
   }
   function forecastView(location, forecast) {
     const current = forecast.current;
     const today = forecast.days[0];
-    return { type: "element", tag: "article", attributes: { class: "forecast-view" }, children: [
-      { type: "element", tag: "section", attributes: { class: "weather-hero" }, children: [
-        { type: "element", tag: "div", attributes: { class: "weather-scene", "aria-hidden": true }, children: [] },
-        { type: "element", tag: "div", attributes: { class: "hero-atmosphere", "aria-hidden": true }, children: [
-          { type: "element", tag: "span", attributes: { class: "atmosphere-sun" }, children: [] },
-          { type: "element", tag: "span", attributes: { class: "atmosphere-line line-one" }, children: [] },
-          { type: "element", tag: "span", attributes: { class: "atmosphere-line line-two" }, children: [] }
+    return { type: "element", key: "forecast-view", tag: "article", attributes: { class: "forecast-view" }, children: [
+      { type: "element", key: "weather-hero", tag: "section", attributes: { class: "weather-hero" }, children: [
+        { type: "element", key: "weather-scene", tag: "div", attributes: { class: "weather-scene", "aria-hidden": true }, children: [] },
+        { type: "element", key: "hero-atmosphere", tag: "div", attributes: { class: "hero-atmosphere", "aria-hidden": true }, children: [
+          { type: "element", key: "atmosphere-sun", tag: "span", attributes: { class: "atmosphere-sun" }, children: [] },
+          { type: "element", key: "atmosphere-line-one", tag: "span", attributes: { class: "atmosphere-line line-one" }, children: [] },
+          { type: "element", key: "atmosphere-line-two", tag: "span", attributes: { class: "atmosphere-line line-two" }, children: [] }
         ] },
-        { type: "element", tag: "div", attributes: { class: "current-summary" }, children: [
-          { type: "element", tag: "div", attributes: { class: "hero-copy" }, children: [
-            { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: [condition(current.weather_code)] },
-            { type: "element", tag: "h2", children: [location.name] },
-            { type: "element", tag: "p", attributes: { class: "hero-meta" }, children: [`${placeSubtitle(location)} / ${forecast.timezone_abbreviation || forecast.timezone} / Local ${formatTime(current.time)}`] },
-            { type: "element", tag: "p", attributes: { class: "weather-story" }, children: [weatherStory(current, today)] }
+        { type: "element", key: "current-summary", tag: "div", attributes: { class: "current-summary" }, children: [
+          { type: "element", key: "hero-copy", tag: "div", attributes: { class: "hero-copy" }, children: [
+            { type: "element", key: "hero-condition", tag: "p", attributes: { class: "eyebrow" }, children: [condition(current.weather_code)] },
+            { type: "element", key: "hero-location", tag: "h2", children: [location.name] },
+            { type: "element", key: "hero-meta", tag: "p", attributes: { class: "hero-meta" }, children: [`${placeSubtitle(location)} / ${forecast.timezone_abbreviation || forecast.timezone} / Local ${formatTime(current.time)}`] },
+            { type: "element", key: "weather-story", tag: "p", attributes: { class: "weather-story" }, children: [weatherStory(current, today)] }
           ] },
-          { type: "element", tag: "div", attributes: { class: "temperature" }, children: [
-            { type: "element", tag: "strong", attributes: { class: "temperature-value" }, children: [`${round(current.temperature)}\xB0`] },
-            { type: "element", tag: "span", attributes: { class: "temperature-feels" }, children: [`Feels like ${round(current.apparent_temperature)}\xB0`] }
+          { type: "element", key: "temperature", tag: "div", attributes: { class: "temperature" }, children: [
+            { type: "element", key: "temperature-value", tag: "strong", attributes: { class: "temperature-value" }, children: [`${round(current.temperature)}\xB0`] },
+            { type: "element", key: "temperature-feels", tag: "span", attributes: { class: "temperature-feels" }, children: [`Feels like ${round(current.apparent_temperature)}\xB0`] }
           ] },
-          { type: "element", tag: "span", attributes: { class: `weather-icon hero-icon weather-icon--${conditionKind(current.weather_code)}`, role: "img", "aria-label": condition(current.weather_code) }, children: [] }
+          { type: "element", key: "hero-weather-icon", tag: "span", attributes: { class: `weather-icon hero-icon weather-icon--${conditionKind(current.weather_code)}`, role: "img", "aria-label": condition(current.weather_code) }, children: [] }
         ] },
-        { type: "element", tag: "div", attributes: { class: "hero-footer" }, children: [
-          { type: "element", tag: "div", attributes: { class: "hero-actions" }, children: [
-            isSaved(location.id) ? { type: "element", tag: "span", attributes: { class: "saved-badge" }, children: ["Saved place"] } : { type: "element", tag: "button", attributes: { class: "button hero-save", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "save-location" }, children: ["Save place"] },
-            isSaved(location.id) ? { type: "element", tag: "button", attributes: { class: "remove-location", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "remove-location" }, children: ["Remove"] } : ""
+        { type: "element", key: "hero-footer", tag: "div", attributes: { class: "hero-footer" }, children: [
+          { type: "element", key: "hero-actions", tag: "div", attributes: { class: "hero-actions" }, children: [
+            isSaved(location.id) ? { type: "element", key: "hero-save", tag: "span", attributes: { class: "saved-badge" }, children: ["Saved place"] } : { type: "element", key: "hero-save", tag: "button", attributes: { class: "button hero-save", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "save-location" }, children: ["Save place"] },
+            isSaved(location.id) ? { type: "element", key: "hero-remove", tag: "button", attributes: { class: "remove-location", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "remove-location" }, children: ["Remove"] } : ""
           ] },
-          { type: "element", tag: "div", attributes: { class: "weather-glance", "aria-label": "Today at a glance" }, children: [
+          { type: "element", key: "weather-glance", tag: "div", attributes: { class: "weather-glance", "aria-label": "Today at a glance" }, children: [
             glanceItem("High", today ? `${round(today.temperature_max)}\xB0` : "-"),
             glanceItem("Low", today ? `${round(today.temperature_min)}\xB0` : "-"),
             glanceItem("Rain", today ? `${round(today.precipitation_probability)}%` : "-")
           ] }
         ] },
-        { type: "element", tag: "div", attributes: { class: "weather-metrics" }, children: [
+        { type: "element", key: "weather-metrics", tag: "div", attributes: { class: "weather-metrics" }, children: [
           weatherMetric("Humidity", `${round(current.humidity)}%`, "Moisture"),
           weatherMetric("Wind", `${round(current.wind_speed)} km/h`, "At ground level"),
           weatherMetric("Sunrise", today ? formatTime(today.sunrise) : "-", "First light"),
           weatherMetric("Sunset", today ? formatTime(today.sunset) : "-", "Last light")
         ] }
       ] },
-      { type: "element", tag: "section", attributes: { class: "forecast-section" }, children: [
-        { type: "element", tag: "div", attributes: { class: "forecast-heading" }, children: [
-          { type: "element", tag: "div", children: [
-            { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: ["The week ahead"] },
-            { type: "element", tag: "h3", children: ["Seven day forecast"] }
+      { type: "element", key: "forecast-section", tag: "section", attributes: { class: "forecast-section" }, children: [
+        { type: "element", key: "forecast-heading", tag: "div", attributes: { class: "forecast-heading" }, children: [
+          { type: "element", key: "forecast-heading-copy", tag: "div", children: [
+            { type: "element", key: "forecast-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["The week ahead"] },
+            { type: "element", key: "forecast-title", tag: "h3", children: ["Seven day forecast"] }
           ] },
-          { type: "element", tag: "span", children: [formatFullDate(forecast.days[0]?.date)] }
+          { type: "element", key: "forecast-date", tag: "span", children: [formatFullDate(forecast.days[0]?.date)] }
         ] },
-        { type: "element", tag: "div", attributes: { class: "forecast-scroll" }, children: [
-          { type: "element", tag: "ol", attributes: { class: "forecast-grid", "aria-label": "Seven day forecast" }, children: forecast.days.map(forecastDay) }
+        { type: "element", key: "forecast-scroll", tag: "div", attributes: { class: "forecast-scroll" }, children: [
+          { type: "element", key: "forecast-grid", tag: "ol", attributes: { class: "forecast-grid", "aria-label": "Seven day forecast" }, children: forecast.days.map(forecastDay) }
         ] }
       ] }
     ] };
   }
   function glanceItem(label, value) {
-    return { type: "element", tag: "span", attributes: { class: "glance-item" }, children: [
-      { type: "element", tag: "small", children: [label] },
-      { type: "element", tag: "strong", children: [value] }
+    const key = `glance-${label.toLowerCase()}`;
+    return { type: "element", key, tag: "span", attributes: { class: "glance-item" }, children: [
+      { type: "element", key: `${key}-label`, tag: "small", children: [label] },
+      { type: "element", key: `${key}-value`, tag: "strong", children: [value] }
     ] };
   }
   function weatherStory(current, today) {
@@ -985,47 +1301,49 @@
     return `${condition(current.weather_code)}. A high of ${round(today.temperature_max)}\xB0 with a ${round(today.precipitation_probability)}% chance of rain.`;
   }
   function weatherLoading() {
-    return { type: "element", tag: "section", attributes: { class: "weather-loading", "aria-label": "Loading live weather" }, children: [
-      { type: "element", tag: "div", attributes: { class: "weather-loading-scene", "aria-hidden": true }, children: [
-        { type: "element", tag: "span", attributes: { class: "loading-city" }, children: [] },
-        { type: "element", tag: "span", attributes: { class: "loading-temperature" }, children: [] },
-        { type: "element", tag: "span", attributes: { class: "loading-condition" }, children: [] }
+    return { type: "element", key: "weather-loading", tag: "section", attributes: { class: "weather-loading", "aria-label": "Loading live weather" }, children: [
+      { type: "element", key: "weather-loading-scene", tag: "div", attributes: { class: "weather-loading-scene", "aria-hidden": true }, children: [
+        { type: "element", key: "weather-loading-city", tag: "span", attributes: { class: "loading-city" }, children: [] },
+        { type: "element", key: "weather-loading-temperature", tag: "span", attributes: { class: "loading-temperature" }, children: [] },
+        { type: "element", key: "weather-loading-condition", tag: "span", attributes: { class: "loading-condition" }, children: [] }
       ] },
-      { type: "element", tag: "p", children: ["Bringing in live conditions for your place..."] }
+      { type: "element", key: "weather-loading-message", tag: "p", children: ["Bringing in live conditions for your place..."] }
     ] };
   }
   function weatherMetric(label, value, detail) {
-    return { type: "element", tag: "div", attributes: { class: "weather-metric" }, children: [
-      { type: "element", tag: "span", children: [label] },
-      { type: "element", tag: "strong", children: [value] },
-      { type: "element", tag: "small", children: [detail] }
+    const key = `metric-${label.toLowerCase()}`;
+    return { type: "element", key, tag: "div", attributes: { class: "weather-metric" }, children: [
+      { type: "element", key: `${key}-label`, tag: "span", children: [label] },
+      { type: "element", key: `${key}-value`, tag: "strong", children: [value] },
+      { type: "element", key: `${key}-detail`, tag: "small", children: [detail] }
     ] };
   }
   function forecastDay(day, index) {
-    return { type: "element", tag: "li", attributes: { class: `forecast-day forecast-day--${conditionKind(day.weather_code)}` }, children: [
-      { type: "element", tag: "div", attributes: { class: "forecast-day-heading" }, children: [
-        { type: "element", tag: "strong", children: [index === 0 ? "Today" : formatDay(day.date)] },
-        { type: "element", tag: "span", children: [formatDateNumber(day.date)] }
+    const key = `forecast-${day.date}`;
+    return { type: "element", key, tag: "li", attributes: { class: `forecast-day forecast-day--${conditionKind(day.weather_code)}` }, children: [
+      { type: "element", key: `${key}-heading`, tag: "div", attributes: { class: "forecast-day-heading" }, children: [
+        { type: "element", key: `${key}-day`, tag: "strong", children: [index === 0 ? "Today" : formatDay(day.date)] },
+        { type: "element", key: `${key}-date`, tag: "span", children: [formatDateNumber(day.date)] }
       ] },
-      { type: "element", tag: "span", attributes: { class: `weather-icon forecast-icon weather-icon--${conditionKind(day.weather_code)}`, role: "img", "aria-label": condition(day.weather_code) }, children: [] },
-      { type: "element", tag: "span", attributes: { class: "condition-label" }, children: [condition(day.weather_code)] },
-      { type: "element", tag: "div", attributes: { class: "temperature-range" }, children: [
-        { type: "element", tag: "strong", children: [`${round(day.temperature_max)}\xB0`] },
-        { type: "element", tag: "span", children: [`${round(day.temperature_min)}\xB0`] }
+      { type: "element", key: `${key}-icon`, tag: "span", attributes: { class: `weather-icon forecast-icon weather-icon--${conditionKind(day.weather_code)}`, role: "img", "aria-label": condition(day.weather_code) }, children: [] },
+      { type: "element", key: `${key}-condition`, tag: "span", attributes: { class: "condition-label" }, children: [condition(day.weather_code)] },
+      { type: "element", key: `${key}-range`, tag: "div", attributes: { class: "temperature-range" }, children: [
+        { type: "element", key: `${key}-high`, tag: "strong", children: [`${round(day.temperature_max)}\xB0`] },
+        { type: "element", key: `${key}-low`, tag: "span", children: [`${round(day.temperature_min)}\xB0`] }
       ] },
-      { type: "element", tag: "span", attributes: { class: "rain-chance" }, children: [`${round(day.precipitation_probability)}% rain`] }
+      { type: "element", key: `${key}-rain`, tag: "span", attributes: { class: "rain-chance" }, children: [`${round(day.precipitation_probability)}% rain`] }
     ] };
   }
   function weatherError() {
-    return { type: "element", tag: "section", attributes: { class: "weather-error" }, children: [
-      { type: "element", tag: "div", attributes: { class: "weather-error-visual", "aria-hidden": true }, children: [
-        { type: "element", tag: "span", attributes: { class: "weather-icon weather-icon--partly" }, children: [] },
-        { type: "element", tag: "span", attributes: { class: "offline-mark" }, children: [] }
+    return { type: "element", key: "weather-error", tag: "section", attributes: { class: "weather-error" }, children: [
+      { type: "element", key: "weather-error-visual", tag: "div", attributes: { class: "weather-error-visual", "aria-hidden": true }, children: [
+        { type: "element", key: "weather-error-icon", tag: "span", attributes: { class: "weather-icon weather-icon--partly" }, children: [] },
+        { type: "element", key: "weather-error-offline", tag: "span", attributes: { class: "offline-mark" }, children: [] }
       ] },
-      { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: [state.selected.name] },
-      { type: "element", tag: "h2", children: ["Live weather is unavailable"] },
-      { type: "element", tag: "p", children: [state.errorMessage || "Fresh conditions could not be reached just now."] },
-      { type: "element", tag: "button", attributes: { class: "button", type: "button", disabled: state.busy, "data-redevplugin-action": "retry-weather" }, children: [state.busy ? "Refreshing" : "Try again"] }
+      { type: "element", key: "weather-error-location", tag: "p", attributes: { class: "eyebrow" }, children: [state.selected.name] },
+      { type: "element", key: "weather-error-title", tag: "h2", children: ["Live weather is unavailable"] },
+      { type: "element", key: "weather-error-message", tag: "p", children: [state.errorMessage || "Fresh conditions could not be reached just now."] },
+      { type: "element", key: "weather-error-retry", tag: "button", attributes: { class: "button", type: "button", disabled: state.busy, "data-redevplugin-action": "retry-weather" }, children: [state.busy ? "Refreshing" : "Try again"] }
     ] };
   }
   function isSaved(id) {
@@ -1039,6 +1357,10 @@
   }
   function formatTime(value) {
     return value.includes("T") ? value.slice(11, 16) : value;
+  }
+  function formatCacheAge(seconds) {
+    const minutes = Math.max(1, Math.round(seconds / 60));
+    return minutes < 60 ? `${minutes} min` : `${Math.round(minutes / 60)} hr`;
   }
   function formatDay(value) {
     return (/* @__PURE__ */ new Date(`${value}T12:00:00Z`)).toLocaleDateString("en", { weekday: "short" });

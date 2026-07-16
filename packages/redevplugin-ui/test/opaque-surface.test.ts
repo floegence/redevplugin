@@ -6,6 +6,7 @@ import {
   PluginPlatformClient,
   PluginSurfaceHost,
   PluginSurfaceReloadLimiter,
+  PluginSurfaceSlot,
   createReDevPluginSurfaceTransport,
   createPluginSurfaceScope,
   type FetchInitLike,
@@ -26,12 +27,16 @@ class FakePort implements MessagePortLike {
   postError?: Error;
   #listeners = new Set<(event: MessageEventLike) => void>();
   closed = false;
+  autoFirstCommit = false;
 
   postMessage(message: unknown, _transfer?: readonly unknown[]): void {
     if (this.postError) throw this.postError;
     if (this.closed) throw new Error("port is closed");
     this.sent.push(message);
     queueMicrotask(() => this.peer?.emit(message));
+    if (this.autoFirstCommit && isMessageType(message, "redevplugin.surface.worker_ready")) {
+      queueMicrotask(() => this.peer?.emit({ type: "redevplugin.surface.first_commit" }));
+    }
   }
 
   addEventListener(_type: "message", listener: (event: MessageEventLike) => void): void {
@@ -59,12 +64,20 @@ function fakeChannel(): { port1: FakePort; port2: FakePort } {
   const port2 = new FakePort();
   port1.peer = port2;
   port2.peer = port1;
+  port2.autoFirstCommit = true;
   return { port1, port2 };
+}
+
+function isMessageType(value: unknown, type: string): boolean {
+  return value !== null && typeof value === "object" && (value as { type?: unknown }).type === type;
 }
 
 class FakeFrame {
   srcdoc = "";
   credentialless = false;
+  hidden = false;
+  inert = false;
+  removed = false;
   attributes = new Map<string, string>();
   transferred: Array<{ message: unknown; targetOrigin: string; ports: MessagePortLike[] }> = [];
   autoAcknowledge = true;
@@ -95,6 +108,19 @@ class FakeFrame {
 
   load(): void {
     for (const listener of this.#listeners) listener();
+  }
+
+  remove(): void {
+    this.removed = true;
+  }
+}
+
+class FakeStage {
+  dataset: Record<string, string> = {};
+  children: FakeFrame[] = [];
+
+  append(...frames: FakeFrame[]): void {
+    this.children.push(...frames);
   }
 }
 
@@ -333,6 +359,8 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes('sendWorker(actionPayload(event, element, "submit"))'), true);
   assert.equal(html.includes("captureRenderState"), true);
   assert.equal(html.includes("restoreRenderState"), true);
+  assert.equal(html.split("const renderState = captureRenderState();").length - 1, 2);
+  assert.equal(html.split("restoreRenderState(renderState);").length - 1, 2);
   assert.equal(html.includes("setSelectionRange"), true);
   assert.equal(html.includes('querySelector("[data-redevplugin-renderer-autofocus]")'), true);
   assert.equal(html.includes('querySelector("[autofocus]")'), false);
@@ -439,11 +467,12 @@ test("plugin bridge client exposes only a public handle and its private port", a
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_1", ok: true, data: { pong: true } });
   assert.deepEqual(await callPromise, { pong: true });
 
-  const renderPromise = client.render({ type: "element", tag: "main", children: ["Ready"] });
+  const renderPromise = client.render({ type: "element", key: "root", tag: "main", children: ["Ready"] });
   assert.deepEqual(pluginPort.sent[1], {
-    type: "redevplugin.ui.render",
+    type: "redevplugin.ui.mount",
     id: "render_2",
-    tree: { type: "element", tag: "main", children: ["Ready"] },
+    revision: 1,
+    tree: { type: "element", key: "root", tag: "main", children: ["Ready"] },
   });
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
   await renderPromise;
@@ -485,7 +514,14 @@ test("plugin bridge client exposes only a public handle and its private port", a
   );
   const actions: string[] = [];
   client.onAction("close-dialog", (event) => actions.push(event.event));
-  rendererPort.postMessage({ type: "redevplugin.ui.action", action: "close-dialog", event: "escape" });
+  rendererPort.postMessage({
+    type: "redevplugin.ui.action",
+    action: "close-dialog",
+    event: "escape",
+    target_key: "dialog",
+    edit_revision: 0,
+    is_composing: false,
+  });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(actions, ["escape"]);
   client.dispose();
@@ -526,7 +562,53 @@ test("plugin bridge acknowledges quiesce only after async lifecycle observers se
     type: "redevplugin.bridge.lifecycle_ack",
     quiesce_id: "quiesce_12345678",
   });
-  assert.equal(pluginPort.closed, true);
+  assert.equal(pluginPort.closed, false);
+  assert.throws(
+    () => client.call("echo.after-quiesce"),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+  );
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "dispose" } });
+  await waitFor(() => pluginPort.closed);
+});
+
+test("plugin bridge completes lifecycle render and persistence work before quiesce acknowledgement", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+  const initialRender = client.render({ type: "element", key: "root", tag: "main", children: ["Unsaved"] });
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
+  await initialRender;
+
+  client.onLifecycle(async (event) => {
+    if (event.type !== "dispose") return;
+    await client.render({ type: "element", key: "root", tag: "main", children: ["Saving"] });
+    await client.call("memos.save", { title: "Quiesced memo" });
+    await client.render({ type: "element", key: "root", tag: "main", children: ["Saved"] });
+  });
+  rendererPort.postMessage({
+    type: "redevplugin.bridge.lifecycle",
+    event: { type: "dispose" },
+    quiesce_id: "quiesce_12345678",
+  });
+
+  await waitFor(() => pluginPort.sent.some((message) => (message as { id?: string }).id === "render_2"));
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
+  await waitFor(() => pluginPort.sent.some((message) => (message as { request?: { id?: string } }).request?.id === "rpc_3"));
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_3", ok: true, data: { saved: true } });
+  await waitFor(() => pluginPort.sent.some((message) => (message as { id?: string }).id === "render_4"));
+  assert.equal(pluginPort.sent.some((message) => isMessageType(message, "redevplugin.bridge.lifecycle_ack")), false);
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_4", ok: true });
+  await waitFor(() => pluginPort.sent.some((message) => isMessageType(message, "redevplugin.bridge.lifecycle_ack")));
+  assert.deepEqual(pluginPort.sent.at(-1), {
+    type: "redevplugin.bridge.lifecycle_ack",
+    quiesce_id: "quiesce_12345678",
+  });
+  assert.throws(
+    () => client.render({ type: "element", key: "root", tag: "main", children: ["Too late"] }),
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+  );
+  client.dispose();
 });
 
 test("plugin bridge transfers one canvas and verified image assets by logical identifier", async () => {
@@ -712,11 +794,36 @@ test("plugin bridge client rejects non-canonical render trees before posting", a
   const sentBefore = pluginPort.sent.length;
   assert.throws(
     () => {
-      void client.render({ type: "element", tag: "main", children: [undefined] } as never);
+      void client.render({ type: "element", key: "root", tag: "main", children: [undefined] } as never);
     },
-    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_INVALID_REQUEST",
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_UI_PROTOCOL_VIOLATION",
   );
   assert.equal(pluginPort.sent.length, sentBefore);
+  client.dispose();
+});
+
+test("plugin bridge keeps one UI commit in flight and coalesces to the latest tree", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  const first = client.render({ type: "element", key: "root", tag: "main", children: ["A"] });
+  const second = client.render({ type: "element", key: "root", tag: "main", children: ["B"] });
+  const latest = client.render({ type: "element", key: "root", tag: "main", children: ["C"] });
+  assert.equal(pluginPort.sent.length, 1);
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
+  await first;
+  await waitFor(() => pluginPort.sent.length === 2);
+  assert.deepEqual(pluginPort.sent[1], {
+    type: "redevplugin.ui.patch",
+    id: "render_2",
+    base_revision: 1,
+    revision: 2,
+    operations: [{ type: "set_text", parent_key: "root", child_index: 0, text: "C" }],
+  });
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
+  await Promise.all([second, latest]);
   client.dispose();
 });
 
@@ -858,6 +965,143 @@ test("surface host mints no bridge token before the transferred port acknowledge
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
   host.dispose();
+});
+
+test("surface host exposes no iframe before the first worker UI commit", async () => {
+  const frame = new FakeFrame();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  channel.port2.autoFirstCommit = false;
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+  let settled = false;
+  const opening = host.open().then(() => { settled = true; });
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await waitFor(() => channel.port1.sent.some((message) =>
+    isMessageType(message, "redevplugin.bridge.lifecycle") &&
+    (message as { event?: { type?: string } }).event?.type === "ready"
+  ));
+  assert.equal(settled, false);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_commit" });
+  await opening;
+  host.dispose();
+});
+
+test("surface slot opens the next surface while the retired surface quiesces", async () => {
+  const firstFrame = new FakeFrame();
+  const secondFrame = new FakeFrame();
+  const firstChannel = fakeChannel();
+  const secondChannel = fakeChannel();
+  const restoreDOM = installSurfaceSlotDOM([firstFrame, secondFrame], [firstChannel, secondChannel]);
+  const firstFetch = new FakeFetch();
+  const secondFetch = new FakeFetch();
+  firstFetch.push(preparation());
+  firstFetch.push(gatewayLease());
+  secondFetch.push(preparation());
+  secondFetch.push(gatewayLease());
+  const stage = new FakeStage();
+  const states: string[] = [];
+  const slot = PluginSurfaceSlot.create({
+    stage: stage as unknown as HTMLElement,
+    onStateChange: (state) => states.push(state),
+  });
+
+  try {
+    const firstOpening = slot.open({
+      bootstrap: hostBootstrap,
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: firstFetch.fetch }),
+    });
+    await waitFor(() => stage.children.length === 1);
+    firstFrame.load();
+    await waitFor(() => firstFrame.transferred.length === 1);
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    firstChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await firstOpening;
+    assert.equal(firstFrame.hidden, false);
+    assert.equal(firstFrame.inert, false);
+
+    firstFetch.push({});
+    const secondOpening = slot.open({
+      bootstrap: {
+        ...hostBootstrap,
+        surfaceInstanceId: "surface_2",
+        bridgeNonce: "bridge_nonce_2",
+      },
+      hostTransport: createReDevPluginSurfaceTransport({ fetch: secondFetch.fetch }),
+    });
+    await waitFor(() => stage.children.length === 2);
+    assert.equal(firstFrame.hidden, true);
+    assert.equal(firstFrame.inert, true);
+    assert.equal(secondFrame.hidden, true);
+    assert.equal(secondFrame.inert, true);
+
+    secondFrame.load();
+    await waitFor(() => secondFrame.transferred.length === 1);
+    secondChannel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+    secondChannel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+    await secondOpening;
+    assert.equal(secondFrame.hidden, false);
+    assert.equal(secondFrame.inert, false);
+    assert.equal(firstFrame.removed, false, "retirement must not block the next surface opening");
+
+    const firstQuiesce = await waitForQuiesce(firstChannel.port1);
+    firstChannel.port2.postMessage({
+      type: "redevplugin.surface.quiesce_ack",
+      quiesce_id: firstQuiesce,
+    });
+    await waitFor(() => firstFrame.removed);
+
+    secondFetch.push({});
+    const closing = slot.close();
+    const secondQuiesce = await waitForQuiesce(secondChannel.port1);
+    secondChannel.port2.postMessage({
+      type: "redevplugin.surface.quiesce_ack",
+      quiesce_id: secondQuiesce,
+    });
+    await closing;
+    assert.equal(secondFrame.removed, true);
+    assert.deepEqual(states, ["empty", "opening", "ready", "opening", "ready", "empty"]);
+  } finally {
+    slot.dispose();
+    restoreDOM();
+  }
+});
+
+test("surface slot keeps only the latest unresolved opening and exposes its error", async () => {
+  const stage = new FakeStage();
+  const errors: Array<PluginBridgeError | undefined> = [];
+  const slot = PluginSurfaceSlot.create({
+    stage: stage as unknown as HTMLElement,
+    onStateChange: (state, error) => {
+      if (state === "error") errors.push(error);
+    },
+  });
+  let resolveFirst!: (options: PluginSurfaceHostOptions) => void;
+  const firstOptions = new Promise<PluginSurfaceHostOptions>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const firstOpening = slot.open(firstOptions);
+  const latestError = new Error("surface options failed");
+  const latestOpening = slot.open(Promise.reject(latestError));
+
+  await assert.rejects(latestOpening, (error: unknown) => error === latestError);
+  assert.equal(stage.dataset.redevpluginSurfaceState, "error");
+  assert.equal(errors[0]?.errorCode, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+  resolveFirst({} as PluginSurfaceHostOptions);
+  await assert.rejects(
+    firstOpening,
+    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
+  );
+  assert.equal(stage.children.length, 0);
+  slot.dispose();
 });
 
 test("surface host dispose sends a keepalive revocation before local teardown", async () => {
@@ -1747,12 +1991,11 @@ test("surface opening deadline revokes server state, tears down locally, and rem
   const fetch = new FakeFetch();
   const channel = fakeChannel();
   const reloadLimiter = new PluginSurfaceReloadLimiter();
-  const delayedEnvelope = async (data: unknown): Promise<FetchResponseLike> => {
-    await new Promise((resolve) => setTimeout(resolve, 18));
-    return { ok: true, status: 200, json: async () => ({ ok: true, data }) };
-  };
-  fetch.pushHandler(async () => delayedEnvelope(preparation()));
-  fetch.pushHandler(async () => delayedEnvelope(gatewayLease()));
+  fetch.push(preparation());
+  fetch.pushHandler(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return { ok: true, status: 200, json: async () => ({ ok: true, data: gatewayLease() }) };
+  });
   fetch.push({ disposed: true });
   const host = createSurfaceHost(frame, {
     bootstrap: hostBootstrap,
@@ -2052,11 +2295,13 @@ test("surface close bounds a non-responsive plugin quiesce", async () => {
   const channel = fakeChannel();
   fetch.push(preparation());
   fetch.push(gatewayLease());
+  const errors: PluginBridgeError[] = [];
   const host = createSurfaceHost(frame, {
     bootstrap: hostBootstrap,
     requestTimeoutMs: 10,
     testMessageChannel: channel,
     hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+    onError: (error) => errors.push(error),
   });
   const opening = host.open();
   frame.load();
@@ -2067,10 +2312,12 @@ test("surface close bounds a non-responsive plugin quiesce", async () => {
 
   fetch.push({});
   const result = await Promise.race([
-    host.close().then(() => "resolved", () => "rejected"),
+    host.close(),
     new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
   ]);
-  assert.equal(result, "resolved");
+  assert.equal(result === "hung", false);
+  assert.equal(typeof result === "string" ? result : result.quiesce.outcome, "timed_out");
+  assert.equal(errors[0]?.errorCode, "PLUGIN_SURFACE_QUIESCE_TIMEOUT");
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/surfaces/surface_1/dispose");
   assert.equal(frame.srcdoc, "");
 });
@@ -2222,6 +2469,54 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error("condition was not met");
+}
+
+async function waitForQuiesce(port: FakePort): Promise<string> {
+  await waitFor(() => port.sent.some((message) =>
+    isMessageType(message, "redevplugin.bridge.lifecycle") &&
+    typeof (message as { quiesce_id?: unknown }).quiesce_id === "string"
+  ));
+  const message = port.sent.find((candidate) =>
+    isMessageType(candidate, "redevplugin.bridge.lifecycle") &&
+    typeof (candidate as { quiesce_id?: unknown }).quiesce_id === "string"
+  ) as { quiesce_id: string };
+  return message.quiesce_id;
+}
+
+function installSurfaceSlotDOM(frames: FakeFrame[], channels: Array<{ port1: FakePort; port2: FakePort }>): () => void {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const previousMessageChannel = Object.getOwnPropertyDescriptor(globalThis, "MessageChannel");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      createElement(tagName: string) {
+        assert.equal(tagName, "iframe");
+        const frame = frames.shift();
+        if (!frame) throw new Error("unexpected iframe creation");
+        return frame;
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "MessageChannel", {
+    configurable: true,
+    value: class implements MessageChannelLike {
+      readonly port1: FakePort;
+      readonly port2: FakePort;
+
+      constructor() {
+        const channel = channels.shift();
+        if (!channel) throw new Error("unexpected MessageChannel creation");
+        this.port1 = channel.port1;
+        this.port2 = channel.port2;
+      }
+    },
+  });
+  return () => {
+    if (previousDocument) Object.defineProperty(globalThis, "document", previousDocument);
+    else Reflect.deleteProperty(globalThis, "document");
+    if (previousMessageChannel) Object.defineProperty(globalThis, "MessageChannel", previousMessageChannel);
+    else Reflect.deleteProperty(globalThis, "MessageChannel");
+  };
 }
 
 function withLocationOrigin<T>(origin: string, run: () => T): T {

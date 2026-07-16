@@ -1,13 +1,13 @@
 {
-  "schema_version": "redevplugin.manifest.v3",
+  "schema_version": "redevplugin.manifest.v4",
   "publisher": { "publisher_id": "dev.redevplugin.examples", "display_name": "ReDevPlugin Examples" },
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.memos",
     "display_name": "Memos",
     "version": "1.1.0",
     "api_version": "plugin-v1",
-    "min_runtime_version": "0.4.0",
-    "ui_protocol_version": "plugin-ui-v3"
+    "min_runtime_version": "0.5.0",
+    "ui_protocol_version": "plugin-ui-v4"
   },
   "surfaces": [{
     "surface_id": "memos.view",
@@ -27,13 +27,40 @@
   }],
   "methods": [
     {
-      "method": "memos.initialize",
+      "method": "memos.bootstrap",
       "effect": "write",
       "execution": "sync",
       "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
       "request_schema": { "type": "object", "additionalProperties": false, "properties": {} },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["ready"], "properties": { "ready": { "type": "boolean", "const": true } } },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec"] }] }
+      "response_schema": {
+        "type": "object", "additionalProperties": false, "required": ["notes", "total", "offset", "has_more", "selected_note"],
+        "properties": {
+          "notes": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/summary" } },
+          "total": { "type": "integer", "minimum": 0 },
+          "offset": { "type": "integer", "const": 0 },
+          "has_more": { "type": "boolean" },
+          "selected_note": { "oneOf": [{ "$ref": "#/$defs/note" }, { "type": "null" }] }
+        },
+        "$defs": {
+          "summary": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "title", "preview", "pinned", "created_at", "updated_at"],
+            "properties": {
+              "id": { "type": "string" }, "title": { "type": "string" }, "preview": { "type": "string" },
+              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+            }
+          },
+          "note": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "title", "body", "pinned", "created_at", "updated_at"],
+            "properties": {
+              "id": { "type": "string" }, "title": { "type": "string" }, "body": { "type": "string" },
+              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+            }
+          }
+        }
+      },
+      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
     },
     {
       "method": "memos.list",

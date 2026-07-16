@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 const (
@@ -1832,7 +1834,7 @@ func (s SurfaceSession) validateHandshake(handshake Handshake) error {
 		handshake.AssetSessionNonce != s.AssetSessionNonce ||
 		handshake.PluginStateVersion != s.ManagementRevision ||
 		handshake.RevokeEpoch != s.RevokeEpoch ||
-		handshake.UIProtocolVersion != "plugin-ui-v3" {
+		handshake.UIProtocolVersion != version.PluginUIProtocolVersion {
 		return ErrHandshakeMismatch
 	}
 	return nil

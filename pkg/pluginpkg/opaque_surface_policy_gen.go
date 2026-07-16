@@ -5,7 +5,7 @@ package pluginpkg
 const (
 	opaqueSurfaceMaxMessageBytes                 = 262144
 	opaqueSurfaceMaxInFlightRequests             = 256
-	opaqueSurfaceMaxRendersPerSecond             = 30
+	opaqueSurfaceMaxRendersPerSecond             = 60
 	opaqueSurfaceMaxRenderDepth                  = 32
 	opaqueSurfaceMaxRenderNodes                  = 4096
 	opaqueSurfaceMaxAttributesPerElement         = 64
@@ -126,6 +126,7 @@ var opaqueSurfaceTagAttributes = map[string]map[string]struct{}{
 	},
 	"textarea": {
 		"name":        {},
+		"value":       {},
 		"disabled":    {},
 		"readonly":    {},
 		"required":    {},

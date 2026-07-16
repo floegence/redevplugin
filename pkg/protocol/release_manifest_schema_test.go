@@ -306,7 +306,7 @@ func assertReleaseManifestVerifierContract(t *testing.T, path string) {
 		`assertEqual(actualSums, expectedSums, "SHA256SUMS content");`,
 		`"contracts/spec/plugin/release-manifest-v3.schema.json"`,
 		`"contracts/spec/plugin/opaque-surface-document-v2.schema.json"`,
-		`"contracts/spec/plugin/opaque-surface-transport-v2.schema.json"`,
+		`"contracts/spec/plugin/opaque-surface-transport-v3.schema.json"`,
 		`const structuralOnly = args.includes("--structural-only");`,
 		`verifyExecutableTargets(bundleDir, manifest.runtime_target);`,
 		`target: { os: process.platform, arch: process.arch },`,

@@ -23,6 +23,8 @@ export type {
   PluginStreamTerminalStatus,
   PluginUIActionEvent,
   PluginUIAttributeValue,
+  PluginUIElementVNode,
+  PluginUIPatchOperation,
   PluginUIVNode,
 } from "./surface.js";
 

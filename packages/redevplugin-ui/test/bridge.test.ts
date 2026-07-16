@@ -176,28 +176,28 @@ test("platform client reads compatibility manifest through host API", async () =
   fetch.push({
     ok: true,
     data: {
-      schema_version: "redevplugin.compatibility.v3",
+      schema_version: "redevplugin.compatibility.v4",
       matrix: {
         redevplugin_go_version: "0.0.0-dev",
         redevplugin_ui_version: "0.0.0-dev",
         redevplugin_runtime_version: "0.0.0-dev",
-        plugin_ui_protocol_version: "plugin-ui-v3",
+        plugin_ui_protocol_version: "plugin-ui-v4",
         plugin_host_protocol_version: "plugin-host-v2",
         rust_ipc_version: "rust-ipc-v2",
         wasm_abi_version: "redevplugin-wasm-worker-v2",
-        manifest_schema_version: "manifest-v3",
+        manifest_schema_version: "manifest-v4",
         package_signature_schema_version: "package-signature-v1",
-        release_metadata_schema_version: "release-metadata-v3",
+        release_metadata_schema_version: "release-metadata-v4",
         source_policy_schema_version: "source-policy-v1",
         source_revocations_schema_version: "source-revocations-v1",
         token_ticket_schema_version: "token-ticket-v2",
-        bridge_schema_version: "bridge-v3",
+        bridge_schema_version: "bridge-v4",
         opaque_surface_document_schema_version: "opaque-surface-document-v2",
-        opaque_surface_transport_schema_version: "opaque-surface-transport-v2",
+        opaque_surface_transport_schema_version: "opaque-surface-transport-v3",
         target_classifier_version: "target-classifier-v1",
         network_grant_schema_version: "network-grant-v1",
-        plugin_platform_openapi_version: "plugin-platform-v3",
-        compatibility_schema_version: "compatibility-manifest-v3",
+        plugin_platform_openapi_version: "plugin-platform-v4",
+        compatibility_schema_version: "compatibility-manifest-v4",
         release_manifest_schema_version: "release-manifest-v3",
         worker_invocation_schema_version: "worker-invocation-v2",
         host_capability_contract_schema_version: "host-capability-contract-v1",
@@ -206,14 +206,14 @@ test("platform client reads compatibility manifest through host API", async () =
         host_capability_compatibility_schema_version: "host-capability-compatibility-v1",
         host_capability_signature_schema_version: "host-capability-signature-v1",
         host_capability_notices_schema_version: "host-capability-notices-v1",
-        error_codes_schema_version: "error-codes-v1",
+        error_codes_schema_version: "error-codes-v2",
         contract_registry_version: "contract-registry-v1",
       },
       contracts: [
         {
           id: "plugin-platform-openapi",
-          path: "spec/openapi/plugin-platform-v3.yaml",
-          version: "plugin-platform-v3",
+          path: "spec/openapi/plugin-platform-v4.yaml",
+          version: "plugin-platform-v4",
           sha256: "sha256-openapi",
         },
         {
@@ -232,9 +232,9 @@ test("platform client reads compatibility manifest through host API", async () =
 
   const compatibility = await client.getCompatibility();
 
-  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v3");
-  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v3");
-  assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v3");
+  assert.equal(compatibility.schema_version, "redevplugin.compatibility.v4");
+  assert.equal(compatibility.matrix.plugin_platform_openapi_version, "plugin-platform-v4");
+  assert.equal(compatibility.matrix.release_metadata_schema_version, "release-metadata-v4");
   assert.equal(compatibility.matrix.source_policy_schema_version, "source-policy-v1");
   assert.equal(compatibility.matrix.source_revocations_schema_version, "source-revocations-v1");
   assert.equal(compatibility.matrix.host_capability_contract_schema_version, "host-capability-contract-v1");

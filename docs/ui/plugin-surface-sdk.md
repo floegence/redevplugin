@@ -32,18 +32,19 @@ product session authority.
 
 ## Bridge Protocol
 
-The bridge protocol is described by `spec/plugin/bridge-v3.schema.json` and
+The bridge protocol is described by `spec/plugin/bridge-v4.schema.json` and
 implemented by the TypeScript package. Contract checks keep these frame names,
 the UI protocol version, and forbidden response fields aligned with the schema:
 
 - `redevplugin.bridge.call`;
 - `redevplugin.bridge.stream.read`;
-- `redevplugin.ui.render`;
+- `redevplugin.ui.mount`;
+- `redevplugin.ui.patch`;
 - `redevplugin.bridge.cancel`;
 - `redevplugin.ui.action`;
 - `redevplugin.bridge.response`;
 - `redevplugin.bridge.lifecycle`;
-- `plugin-ui-v3`.
+- `plugin-ui-v4`.
 
 The parent transfers one secret-free bootstrap port to the current iframe
 `contentWindow` and frame generation. Because the iframe has an opaque origin,
@@ -70,7 +71,7 @@ asset-session nonce, plugin state version, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
-`bridge-v3.schema.json` contract.
+`bridge-v4.schema.json` contract.
 
 ## Management Client
 
@@ -152,7 +153,8 @@ await surfaceHost.open();
 
 `loadTimeoutMs` is one aggregate opening deadline, not a fresh timeout for each
 stage. It covers frame load, prepare, port acknowledgement, initial lease,
-first paint, and worker readiness. Expiry returns `PLUGIN_BRIDGE_TIMEOUT`,
+worker bridge activation, and the first renderer commit. Expiry returns
+`PLUGIN_BRIDGE_TIMEOUT`,
 revokes the server surface, aborts parent requests, clears the iframe and ports,
 and records one attempt in the supplied `PluginSurfaceReloadLimiter`. A new host
 instance may retry within that limiter; a healthy open resets its state.
@@ -212,8 +214,10 @@ prepared. After the generation-bound port acknowledgement, the trusted parent
 mints and applies the initial gateway and asset
 lease before it sends `redevplugin.surface.initialize`. This ordering prevents
 renderer asset reads from racing the server-side replacement of the prepared
-asset session. Renewal scheduling starts only after first paint and worker
-startup make the surface ready.
+asset session. The bridge activates and lease renewal scheduling begins after
+worker startup, before the first renderer commit, so bootstrap code can publish
+its initial tree without a lease gap. External surface readiness waits for that
+commit; `open()` never resolves on bridge activation alone.
 
 The Host renews a live surface lease before expiry by rotating both the
 parent-held gateway token and asset session on the same bridge channel. Reads

@@ -6,7 +6,6 @@ import {
   opaqueSurfaceRenderLimits,
   opaqueSurfaceSafeInputTypes,
   opaqueSurfaceTagAttributes,
-  type OpaqueSurfaceAllowedTag,
 } from "./opaque-surface-policy.gen.js";
 import {
   defaultFetch,
@@ -21,6 +20,20 @@ import {
   registerPluginSurface,
   type PluginSurfaceScope,
 } from "./surface-scope.js";
+import {
+  PluginUIReconcileError,
+  reconcilePluginUITrees,
+  validatePluginUITree,
+  type PluginUIElementVNode,
+  type PluginUIVNode,
+} from "./ui-reconciler.js";
+
+export type {
+  PluginUIAttributeValue,
+  PluginUIElementVNode,
+  PluginUIPatchOperation,
+  PluginUIVNode,
+} from "./ui-reconciler.js";
 
 export const opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2" as const;
 export const pluginRiskPlanSchemaVersion = "redevplugin.capability.risk_plan.v1" as const;
@@ -83,6 +96,9 @@ export type PluginBridgeLifecycleAckMessage = {
 export type PluginUIActionEvent = {
   action: string;
   event: "click" | "input" | "change" | "submit" | "escape";
+  targetKey: string;
+  editRevision: number;
+  isComposing: boolean;
   value?: string;
   checked?: boolean;
   form_data?: Record<string, string>;
@@ -137,17 +153,6 @@ export type PluginCanvasPointerEvent = {
 };
 
 export type PluginCanvasInputEvent = PluginCanvasFocusEvent | PluginCanvasResizeEvent | PluginCanvasKeyEvent | PluginCanvasPointerEvent;
-
-export type PluginUIAttributeValue = string | number | boolean;
-
-export type PluginUIVNode =
-  | string
-  | {
-      type: "element";
-      tag: OpaqueSurfaceAllowedTag;
-      attributes?: Record<string, PluginUIAttributeValue>;
-      children?: PluginUIVNode[];
-    };
 
 export type PluginMethodResult<T = unknown> = {
   data: T;
@@ -276,6 +281,13 @@ type PendingCall = {
   identifier?: string;
 };
 
+type PendingRender = {
+  tree: PluginUIElementVNode;
+  waiters: Array<{ resolve: () => void; reject: (reason: unknown) => void }>;
+};
+
+type PluginBridgeLifecycleState = "active" | "quiescing" | "quiesced" | "disposed";
+
 type WorkerBridgeClaim = { surfaceHandle: string; port: MessagePortLike };
 
 type WorkerBridgeGlobal = {
@@ -327,7 +339,13 @@ export class PluginBridgeClient {
   #readyPromise: Promise<void>;
   #resolveReady!: () => void;
   #rejectReady!: (reason: unknown) => void;
-  #disposed = false;
+  #lifecycleState: PluginBridgeLifecycleState = "active";
+  #handlingLifecycle = false;
+  #renderRevision = 0;
+  #committedTree?: PluginUIElementVNode;
+  #pendingRender?: PendingRender;
+  #renderLoop?: Promise<void>;
+  #controlEditRevisions = new Map<string, number>();
   #onMessage = (event: MessageEventLike): void => {
     void this.#handleMessage(event);
   };
@@ -401,13 +419,22 @@ export class PluginBridgeClient {
     }));
   }
 
-  render(tree: PluginUIVNode | PluginUIVNode[]): Promise<void> {
+  render(tree: PluginUIVNode): Promise<void> {
     this.#assertActive();
-    const id = this.#requestID("render");
-    return this.#request<void>(id, {
-      type: "redevplugin.ui.render",
-      id,
-      tree,
+    let validated: PluginUIElementVNode;
+    try {
+      validated = validatePluginUITree(tree);
+    } catch (error) {
+      throw new PluginBridgeError(
+        "PLUGIN_UI_PROTOCOL_VIOLATION",
+        error instanceof Error ? error.message : "Plugin UI tree is invalid",
+      );
+    }
+    return new Promise<void>((resolve, reject) => {
+      const waiters = this.#pendingRender?.waiters ?? [];
+      waiters.push({ resolve, reject });
+      this.#pendingRender = { tree: validated, waiters };
+      this.#startRenderLoop();
     });
   }
 
@@ -489,8 +516,8 @@ export class PluginBridgeClient {
   }
 
   dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
+    if (this.#lifecycleState === "disposed") return;
+    this.#lifecycleState = "disposed";
     const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
     if (!this.#ready) this.#rejectReady(disposedError);
     this.#port.removeEventListener("message", this.#onMessage);
@@ -502,7 +529,70 @@ export class PluginBridgeClient {
     this.#actionHandlers.clear();
     this.#canvasInputHandlers.clear();
     this.#lifecycleHandlers.clear();
+    for (const waiter of this.#pendingRender?.waiters ?? []) waiter.reject(disposedError);
+    this.#pendingRender = undefined;
+    this.#controlEditRevisions.clear();
     this.#port.close();
+  }
+
+  async #drainRenders(): Promise<void> {
+    while (this.#pendingRender && this.#acceptsPluginWork()) {
+      const pending = this.#pendingRender;
+      this.#pendingRender = undefined;
+      const id = this.#requestID("render");
+      const nextRevision = this.#renderRevision + 1;
+      try {
+        if (!this.#committedTree) {
+          await this.#request<void>(id, {
+            type: "redevplugin.ui.mount",
+            id,
+            revision: 1,
+            tree: pending.tree,
+          });
+        } else {
+          const operations = reconcilePluginUITrees(this.#committedTree, pending.tree, {
+            controlEditRevisions: this.#controlEditRevisions,
+          });
+          if (operations.length > 0) {
+            await this.#request<void>(id, {
+              type: "redevplugin.ui.patch",
+              id,
+              base_revision: this.#renderRevision,
+              revision: nextRevision,
+              operations,
+            });
+            this.#renderRevision = nextRevision;
+          }
+        }
+        this.#committedTree = pending.tree;
+        if (this.#renderRevision === 0) this.#renderRevision = 1;
+        for (const waiter of pending.waiters) waiter.resolve();
+      } catch (error) {
+        const bridgeError = error instanceof PluginUIReconcileError
+          ? new PluginBridgeError("PLUGIN_UI_PROTOCOL_VIOLATION", error.message)
+          : error;
+        for (const waiter of pending.waiters) waiter.reject(bridgeError);
+        const queued = this.#pendingRender as PendingRender | undefined;
+        for (const waiter of queued?.waiters ?? []) waiter.reject(bridgeError);
+        this.#pendingRender = undefined;
+        throw bridgeError;
+      }
+    }
+    if (this.#pendingRender) {
+      const error = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin UI cannot render after quiescing starts");
+      for (const waiter of this.#pendingRender.waiters) waiter.reject(error);
+      this.#pendingRender = undefined;
+    }
+  }
+
+  #startRenderLoop(): void {
+    if (this.#renderLoop) return;
+    this.#renderLoop = this.#drainRenders()
+      .catch(() => undefined)
+      .finally(() => {
+        this.#renderLoop = undefined;
+        if (this.#pendingRender) this.#startRenderLoop();
+      });
   }
 
   #request<T>(id: string, message: unknown, kind: PendingCall["kind"] = "json", identifier?: string): Promise<T> {
@@ -550,7 +640,7 @@ export class PluginBridgeClient {
   }
 
   async #handleMessage(event: MessageEventLike): Promise<void> {
-    if (this.#disposed) return;
+    if (this.#lifecycleState === "disposed") return;
     const data = event.data;
     if (isCanvasReadyCandidate(data)) {
       const pending = this.#pending.get(data.id);
@@ -603,6 +693,8 @@ export class PluginBridgeClient {
         this.#ready = true;
         this.#resolveReady();
       }
+      if (data.quiesce_id) this.#lifecycleState = "quiescing";
+      this.#handlingLifecycle = true;
       await Promise.allSettled(Array.from(this.#lifecycleHandlers, async (handler) => {
         try {
           await handler(data.event);
@@ -610,17 +702,21 @@ export class PluginBridgeClient {
           // A plugin lifecycle observer cannot block bounded surface teardown.
         }
       }));
+      this.#handlingLifecycle = false;
       if (data.quiesce_id) {
         this.#port.postMessage({
           type: "redevplugin.bridge.lifecycle_ack",
           quiesce_id: data.quiesce_id,
         } satisfies PluginBridgeLifecycleAckMessage);
+        this.#lifecycleState = "quiesced";
       }
-      if (data.event.type === "dispose") this.dispose();
+      if (data.event.type === "dispose" && !data.quiesce_id) this.dispose();
       return;
     }
     if (isActionMessage(data)) {
-      for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(data);
+      this.#controlEditRevisions.set(data.target_key, data.edit_revision);
+      const action = publicActionEvent(data);
+      for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(action);
       return;
     }
     const canvasInput = publicCanvasInputMessage(data);
@@ -634,9 +730,14 @@ export class PluginBridgeClient {
   }
 
   #assertActive(): void {
-    if (this.#disposed) {
+    if (!this.#acceptsPluginWork()) {
       throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
     }
+  }
+
+  #acceptsPluginWork(): boolean {
+    return this.#lifecycleState === "active" ||
+      (this.#lifecycleState === "quiescing" && this.#handlingLifecycle);
   }
 }
 
@@ -952,11 +1053,23 @@ type OpenSignals = {
   portAcknowledged: Deferred<void>;
   firstPaint: Deferred<void>;
   workerReady: Deferred<void>;
+  firstCommit: Deferred<void>;
 };
 
 type SurfaceQuiesce = {
   id: string;
   acknowledged: Deferred<void>;
+};
+
+export type PluginSurfaceQuiesceResult = {
+  outcome: "acknowledged" | "not_ready" | "timed_out";
+  durationMs: number;
+};
+
+export type PluginSurfaceCloseResult = {
+  quiesce: PluginSurfaceQuiesceResult;
+  revokeDurationMs: number;
+  totalDurationMs: number;
 };
 
 type Deferred<T> = {
@@ -1115,6 +1228,10 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
   const requestSequence = { rpc: 0, stream: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
   let renderWindowStartedAt = 0;
   let renderCount = 0;
+  let uiRevision = 0;
+  let uiTree;
+  let uiElements = new Map();
+  const controlEdits = new Map();
   let lastAutofocusIdentity = "";
   const pendingAssets = new Map();
   const queuedAssets = [];
@@ -1189,6 +1306,27 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     verifiedAssetBytes.clear();
     assetByLogicalID.clear();
   };
+  const terminateQuiescedWorker = () => {
+    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
+    if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
+    workerHeartbeatTimer = undefined;
+    workerHeartbeatTimeout = undefined;
+    workerHeartbeatPendingID = undefined;
+    workerReady = false;
+    if (workerControlPort) {
+      workerControlPort.close();
+      workerControlPort = undefined;
+    }
+    if (workerPort) {
+      workerPort.close();
+      workerPort = undefined;
+    }
+    if (worker) {
+      worker.terminate();
+      worker = undefined;
+    }
+    pendingWorkerRequests.clear();
+  };
   const validateCanvasIdentifiers = (root) => {
     const identifiers = new Set();
     let totalPixels = 0;
@@ -1226,37 +1364,48 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       document.head.append(style);
     }
   };
-  const buildWorkerNode = (value, state, depth) => {
+  const applyWorkerAttribute = (element, tag, name, attributeValue) => {
+    const lower = name.toLowerCase();
+    if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
+    if (lower === "value" && "value" in element) element.value = String(attributeValue);
+    if (lower === "checked" && "checked" in element) element.checked = attributeValue === true;
+    if (lower === "autofocus") {
+      if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
+      else element.removeAttribute("data-redevplugin-renderer-autofocus");
+      return;
+    }
+    if (typeof attributeValue === "boolean") {
+      const serialized = lower.startsWith("aria-") ? String(attributeValue) : "";
+      if (attributeValue || serialized) element.setAttribute(name, serialized);
+      else element.removeAttribute(name);
+      return;
+    }
+    element.setAttribute(name, String(attributeValue));
+  };
+  const buildWorkerNode = (value, state, depth, elements = new Map()) => {
     state.nodes += 1;
     if (state.nodes > maxRenderNodes || depth > maxRenderDepth) throw new Error("plugin render tree exceeds limits");
     if (typeof value === "string") {
       if (value.length > maxTextLength) throw new Error("plugin render text exceeds limits");
       return document.createTextNode(value);
     }
-    if (!exactKeys(value, Object.prototype.hasOwnProperty.call(value, "attributes") && Object.prototype.hasOwnProperty.call(value, "children") ? ["type", "tag", "attributes", "children"] : Object.prototype.hasOwnProperty.call(value, "attributes") ? ["type", "tag", "attributes"] : Object.prototype.hasOwnProperty.call(value, "children") ? ["type", "tag", "children"] : ["type", "tag"]) || value.type !== "element" || typeof value.tag !== "string") throw new Error("plugin render node is invalid");
+    if (!isRecord(value) || !Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
+        !Object.prototype.hasOwnProperty.call(value, "key") || value.type !== "element" || !validResourceIdentifier(value.key) ||
+        elements.has(value.key) || typeof value.tag !== "string") throw new Error("plugin render node is invalid");
     const tag = value.tag.toLowerCase();
     if (!allowedTags.has(tag)) throw new Error("plugin render tag is not allowed");
     const element = document.createElement(tag);
+    element.setAttribute("data-redevplugin-key", value.key);
+    elements.set(value.key, element);
     if (value.attributes !== undefined) {
       if (!isRecord(value.attributes) || Object.keys(value.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
       for (const [name, attributeValue] of Object.entries(value.attributes)) {
-        const lower = name.toLowerCase();
-        if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
-        if (lower === "autofocus") {
-          if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
-          continue;
-        }
-        if (typeof attributeValue === "boolean") {
-          const serialized = lower.startsWith("aria-") ? String(attributeValue) : "";
-          if (attributeValue || serialized) element.setAttribute(name, serialized);
-        } else {
-          element.setAttribute(name, String(attributeValue));
-        }
+        applyWorkerAttribute(element, tag, name, attributeValue);
       }
     }
     if (value.children !== undefined) {
       if (!Array.isArray(value.children)) throw new Error("plugin render children are invalid");
-      for (const child of value.children) element.append(buildWorkerNode(child, state, depth + 1));
+      for (const child of value.children) element.append(buildWorkerNode(child, state, depth + 1, elements));
     }
     return element;
   };
@@ -1322,22 +1471,201 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     document.body.scrollTop = snapshot.bodyScrollTop;
     document.body.scrollLeft = snapshot.bodyScrollLeft;
   };
-  const applyWorkerRender = (tree) => {
-    if (canvasRuntimes.size > 0) throw new Error("plugin render cannot replace an active transferred canvas");
-    const values = Array.isArray(tree) ? tree : [tree];
-    const fragment = document.createDocumentFragment();
-    const state = { nodes: 0 };
-    for (const value of values) fragment.append(buildWorkerNode(value, state, 1));
-    validateCanvasIdentifiers(fragment);
+  const cloneVNode = (value) => JSON.parse(JSON.stringify(value));
+  const indexModel = (root) => {
+    const elements = new Map();
+    const visit = (node, parent, depth, state) => {
+      state.nodes += 1;
+      if (state.nodes > maxRenderNodes || depth > maxRenderDepth) throw new Error("plugin render tree exceeds limits");
+      if (typeof node === "string") {
+        if (node.length > maxTextLength) throw new Error("plugin render text exceeds limits");
+        return;
+      }
+      if (!isRecord(node) || !Object.keys(node).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
+          node.type !== "element" || !validResourceIdentifier(node.key) || elements.has(node.key) ||
+          typeof node.tag !== "string" || !allowedTags.has(node.tag)) throw new Error("plugin render node is invalid");
+      if (node.attributes !== undefined) {
+        if (!isRecord(node.attributes) || Object.keys(node.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
+        for (const [name, value] of Object.entries(node.attributes)) if (!validAttribute(node.tag, name, value)) throw new Error("plugin render attribute is not allowed");
+      }
+      if (node.children !== undefined && !Array.isArray(node.children)) throw new Error("plugin render children are invalid");
+      elements.set(node.key, { node, parent });
+      for (const child of node.children || []) visit(child, node, depth + 1, state);
+    };
+    visit(root, undefined, 1, { nodes: 0 });
+    return elements;
+  };
+  const transferredCanvasKey = (key) => {
+    const element = uiElements.get(key);
+    if (!(element instanceof HTMLCanvasElement)) return false;
+    for (const runtime of canvasRuntimes.values()) if (runtime.canvas === element) return true;
+    return false;
+  };
+  const editableControlAttribute = (tag, name) => {
+    const normalized = name.toLowerCase();
+    return (normalized === "value" && ["input", "textarea", "select", "option"].includes(tag)) ||
+      (normalized === "checked" && tag === "input");
+  };
+  const subtreeHasTransferredCanvas = (node) => {
+    if (typeof node === "string") return false;
+    if (transferredCanvasKey(node.key)) return true;
+    return (node.children || []).some(subtreeHasTransferredCanvas);
+  };
+  const validatePatch = (operations) => {
+    if (!Array.isArray(operations) || operations.length > maxRenderNodes) throw new Error("plugin UI patch exceeds limits");
+    const nextTree = cloneVNode(uiTree);
+    let model = indexModel(nextTree);
+    for (const operation of operations) {
+      if (!isRecord(operation) || typeof operation.type !== "string") throw new Error("plugin UI patch operation is invalid");
+      if (operation.type === "set_text") {
+        if (!exactKeys(operation, ["type", "parent_key", "child_index", "text"]) || !validResourceIdentifier(operation.parent_key) ||
+            !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 || typeof operation.text !== "string" || operation.text.length > maxTextLength) throw new Error("plugin UI text patch is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        if (!parent || typeof (parent.children || [])[operation.child_index] !== "string") throw new Error("plugin UI text patch target is invalid");
+        parent.children[operation.child_index] = operation.text;
+      } else if (operation.type === "patch_attributes") {
+        if (!exactKeys(operation, ["type", "target_key", "set", "remove"]) || !validResourceIdentifier(operation.target_key) ||
+            !isRecord(operation.set) || !Array.isArray(operation.remove) || operation.remove.some((name) => typeof name !== "string") ||
+            Object.keys(operation.set).some((name) => typeof name !== "string")) throw new Error("plugin UI attribute patch is invalid");
+        const target = model.get(operation.target_key)?.node;
+        if (!target || transferredCanvasKey(target.key) || Object.keys(operation.set).some((name) => editableControlAttribute(target.tag, name)) ||
+            operation.remove.some((name) => editableControlAttribute(target.tag, name))) throw new Error("plugin UI attribute patch target is invalid");
+        target.attributes ||= {};
+        for (const [name, value] of Object.entries(operation.set)) {
+          if (!validAttribute(target.tag, name, value)) throw new Error("plugin UI attribute patch is not allowed");
+          target.attributes[name] = value;
+        }
+        for (const name of operation.remove) delete target.attributes[name];
+      } else if (operation.type === "patch_control") {
+        if (!Object.keys(operation).every((key) => ["type", "target_key", "edit_revision", "value", "checked"].includes(key)) ||
+            !validResourceIdentifier(operation.target_key) || !Number.isSafeInteger(operation.edit_revision) || operation.edit_revision < 0 ||
+            (operation.value === undefined && operation.checked === undefined) ||
+            (operation.value !== undefined && operation.value !== null && typeof operation.value !== "string") ||
+            (operation.checked !== undefined && operation.checked !== null && typeof operation.checked !== "boolean")) throw new Error("plugin UI control patch is invalid");
+        const target = model.get(operation.target_key)?.node;
+        if (!target || !["input", "textarea", "select", "option"].includes(target.tag)) throw new Error("plugin UI control patch target is invalid");
+        target.attributes ||= {};
+        if (operation.value !== undefined) operation.value === null ? delete target.attributes.value : target.attributes.value = operation.value;
+        if (operation.checked !== undefined) operation.checked === null ? delete target.attributes.checked : target.attributes.checked = operation.checked;
+      } else if (operation.type === "insert_child") {
+        if (!exactKeys(operation, ["type", "parent_key", "child_index", "node"]) || !validResourceIdentifier(operation.parent_key) ||
+            !Number.isSafeInteger(operation.child_index) || operation.child_index < 0) throw new Error("plugin UI insertion is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        if (!parent || operation.child_index > (parent.children || []).length) throw new Error("plugin UI insertion target is invalid");
+        parent.children ||= [];
+        parent.children.splice(operation.child_index, 0, operation.node);
+      } else if (operation.type === "remove_child") {
+        if (!Object.keys(operation).every((key) => ["type", "parent_key", "child_index", "child_key"].includes(key)) ||
+            !validResourceIdentifier(operation.parent_key) || !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 ||
+            (operation.child_key !== undefined && !validResourceIdentifier(operation.child_key))) throw new Error("plugin UI removal is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        const child = parent && (parent.children || [])[operation.child_index];
+        if (!parent || child === undefined || (operation.child_key === undefined) !== (typeof child === "string") ||
+            (typeof child !== "string" && operation.child_key !== child.key) || subtreeHasTransferredCanvas(child)) throw new Error("plugin UI removal target is invalid");
+        parent.children.splice(operation.child_index, 1);
+      } else if (operation.type === "move_child") {
+        if (!exactKeys(operation, ["type", "parent_key", "child_key", "from_index", "to_index"]) || !validResourceIdentifier(operation.parent_key) ||
+            !validResourceIdentifier(operation.child_key) || !Number.isSafeInteger(operation.from_index) || !Number.isSafeInteger(operation.to_index) ||
+            operation.from_index < 0 || operation.to_index < 0 || transferredCanvasKey(operation.child_key)) throw new Error("plugin UI move is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        const child = parent && (parent.children || [])[operation.from_index];
+        if (!parent || typeof child === "string" || child?.key !== operation.child_key || operation.to_index >= parent.children.length) throw new Error("plugin UI move target is invalid");
+        parent.children.splice(operation.from_index, 1);
+        parent.children.splice(operation.to_index, 0, child);
+      } else {
+        throw new Error("plugin UI patch operation type is unsupported");
+      }
+      model = indexModel(nextTree);
+    }
+    return nextTree;
+  };
+  const removeDOMIndex = (node) => {
+    if (!(node instanceof Element)) return;
+    for (const element of [node, ...node.querySelectorAll("[data-redevplugin-key]")]) {
+      const key = element.getAttribute("data-redevplugin-key");
+      if (key) uiElements.delete(key);
+    }
+  };
+  const applyPatchOperation = (operation) => {
+    const parent = operation.parent_key && uiElements.get(operation.parent_key);
+    const target = operation.target_key && uiElements.get(operation.target_key);
+    if (operation.type === "set_text") {
+      parent.childNodes[operation.child_index].nodeValue = operation.text;
+    } else if (operation.type === "patch_attributes") {
+      for (const name of operation.remove) {
+        target.removeAttribute(name);
+        if (name.toLowerCase() === "autofocus") target.removeAttribute("data-redevplugin-renderer-autofocus");
+      }
+      for (const [name, value] of Object.entries(operation.set)) applyWorkerAttribute(target, target.tagName.toLowerCase(), name, value);
+    } else if (operation.type === "patch_control") {
+      const edit = controlEdits.get(operation.target_key) || { revision: 0, isComposing: false };
+      if (edit.revision !== operation.edit_revision || edit.isComposing) return;
+      if (operation.value !== undefined && "value" in target) target.value = operation.value === null ? "" : operation.value;
+      if (operation.checked !== undefined && "checked" in target) target.checked = operation.checked === true;
+    } else if (operation.type === "insert_child") {
+      const elements = new Map();
+      const node = buildWorkerNode(operation.node, { nodes: 0 }, 1, elements);
+      parent.insertBefore(node, parent.childNodes[operation.child_index] || null);
+      for (const [key, element] of elements) uiElements.set(key, element);
+    } else if (operation.type === "remove_child") {
+      const node = parent.childNodes[operation.child_index];
+      removeDOMIndex(node);
+      node.remove();
+    } else if (operation.type === "move_child") {
+      const node = parent.childNodes[operation.from_index];
+      const reference = operation.to_index > operation.from_index ? parent.childNodes[operation.to_index + 1] : parent.childNodes[operation.to_index];
+      parent.insertBefore(node, reference || null);
+    }
+  };
+  const onAnimationFrame = (commit) => new Promise((resolve, reject) => requestAnimationFrame(() => {
+    try { commit(); resolve(); } catch (error) { reject(error); }
+  }));
+  const mountWorkerTree = async (tree) => {
+    if (uiRevision !== 0) throw new Error("plugin UI mount may only occur once");
+    const elements = new Map();
+    const root = buildWorkerNode(tree, { nodes: 0 }, 1, elements);
+    if (!(root instanceof Element)) throw new Error("plugin UI root must be an element");
+    validateCanvasIdentifiers(root);
     const renderState = captureRenderState();
-    document.body.replaceChildren(fragment);
-    restoreRenderState(renderState);
+    await onAnimationFrame(() => {
+      document.body.replaceChildren(root);
+      restoreRenderState(renderState);
+    });
+    uiTree = cloneVNode(tree);
+    uiElements = elements;
+    uiRevision = 1;
+    sendParent({ type: "redevplugin.surface.first_commit" });
+  };
+  const patchWorkerTree = async (baseRevision, revision, operations) => {
+    if (uiRevision < 1 || baseRevision !== uiRevision || revision !== baseRevision + 1) throw new Error("plugin UI patch revision is invalid");
+    const nextTree = validatePatch(operations);
+    const renderState = captureRenderState();
+    await onAnimationFrame(() => {
+      for (const operation of operations) applyPatchOperation(operation);
+      restoreRenderState(renderState);
+    });
+    uiTree = nextTree;
+    uiRevision = revision;
   };
   const actionPayload = (event, element, eventType = event.type) => {
-    const payload = { type: "redevplugin.ui.action", action: element.getAttribute("data-redevplugin-action"), event: eventType };
-    const target = event.target;
-    if (target && typeof target.value === "string") payload.value = target.value.slice(0, maxTextLength);
-    if (target && typeof target.checked === "boolean") payload.checked = target.checked;
+    const target = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : element;
+    const targetKey = target?.getAttribute("data-redevplugin-key") || element.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(targetKey)) throw new Error("plugin UI action target is invalid");
+    const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
+    if (eventType === "input" || eventType === "change") edit.revision += 1;
+    edit.isComposing = Boolean(event.isComposing || edit.isComposing);
+    controlEdits.set(targetKey, edit);
+    const payload = {
+      type: "redevplugin.ui.action",
+      action: element.getAttribute("data-redevplugin-action"),
+      event: eventType,
+      target_key: targetKey,
+      edit_revision: edit.revision,
+      is_composing: edit.isComposing,
+    };
+    const eventTarget = event.target;
+    if (eventTarget && typeof eventTarget.value === "string") payload.value = eventTarget.value.slice(0, maxTextLength);
+    if (eventTarget && typeof eventTarget.checked === "boolean") payload.checked = eventTarget.checked;
     if (eventType === "submit" && element.tagName === "FORM") {
       const values = {};
       let count = 0;
@@ -1350,7 +1678,24 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     }
     return payload;
   };
+  document.addEventListener("compositionstart", (event) => {
+    const element = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : null;
+    const key = element?.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(key)) return;
+    const edit = controlEdits.get(key) || { revision: 0, isComposing: false };
+    edit.isComposing = true;
+    controlEdits.set(key, edit);
+  }, true);
+  document.addEventListener("compositionend", (event) => {
+    const element = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : null;
+    const key = element?.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(key)) return;
+    const edit = controlEdits.get(key) || { revision: 0, isComposing: true };
+    edit.isComposing = false;
+    controlEdits.set(key, edit);
+  }, true);
   const handleAction = (event) => {
+    if (pendingQuiesceID) return;
     if (!["click", "input", "change", "submit"].includes(event.type)) return;
     const origin = event.target instanceof Element ? event.target : null;
     const element = origin ? origin.closest("[data-redevplugin-action]") : null;
@@ -1402,7 +1747,17 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (!owner || !document.body.contains(owner) || !validIdentifier(action)) return;
     event.preventDefault();
     event.stopPropagation();
-    sendWorker({ type: "redevplugin.ui.action", action, event: "escape" });
+    const targetKey = owner.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(targetKey)) return;
+    const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
+    sendWorker({
+      type: "redevplugin.ui.action",
+      action,
+      event: "escape",
+      target_key: targetKey,
+      edit_revision: edit.revision,
+      is_composing: edit.isComposing,
+    });
   }, true);
   const pumpAssets = () => {
     while (activeAssetReads < maxConcurrentAssetReads && queuedAssets.length > 0) {
@@ -1950,7 +2305,7 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
     if (exactKeys(message, ["type", "quiesce_id"]) && message.type === "redevplugin.bridge.lifecycle_ack" && validOpaqueHandle(message.quiesce_id, "quiesce") && message.quiesce_id === pendingQuiesceID) {
       pendingQuiesceID = undefined;
       sendParent({ type: "redevplugin.surface.quiesce_ack", quiesce_id: message.quiesce_id });
-      disposeRuntime();
+      terminateQuiescedWorker();
       return;
     }
     if (validCall(message)) {
@@ -1990,20 +2345,30 @@ export function createOpaquePluginBootstrapHTML(options: OpaquePluginBootstrapHT
       void deliverImageAsset(message.id, message.asset_id, asset);
       return;
     }
-    if (exactKeys(message, ["type", "id", "tree"]) && message.type === "redevplugin.ui.render" && typeof message.id === "string") {
+    if (exactKeys(message, ["type", "id", "revision", "tree"]) && message.type === "redevplugin.ui.mount" &&
+        typeof message.id === "string" && message.revision === 1) {
       if (!acceptWorkerRequest(message.id, "render")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       if (!renderRateAllowed()) {
         completeWorkerRequest(message.id);
         return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
       }
-      try {
-        applyWorkerRender(message.tree);
+      void mountWorkerTree(message.tree).then(() => {
         completeWorkerRequest(message.id);
         sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
-      } catch (error) {
+      }, (error) => fail(error && error.message || "plugin UI mount violated the protocol"));
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "base_revision", "revision", "operations"]) && message.type === "redevplugin.ui.patch" &&
+        typeof message.id === "string" && Number.isSafeInteger(message.base_revision) && Number.isSafeInteger(message.revision)) {
+      if (!acceptWorkerRequest(message.id, "render")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      if (!renderRateAllowed()) {
         completeWorkerRequest(message.id);
-        sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: false, error_code: "PLUGIN_CONTRACT_MISMATCH", error: String(error && error.message || error).slice(0, 512) });
+        return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
       }
+      void patchWorkerTree(message.base_revision, message.revision, message.operations).then(() => {
+        completeWorkerRequest(message.id);
+        sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
+      }, (error) => fail(error && error.message || "plugin UI patch violated the protocol"));
       return;
     }
     if (exactKeys(message, ["type", "id"]) && message.type === "redevplugin.bridge.cancel" && typeof message.id === "string") {
@@ -2088,6 +2453,7 @@ export class PluginSurfaceHost {
   #iframe: PluginSurfaceFrameLike;
   #transport: ReDevPluginSurfaceTransportInternals;
   #createMessageChannel: () => MessageChannelLike;
+  #bridgeReady = false;
   #loadTimeoutMs: number;
   #requestTimeoutMs: number;
   #leaseRenewalLeadMs: number;
@@ -2115,7 +2481,7 @@ export class PluginSurfaceHost {
   #quiesce?: SurfaceQuiesce;
   #initialFrameLoad?: Deferred<void>;
   #frameLoaded = false;
-  #closePromise?: Promise<void>;
+  #closePromise?: Promise<PluginSurfaceCloseResult>;
   #revokePromise?: Promise<void>;
   #unregisterSurfaceScope?: () => void;
   #opened = false;
@@ -2195,10 +2561,16 @@ export class PluginSurfaceHost {
         });
       }
     }, openingProgressDelayMs);
-    const signals: OpenSignals = { portAcknowledged: deferred<void>(), firstPaint: deferred<void>(), workerReady: deferred<void>() };
+    const signals: OpenSignals = {
+      portAcknowledged: deferred<void>(),
+      firstPaint: deferred<void>(),
+      workerReady: deferred<void>(),
+      firstCommit: deferred<void>(),
+    };
     void signals.portAcknowledged.promise.catch(() => undefined);
     void signals.firstPaint.promise.catch(() => undefined);
     void signals.workerReady.promise.catch(() => undefined);
+    void signals.firstCommit.promise.catch(() => undefined);
     this.#openSignals = signals;
     const scriptNonce = randomOpaqueNonce();
     this.#frameLoaded = false;
@@ -2267,10 +2639,14 @@ export class PluginSurfaceHost {
 
     await Promise.all([signals.firstPaint.promise, signals.workerReady.promise]);
     this.#assertActive();
-    this.#ready = true;
+    this.#bridgeReady = true;
     this.#scheduleLeaseRenewal();
-    this.#reloadLimiter.recordHealthyLoad();
     this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+
+    await signals.firstCommit.promise;
+    this.#assertActive();
+    this.#ready = true;
+    this.#reloadLimiter.recordHealthyLoad();
   }
 
   sendLifecycle(event: Exclude<BridgeLifecycleEvent, { type: "ready" | "dispose" }>): void {
@@ -2278,8 +2654,14 @@ export class PluginSurfaceHost {
     this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event });
   }
 
-  close(): Promise<void> {
-    if (this.#disposed) return Promise.resolve();
+  close(): Promise<PluginSurfaceCloseResult> {
+    if (this.#disposed) {
+      return Promise.resolve({
+        quiesce: { outcome: "not_ready", durationMs: 0 },
+        revokeDurationMs: 0,
+        totalDurationMs: 0,
+      });
+    }
     if (this.#closePromise) return this.#closePromise;
     this.#closePromise = this.#closeSurface();
     return this.#closePromise;
@@ -2291,9 +2673,13 @@ export class PluginSurfaceHost {
     this.#disposeLocal();
   }
 
-  async #closeSurface(): Promise<void> {
-    await this.#quiesceSurface();
-    if (this.#disposed) return;
+  async #closeSurface(): Promise<PluginSurfaceCloseResult> {
+    const startedAt = performance.now();
+    const quiesce = await this.#quiesceSurface();
+    if (this.#disposed) {
+      return { quiesce, revokeDurationMs: 0, totalDurationMs: performance.now() - startedAt };
+    }
+    const revokeStartedAt = performance.now();
     const revoke = this.#revokeSurface(false);
     this.#disposeLocal();
     try {
@@ -2301,6 +2687,11 @@ export class PluginSurfaceHost {
     } catch (error) {
       throw toBridgeError(error, "PLUGIN_BRIDGE_DISPOSED");
     }
+    return {
+      quiesce,
+      revokeDurationMs: performance.now() - revokeStartedAt,
+      totalDurationMs: performance.now() - startedAt,
+    };
   }
 
   #disposeLocal(): void {
@@ -2309,6 +2700,7 @@ export class PluginSurfaceHost {
     this.#unregisterSurfaceScope?.();
     this.#unregisterSurfaceScope = undefined;
     this.#ready = false;
+    this.#bridgeReady = false;
     if (this.#leaseRenewalTimer) clearTimeout(this.#leaseRenewalTimer);
     this.#leaseRenewalTimer = undefined;
     this.#iframe.removeEventListener("load", this.#onFrameLoad);
@@ -2318,6 +2710,7 @@ export class PluginSurfaceHost {
     const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface host was disposed");
     this.#openSignals?.firstPaint.reject(disposedError);
     this.#openSignals?.workerReady.reject(disposedError);
+    this.#openSignals?.firstCommit.reject(disposedError);
     this.#openSignals?.portAcknowledged.reject(disposedError);
     this.#initialFrameLoad?.reject(disposedError);
     this.#quiesce?.acknowledged.reject(disposedError);
@@ -2359,6 +2752,10 @@ export class PluginSurfaceHost {
         this.#openSignals?.workerReady.resolve();
         return;
       }
+      if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_commit") {
+        this.#openSignals?.firstCommit.resolve();
+        return;
+      }
       if (hasExactKeys(data, ["type", "quiesce_id"]) && data.type === "redevplugin.surface.quiesce_ack" && validOpaqueHandle(data.quiesce_id, "quiesce") && data.quiesce_id === this.#quiesce?.id) {
         this.#quiesce.acknowledged.resolve();
         return;
@@ -2393,7 +2790,7 @@ export class PluginSurfaceHost {
   }
 
   async #handleCall(request: PluginBridgeRequest): Promise<void> {
-    if (!this.#ready || !this.#gatewayToken) {
+    if ((!this.#bridgeReady && !this.#quiesce) || !this.#gatewayToken) {
       this.#postError(request.id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin bridge call arrived before the surface became ready");
       return;
     }
@@ -2681,7 +3078,7 @@ export class PluginSurfaceHost {
   }
 
   async #postJSON<T>(path: string, body: unknown | (() => unknown), signal?: AbortSignal): Promise<T> {
-    if (this.#ready) {
+    if (this.#bridgeReady) {
       if (Date.now() >= this.#leaseRenewAtMs) await this.#startLeaseRenewal();
       else if (this.#leaseRenewalPromise) await this.#leaseRenewalPromise;
     }
@@ -2775,7 +3172,7 @@ export class PluginSurfaceHost {
 
   #startLeaseRenewal(): Promise<void> {
     this.#assertActive();
-    if (!this.#ready || !this.#gatewayToken) {
+    if (!this.#bridgeReady || !this.#gatewayToken) {
       return Promise.reject(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin surface lease cannot renew before readiness"));
     }
     if (this.#leaseRenewalPromise) return this.#leaseRenewalPromise;
@@ -2826,14 +3223,18 @@ export class PluginSurfaceHost {
     }
   }
 
-  async #quiesceSurface(): Promise<void> {
-    if (!this.#ready || !this.#port || this.#quiesce) return;
+  async #quiesceSurface(): Promise<PluginSurfaceQuiesceResult> {
+    const startedAt = performance.now();
+    if (!this.#ready || !this.#port || this.#quiesce) {
+      return { outcome: "not_ready", durationMs: performance.now() - startedAt };
+    }
     const quiesce: SurfaceQuiesce = {
       id: randomOpaqueHandle("quiesce"),
       acknowledged: deferred<void>(),
     };
     void quiesce.acknowledged.promise.catch(() => undefined);
     this.#quiesce = quiesce;
+    this.#ready = false;
     try {
       this.#postToRenderer({
         type: "redevplugin.bridge.lifecycle",
@@ -2845,8 +3246,11 @@ export class PluginSurfaceHost {
         Math.min(this.#requestTimeoutMs, maxSurfaceQuiesceMs),
         "Plugin surface quiesce timed out",
       );
+      return { outcome: "acknowledged", durationMs: performance.now() - startedAt };
     } catch {
-      // A non-responsive plugin cannot block session revocation and iframe teardown.
+      const error = new PluginBridgeError("PLUGIN_SURFACE_QUIESCE_TIMEOUT", "Plugin surface quiesce timed out");
+      this.#reportError(error);
+      return { outcome: "timed_out", durationMs: performance.now() - startedAt };
     } finally {
       if (this.#quiesce === quiesce) this.#quiesce = undefined;
     }
@@ -2855,6 +3259,7 @@ export class PluginSurfaceHost {
   async #failSurface(error: PluginBridgeError): Promise<void> {
     if (this.#disposed) return;
     this.#ready = false;
+    this.#bridgeReady = false;
     this.#openSignals?.firstPaint.reject(error);
     this.#openSignals?.workerReady.reject(error);
     this.#reportError(error);
@@ -2911,6 +3316,141 @@ export class PluginSurfaceHost {
       throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface host is disposed");
     }
   }
+}
+
+export type PluginSurfaceSlotState = "empty" | "opening" | "ready" | "error" | "disposed";
+
+export type PluginSurfaceSlotOptions = {
+  stage: HTMLElement;
+  onStateChange?: (state: PluginSurfaceSlotState, error?: PluginBridgeError) => void;
+  onSurfaceClosed?: (result: PluginSurfaceCloseResult) => void;
+};
+
+export class PluginSurfaceSlot {
+  readonly element: HTMLElement;
+  #onStateChange?: PluginSurfaceSlotOptions["onStateChange"];
+  #onSurfaceClosed?: PluginSurfaceSlotOptions["onSurfaceClosed"];
+  #active?: PluginSurfaceHost;
+  #opening?: PluginSurfaceHost;
+  #transition = 0;
+  #disposed = false;
+  #retired = new WeakSet<PluginSurfaceHost>();
+
+  static create(options: PluginSurfaceSlotOptions): PluginSurfaceSlot {
+    if (!options.stage || typeof options.stage.append !== "function" || !options.stage.dataset) {
+      throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface slot requires an HTML stage");
+    }
+    return new PluginSurfaceSlot(options);
+  }
+
+  private constructor(options: PluginSurfaceSlotOptions) {
+    this.element = options.stage;
+    this.#onStateChange = options.onStateChange;
+    this.#onSurfaceClosed = options.onSurfaceClosed;
+    this.#setState("empty");
+  }
+
+  async open(options: PluginSurfaceHostOptions | PromiseLike<PluginSurfaceHostOptions>): Promise<PluginSurfaceHost> {
+    this.#assertActive();
+    const transition = ++this.#transition;
+    const previous = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHost => host !== undefined));
+    this.#active = undefined;
+    this.#opening = undefined;
+    for (const host of previous) this.#retire(host);
+    this.#setState("opening");
+    let resolvedOptions: PluginSurfaceHostOptions;
+    try {
+      resolvedOptions = await options;
+    } catch (error) {
+      if (!this.#disposed && transition === this.#transition) {
+        this.#setState("error", toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
+      }
+      throw error;
+    }
+    if (this.#disposed || transition !== this.#transition) {
+      throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+    }
+    const host = PluginSurfaceHost.create(resolvedOptions);
+    this.#opening = host;
+    setSurfaceInteractive(host.element, false);
+    this.element.append(host.element);
+    try {
+      await host.open();
+      if (this.#disposed || transition !== this.#transition || this.#opening !== host) {
+        this.#retire(host);
+        throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+      }
+      this.#opening = undefined;
+      this.#active = host;
+      setSurfaceInteractive(host.element, true);
+      this.#setState("ready");
+      return host;
+    } catch (error) {
+      this.#retire(host);
+      if (!this.#disposed && transition === this.#transition) {
+        this.#opening = undefined;
+        const bridgeError = toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+        this.#setState("error", bridgeError);
+      }
+      throw error;
+    }
+  }
+
+  async close(): Promise<PluginSurfaceCloseResult | undefined> {
+    this.#assertActive();
+    this.#transition += 1;
+    const hosts = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHost => host !== undefined));
+    this.#active = undefined;
+    this.#opening = undefined;
+    this.#setState("empty");
+    let result: PluginSurfaceCloseResult | undefined;
+    for (const host of hosts) {
+      setSurfaceInteractive(host.element, false);
+      const closed = await host.close();
+      host.element.remove();
+      this.#onSurfaceClosed?.(closed);
+      result ??= closed;
+    }
+    return result;
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#transition += 1;
+    const hosts = new Set([this.#active, this.#opening].filter((host): host is PluginSurfaceHost => host !== undefined));
+    this.#active = undefined;
+    this.#opening = undefined;
+    for (const host of hosts) {
+      host.dispose();
+      host.element.remove();
+    }
+    this.#setState("disposed");
+  }
+
+  #retire(host: PluginSurfaceHost): void {
+    if (this.#retired.has(host)) return;
+    this.#retired.add(host);
+    setSurfaceInteractive(host.element, false);
+    void host.close().then((result) => {
+      this.#onSurfaceClosed?.(result);
+    }).catch(() => undefined).finally(() => host.element.remove());
+  }
+
+  #setState(state: PluginSurfaceSlotState, error?: PluginBridgeError): void {
+    this.element.dataset.redevpluginSurfaceState = state;
+    this.#onStateChange?.(state, error);
+  }
+
+  #assertActive(): void {
+    if (this.#disposed) throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface slot is disposed");
+  }
+}
+
+function setSurfaceInteractive(element: HTMLIFrameElement, interactive: boolean): void {
+  element.hidden = !interactive;
+  element.inert = !interactive;
+  element.setAttribute("aria-hidden", interactive ? "false" : "true");
 }
 
 type SurfaceAssetReadMessage = {
@@ -3232,14 +3772,41 @@ function isLifecycleMessage(value: unknown): value is PluginBridgeLifecycleMessa
     (value.quiesce_id === undefined || (value.event.type === "dispose" && validOpaqueHandle(value.quiesce_id, "quiesce")));
 }
 
-function isActionMessage(value: unknown): value is PluginUIActionEvent & { type: "redevplugin.ui.action" } {
-  return hasAllowedKeys(value, ["type", "action", "event", "value", "checked", "form_data"]) &&
+type PluginUIActionMessage = {
+  type: "redevplugin.ui.action";
+  action: string;
+  event: PluginUIActionEvent["event"];
+  target_key: string;
+  edit_revision: number;
+  is_composing: boolean;
+  value?: string;
+  checked?: boolean;
+  form_data?: Record<string, string>;
+};
+
+function isActionMessage(value: unknown): value is PluginUIActionMessage {
+  return hasAllowedKeys(value, ["type", "action", "event", "target_key", "edit_revision", "is_composing", "value", "checked", "form_data"]) &&
     value.type === "redevplugin.ui.action" &&
     validActionID(value.action) &&
     (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit" || value.event === "escape") &&
+    validUIIdentifier(value.target_key) && Number.isSafeInteger(value.edit_revision) && Number(value.edit_revision) >= 0 &&
+    typeof value.is_composing === "boolean" &&
     (value.value == null || (typeof value.value === "string" && value.value.length <= 65536)) &&
     (value.checked == null || typeof value.checked === "boolean") &&
     (value.form_data == null || (isRecord(value.form_data) && Object.entries(value.form_data).every(([key, item]) => validActionID(key) && typeof item === "string" && item.length <= 65536)));
+}
+
+function publicActionEvent(value: PluginUIActionMessage): PluginUIActionEvent {
+  return removeUndefined({
+    action: value.action,
+    event: value.event,
+    targetKey: value.target_key,
+    editRevision: value.edit_revision,
+    isComposing: value.is_composing,
+    value: value.value,
+    checked: value.checked,
+    form_data: value.form_data,
+  });
 }
 
 type PluginCanvasReadyMessage = {

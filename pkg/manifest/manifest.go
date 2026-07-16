@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 type Manifest struct {
@@ -295,8 +296,8 @@ func Decode(r io.Reader) (Manifest, error) {
 }
 
 func Validate(m Manifest) error {
-	if m.SchemaVersion != "redevplugin.manifest.v3" {
-		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v3"}
+	if m.SchemaVersion != "redevplugin.manifest.v4" {
+		return ValidationError{Field: "schema_version", Message: "must be redevplugin.manifest.v4"}
 	}
 	if strings.TrimSpace(m.Publisher.PublisherID) == "" {
 		return ValidationError{Field: "publisher.publisher_id", Message: "is required"}
@@ -313,8 +314,8 @@ func Validate(m Manifest) error {
 	if m.Plugin.APIVersion != "plugin-v1" {
 		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
 	}
-	if m.Plugin.UIProtocolVersion != "plugin-ui-v3" {
-		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be plugin-ui-v3"}
+	if m.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
+		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be " + version.PluginUIProtocolVersion}
 	}
 	if strings.TrimSpace(m.Plugin.MinRuntimeVersion) == "" {
 		return ValidationError{Field: "plugin.min_runtime_version", Message: "is required"}

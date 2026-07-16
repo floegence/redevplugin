@@ -107,10 +107,10 @@ function verifyRequiredArtifacts(bundleDir) {
     "bin/redevplugin",
     "bin/redevplugin-runtime",
     "compatibility.json",
-    "contracts/spec/openapi/plugin-platform-v3.yaml",
-    "contracts/spec/plugin/bridge-v3.schema.json",
-    "contracts/spec/plugin/compatibility-manifest-v3.schema.json",
-    "contracts/spec/plugin/error-codes-v1.schema.json",
+    "contracts/spec/openapi/plugin-platform-v4.yaml",
+    "contracts/spec/plugin/bridge-v4.schema.json",
+    "contracts/spec/plugin/compatibility-manifest-v4.schema.json",
+    "contracts/spec/plugin/error-codes-v2.schema.json",
     "contracts/spec/plugin/host-capability-contract-v1.schema.json",
     "contracts/spec/plugin/host-capability-pin-v1.schema.json",
     "contracts/spec/plugin/host-capability-manifest-v1.schema.json",
@@ -118,10 +118,10 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/host-capability-signature-v1.schema.json",
     "contracts/spec/plugin/host-capability-notices-v1.schema.json",
     "contracts/spec/plugin/ipc-v2.schema.json",
-    "contracts/spec/plugin/manifest-v3.schema.json",
+    "contracts/spec/plugin/manifest-v4.schema.json",
     "contracts/spec/plugin/opaque-surface-document-v2.schema.json",
-    "contracts/spec/plugin/opaque-surface-transport-v2.schema.json",
-    "contracts/spec/plugin/release-metadata-v3.schema.json",
+    "contracts/spec/plugin/opaque-surface-transport-v3.schema.json",
+    "contracts/spec/plugin/release-metadata-v4.schema.json",
     "contracts/spec/plugin/release-manifest-v3.schema.json",
     "contracts/spec/plugin/source-policy-v1.schema.json",
     "contracts/spec/plugin/source-revocations-v1.schema.json",
@@ -190,7 +190,7 @@ function verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution
   const compatibility = readJSON(compatibilityPath);
   assertObject(compatibility, "compatibility.json");
   assertExactKeys(compatibility, ["schema_version", "matrix", "contracts"], "compatibility manifest");
-  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v3", "compatibility schema_version");
+  assertEqual(compatibility.schema_version, "redevplugin.compatibility.v4", "compatibility schema_version");
   assertObject(compatibility.matrix, "compatibility matrix");
   for (const key of ["redevplugin_go_version", "redevplugin_ui_version", "redevplugin_runtime_version"]) {
     assertEqual(compatibility.matrix?.[key], expectedVersion, `compatibility matrix ${key}`);

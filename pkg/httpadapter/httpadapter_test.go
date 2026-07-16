@@ -214,10 +214,10 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 		} `json:"contracts"`
 	}](t, handler, "/_redevplugin/api/plugins/platform/compatibility")
 
-	if got.SchemaVersion != "redevplugin.compatibility.v3" {
+	if got.SchemaVersion != "redevplugin.compatibility.v4" {
 		t.Fatalf("schema_version = %q", got.SchemaVersion)
 	}
-	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v2" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v3" {
+	if got.Matrix.PluginHostProtocolVersion != "plugin-host-v2" || got.Matrix.PluginPlatformOpenAPI != "plugin-platform-v4" {
 		t.Fatalf("matrix mismatch: %#v", got.Matrix)
 	}
 	contracts := map[string]struct {
@@ -234,7 +234,7 @@ func TestHandlerCompatibilityManifest(t *testing.T) {
 	if !ok {
 		t.Fatalf("compatibility manifest missing plugin-platform-openapi: %#v", got.Contracts)
 	}
-	if openapi.Path != "spec/openapi/plugin-platform-v3.yaml" || openapi.SHA256 == "" {
+	if openapi.Path != "spec/openapi/plugin-platform-v4.yaml" || openapi.SHA256 == "" {
 		t.Fatalf("plugin-platform-openapi contract mismatch: %#v", openapi)
 	}
 }
@@ -2725,8 +2725,8 @@ func samplePathForRoute(path string) string {
 func readOpenAPIContract(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
-		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v3.yaml"),
-		filepath.Join("spec", "openapi", "plugin-platform-v3.yaml"),
+		filepath.Join("..", "..", "spec", "openapi", "plugin-platform-v4.yaml"),
+		filepath.Join("spec", "openapi", "plugin-platform-v4.yaml"),
 	}
 	var lastErr error
 	for _, candidate := range candidates {
@@ -3217,7 +3217,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 		title = "HTTP"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http",
@@ -3225,7 +3225,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.view", "kind": "view", "label": "HTTP", "entry": "ui/index.html"}
@@ -3235,7 +3235,7 @@ func httpVersionedFixtureManifestJSON(version string, title string) string {
 
 func httpStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.storage",
@@ -3243,7 +3243,7 @@ func httpStorageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.storage.view", "kind": "view", "label": "HTTP Storage", "entry": "ui/index.html"}
@@ -3274,7 +3274,7 @@ func httpStorageFixtureManifestJSON() string {
 
 func httpRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.rpc",
@@ -3282,7 +3282,7 @@ func httpRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.rpc.view", "kind": "view", "label": "HTTP RPC", "entry": "ui/index.html"}
@@ -3301,7 +3301,7 @@ func httpRPCFixtureManifestJSON() string {
 
 func httpDangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.danger",
@@ -3309,7 +3309,7 @@ func httpDangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.danger.view", "kind": "view", "label": "HTTP Danger", "entry": "ui/index.html"}
@@ -3328,7 +3328,7 @@ func httpDangerousRPCFixtureManifestJSON() string {
 
 func httpOperationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.operation",
@@ -3336,7 +3336,7 @@ func httpOperationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.operation.view", "kind": "view", "label": "HTTP Operation", "entry": "ui/index.html"}
@@ -3355,7 +3355,7 @@ func httpOperationRPCFixtureManifestJSON() string {
 
 func httpSubscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.subscription",
@@ -3363,7 +3363,7 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.subscription.view", "kind": "view", "label": "HTTP Subscription", "entry": "ui/index.html"}
@@ -3382,7 +3382,7 @@ func httpSubscriptionRPCFixtureManifestJSON() string {
 
 func httpCoreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.core",
@@ -3390,7 +3390,7 @@ func httpCoreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.core.view", "kind": "view", "label": "HTTP Core", "entry": "ui/index.html"}
@@ -3418,7 +3418,7 @@ func httpCoreActionFixtureManifestJSON() string {
 
 func httpWorkerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.worker",
@@ -3426,7 +3426,7 @@ func httpWorkerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.worker.view", "kind": "view", "label": "HTTP Worker", "entry": "ui/index.html"}
@@ -3453,7 +3453,7 @@ func httpWorkerFixtureManifestJSON() string {
 
 func httpSettingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.settings",
@@ -3461,7 +3461,7 @@ func httpSettingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.settings.view", "kind": "view", "label": "HTTP Settings", "entry": "ui/index.html"}
@@ -3489,7 +3489,7 @@ func httpSettingsFixtureManifestJSON() string {
 
 func httpBlockedNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.http.network",
@@ -3497,7 +3497,7 @@ func httpBlockedNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "http.network.view", "kind": "view", "label": "HTTP Network", "entry": "ui/index.html"}
@@ -3739,7 +3739,7 @@ func httpReleaseMetadataBytesForPackage(t *testing.T, ref host.PluginReleaseRef,
 	t.Helper()
 	release := httpReleaseForPackage(ref, pkg)
 	raw, err := json.Marshal(map[string]any{
-		"schema_version":             "redevplugin.release_metadata.v3",
+		"schema_version":             "redevplugin.release_metadata.v4",
 		"source_id":                  release.SourceID,
 		"release_metadata_ref":       ref.ReleaseMetadataRef,
 		"publisher_id":               release.PublisherID,
@@ -3957,7 +3957,7 @@ func bridgeHandshakeFromBootstrap(openResp bridge.SurfaceBootstrap) bridge.Hands
 		AssetSessionNonce:  openResp.AssetSessionNonce,
 		PluginStateVersion: openResp.PluginStateVersion,
 		RevokeEpoch:        openResp.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v3",
+		UIProtocolVersion:  "plugin-ui-v4",
 	}
 }
 

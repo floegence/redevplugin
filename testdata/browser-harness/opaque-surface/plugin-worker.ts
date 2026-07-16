@@ -103,6 +103,7 @@ async function runAction(starting: string, complete: string, action: () => Promi
 function button(label: string, action: string): PluginUIVNode {
   return {
     type: "element",
+    key: `action-${action}`,
     tag: "button",
     attributes: {
       type: "button",
@@ -116,14 +117,16 @@ function button(label: string, action: string): PluginUIVNode {
 function render(): Promise<void> {
   return bridge.render({
     type: "element",
+    key: "harness-root",
     tag: "main",
     attributes: { class: "plugin-surface" },
     children: [
-      { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: ["Opaque worker surface"] },
-      { type: "element", tag: "h1", children: ["Plugin isolation lab"] },
-      { type: "element", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [state.status] },
+      { type: "element", key: "harness-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Opaque worker surface"] },
+      { type: "element", key: "harness-title", tag: "h1", children: ["Plugin isolation lab"] },
+      { type: "element", key: "harness-status", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [state.status] },
       {
         type: "element",
+        key: "harness-actions",
         tag: "div",
         attributes: { class: "button-row" },
         children: [
@@ -132,16 +135,18 @@ function render(): Promise<void> {
           button("Dangerous action", "dangerous-action"),
         ],
       },
-      { type: "element", tag: "h2", children: ["Worker security probe"] },
+      { type: "element", key: "security-title", tag: "h2", children: ["Worker security probe"] },
       {
         type: "element",
+        key: "security-probe",
         tag: "pre",
         attributes: { id: "security-probe", "aria-label": "Worker security probe" },
         children: [JSON.stringify(state.security, null, 2)],
       },
-      { type: "element", tag: "h2", children: ["Latest result"] },
+      { type: "element", key: "result-title", tag: "h2", children: ["Latest result"] },
       {
         type: "element",
+        key: "plugin-result",
         tag: "pre",
         attributes: { id: "plugin-result", "aria-label": "Latest result" },
         children: [state.result],

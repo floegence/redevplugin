@@ -1,4 +1,4 @@
-import { PluginBridgeClient, type PluginCanvasInputEvent, type PluginMethodResult } from "../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, type PluginCanvasInputEvent, type PluginMethodResult, type PluginUIElementVNode } from "../../packages/redevplugin-ui/src/plugin.js";
 
 type Vec = { x: number; y: number };
 type Bullet = Vec & { vy: number; enemy: boolean };
@@ -92,6 +92,7 @@ void initialize().catch((error) => void showFatalError(error));
 
 async function initialize(): Promise<void> {
   await bridge.ready();
+  await bridge.render(gameSurface(false));
   await bridge.call("game.initialize", {});
   const [surface, backgroundImage, playerImage, enemyImage, laserImage, meteorImage, saved] = await Promise.all([
     bridge.openCanvas("playfield"),
@@ -127,20 +128,42 @@ async function initialize(): Promise<void> {
 async function showFatalError(_error: unknown): Promise<void> {
   try {
     await bridge.ready();
-    await bridge.render({
-      type: "element",
-      tag: "main",
-      attributes: { class: "game-error" },
-      children: [
-        { type: "element", tag: "span", attributes: { class: "game-error-mark", "aria-hidden": true }, children: ["07"] },
-        { type: "element", tag: "p", attributes: { class: "game-error-eyebrow" }, children: ["Mission unavailable"] },
-        { type: "element", tag: "h1", children: ["Sky Strike could not start"] },
-        { type: "element", tag: "p", children: ["The flight system did not finish loading. Reopen the app to try again."] },
-      ],
-    });
+    await bridge.render(gameSurface(true));
   } catch {
     // The host owns the final fallback when the plugin bridge itself is unavailable.
   }
+}
+
+function gameSurface(fatal: boolean): PluginUIElementVNode {
+  return {
+    type: "element" as const,
+    key: "game-root",
+    tag: "main" as const,
+    attributes: { class: fatal ? "game-shell arcade-shell game-failed" : "game-shell arcade-shell" },
+    children: [
+      { type: "element" as const, key: "canvas-stage", tag: "section" as const, attributes: { class: "canvas-stage", "aria-label": "Sky Strike game" }, children: [
+        { type: "element" as const, key: "playfield", tag: "canvas" as const, attributes: { "data-redevplugin-canvas": "playfield", width: 960, height: 540, tabindex: 0, "aria-label": "Sky Strike mission playfield", "aria-describedby": "control-hint" }, children: [] },
+        { type: "element" as const, key: "game-actions", tag: "div" as const, attributes: { class: "game-actions" }, children: [
+          { type: "element" as const, key: "pause-game", tag: "button" as const, attributes: { type: "button", "data-redevplugin-action": "pause-game", title: "Play, pause, or resume", "aria-label": "Play, pause, or resume" }, children: [
+            { type: "element" as const, key: "pause-game-icon", tag: "span" as const, attributes: { class: "icon-play-pause", "aria-hidden": true }, children: [] },
+          ] },
+          { type: "element" as const, key: "restart-game", tag: "button" as const, attributes: { type: "button", "data-redevplugin-action": "restart-game", title: "Restart mission", "aria-label": "Restart mission" }, children: [
+            { type: "element" as const, key: "restart-game-icon", tag: "span" as const, attributes: { class: "icon-restart", "aria-hidden": true }, children: [] },
+          ] },
+        ] },
+        { type: "element" as const, key: "control-hint", tag: "div" as const, attributes: { id: "control-hint", class: "control-hint" }, children: [
+          { type: "element" as const, key: "keyboard-hint", tag: "span" as const, attributes: { class: "keyboard-copy" }, children: ["WASD or arrows to fly / Space to fire"] },
+          { type: "element" as const, key: "touch-hint", tag: "span" as const, attributes: { class: "touch-copy" }, children: ["Drag to fly / Hold to fire"] },
+        ] },
+      ] },
+      { type: "element" as const, key: "game-error", tag: "section" as const, attributes: { class: "game-error", hidden: !fatal, role: "alert" }, children: [
+        { type: "element" as const, key: "game-error-mark", tag: "span" as const, attributes: { class: "game-error-mark", "aria-hidden": true }, children: ["07"] },
+        { type: "element" as const, key: "game-error-eyebrow", tag: "p" as const, attributes: { class: "game-error-eyebrow" }, children: ["Mission unavailable"] },
+        { type: "element" as const, key: "game-error-title", tag: "h1" as const, children: ["Sky Strike could not start"] },
+        { type: "element" as const, key: "game-error-message", tag: "p" as const, children: ["The flight system did not finish loading. Reopen the app to try again."] },
+      ] },
+    ],
+  };
 }
 
 function scheduleFrame(): void {

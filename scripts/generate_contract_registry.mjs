@@ -202,7 +202,7 @@ async function readRenderPolicy(registry) {
     }
     limits[key] = policy[key];
   }
-  const vnode = schema?.$defs?.vnode?.oneOf?.[1];
+  const vnode = schema?.$defs?.element_vnode ?? schema?.$defs?.vnode?.oneOf?.[1];
   const allowedTags = vnode?.properties?.tag?.enum;
   if (!isUniqueStringArray(allowedTags)) {
     throw new Error("bridge vnode tag enum must be a unique string array");

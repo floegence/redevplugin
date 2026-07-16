@@ -39,6 +39,9 @@
     "PLUGIN_NETWORK_RATE_LIMITED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
     "PLUGIN_RUNTIME_VERSION_MISMATCH",
+    "PLUGIN_UI_PROTOCOL_UNSUPPORTED",
+    "PLUGIN_UI_PROTOCOL_VIOLATION",
+    "PLUGIN_SURFACE_QUIESCE_TIMEOUT",
     "PLUGIN_JSON_LIMIT_EXCEEDED",
     "PLUGIN_CAPABILITY_ERROR",
     "PLUGIN_WORKER_ERROR",
@@ -78,7 +81,7 @@
   var opaqueSurfaceRenderLimits = {
     "max_message_bytes": 262144,
     "max_in_flight_requests": 256,
-    "max_renders_per_second": 30,
+    "max_renders_per_second": 60,
     "max_render_depth": 32,
     "max_render_nodes": 4096,
     "max_attributes_per_element": 64,
@@ -125,6 +128,195 @@
   }
   var defaultPluginSurfaceScope = createPluginSurfaceScope();
 
+  // packages/redevplugin-ui/src/ui-reconciler.ts
+  var keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
+  var editableValueTags = /* @__PURE__ */ new Set(["input", "textarea", "select", "option"]);
+  var PluginUIReconcileError = class extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "PluginUIReconcileError";
+    }
+  };
+  function validatePluginUITree(tree) {
+    if (!isElement(tree)) {
+      throw new PluginUIReconcileError("Plugin UI root must be one keyed element");
+    }
+    const keys = /* @__PURE__ */ new Set();
+    const seen = /* @__PURE__ */ new Set();
+    let nodes = 0;
+    const visit = (node, depth) => {
+      nodes += 1;
+      if (nodes > 4096 || depth > 32) {
+        throw new PluginUIReconcileError("Plugin UI tree exceeds structural limits");
+      }
+      if (typeof node === "string") {
+        if (node.length > 65536) throw new PluginUIReconcileError("Plugin UI text exceeds limits");
+        return;
+      }
+      if (!isElement(node) || seen.has(node)) {
+        throw new PluginUIReconcileError("Plugin UI tree must contain plain acyclic VNodes");
+      }
+      seen.add(node);
+      try {
+        if (!keyPattern.test(node.key) || keys.has(node.key)) {
+          throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
+        }
+        keys.add(node.key);
+        if (node.attributes !== void 0) {
+          if (!isPlainRecord(node.attributes) || Object.keys(node.attributes).length > 64) {
+            throw new PluginUIReconcileError(`Plugin UI attributes are invalid for ${node.key}`);
+          }
+          for (const value of Object.values(node.attributes)) {
+            if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+              throw new PluginUIReconcileError(`Plugin UI attribute is invalid for ${node.key}`);
+            }
+            if (typeof value === "number" && !Number.isFinite(value)) {
+              throw new PluginUIReconcileError(`Plugin UI attribute must be finite for ${node.key}`);
+            }
+          }
+        }
+        if (node.children !== void 0) {
+          if (!Array.isArray(node.children)) throw new PluginUIReconcileError(`Plugin UI children are invalid for ${node.key}`);
+          for (const child of node.children) visit(child, depth + 1);
+        }
+      } finally {
+        seen.delete(node);
+      }
+    };
+    visit(tree, 1);
+    return tree;
+  }
+  function reconcilePluginUITrees(current, next, options = {}) {
+    validatePluginUITree(current);
+    validatePluginUITree(next);
+    if (current.key !== next.key || current.tag !== next.tag) {
+      throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
+    }
+    const operations = [];
+    const transferredCanvasKeys = options.transferredCanvasKeys ?? /* @__PURE__ */ new Set();
+    const maxOperations = options.maxOperations ?? 4096;
+    const append = (operation) => {
+      if (operations.length >= maxOperations) {
+        throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
+      }
+      operations.push(operation);
+    };
+    const ensureCanvasStable = (node, action) => {
+      if (typeof node === "string") return;
+      if (transferredCanvasKeys.has(node.key)) {
+        throw new PluginUIReconcileError(`Transferred canvas ${node.key} cannot be ${action}`);
+      }
+      for (const child of node.children ?? []) ensureCanvasStable(child, action);
+    };
+    const reconcileElement = (left, right) => {
+      if (left.key !== right.key || left.tag !== right.tag) {
+        throw new PluginUIReconcileError(`Plugin UI element identity changed for ${left.key}`);
+      }
+      reconcileAttributes(left, right, options.controlEditRevisions, append);
+      const working = [...left.children ?? []];
+      const desired = right.children ?? [];
+      for (let index = 0; index < working.length; index += 1) {
+        const child = working[index];
+        if (typeof child !== "string" && transferredCanvasKeys.has(child.key)) {
+          const nextIndex = desired.findIndex((candidate) => typeof candidate !== "string" && candidate.key === child.key);
+          if (nextIndex === -1) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be removed`);
+          if (nextIndex !== index) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be moved`);
+        }
+      }
+      for (let index = 0; index < desired.length; index += 1) {
+        const wanted = desired[index];
+        const present = working[index];
+        if (typeof wanted === "string") {
+          if (typeof present === "string") {
+            if (present !== wanted) append({ type: "set_text", parent_key: left.key, child_index: index, text: wanted });
+            working[index] = wanted;
+          } else {
+            append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
+            working.splice(index, 0, wanted);
+          }
+          continue;
+        }
+        const foundIndex = typeof present !== "string" && present?.key === wanted.key ? index : working.findIndex((candidate) => typeof candidate !== "string" && candidate.key === wanted.key);
+        if (foundIndex === -1) {
+          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
+          working.splice(index, 0, wanted);
+          continue;
+        }
+        const found = working[foundIndex];
+        if (typeof found === "string") throw new PluginUIReconcileError("Plugin UI keyed lookup became inconsistent");
+        if (found.tag !== wanted.tag) {
+          ensureCanvasStable(found, "replaced");
+          append({ type: "remove_child", parent_key: left.key, child_index: foundIndex, child_key: found.key });
+          working.splice(foundIndex, 1);
+          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
+          working.splice(index, 0, wanted);
+          continue;
+        }
+        if (foundIndex !== index) {
+          ensureCanvasStable(found, "moved");
+          append({ type: "move_child", parent_key: left.key, child_key: found.key, from_index: foundIndex, to_index: index });
+          working.splice(foundIndex, 1);
+          working.splice(index, 0, found);
+        }
+        reconcileElement(found, wanted);
+        working[index] = wanted;
+      }
+      for (let index = working.length - 1; index >= desired.length; index -= 1) {
+        const removed = working[index];
+        ensureCanvasStable(removed, "removed");
+        append({
+          type: "remove_child",
+          parent_key: left.key,
+          child_index: index,
+          ...typeof removed === "string" ? {} : { child_key: removed.key }
+        });
+        working.splice(index, 1);
+      }
+    };
+    reconcileElement(current, next);
+    return operations;
+  }
+  function reconcileAttributes(current, next, controlEditRevisions, append) {
+    const left = current.attributes ?? {};
+    const right = next.attributes ?? {};
+    const set = {};
+    const remove = [];
+    for (const [name, value] of Object.entries(right)) {
+      if (!isEditableControlAttribute(current.tag, name) && left[name] !== value) set[name] = value;
+    }
+    for (const name of Object.keys(left)) {
+      if (!isEditableControlAttribute(current.tag, name) && !(name in right)) remove.push(name);
+    }
+    if (Object.keys(set).length > 0 || remove.length > 0) {
+      append({ type: "patch_attributes", target_key: current.key, set, remove });
+    }
+    const valueChanged = editableValueTags.has(current.tag) && left.value !== right.value;
+    const checkedChanged = current.tag === "input" && left.checked !== right.checked;
+    if (valueChanged || checkedChanged) {
+      append({
+        type: "patch_control",
+        target_key: current.key,
+        edit_revision: controlEditRevisions?.get(current.key) ?? 0,
+        ...valueChanged ? { value: right.value === void 0 ? null : String(right.value) } : {},
+        ...checkedChanged ? { checked: right.checked === void 0 ? null : Boolean(right.checked) } : {}
+      });
+    }
+  }
+  function isEditableControlAttribute(tag, name) {
+    const normalized = name.toLowerCase();
+    return normalized === "value" && editableValueTags.has(tag) || normalized === "checked" && tag === "input";
+  }
+  function isElement(value) {
+    if (!isPlainRecord(value)) return false;
+    const keys = Object.keys(value);
+    return keys.every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) && value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
+  }
+  function isPlainRecord(value) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
   // packages/redevplugin-ui/src/surface.ts
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridgeV2";
   var maxPendingPluginBridgeRequests = 256;
@@ -148,7 +340,13 @@
     #readyPromise;
     #resolveReady;
     #rejectReady;
-    #disposed = false;
+    #lifecycleState = "active";
+    #handlingLifecycle = false;
+    #renderRevision = 0;
+    #committedTree;
+    #pendingRender;
+    #renderLoop;
+    #controlEditRevisions = /* @__PURE__ */ new Map();
     #onMessage = (event) => {
       void this.#handleMessage(event);
     };
@@ -214,11 +412,20 @@
     }
     render(tree) {
       this.#assertActive();
-      const id = this.#requestID("render");
-      return this.#request(id, {
-        type: "redevplugin.ui.render",
-        id,
-        tree
+      let validated;
+      try {
+        validated = validatePluginUITree(tree);
+      } catch (error) {
+        throw new PluginBridgeError(
+          "PLUGIN_UI_PROTOCOL_VIOLATION",
+          error instanceof Error ? error.message : "Plugin UI tree is invalid"
+        );
+      }
+      return new Promise((resolve, reject) => {
+        const waiters = this.#pendingRender?.waiters ?? [];
+        waiters.push({ resolve, reject });
+        this.#pendingRender = { tree: validated, waiters };
+        this.#startRenderLoop();
       });
     }
     openCanvas(canvasId) {
@@ -293,8 +500,8 @@
       };
     }
     dispose() {
-      if (this.#disposed) return;
-      this.#disposed = true;
+      if (this.#lifecycleState === "disposed") return;
+      this.#lifecycleState = "disposed";
       const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
       if (!this.#ready) this.#rejectReady(disposedError);
       this.#port.removeEventListener("message", this.#onMessage);
@@ -306,7 +513,64 @@
       this.#actionHandlers.clear();
       this.#canvasInputHandlers.clear();
       this.#lifecycleHandlers.clear();
+      for (const waiter of this.#pendingRender?.waiters ?? []) waiter.reject(disposedError);
+      this.#pendingRender = void 0;
+      this.#controlEditRevisions.clear();
       this.#port.close();
+    }
+    async #drainRenders() {
+      while (this.#pendingRender && this.#acceptsPluginWork()) {
+        const pending = this.#pendingRender;
+        this.#pendingRender = void 0;
+        const id = this.#requestID("render");
+        const nextRevision = this.#renderRevision + 1;
+        try {
+          if (!this.#committedTree) {
+            await this.#request(id, {
+              type: "redevplugin.ui.mount",
+              id,
+              revision: 1,
+              tree: pending.tree
+            });
+          } else {
+            const operations = reconcilePluginUITrees(this.#committedTree, pending.tree, {
+              controlEditRevisions: this.#controlEditRevisions
+            });
+            if (operations.length > 0) {
+              await this.#request(id, {
+                type: "redevplugin.ui.patch",
+                id,
+                base_revision: this.#renderRevision,
+                revision: nextRevision,
+                operations
+              });
+              this.#renderRevision = nextRevision;
+            }
+          }
+          this.#committedTree = pending.tree;
+          if (this.#renderRevision === 0) this.#renderRevision = 1;
+          for (const waiter of pending.waiters) waiter.resolve();
+        } catch (error) {
+          const bridgeError = error instanceof PluginUIReconcileError ? new PluginBridgeError("PLUGIN_UI_PROTOCOL_VIOLATION", error.message) : error;
+          for (const waiter of pending.waiters) waiter.reject(bridgeError);
+          const queued = this.#pendingRender;
+          for (const waiter of queued?.waiters ?? []) waiter.reject(bridgeError);
+          this.#pendingRender = void 0;
+          throw bridgeError;
+        }
+      }
+      if (this.#pendingRender) {
+        const error = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin UI cannot render after quiescing starts");
+        for (const waiter of this.#pendingRender.waiters) waiter.reject(error);
+        this.#pendingRender = void 0;
+      }
+    }
+    #startRenderLoop() {
+      if (this.#renderLoop) return;
+      this.#renderLoop = this.#drainRenders().catch(() => void 0).finally(() => {
+        this.#renderLoop = void 0;
+        if (this.#pendingRender) this.#startRenderLoop();
+      });
     }
     #request(id, message, kind = "json", identifier) {
       let normalizedMessage;
@@ -351,7 +615,7 @@
       return result;
     }
     async #handleMessage(event) {
-      if (this.#disposed) return;
+      if (this.#lifecycleState === "disposed") return;
       const data = event.data;
       if (isCanvasReadyCandidate(data)) {
         const pending = this.#pending.get(data.id);
@@ -404,23 +668,29 @@
           this.#ready = true;
           this.#resolveReady();
         }
+        if (data.quiesce_id) this.#lifecycleState = "quiescing";
+        this.#handlingLifecycle = true;
         await Promise.allSettled(Array.from(this.#lifecycleHandlers, async (handler) => {
           try {
             await handler(data.event);
           } catch {
           }
         }));
+        this.#handlingLifecycle = false;
         if (data.quiesce_id) {
           this.#port.postMessage({
             type: "redevplugin.bridge.lifecycle_ack",
             quiesce_id: data.quiesce_id
           });
+          this.#lifecycleState = "quiesced";
         }
-        if (data.event.type === "dispose") this.dispose();
+        if (data.event.type === "dispose" && !data.quiesce_id) this.dispose();
         return;
       }
       if (isActionMessage(data)) {
-        for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(data);
+        this.#controlEditRevisions.set(data.target_key, data.edit_revision);
+        const action = publicActionEvent(data);
+        for (const handler of this.#actionHandlers.get(data.action) ?? []) handler(action);
         return;
       }
       const canvasInput = publicCanvasInputMessage(data);
@@ -432,9 +702,12 @@
       return `${prefix}_${this.#nextID++}`;
     }
     #assertActive() {
-      if (this.#disposed) {
+      if (!this.#acceptsPluginWork()) {
         throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin bridge client is disposed");
       }
+    }
+    #acceptsPluginWork() {
+      return this.#lifecycleState === "active" || this.#lifecycleState === "quiescing" && this.#handlingLifecycle;
     }
   };
   var pluginSurfaceHostConstructorToken = Symbol("redevplugin.surface-host.constructor");
@@ -527,7 +800,19 @@
     return hasAllowedKeys(value, ["type", "event", "quiesce_id"]) && value.type === "redevplugin.bridge.lifecycle" && hasExactKeys(value.event, ["type"]) && (value.event.type === "ready" || value.event.type === "visible" || value.event.type === "hidden" || value.event.type === "dispose") && (value.quiesce_id === void 0 || value.event.type === "dispose" && validOpaqueHandle(value.quiesce_id, "quiesce"));
   }
   function isActionMessage(value) {
-    return hasAllowedKeys(value, ["type", "action", "event", "value", "checked", "form_data"]) && value.type === "redevplugin.ui.action" && validActionID(value.action) && (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit" || value.event === "escape") && (value.value == null || typeof value.value === "string" && value.value.length <= 65536) && (value.checked == null || typeof value.checked === "boolean") && (value.form_data == null || isRecord(value.form_data) && Object.entries(value.form_data).every(([key, item]) => validActionID(key) && typeof item === "string" && item.length <= 65536));
+    return hasAllowedKeys(value, ["type", "action", "event", "target_key", "edit_revision", "is_composing", "value", "checked", "form_data"]) && value.type === "redevplugin.ui.action" && validActionID(value.action) && (value.event === "click" || value.event === "input" || value.event === "change" || value.event === "submit" || value.event === "escape") && validUIIdentifier(value.target_key) && Number.isSafeInteger(value.edit_revision) && Number(value.edit_revision) >= 0 && typeof value.is_composing === "boolean" && (value.value == null || typeof value.value === "string" && value.value.length <= 65536) && (value.checked == null || typeof value.checked === "boolean") && (value.form_data == null || isRecord(value.form_data) && Object.entries(value.form_data).every(([key, item]) => validActionID(key) && typeof item === "string" && item.length <= 65536));
+  }
+  function publicActionEvent(value) {
+    return removeUndefined({
+      action: value.action,
+      event: value.event,
+      targetKey: value.target_key,
+      editRevision: value.edit_revision,
+      isComposing: value.is_composing,
+      value: value.value,
+      checked: value.checked,
+      form_data: value.form_data
+    });
   }
   function isCanvasReadyCandidate(value) {
     return isRecord(value) && value.type === "redevplugin.ui.canvas.ready" && typeof value.id === "string" && typeof value.canvas_id === "string";
@@ -887,6 +1172,7 @@
   function button(label, action) {
     return {
       type: "element",
+      key: `action-${action}`,
       tag: "button",
       attributes: {
         type: "button",
@@ -899,14 +1185,16 @@
   function render() {
     return bridge.render({
       type: "element",
+      key: "harness-root",
       tag: "main",
       attributes: { class: "plugin-surface" },
       children: [
-        { type: "element", tag: "p", attributes: { class: "eyebrow" }, children: ["Opaque worker surface"] },
-        { type: "element", tag: "h1", children: ["Plugin isolation lab"] },
-        { type: "element", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [state.status] },
+        { type: "element", key: "harness-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Opaque worker surface"] },
+        { type: "element", key: "harness-title", tag: "h1", children: ["Plugin isolation lab"] },
+        { type: "element", key: "harness-status", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [state.status] },
         {
           type: "element",
+          key: "harness-actions",
           tag: "div",
           attributes: { class: "button-row" },
           children: [
@@ -915,16 +1203,18 @@
             button("Dangerous action", "dangerous-action")
           ]
         },
-        { type: "element", tag: "h2", children: ["Worker security probe"] },
+        { type: "element", key: "security-title", tag: "h2", children: ["Worker security probe"] },
         {
           type: "element",
+          key: "security-probe",
           tag: "pre",
           attributes: { id: "security-probe", "aria-label": "Worker security probe" },
           children: [JSON.stringify(state.security, null, 2)]
         },
-        { type: "element", tag: "h2", children: ["Latest result"] },
+        { type: "element", key: "result-title", tag: "h2", children: ["Latest result"] },
         {
           type: "element",
+          key: "plugin-result",
           tag: "pre",
           attributes: { id: "plugin-result", "aria-label": "Latest result" },
           children: [state.result]

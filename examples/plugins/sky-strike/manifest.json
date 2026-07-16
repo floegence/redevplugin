@@ -1,9 +1,9 @@
 {
-  "schema_version": "redevplugin.manifest.v3",
+  "schema_version": "redevplugin.manifest.v4",
   "publisher": { "publisher_id": "dev.redevplugin.examples", "display_name": "ReDevPlugin Examples" },
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.sky-strike", "display_name": "Sky Strike", "version": "1.0.0",
-    "api_version": "plugin-v1", "min_runtime_version": "0.4.0", "ui_protocol_version": "plugin-ui-v3"
+    "api_version": "plugin-v1", "min_runtime_version": "0.5.0", "ui_protocol_version": "plugin-ui-v4"
   },
   "surfaces": [{
     "surface_id": "sky-strike.view", "kind": "view", "intent": "primary", "label": "Sky Strike",

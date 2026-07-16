@@ -1,24 +1,24 @@
 {
   "schema_version": "redevplugin.contract_registry.v1",
   "matrix": {
-    "plugin_ui_protocol_version": "plugin-ui-v3",
+    "plugin_ui_protocol_version": "plugin-ui-v4",
     "plugin_host_protocol_version": "plugin-host-v2",
     "rust_ipc_version": "rust-ipc-v2",
     "wasm_abi_version": "redevplugin-wasm-worker-v2",
-    "manifest_schema_version": "manifest-v3",
+    "manifest_schema_version": "manifest-v4",
     "package_signature_schema_version": "package-signature-v1",
-    "release_metadata_schema_version": "release-metadata-v3",
+    "release_metadata_schema_version": "release-metadata-v4",
     "source_policy_schema_version": "source-policy-v1",
     "source_revocations_schema_version": "source-revocations-v1",
     "token_ticket_schema_version": "token-ticket-v2",
-    "bridge_schema_version": "bridge-v3",
+    "bridge_schema_version": "bridge-v4",
     "opaque_surface_document_schema_version": "opaque-surface-document-v2",
-    "opaque_surface_transport_schema_version": "opaque-surface-transport-v2",
+    "opaque_surface_transport_schema_version": "opaque-surface-transport-v3",
     "target_classifier_version": "target-classifier-v1",
     "network_grant_schema_version": "network-grant-v1",
-    "plugin_platform_openapi_version": "plugin-platform-v3",
-    "compatibility_manifest_version": "redevplugin.compatibility.v3",
-    "compatibility_schema_version": "compatibility-manifest-v3",
+    "plugin_platform_openapi_version": "plugin-platform-v4",
+    "compatibility_manifest_version": "redevplugin.compatibility.v4",
+    "compatibility_schema_version": "compatibility-manifest-v4",
     "release_manifest_schema_version": "release-manifest-v3",
     "worker_invocation_schema_version": "worker-invocation-v2",
     "host_capability_contract_schema_version": "host-capability-contract-v1",
@@ -27,18 +27,18 @@
     "host_capability_compatibility_schema_version": "host-capability-compatibility-v1",
     "host_capability_signature_schema_version": "host-capability-signature-v1",
     "host_capability_notices_schema_version": "host-capability-notices-v1",
-    "error_codes_schema_version": "error-codes-v1",
+    "error_codes_schema_version": "error-codes-v2",
     "contract_registry_version": "contract-registry-v1"
   },
   "contracts": [
     {
       "id": "plugin-platform-openapi",
-      "path": "spec/openapi/plugin-platform-v3.yaml",
+      "path": "spec/openapi/plugin-platform-v4.yaml",
       "version_key": "plugin_platform_openapi_version"
     },
     {
       "id": "manifest-schema",
-      "path": "spec/plugin/manifest-v3.schema.json",
+      "path": "spec/plugin/manifest-v4.schema.json",
       "version_key": "manifest_schema_version"
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "id": "release-metadata-schema",
-      "path": "spec/plugin/release-metadata-v3.schema.json",
+      "path": "spec/plugin/release-metadata-v4.schema.json",
       "version_key": "release_metadata_schema_version"
     },
     {
@@ -68,7 +68,7 @@
     },
     {
       "id": "iframe-bridge-schema",
-      "path": "spec/plugin/bridge-v3.schema.json",
+      "path": "spec/plugin/bridge-v4.schema.json",
       "version_key": "bridge_schema_version"
     },
     {
@@ -78,12 +78,12 @@
     },
     {
       "id": "opaque-surface-transport-schema",
-      "path": "spec/plugin/opaque-surface-transport-v2.schema.json",
+      "path": "spec/plugin/opaque-surface-transport-v3.schema.json",
       "version_key": "opaque_surface_transport_schema_version"
     },
     {
       "id": "compatibility-manifest-schema",
-      "path": "spec/plugin/compatibility-manifest-v3.schema.json",
+      "path": "spec/plugin/compatibility-manifest-v4.schema.json",
       "version_key": "compatibility_schema_version"
     },
     {
@@ -128,7 +128,7 @@
     },
     {
       "id": "error-codes-schema",
-      "path": "spec/plugin/error-codes-v1.schema.json",
+      "path": "spec/plugin/error-codes-v2.schema.json",
       "version_key": "error_codes_schema_version"
     },
     {

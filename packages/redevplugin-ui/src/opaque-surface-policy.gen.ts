@@ -104,6 +104,7 @@ export const opaqueSurfaceTagAttributes = {
   ],
   "textarea": [
     "name",
+    "value",
     "disabled",
     "readonly",
     "required",
@@ -211,7 +212,7 @@ export const opaqueSurfaceSafeInputTypes = [
 export const opaqueSurfaceRenderLimits = {
   "max_message_bytes": 262144,
   "max_in_flight_requests": 256,
-  "max_renders_per_second": 30,
+  "max_renders_per_second": 60,
   "max_render_depth": 32,
   "max_render_nodes": 4096,
   "max_attributes_per_element": 64,

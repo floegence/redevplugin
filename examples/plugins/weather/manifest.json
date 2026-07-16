@@ -1,9 +1,9 @@
 {
-  "schema_version": "redevplugin.manifest.v3",
+  "schema_version": "redevplugin.manifest.v4",
   "publisher": { "publisher_id": "dev.redevplugin.examples", "display_name": "ReDevPlugin Examples" },
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.weather", "display_name": "Weather", "version": "1.0.0",
-    "api_version": "plugin-v1", "min_runtime_version": "0.4.0", "ui_protocol_version": "plugin-ui-v3"
+    "api_version": "plugin-v1", "min_runtime_version": "0.5.0", "ui_protocol_version": "plugin-ui-v4"
   },
   "surfaces": [{
     "surface_id": "weather.view", "kind": "view", "intent": "primary", "label": "Weather",
@@ -50,14 +50,18 @@
       "response_schema": { "type": "object", "additionalProperties": false, "required": ["removed_id"], "properties": { "removed_id": { "type": "string" } } }
     },
     {
-      "method": "weather.forecast", "effect": "read", "execution": "sync",
+      "method": "weather.forecast", "effect": "write", "execution": "sync",
       "route": { "kind": "worker", "worker_id": "weather_backend", "export": "redevplugin_worker_invoke" },
-      "broker_access": { "network": [{ "connector_id": "forecast", "transport": "http", "operations": ["http"], "http_methods": ["GET"] }] },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["latitude","longitude","timezone"], "properties": { "latitude":{"type":"number","minimum":-90,"maximum":90},"longitude":{"type":"number","minimum":-180,"maximum":180},"timezone":{"type":"string"} } },
+      "broker_access": {
+        "storage": [{ "store_id": "weather", "operations": ["query", "exec"] }],
+        "network": [{ "connector_id": "forecast", "transport": "http", "operations": ["http"], "http_methods": ["GET"] }]
+      },
+      "request_schema": { "type": "object", "additionalProperties": false, "required": ["latitude","longitude","timezone"], "properties": { "latitude":{"type":"number","minimum":-90,"maximum":90},"longitude":{"type":"number","minimum":-180,"maximum":180},"timezone":{"type":"string"},"force_refresh":{"type":"boolean"} } },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["timezone","timezone_abbreviation","current","days"],
+        "type": "object", "additionalProperties": false, "required": ["timezone","timezone_abbreviation","current","days","cache_state","age_seconds"],
         "properties": {
           "timezone":{"type":"string"}, "timezone_abbreviation":{"type":"string"},
+          "cache_state":{"enum":["fresh","stale","network"]}, "age_seconds":{"type":"integer","minimum":0,"maximum":86400},
           "current": { "type":"object","additionalProperties":false,"required":["time","temperature","apparent_temperature","humidity","weather_code","wind_speed","is_day"],"properties":{"time":{"type":"string"},"temperature":{"type":"number"},"apparent_temperature":{"type":"number"},"humidity":{"type":"number"},"weather_code":{"type":"integer"},"wind_speed":{"type":"number"},"is_day":{"type":"boolean"}} },
           "days": { "type":"array","items": { "type":"object","additionalProperties":false,"required":["date","weather_code","temperature_max","temperature_min","precipitation_probability","sunrise","sunset"],"properties":{"date":{"type":"string"},"weather_code":{"type":"integer"},"temperature_max":{"type":"number"},"temperature_min":{"type":"number"},"precipitation_probability":{"type":"number"},"sunrise":{"type":"string"},"sunset":{"type":"string"}} } }
         }
@@ -66,8 +70,8 @@
   ],
   "storage": { "stores": [{
     "store_id": "weather", "kind": "sqlite", "scope": "user", "quota_bytes": 2097152, "quota_files": 4,
-    "schema_version": 1,
-    "migration": { "from_version":0,"to_version":1,"reversible":true,"requires_worker":true,"estimated_bytes":0,"max_duration_ms":1500,"data_loss_risk":false,"steps_hash":"sha256:redevplugin-example-weather-worker-migration-v1" }
+    "schema_version": 2,
+    "migration": { "from_version":1,"to_version":2,"reversible":true,"requires_worker":true,"estimated_bytes":393216,"max_duration_ms":1500,"data_loss_risk":false,"steps_hash":"sha256:redevplugin-example-weather-worker-migration-v2" }
   }] },
   "network_access": { "connectors": [
     { "connector_id": "geocoding", "transport": "http", "scope": "user", "destinations": ["https://geocoding-api.open-meteo.com"] },

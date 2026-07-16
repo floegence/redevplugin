@@ -2,7 +2,7 @@
 "use strict";
 (() => {
   // packages/redevplugin-ui/src/contracts.gen.ts
-  var pluginUIProtocolVersion = "plugin-ui-v3";
+  var pluginUIProtocolVersion = "plugin-ui-v4";
 
   // packages/redevplugin-ui/src/errors.ts
   var pluginPlatformErrorCodes = [
@@ -42,6 +42,9 @@
     "PLUGIN_NETWORK_RATE_LIMITED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
     "PLUGIN_RUNTIME_VERSION_MISMATCH",
+    "PLUGIN_UI_PROTOCOL_UNSUPPORTED",
+    "PLUGIN_UI_PROTOCOL_VIOLATION",
+    "PLUGIN_SURFACE_QUIESCE_TIMEOUT",
     "PLUGIN_JSON_LIMIT_EXCEEDED",
     "PLUGIN_CAPABILITY_ERROR",
     "PLUGIN_WORKER_ERROR",
@@ -269,6 +272,7 @@
     ],
     "textarea": [
       "name",
+      "value",
       "disabled",
       "readonly",
       "required",
@@ -374,7 +378,7 @@
   var opaqueSurfaceRenderLimits = {
     "max_message_bytes": 262144,
     "max_in_flight_requests": 256,
-    "max_renders_per_second": 30,
+    "max_renders_per_second": 60,
     "max_render_depth": 32,
     "max_render_nodes": 4096,
     "max_attributes_per_element": 64,
@@ -391,6 +395,9 @@
     "worker_heartbeat_interval_ms": 1e4,
     "worker_heartbeat_timeout_ms": 5e3
   };
+
+  // packages/redevplugin-ui/src/ui-reconciler.ts
+  var keyPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$");
 
   // packages/redevplugin-ui/src/surface.ts
   var opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2";
@@ -674,6 +681,10 @@
   const requestSequence = { rpc: 0, stream: 0, render: 0, operation: 0, canvas: 0, asset: 0 };
   let renderWindowStartedAt = 0;
   let renderCount = 0;
+  let uiRevision = 0;
+  let uiTree;
+  let uiElements = new Map();
+  const controlEdits = new Map();
   let lastAutofocusIdentity = "";
   const pendingAssets = new Map();
   const queuedAssets = [];
@@ -748,6 +759,27 @@
     verifiedAssetBytes.clear();
     assetByLogicalID.clear();
   };
+  const terminateQuiescedWorker = () => {
+    if (workerHeartbeatTimer) clearTimeout(workerHeartbeatTimer);
+    if (workerHeartbeatTimeout) clearTimeout(workerHeartbeatTimeout);
+    workerHeartbeatTimer = undefined;
+    workerHeartbeatTimeout = undefined;
+    workerHeartbeatPendingID = undefined;
+    workerReady = false;
+    if (workerControlPort) {
+      workerControlPort.close();
+      workerControlPort = undefined;
+    }
+    if (workerPort) {
+      workerPort.close();
+      workerPort = undefined;
+    }
+    if (worker) {
+      worker.terminate();
+      worker = undefined;
+    }
+    pendingWorkerRequests.clear();
+  };
   const validateCanvasIdentifiers = (root) => {
     const identifiers = new Set();
     let totalPixels = 0;
@@ -785,37 +817,48 @@
       document.head.append(style);
     }
   };
-  const buildWorkerNode = (value, state, depth) => {
+  const applyWorkerAttribute = (element, tag, name, attributeValue) => {
+    const lower = name.toLowerCase();
+    if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
+    if (lower === "value" && "value" in element) element.value = String(attributeValue);
+    if (lower === "checked" && "checked" in element) element.checked = attributeValue === true;
+    if (lower === "autofocus") {
+      if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
+      else element.removeAttribute("data-redevplugin-renderer-autofocus");
+      return;
+    }
+    if (typeof attributeValue === "boolean") {
+      const serialized = lower.startsWith("aria-") ? String(attributeValue) : "";
+      if (attributeValue || serialized) element.setAttribute(name, serialized);
+      else element.removeAttribute(name);
+      return;
+    }
+    element.setAttribute(name, String(attributeValue));
+  };
+  const buildWorkerNode = (value, state, depth, elements = new Map()) => {
     state.nodes += 1;
     if (state.nodes > maxRenderNodes || depth > maxRenderDepth) throw new Error("plugin render tree exceeds limits");
     if (typeof value === "string") {
       if (value.length > maxTextLength) throw new Error("plugin render text exceeds limits");
       return document.createTextNode(value);
     }
-    if (!exactKeys(value, Object.prototype.hasOwnProperty.call(value, "attributes") && Object.prototype.hasOwnProperty.call(value, "children") ? ["type", "tag", "attributes", "children"] : Object.prototype.hasOwnProperty.call(value, "attributes") ? ["type", "tag", "attributes"] : Object.prototype.hasOwnProperty.call(value, "children") ? ["type", "tag", "children"] : ["type", "tag"]) || value.type !== "element" || typeof value.tag !== "string") throw new Error("plugin render node is invalid");
+    if (!isRecord(value) || !Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
+        !Object.prototype.hasOwnProperty.call(value, "key") || value.type !== "element" || !validResourceIdentifier(value.key) ||
+        elements.has(value.key) || typeof value.tag !== "string") throw new Error("plugin render node is invalid");
     const tag = value.tag.toLowerCase();
     if (!allowedTags.has(tag)) throw new Error("plugin render tag is not allowed");
     const element = document.createElement(tag);
+    element.setAttribute("data-redevplugin-key", value.key);
+    elements.set(value.key, element);
     if (value.attributes !== undefined) {
       if (!isRecord(value.attributes) || Object.keys(value.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
       for (const [name, attributeValue] of Object.entries(value.attributes)) {
-        const lower = name.toLowerCase();
-        if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
-        if (lower === "autofocus") {
-          if (attributeValue !== false) element.setAttribute("data-redevplugin-renderer-autofocus", "");
-          continue;
-        }
-        if (typeof attributeValue === "boolean") {
-          const serialized = lower.startsWith("aria-") ? String(attributeValue) : "";
-          if (attributeValue || serialized) element.setAttribute(name, serialized);
-        } else {
-          element.setAttribute(name, String(attributeValue));
-        }
+        applyWorkerAttribute(element, tag, name, attributeValue);
       }
     }
     if (value.children !== undefined) {
       if (!Array.isArray(value.children)) throw new Error("plugin render children are invalid");
-      for (const child of value.children) element.append(buildWorkerNode(child, state, depth + 1));
+      for (const child of value.children) element.append(buildWorkerNode(child, state, depth + 1, elements));
     }
     return element;
   };
@@ -881,22 +924,201 @@
     document.body.scrollTop = snapshot.bodyScrollTop;
     document.body.scrollLeft = snapshot.bodyScrollLeft;
   };
-  const applyWorkerRender = (tree) => {
-    if (canvasRuntimes.size > 0) throw new Error("plugin render cannot replace an active transferred canvas");
-    const values = Array.isArray(tree) ? tree : [tree];
-    const fragment = document.createDocumentFragment();
-    const state = { nodes: 0 };
-    for (const value of values) fragment.append(buildWorkerNode(value, state, 1));
-    validateCanvasIdentifiers(fragment);
+  const cloneVNode = (value) => JSON.parse(JSON.stringify(value));
+  const indexModel = (root) => {
+    const elements = new Map();
+    const visit = (node, parent, depth, state) => {
+      state.nodes += 1;
+      if (state.nodes > maxRenderNodes || depth > maxRenderDepth) throw new Error("plugin render tree exceeds limits");
+      if (typeof node === "string") {
+        if (node.length > maxTextLength) throw new Error("plugin render text exceeds limits");
+        return;
+      }
+      if (!isRecord(node) || !Object.keys(node).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
+          node.type !== "element" || !validResourceIdentifier(node.key) || elements.has(node.key) ||
+          typeof node.tag !== "string" || !allowedTags.has(node.tag)) throw new Error("plugin render node is invalid");
+      if (node.attributes !== undefined) {
+        if (!isRecord(node.attributes) || Object.keys(node.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
+        for (const [name, value] of Object.entries(node.attributes)) if (!validAttribute(node.tag, name, value)) throw new Error("plugin render attribute is not allowed");
+      }
+      if (node.children !== undefined && !Array.isArray(node.children)) throw new Error("plugin render children are invalid");
+      elements.set(node.key, { node, parent });
+      for (const child of node.children || []) visit(child, node, depth + 1, state);
+    };
+    visit(root, undefined, 1, { nodes: 0 });
+    return elements;
+  };
+  const transferredCanvasKey = (key) => {
+    const element = uiElements.get(key);
+    if (!(element instanceof HTMLCanvasElement)) return false;
+    for (const runtime of canvasRuntimes.values()) if (runtime.canvas === element) return true;
+    return false;
+  };
+  const editableControlAttribute = (tag, name) => {
+    const normalized = name.toLowerCase();
+    return (normalized === "value" && ["input", "textarea", "select", "option"].includes(tag)) ||
+      (normalized === "checked" && tag === "input");
+  };
+  const subtreeHasTransferredCanvas = (node) => {
+    if (typeof node === "string") return false;
+    if (transferredCanvasKey(node.key)) return true;
+    return (node.children || []).some(subtreeHasTransferredCanvas);
+  };
+  const validatePatch = (operations) => {
+    if (!Array.isArray(operations) || operations.length > maxRenderNodes) throw new Error("plugin UI patch exceeds limits");
+    const nextTree = cloneVNode(uiTree);
+    let model = indexModel(nextTree);
+    for (const operation of operations) {
+      if (!isRecord(operation) || typeof operation.type !== "string") throw new Error("plugin UI patch operation is invalid");
+      if (operation.type === "set_text") {
+        if (!exactKeys(operation, ["type", "parent_key", "child_index", "text"]) || !validResourceIdentifier(operation.parent_key) ||
+            !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 || typeof operation.text !== "string" || operation.text.length > maxTextLength) throw new Error("plugin UI text patch is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        if (!parent || typeof (parent.children || [])[operation.child_index] !== "string") throw new Error("plugin UI text patch target is invalid");
+        parent.children[operation.child_index] = operation.text;
+      } else if (operation.type === "patch_attributes") {
+        if (!exactKeys(operation, ["type", "target_key", "set", "remove"]) || !validResourceIdentifier(operation.target_key) ||
+            !isRecord(operation.set) || !Array.isArray(operation.remove) || operation.remove.some((name) => typeof name !== "string") ||
+            Object.keys(operation.set).some((name) => typeof name !== "string")) throw new Error("plugin UI attribute patch is invalid");
+        const target = model.get(operation.target_key)?.node;
+        if (!target || transferredCanvasKey(target.key) || Object.keys(operation.set).some((name) => editableControlAttribute(target.tag, name)) ||
+            operation.remove.some((name) => editableControlAttribute(target.tag, name))) throw new Error("plugin UI attribute patch target is invalid");
+        target.attributes ||= {};
+        for (const [name, value] of Object.entries(operation.set)) {
+          if (!validAttribute(target.tag, name, value)) throw new Error("plugin UI attribute patch is not allowed");
+          target.attributes[name] = value;
+        }
+        for (const name of operation.remove) delete target.attributes[name];
+      } else if (operation.type === "patch_control") {
+        if (!Object.keys(operation).every((key) => ["type", "target_key", "edit_revision", "value", "checked"].includes(key)) ||
+            !validResourceIdentifier(operation.target_key) || !Number.isSafeInteger(operation.edit_revision) || operation.edit_revision < 0 ||
+            (operation.value === undefined && operation.checked === undefined) ||
+            (operation.value !== undefined && operation.value !== null && typeof operation.value !== "string") ||
+            (operation.checked !== undefined && operation.checked !== null && typeof operation.checked !== "boolean")) throw new Error("plugin UI control patch is invalid");
+        const target = model.get(operation.target_key)?.node;
+        if (!target || !["input", "textarea", "select", "option"].includes(target.tag)) throw new Error("plugin UI control patch target is invalid");
+        target.attributes ||= {};
+        if (operation.value !== undefined) operation.value === null ? delete target.attributes.value : target.attributes.value = operation.value;
+        if (operation.checked !== undefined) operation.checked === null ? delete target.attributes.checked : target.attributes.checked = operation.checked;
+      } else if (operation.type === "insert_child") {
+        if (!exactKeys(operation, ["type", "parent_key", "child_index", "node"]) || !validResourceIdentifier(operation.parent_key) ||
+            !Number.isSafeInteger(operation.child_index) || operation.child_index < 0) throw new Error("plugin UI insertion is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        if (!parent || operation.child_index > (parent.children || []).length) throw new Error("plugin UI insertion target is invalid");
+        parent.children ||= [];
+        parent.children.splice(operation.child_index, 0, operation.node);
+      } else if (operation.type === "remove_child") {
+        if (!Object.keys(operation).every((key) => ["type", "parent_key", "child_index", "child_key"].includes(key)) ||
+            !validResourceIdentifier(operation.parent_key) || !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 ||
+            (operation.child_key !== undefined && !validResourceIdentifier(operation.child_key))) throw new Error("plugin UI removal is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        const child = parent && (parent.children || [])[operation.child_index];
+        if (!parent || child === undefined || (operation.child_key === undefined) !== (typeof child === "string") ||
+            (typeof child !== "string" && operation.child_key !== child.key) || subtreeHasTransferredCanvas(child)) throw new Error("plugin UI removal target is invalid");
+        parent.children.splice(operation.child_index, 1);
+      } else if (operation.type === "move_child") {
+        if (!exactKeys(operation, ["type", "parent_key", "child_key", "from_index", "to_index"]) || !validResourceIdentifier(operation.parent_key) ||
+            !validResourceIdentifier(operation.child_key) || !Number.isSafeInteger(operation.from_index) || !Number.isSafeInteger(operation.to_index) ||
+            operation.from_index < 0 || operation.to_index < 0 || transferredCanvasKey(operation.child_key)) throw new Error("plugin UI move is invalid");
+        const parent = model.get(operation.parent_key)?.node;
+        const child = parent && (parent.children || [])[operation.from_index];
+        if (!parent || typeof child === "string" || child?.key !== operation.child_key || operation.to_index >= parent.children.length) throw new Error("plugin UI move target is invalid");
+        parent.children.splice(operation.from_index, 1);
+        parent.children.splice(operation.to_index, 0, child);
+      } else {
+        throw new Error("plugin UI patch operation type is unsupported");
+      }
+      model = indexModel(nextTree);
+    }
+    return nextTree;
+  };
+  const removeDOMIndex = (node) => {
+    if (!(node instanceof Element)) return;
+    for (const element of [node, ...node.querySelectorAll("[data-redevplugin-key]")]) {
+      const key = element.getAttribute("data-redevplugin-key");
+      if (key) uiElements.delete(key);
+    }
+  };
+  const applyPatchOperation = (operation) => {
+    const parent = operation.parent_key && uiElements.get(operation.parent_key);
+    const target = operation.target_key && uiElements.get(operation.target_key);
+    if (operation.type === "set_text") {
+      parent.childNodes[operation.child_index].nodeValue = operation.text;
+    } else if (operation.type === "patch_attributes") {
+      for (const name of operation.remove) {
+        target.removeAttribute(name);
+        if (name.toLowerCase() === "autofocus") target.removeAttribute("data-redevplugin-renderer-autofocus");
+      }
+      for (const [name, value] of Object.entries(operation.set)) applyWorkerAttribute(target, target.tagName.toLowerCase(), name, value);
+    } else if (operation.type === "patch_control") {
+      const edit = controlEdits.get(operation.target_key) || { revision: 0, isComposing: false };
+      if (edit.revision !== operation.edit_revision || edit.isComposing) return;
+      if (operation.value !== undefined && "value" in target) target.value = operation.value === null ? "" : operation.value;
+      if (operation.checked !== undefined && "checked" in target) target.checked = operation.checked === true;
+    } else if (operation.type === "insert_child") {
+      const elements = new Map();
+      const node = buildWorkerNode(operation.node, { nodes: 0 }, 1, elements);
+      parent.insertBefore(node, parent.childNodes[operation.child_index] || null);
+      for (const [key, element] of elements) uiElements.set(key, element);
+    } else if (operation.type === "remove_child") {
+      const node = parent.childNodes[operation.child_index];
+      removeDOMIndex(node);
+      node.remove();
+    } else if (operation.type === "move_child") {
+      const node = parent.childNodes[operation.from_index];
+      const reference = operation.to_index > operation.from_index ? parent.childNodes[operation.to_index + 1] : parent.childNodes[operation.to_index];
+      parent.insertBefore(node, reference || null);
+    }
+  };
+  const onAnimationFrame = (commit) => new Promise((resolve, reject) => requestAnimationFrame(() => {
+    try { commit(); resolve(); } catch (error) { reject(error); }
+  }));
+  const mountWorkerTree = async (tree) => {
+    if (uiRevision !== 0) throw new Error("plugin UI mount may only occur once");
+    const elements = new Map();
+    const root = buildWorkerNode(tree, { nodes: 0 }, 1, elements);
+    if (!(root instanceof Element)) throw new Error("plugin UI root must be an element");
+    validateCanvasIdentifiers(root);
     const renderState = captureRenderState();
-    document.body.replaceChildren(fragment);
-    restoreRenderState(renderState);
+    await onAnimationFrame(() => {
+      document.body.replaceChildren(root);
+      restoreRenderState(renderState);
+    });
+    uiTree = cloneVNode(tree);
+    uiElements = elements;
+    uiRevision = 1;
+    sendParent({ type: "redevplugin.surface.first_commit" });
+  };
+  const patchWorkerTree = async (baseRevision, revision, operations) => {
+    if (uiRevision < 1 || baseRevision !== uiRevision || revision !== baseRevision + 1) throw new Error("plugin UI patch revision is invalid");
+    const nextTree = validatePatch(operations);
+    const renderState = captureRenderState();
+    await onAnimationFrame(() => {
+      for (const operation of operations) applyPatchOperation(operation);
+      restoreRenderState(renderState);
+    });
+    uiTree = nextTree;
+    uiRevision = revision;
   };
   const actionPayload = (event, element, eventType = event.type) => {
-    const payload = { type: "redevplugin.ui.action", action: element.getAttribute("data-redevplugin-action"), event: eventType };
-    const target = event.target;
-    if (target && typeof target.value === "string") payload.value = target.value.slice(0, maxTextLength);
-    if (target && typeof target.checked === "boolean") payload.checked = target.checked;
+    const target = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : element;
+    const targetKey = target?.getAttribute("data-redevplugin-key") || element.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(targetKey)) throw new Error("plugin UI action target is invalid");
+    const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
+    if (eventType === "input" || eventType === "change") edit.revision += 1;
+    edit.isComposing = Boolean(event.isComposing || edit.isComposing);
+    controlEdits.set(targetKey, edit);
+    const payload = {
+      type: "redevplugin.ui.action",
+      action: element.getAttribute("data-redevplugin-action"),
+      event: eventType,
+      target_key: targetKey,
+      edit_revision: edit.revision,
+      is_composing: edit.isComposing,
+    };
+    const eventTarget = event.target;
+    if (eventTarget && typeof eventTarget.value === "string") payload.value = eventTarget.value.slice(0, maxTextLength);
+    if (eventTarget && typeof eventTarget.checked === "boolean") payload.checked = eventTarget.checked;
     if (eventType === "submit" && element.tagName === "FORM") {
       const values = {};
       let count = 0;
@@ -909,7 +1131,24 @@
     }
     return payload;
   };
+  document.addEventListener("compositionstart", (event) => {
+    const element = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : null;
+    const key = element?.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(key)) return;
+    const edit = controlEdits.get(key) || { revision: 0, isComposing: false };
+    edit.isComposing = true;
+    controlEdits.set(key, edit);
+  }, true);
+  document.addEventListener("compositionend", (event) => {
+    const element = event.target instanceof Element ? event.target.closest("[data-redevplugin-key]") : null;
+    const key = element?.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(key)) return;
+    const edit = controlEdits.get(key) || { revision: 0, isComposing: true };
+    edit.isComposing = false;
+    controlEdits.set(key, edit);
+  }, true);
   const handleAction = (event) => {
+    if (pendingQuiesceID) return;
     if (!["click", "input", "change", "submit"].includes(event.type)) return;
     const origin = event.target instanceof Element ? event.target : null;
     const element = origin ? origin.closest("[data-redevplugin-action]") : null;
@@ -961,7 +1200,17 @@
     if (!owner || !document.body.contains(owner) || !validIdentifier(action)) return;
     event.preventDefault();
     event.stopPropagation();
-    sendWorker({ type: "redevplugin.ui.action", action, event: "escape" });
+    const targetKey = owner.getAttribute("data-redevplugin-key");
+    if (!validResourceIdentifier(targetKey)) return;
+    const edit = controlEdits.get(targetKey) || { revision: 0, isComposing: false };
+    sendWorker({
+      type: "redevplugin.ui.action",
+      action,
+      event: "escape",
+      target_key: targetKey,
+      edit_revision: edit.revision,
+      is_composing: edit.isComposing,
+    });
   }, true);
   const pumpAssets = () => {
     while (activeAssetReads < maxConcurrentAssetReads && queuedAssets.length > 0) {
@@ -1509,7 +1758,7 @@
     if (exactKeys(message, ["type", "quiesce_id"]) && message.type === "redevplugin.bridge.lifecycle_ack" && validOpaqueHandle(message.quiesce_id, "quiesce") && message.quiesce_id === pendingQuiesceID) {
       pendingQuiesceID = undefined;
       sendParent({ type: "redevplugin.surface.quiesce_ack", quiesce_id: message.quiesce_id });
-      disposeRuntime();
+      terminateQuiescedWorker();
       return;
     }
     if (validCall(message)) {
@@ -1549,20 +1798,30 @@
       void deliverImageAsset(message.id, message.asset_id, asset);
       return;
     }
-    if (exactKeys(message, ["type", "id", "tree"]) && message.type === "redevplugin.ui.render" && typeof message.id === "string") {
+    if (exactKeys(message, ["type", "id", "revision", "tree"]) && message.type === "redevplugin.ui.mount" &&
+        typeof message.id === "string" && message.revision === 1) {
       if (!acceptWorkerRequest(message.id, "render")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
       if (!renderRateAllowed()) {
         completeWorkerRequest(message.id);
         return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
       }
-      try {
-        applyWorkerRender(message.tree);
+      void mountWorkerTree(message.tree).then(() => {
         completeWorkerRequest(message.id);
         sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
-      } catch (error) {
+      }, (error) => fail(error && error.message || "plugin UI mount violated the protocol"));
+      return;
+    }
+    if (exactKeys(message, ["type", "id", "base_revision", "revision", "operations"]) && message.type === "redevplugin.ui.patch" &&
+        typeof message.id === "string" && Number.isSafeInteger(message.base_revision) && Number.isSafeInteger(message.revision)) {
+      if (!acceptWorkerRequest(message.id, "render")) return rejectWorkerRequest(message.id, "duplicate, replayed, or excessive plugin request");
+      if (!renderRateAllowed()) {
         completeWorkerRequest(message.id);
-        sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: false, error_code: "PLUGIN_CONTRACT_MISMATCH", error: String(error && error.message || error).slice(0, 512) });
+        return rejectWorkerRequest(message.id, "plugin render rate limit exceeded");
       }
+      void patchWorkerTree(message.base_revision, message.revision, message.operations).then(() => {
+        completeWorkerRequest(message.id);
+        sendWorker({ type: "redevplugin.bridge.response", id: message.id, ok: true });
+      }, (error) => fail(error && error.message || "plugin UI patch violated the protocol"));
       return;
     }
     if (exactKeys(message, ["type", "id"]) && message.type === "redevplugin.bridge.cancel" && typeof message.id === "string") {
@@ -1645,6 +1904,7 @@
     #iframe;
     #transport;
     #createMessageChannel;
+    #bridgeReady = false;
     #loadTimeoutMs;
     #requestTimeoutMs;
     #leaseRenewalLeadMs;
@@ -1744,10 +2004,16 @@
           });
         }
       }, openingProgressDelayMs);
-      const signals = { portAcknowledged: deferred(), firstPaint: deferred(), workerReady: deferred() };
+      const signals = {
+        portAcknowledged: deferred(),
+        firstPaint: deferred(),
+        workerReady: deferred(),
+        firstCommit: deferred()
+      };
       void signals.portAcknowledged.promise.catch(() => void 0);
       void signals.firstPaint.promise.catch(() => void 0);
       void signals.workerReady.promise.catch(() => void 0);
+      void signals.firstCommit.promise.catch(() => void 0);
       this.#openSignals = signals;
       const scriptNonce = randomOpaqueNonce();
       this.#frameLoaded = false;
@@ -1810,17 +2076,26 @@
       });
       await Promise.all([signals.firstPaint.promise, signals.workerReady.promise]);
       this.#assertActive();
-      this.#ready = true;
+      this.#bridgeReady = true;
       this.#scheduleLeaseRenewal();
-      this.#reloadLimiter.recordHealthyLoad();
       this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+      await signals.firstCommit.promise;
+      this.#assertActive();
+      this.#ready = true;
+      this.#reloadLimiter.recordHealthyLoad();
     }
     sendLifecycle(event) {
       this.#assertReady();
       this.#postToRenderer({ type: "redevplugin.bridge.lifecycle", event });
     }
     close() {
-      if (this.#disposed) return Promise.resolve();
+      if (this.#disposed) {
+        return Promise.resolve({
+          quiesce: { outcome: "not_ready", durationMs: 0 },
+          revokeDurationMs: 0,
+          totalDurationMs: 0
+        });
+      }
       if (this.#closePromise) return this.#closePromise;
       this.#closePromise = this.#closeSurface();
       return this.#closePromise;
@@ -1831,8 +2106,12 @@
       this.#disposeLocal();
     }
     async #closeSurface() {
-      await this.#quiesceSurface();
-      if (this.#disposed) return;
+      const startedAt = performance.now();
+      const quiesce = await this.#quiesceSurface();
+      if (this.#disposed) {
+        return { quiesce, revokeDurationMs: 0, totalDurationMs: performance.now() - startedAt };
+      }
+      const revokeStartedAt = performance.now();
       const revoke = this.#revokeSurface(false);
       this.#disposeLocal();
       try {
@@ -1840,6 +2119,11 @@
       } catch (error) {
         throw toBridgeError(error, "PLUGIN_BRIDGE_DISPOSED");
       }
+      return {
+        quiesce,
+        revokeDurationMs: performance.now() - revokeStartedAt,
+        totalDurationMs: performance.now() - startedAt
+      };
     }
     #disposeLocal() {
       if (this.#disposed) return;
@@ -1847,6 +2131,7 @@
       this.#unregisterSurfaceScope?.();
       this.#unregisterSurfaceScope = void 0;
       this.#ready = false;
+      this.#bridgeReady = false;
       if (this.#leaseRenewalTimer) clearTimeout(this.#leaseRenewalTimer);
       this.#leaseRenewalTimer = void 0;
       this.#iframe.removeEventListener("load", this.#onFrameLoad);
@@ -1856,6 +2141,7 @@
       const disposedError = new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface host was disposed");
       this.#openSignals?.firstPaint.reject(disposedError);
       this.#openSignals?.workerReady.reject(disposedError);
+      this.#openSignals?.firstCommit.reject(disposedError);
       this.#openSignals?.portAcknowledged.reject(disposedError);
       this.#initialFrameLoad?.reject(disposedError);
       this.#quiesce?.acknowledged.reject(disposedError);
@@ -1894,6 +2180,10 @@
           this.#openSignals?.workerReady.resolve();
           return;
         }
+        if (hasExactKeys(data, ["type"]) && data.type === "redevplugin.surface.first_commit") {
+          this.#openSignals?.firstCommit.resolve();
+          return;
+        }
         if (hasExactKeys(data, ["type", "quiesce_id"]) && data.type === "redevplugin.surface.quiesce_ack" && validOpaqueHandle(data.quiesce_id, "quiesce") && data.quiesce_id === this.#quiesce?.id) {
           this.#quiesce.acknowledged.resolve();
           return;
@@ -1927,7 +2217,7 @@
       }
     }
     async #handleCall(request2) {
-      if (!this.#ready || !this.#gatewayToken) {
+      if (!this.#bridgeReady && !this.#quiesce || !this.#gatewayToken) {
         this.#postError(request2.id, "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin bridge call arrived before the surface became ready");
         return;
       }
@@ -2199,7 +2489,7 @@
       };
     }
     async #postJSON(path, body, signal) {
-      if (this.#ready) {
+      if (this.#bridgeReady) {
         if (Date.now() >= this.#leaseRenewAtMs) await this.#startLeaseRenewal();
         else if (this.#leaseRenewalPromise) await this.#leaseRenewalPromise;
       }
@@ -2284,7 +2574,7 @@
     }
     #startLeaseRenewal() {
       this.#assertActive();
-      if (!this.#ready || !this.#gatewayToken) {
+      if (!this.#bridgeReady || !this.#gatewayToken) {
         return Promise.reject(new PluginBridgeError("PLUGIN_BRIDGE_HANDSHAKE_REQUIRED", "Plugin surface lease cannot renew before readiness"));
       }
       if (this.#leaseRenewalPromise) return this.#leaseRenewalPromise;
@@ -2329,13 +2619,17 @@
       }
     }
     async #quiesceSurface() {
-      if (!this.#ready || !this.#port || this.#quiesce) return;
+      const startedAt = performance.now();
+      if (!this.#ready || !this.#port || this.#quiesce) {
+        return { outcome: "not_ready", durationMs: performance.now() - startedAt };
+      }
       const quiesce = {
         id: randomOpaqueHandle("quiesce"),
         acknowledged: deferred()
       };
       void quiesce.acknowledged.promise.catch(() => void 0);
       this.#quiesce = quiesce;
+      this.#ready = false;
       try {
         this.#postToRenderer({
           type: "redevplugin.bridge.lifecycle",
@@ -2347,7 +2641,11 @@
           Math.min(this.#requestTimeoutMs, maxSurfaceQuiesceMs),
           "Plugin surface quiesce timed out"
         );
+        return { outcome: "acknowledged", durationMs: performance.now() - startedAt };
       } catch {
+        const error = new PluginBridgeError("PLUGIN_SURFACE_QUIESCE_TIMEOUT", "Plugin surface quiesce timed out");
+        this.#reportError(error);
+        return { outcome: "timed_out", durationMs: performance.now() - startedAt };
       } finally {
         if (this.#quiesce === quiesce) this.#quiesce = void 0;
       }
@@ -2355,6 +2653,7 @@
     async #failSurface(error) {
       if (this.#disposed) return;
       this.#ready = false;
+      this.#bridgeReady = false;
       this.#openSignals?.firstPaint.reject(error);
       this.#openSignals?.workerReady.reject(error);
       this.#reportError(error);
@@ -2405,6 +2704,123 @@
       }
     }
   };
+  var PluginSurfaceSlot = class _PluginSurfaceSlot {
+    element;
+    #onStateChange;
+    #onSurfaceClosed;
+    #active;
+    #opening;
+    #transition = 0;
+    #disposed = false;
+    #retired = /* @__PURE__ */ new WeakSet();
+    static create(options) {
+      if (!options.stage || typeof options.stage.append !== "function" || !options.stage.dataset) {
+        throw new PluginBridgeError("PLUGIN_INVALID_REQUEST", "Plugin surface slot requires an HTML stage");
+      }
+      return new _PluginSurfaceSlot(options);
+    }
+    constructor(options) {
+      this.element = options.stage;
+      this.#onStateChange = options.onStateChange;
+      this.#onSurfaceClosed = options.onSurfaceClosed;
+      this.#setState("empty");
+    }
+    async open(options) {
+      this.#assertActive();
+      const transition = ++this.#transition;
+      const previous = new Set([this.#active, this.#opening].filter((host2) => host2 !== void 0));
+      this.#active = void 0;
+      this.#opening = void 0;
+      for (const host2 of previous) this.#retire(host2);
+      this.#setState("opening");
+      let resolvedOptions;
+      try {
+        resolvedOptions = await options;
+      } catch (error) {
+        if (!this.#disposed && transition === this.#transition) {
+          this.#setState("error", toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED"));
+        }
+        throw error;
+      }
+      if (this.#disposed || transition !== this.#transition) {
+        throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+      }
+      const host = PluginSurfaceHost.create(resolvedOptions);
+      this.#opening = host;
+      setSurfaceInteractive(host.element, false);
+      this.element.append(host.element);
+      try {
+        await host.open();
+        if (this.#disposed || transition !== this.#transition || this.#opening !== host) {
+          this.#retire(host);
+          throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface opening was superseded");
+        }
+        this.#opening = void 0;
+        this.#active = host;
+        setSurfaceInteractive(host.element, true);
+        this.#setState("ready");
+        return host;
+      } catch (error) {
+        this.#retire(host);
+        if (!this.#disposed && transition === this.#transition) {
+          this.#opening = void 0;
+          const bridgeError = toBridgeError(error, "PLUGIN_BRIDGE_HANDSHAKE_FAILED");
+          this.#setState("error", bridgeError);
+        }
+        throw error;
+      }
+    }
+    async close() {
+      this.#assertActive();
+      this.#transition += 1;
+      const hosts = new Set([this.#active, this.#opening].filter((host) => host !== void 0));
+      this.#active = void 0;
+      this.#opening = void 0;
+      this.#setState("empty");
+      let result;
+      for (const host of hosts) {
+        setSurfaceInteractive(host.element, false);
+        const closed = await host.close();
+        host.element.remove();
+        this.#onSurfaceClosed?.(closed);
+        result ??= closed;
+      }
+      return result;
+    }
+    dispose() {
+      if (this.#disposed) return;
+      this.#disposed = true;
+      this.#transition += 1;
+      const hosts = new Set([this.#active, this.#opening].filter((host) => host !== void 0));
+      this.#active = void 0;
+      this.#opening = void 0;
+      for (const host of hosts) {
+        host.dispose();
+        host.element.remove();
+      }
+      this.#setState("disposed");
+    }
+    #retire(host) {
+      if (this.#retired.has(host)) return;
+      this.#retired.add(host);
+      setSurfaceInteractive(host.element, false);
+      void host.close().then((result) => {
+        this.#onSurfaceClosed?.(result);
+      }).catch(() => void 0).finally(() => host.element.remove());
+    }
+    #setState(state, error) {
+      this.element.dataset.redevpluginSurfaceState = state;
+      this.#onStateChange?.(state, error);
+    }
+    #assertActive() {
+      if (this.#disposed) throw new PluginBridgeError("PLUGIN_BRIDGE_DISPOSED", "Plugin surface slot is disposed");
+    }
+  };
+  function setSurfaceInteractive(element, interactive) {
+    element.hidden = !interactive;
+    element.inert = !interactive;
+    element.setAttribute("aria-hidden", interactive ? "false" : "true");
+  }
   function captureMessageChannelFactory() {
     const Channel = globalThis.MessageChannel;
     if (!Channel) {
@@ -2852,6 +3268,7 @@
   var catalog = [];
   var activePlugin;
   var surfaceHost;
+  var surfaceSlot = PluginSurfaceSlot.create({ stage: elements.stage });
   var openSequence = 0;
   var inspectorReturnFocus;
   elements.reload.addEventListener("click", () => {
@@ -2874,7 +3291,7 @@
     if (plugin && plugin.slug !== activePlugin?.slug) void openPlugin(plugin, "preserve");
   });
   document.addEventListener("visibilitychange", () => sendSurfaceVisibility());
-  addEventListener("beforeunload", () => surfaceHost?.dispose());
+  addEventListener("beforeunload", () => surfaceSlot.dispose());
   void initialize();
   async function initialize() {
     try {
@@ -2933,29 +3350,23 @@
     renderMetadata(plugin);
     showLoading(plugin);
     setReloadDisabled(true);
-    const previous = surfaceHost;
     surfaceHost = void 0;
-    if (previous) await previous.close().catch(() => previous.dispose());
-    if (sequence !== openSequence) return;
     restoreNavigationFocus(navigationTrigger);
-    elements.stage.querySelector("iframe")?.remove();
     try {
-      const bootstrap = await request("/api/open", { slug: plugin.slug });
-      if (sequence !== openSequence) return;
-      const next = PluginSurfaceHost.create({
-        bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
-        hostTransport: createReDevPluginSurfaceTransport(),
-        confirm: confirmAction,
-        onError: (error) => {
-          if (sequence === openSequence) showError(error);
-        }
-      });
+      const next = await surfaceSlot.open(
+        request("/api/open", { slug: plugin.slug }).then((bootstrap) => ({
+          bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
+          hostTransport: createReDevPluginSurfaceTransport(),
+          confirm: confirmAction,
+          onError: (error) => {
+            if (sequence === openSequence) showError(error);
+          }
+        }))
+      );
       next.element.title = `${plugin.name} plugin`;
-      elements.stage.append(next.element);
       surfaceHost = next;
-      await next.open();
       if (sequence !== openSequence || surfaceHost !== next) {
-        await next.close().catch(() => next.dispose());
+        next.dispose();
         return;
       }
       sendSurfaceVisibility();

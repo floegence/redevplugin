@@ -1,5 +1,6 @@
 import {
   PluginSurfaceHost,
+  PluginSurfaceSlot,
   createReDevPluginSurfaceTransport,
   toPluginSurfaceHostBootstrap,
   type PluginConfirmationIntent,
@@ -52,6 +53,7 @@ const elements = {
 let catalog: CatalogPlugin[] = [];
 let activePlugin: CatalogPlugin | undefined;
 let surfaceHost: PluginSurfaceHost | undefined;
+const surfaceSlot = PluginSurfaceSlot.create({ stage: elements.stage });
 let openSequence = 0;
 let inspectorReturnFocus: HTMLButtonElement | undefined;
 
@@ -75,7 +77,7 @@ addEventListener("popstate", () => {
   if (plugin && plugin.slug !== activePlugin?.slug) void openPlugin(plugin, "preserve");
 });
 document.addEventListener("visibilitychange", () => sendSurfaceVisibility());
-addEventListener("beforeunload", () => surfaceHost?.dispose());
+addEventListener("beforeunload", () => surfaceSlot.dispose());
 void initialize();
 
 async function initialize(): Promise<void> {
@@ -144,27 +146,21 @@ async function openPlugin(
   renderMetadata(plugin);
   showLoading(plugin);
   setReloadDisabled(true);
-  const previous = surfaceHost;
   surfaceHost = undefined;
-  if (previous) await previous.close().catch(() => previous.dispose());
-  if (sequence !== openSequence) return;
   restoreNavigationFocus(navigationTrigger);
-  elements.stage.querySelector("iframe")?.remove();
   try {
-    const bootstrap = await request<PluginSurfaceBootstrapResult>("/api/open", { slug: plugin.slug });
-    if (sequence !== openSequence) return;
-    const next = PluginSurfaceHost.create({
-      bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
-      hostTransport: createReDevPluginSurfaceTransport(),
-      confirm: confirmAction,
-      onError: (error) => { if (sequence === openSequence) showError(error); },
-    });
+    const next = await surfaceSlot.open(
+      request<PluginSurfaceBootstrapResult>("/api/open", { slug: plugin.slug }).then((bootstrap) => ({
+        bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
+        hostTransport: createReDevPluginSurfaceTransport(),
+        confirm: confirmAction,
+        onError: (error) => { if (sequence === openSequence) showError(error); },
+      })),
+    );
     next.element.title = `${plugin.name} plugin`;
-    elements.stage.append(next.element);
     surfaceHost = next;
-    await next.open();
     if (sequence !== openSequence || surfaceHost !== next) {
-      await next.close().catch(() => next.dispose());
+      next.dispose();
       return;
     }
     sendSurfaceVisibility();

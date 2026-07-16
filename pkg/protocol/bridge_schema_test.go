@@ -68,9 +68,86 @@ func TestBridgeSchemaDefinesIframeMessages(t *testing.T) {
 	}
 }
 
+func TestBridgeSchemaDefinesRevisionedKeyedRendering(t *testing.T) {
+	schema := readBridgeSchema(t)
+	defs, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatal("bridge schema missing $defs")
+	}
+
+	requireConst(t, defs, "mount", "type", "redevplugin.ui.mount")
+	mount := requireDef(t, defs, "mount")
+	assertStringSet(t, requireStringSlice(t, mount["required"], "mount required"), []string{"type", "id", "revision", "tree"}, "mount required")
+	if got := requireNestedObject(t, mount, "properties", "revision")["const"]; got != float64(1) {
+		t.Fatalf("mount revision = %#v, want 1", got)
+	}
+	if got := requireNestedObject(t, mount, "properties", "tree")["$ref"]; got != "#/$defs/element_vnode" {
+		t.Fatalf("mount tree ref = %#v", got)
+	}
+
+	requireConst(t, defs, "patch", "type", "redevplugin.ui.patch")
+	patch := requireDef(t, defs, "patch")
+	assertStringSet(t, requireStringSlice(t, patch["required"], "patch required"), []string{"type", "id", "base_revision", "revision", "operations"}, "patch required")
+	if got := requireNestedObject(t, patch, "properties", "operations", "items")["$ref"]; got != "#/$defs/patch_operation" {
+		t.Fatalf("patch operation ref = %#v", got)
+	}
+
+	element := requireDef(t, defs, "element_vnode")
+	if !containsStringValue(requireStringSlice(t, element["required"], "element vnode required"), "key") {
+		t.Fatal("element vnode must require an explicit key")
+	}
+	if got := requireNestedObject(t, element, "properties", "key")["$ref"]; got != "#/$defs/ui_identifier" {
+		t.Fatalf("element vnode key ref = %#v", got)
+	}
+
+	operations := requireDef(t, defs, "patch_operation")
+	variants, ok := operations["oneOf"].([]any)
+	if !ok || len(variants) != 6 {
+		t.Fatalf("patch operation variants = %#v, want six closed operations", operations["oneOf"])
+	}
+	wantOperations := map[string]bool{
+		"set_text":         false,
+		"patch_attributes": false,
+		"patch_control":    false,
+		"insert_child":     false,
+		"remove_child":     false,
+		"move_child":       false,
+	}
+	for _, raw := range variants {
+		variant, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("patch operation variant = %#v, want object", raw)
+		}
+		if variant["additionalProperties"] != false {
+			t.Fatalf("patch operation must be closed: %#v", variant)
+		}
+		operation, ok := requireNestedObject(t, variant, "properties", "type")["const"].(string)
+		if !ok {
+			t.Fatalf("patch operation type = %#v, want const string", variant)
+		}
+		if _, known := wantOperations[operation]; !known {
+			t.Fatalf("unknown patch operation %q", operation)
+		}
+		wantOperations[operation] = true
+	}
+	for operation, found := range wantOperations {
+		if !found {
+			t.Fatalf("patch operation missing %q", operation)
+		}
+	}
+
+	action := requireDef(t, defs, "action")
+	actionRequired := requireStringSlice(t, action["required"], "action required")
+	for _, field := range []string{"target_key", "edit_revision", "is_composing"} {
+		if !containsStringValue(actionRequired, field) {
+			t.Fatalf("action must require %q", field)
+		}
+	}
+}
+
 func TestBridgeSchemaKeepsParentOnlyTokensOutOfIframeMessages(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v4.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +212,10 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	if !ok || len(variants) != 2 {
 		t.Fatalf("vnode oneOf = %#v, want text and element variants", vnode["oneOf"])
 	}
-	element := variants[1].(map[string]any)
+	element := requireDef(t, defs, "element_vnode")
+	if ref := variants[1].(map[string]any)["$ref"]; ref != "#/$defs/element_vnode" {
+		t.Fatalf("element vnode ref = %#v", ref)
+	}
 	tags := requireStringSlice(t, requireNestedObject(t, element, "properties", "tag")["enum"], "render tag enum")
 	wantTags := map[string]bool{"main": false, "button": false, "input": false, "table": false, "img": false, "video": false, "canvas": false}
 	for _, tag := range tags {
@@ -169,7 +249,7 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 func readBridgeSchema(t *testing.T) map[string]any {
 	t.Helper()
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v3.schema.json"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v4.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

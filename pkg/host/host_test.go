@@ -116,6 +116,132 @@ func TestLifecycleInstallEnableDisableUninstall(t *testing.T) {
 	}
 }
 
+func TestHostStartupDisablesEnabledLegacyUIProtocols(t *testing.T) {
+	ctx := context.Background()
+	h, surfaces, audits := newTestHost(t, true, true)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		PluginStateVersion: installed.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled.Manifest.SchemaVersion = "redevplugin.manifest.v3"
+	enabled.Manifest.Plugin.UIProtocolVersion = "plugin-ui-v3"
+	legacy, err := h.adapters.Registry.PutPlugin(ctx, enabled, registry.PutOptions{Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := &diagnosticSink{}
+	h.adapters.Diagnostics = diagnostics
+	restarted, err := New(h.adapters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := restarted.adapters.Registry.GetPlugin(ctx, legacy.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.EnableState != registry.EnableDisabledIncompatible {
+		t.Fatalf("EnableState = %q, want %q", record.EnableState, registry.EnableDisabledIncompatible)
+	}
+	if record.ManagementRevision != legacy.ManagementRevision+1 || record.RevokeEpoch != legacy.RevokeEpoch+1 {
+		t.Fatalf("legacy revisions were not revoked: before=%#v after=%#v", legacy, record)
+	}
+	if record.Manifest.Plugin.UIProtocolVersion != "plugin-ui-v3" || record.DeletedAt != nil {
+		t.Fatalf("legacy package data was mutated: %#v", record)
+	}
+	if !audits.hasEvent("plugin.disabled_incompatible") {
+		t.Fatalf("missing incompatibility audit: %#v", audits.events)
+	}
+	if len(diagnostics.events) != 1 || diagnostics.events[0].Type != "plugin.ui_protocol.incompatible" {
+		t.Fatalf("incompatibility diagnostics = %#v", diagnostics.events)
+	}
+	if len(surfaces.snapshots) == 0 || len(surfaces.snapshots[len(surfaces.snapshots)-1].Surfaces) != 0 {
+		t.Fatalf("legacy surfaces were not withdrawn: %#v", surfaces.snapshots)
+	}
+	_, err = restarted.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:   record.PluginInstanceID,
+		PluginStateVersion: record.ManagementRevision,
+	})
+	if !errors.Is(err, ErrPluginUIProtocolUnsupported) {
+		t.Fatalf("EnablePlugin() error = %v, want %v", err, ErrPluginUIProtocolUnsupported)
+	}
+	_, err = restarted.OpenSurface(ctx, OpenSurfaceRequest{
+		PluginInstanceID:   record.PluginInstanceID,
+		PluginStateVersion: record.ManagementRevision,
+		SurfaceID:          record.Manifest.Surfaces[0].SurfaceID,
+	})
+	if !errors.Is(err, ErrPluginUIProtocolUnsupported) {
+		t.Fatalf("OpenSurface() error = %v, want %v", err, ErrPluginUIProtocolUnsupported)
+	}
+}
+
+func TestHostStartupRetriesLegacyUIWithdrawalWithoutRepeatingStateTransition(t *testing.T) {
+	ctx := context.Background()
+	h, _, audits := newTestHost(t, true, true)
+	installed, err := ImportLocalPackageBytes(ctx, h, buildFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := h.EnablePlugin(ctx, EnableRequest{
+		PluginInstanceID:   installed.PluginInstanceID,
+		PluginStateVersion: installed.ManagementRevision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled.Manifest.SchemaVersion = "redevplugin.manifest.v3"
+	enabled.Manifest.Plugin.UIProtocolVersion = "plugin-ui-v3"
+	legacy, err := h.adapters.Registry.PutPlugin(ctx, enabled, registry.PutOptions{Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	surfaces := &failingSurfaceSink{err: errors.New("surface catalog unavailable")}
+	h.adapters.SurfaceCatalog = surfaces
+	if _, err := New(h.adapters); err == nil || !strings.Contains(err.Error(), "surface catalog unavailable") {
+		t.Fatalf("New() error = %v, want surface catalog failure", err)
+	}
+	disabled, err := h.adapters.Registry.GetPlugin(ctx, legacy.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.EnableState != registry.EnableDisabledIncompatible ||
+		disabled.ManagementRevision != legacy.ManagementRevision+1 ||
+		disabled.RevokeEpoch != legacy.RevokeEpoch+1 {
+		t.Fatalf("failed withdrawal state = %#v, legacy = %#v", disabled, legacy)
+	}
+
+	surfaces.err = nil
+	if _, err := New(h.adapters); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := h.adapters.Registry.GetPlugin(ctx, legacy.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciled.ManagementRevision != disabled.ManagementRevision || reconciled.RevokeEpoch != disabled.RevokeEpoch {
+		t.Fatalf("retry repeated the state transition: before=%#v after=%#v", disabled, reconciled)
+	}
+	if len(surfaces.snapshots) != 1 || len(surfaces.snapshots[0].Surfaces) != 0 {
+		t.Fatalf("legacy surfaces were not withdrawn on retry: %#v", surfaces.snapshots)
+	}
+	auditCount := 0
+	for _, event := range audits.events {
+		if event.Type == "plugin.disabled_incompatible" {
+			auditCount++
+		}
+	}
+	if auditCount != 1 {
+		t.Fatalf("incompatibility audit count = %d, want 1", auditCount)
+	}
+}
+
 func TestManagementStateVersionFailsClosedWithoutSideEffects(t *testing.T) {
 	ctx := context.Background()
 	h, surfaces, audits := newTestHost(t, true, true)
@@ -234,7 +360,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v3",
+		UIProtocolVersion:  "plugin-ui-v4",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2285,7 +2411,7 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v3",
+		UIProtocolVersion:  "plugin-ui-v4",
 	}
 
 	if _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
@@ -2558,7 +2684,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v3",
+		UIProtocolVersion:  "plugin-ui-v4",
 	}
 	gateway, err := host.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2663,7 +2789,7 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v3",
+		UIProtocolVersion:  "plugin-ui-v4",
 	}
 	_, err = h.MintBridgeToken(context.Background(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -9458,7 +9584,7 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
@@ -9466,7 +9592,7 @@ func lifecycleManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
@@ -9476,7 +9602,7 @@ func lifecycleManifestJSON(version string, title string) string {
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
@@ -9484,7 +9610,7 @@ func storageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
@@ -9534,7 +9660,7 @@ func storageFixtureManifestJSON() string {
 
 func sqliteNamespaceFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.sqlite-namespace",
@@ -9542,7 +9668,7 @@ func sqliteNamespaceFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "sqlite.view", "kind": "view", "label": "SQLite Namespace", "entry": "ui/index.html"}
@@ -9572,7 +9698,7 @@ func sqliteNamespaceFixtureManifestJSON() string {
 
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
@@ -9580,7 +9706,7 @@ func settingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
@@ -9612,7 +9738,7 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 		version = "1.0.0"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.migration",
@@ -9620,7 +9746,7 @@ func migrationFixtureManifestJSON(opts migrationFixtureOptions) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "migration.view", "kind": "view", "label": "Migration", "entry": "ui/index.html"}
@@ -9670,7 +9796,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
@@ -9678,7 +9804,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
@@ -9697,7 +9823,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
@@ -9705,7 +9831,7 @@ func dangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
@@ -9724,7 +9850,7 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
@@ -9732,7 +9858,7 @@ func operationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
@@ -9751,7 +9877,7 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
@@ -9759,7 +9885,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
@@ -9778,7 +9904,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
@@ -9786,7 +9912,7 @@ func coreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
@@ -9893,7 +10019,7 @@ func workerMethodSchemasJSON() string {
 
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -9901,7 +10027,7 @@ func workerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9931,7 +10057,7 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
@@ -9939,7 +10065,7 @@ func workerNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9997,7 +10123,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network.transport",
@@ -10005,7 +10131,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -10039,7 +10165,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 
 func workerStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage",
@@ -10047,7 +10173,7 @@ func workerStorageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -10099,7 +10225,7 @@ func workerStorageFixtureManifestJSON() string {
 
 func workerStorageKVFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.kv",
@@ -10107,7 +10233,7 @@ func workerStorageKVFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -10159,7 +10285,7 @@ func workerStorageKVFixtureManifestJSON() string {
 
 func workerStorageSQLiteFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.sqlite",
@@ -10167,7 +10293,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -10223,7 +10349,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",
@@ -10231,7 +10357,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}
@@ -10333,7 +10459,7 @@ func openSurfaceAndMintGateway(t *testing.T, h *Host, pluginInstanceID string, s
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		PluginStateVersion: bootstrap.PluginStateVersion,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v3",
+		UIProtocolVersion:  "plugin-ui-v4",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -10684,7 +10810,7 @@ func releaseMetadataBytesForPackage(t *testing.T, ref PluginReleaseRef, pkg plug
 func releaseMetadataBytesForRelease(t *testing.T, ref PluginReleaseRef, release PluginPackageRelease) []byte {
 	t.Helper()
 	raw, err := json.Marshal(signedReleaseMetadata{
-		SchemaVersion:            "redevplugin.release_metadata.v3",
+		SchemaVersion:            "redevplugin.release_metadata.v4",
 		SourceID:                 release.SourceID,
 		ReleaseMetadataRef:       ref.ReleaseMetadataRef,
 		PublisherID:              release.PublisherID,
@@ -10776,7 +10902,7 @@ func releaseForPackage(ref PluginReleaseRef, pkg pluginpkg.Package) PluginPackag
 		Compatibility: &ReleaseCompatibility{
 			MinReDevPluginVersion: "0.1.0",
 			MinRuntimeVersion:     "0.1.0",
-			UIProtocolVersion:     "plugin-ui-v3",
+			UIProtocolVersion:     "plugin-ui-v4",
 		},
 	}
 }

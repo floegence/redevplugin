@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 
 const STORE_ID: &str = "weather";
 const DATABASE: &str = "weather.sqlite";
+const FRESH_CACHE_SECONDS: i64 = 10 * 60;
+const MAX_STALE_CACHE_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +43,8 @@ struct ForecastParams {
     latitude: f64,
     longitude: f64,
     timezone: String,
+    #[serde(default)]
+    force_refresh: bool,
 }
 
 fn handle(request: WorkerRequest) -> WorkerResult {
@@ -58,6 +62,10 @@ fn handle(request: WorkerRequest) -> WorkerResult {
 fn initialize() -> WorkerResult {
     exec(
         "CREATE TABLE IF NOT EXISTS locations (id TEXT PRIMARY KEY, name TEXT NOT NULL, admin1 TEXT NOT NULL, country TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, timezone TEXT NOT NULL, saved_at TEXT NOT NULL)",
+        vec![],
+    )?;
+    exec(
+        "CREATE TABLE IF NOT EXISTS forecast_cache (cache_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, cached_at INTEGER NOT NULL)",
         vec![],
     )?;
     Ok(json!({"ready": true}))
@@ -135,6 +143,28 @@ fn remove_location(params: IDParams) -> WorkerResult {
 }
 
 fn forecast(params: ForecastParams) -> WorkerResult {
+    validate_forecast_params(&params)?;
+    let cache_key = forecast_cache_key(&params);
+    if !params.force_refresh
+        && let Some((payload, age_seconds)) = cached_forecast(&cache_key)?
+        && let Some(cache_state) = usable_cache_state(age_seconds)
+    {
+        return forecast_response(payload, cache_state, age_seconds);
+    }
+    fetch_and_cache_forecast(&params, &cache_key)
+}
+
+fn usable_cache_state(age_seconds: i64) -> Option<&'static str> {
+    if age_seconds <= FRESH_CACHE_SECONDS {
+        Some("fresh")
+    } else if age_seconds <= MAX_STALE_CACHE_SECONDS {
+        Some("stale")
+    } else {
+        None
+    }
+}
+
+fn validate_forecast_params(params: &ForecastParams) -> Result<(), WorkerError> {
     if !params.latitude.is_finite()
         || !params.longitude.is_finite()
         || params.latitude.abs() > 90.0
@@ -144,6 +174,40 @@ fn forecast(params: ForecastParams) -> WorkerResult {
             "forecast coordinates are invalid",
         ));
     }
+    if params.timezone.len() > 120 {
+        return Err(WorkerError::invalid_request("forecast timezone is invalid"));
+    }
+    Ok(())
+}
+
+fn forecast_cache_key(params: &ForecastParams) -> String {
+    format!(
+        "{:.5}:{:.5}:{}",
+        params.latitude,
+        params.longitude,
+        params.timezone.trim()
+    )
+}
+
+fn cached_forecast(cache_key: &str) -> Result<Option<(Value, i64)>, WorkerError> {
+    let response = query(
+        "SELECT payload_json, max(0, CAST(strftime('%s','now') AS INTEGER) - cached_at) FROM forecast_cache WHERE cache_key = ? LIMIT 1",
+        vec![SQLiteValue::Text(cache_key.to_string())],
+        1,
+        393_216,
+    )?;
+    let Some(row) = response.rows.first() else {
+        return Ok(None);
+    };
+    if row.len() != 2 {
+        return Err(WorkerError::hostcall("forecast cache row is invalid"));
+    }
+    let payload = serde_json::from_str(cell_text(&row[0])?)
+        .map_err(|err| WorkerError::hostcall(format!("decode cached forecast: {err}")))?;
+    Ok(Some((payload, cell_int(&row[1])?)))
+}
+
+fn fetch_and_cache_forecast(params: &ForecastParams, cache_key: &str) -> WorkerResult {
     let timezone = if params.timezone.trim().is_empty() {
         "auto"
     } else {
@@ -162,7 +226,26 @@ fn forecast(params: ForecastParams) -> WorkerResult {
             ("daily".to_string(), vec!["weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset".to_string()]),
         ]),
     )?;
-    project_forecast(&payload)
+    let forecast = project_forecast(&payload)?;
+    let serialized = serde_json::to_string(&forecast)
+        .map_err(|err| WorkerError::hostcall(format!("encode forecast cache: {err}")))?;
+    exec(
+        "INSERT INTO forecast_cache (cache_key, payload_json, cached_at) VALUES (?, ?, CAST(strftime('%s','now') AS INTEGER)) ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json, cached_at=excluded.cached_at",
+        vec![
+            SQLiteValue::Text(cache_key.to_string()),
+            SQLiteValue::Text(serialized),
+        ],
+    )?;
+    forecast_response(forecast, "network", 0)
+}
+
+fn forecast_response(mut forecast: Value, cache_state: &str, age_seconds: i64) -> WorkerResult {
+    let object = forecast
+        .as_object_mut()
+        .ok_or_else(|| WorkerError::hostcall("projected forecast is not an object"))?;
+    object.insert("cache_state".to_string(), json!(cache_state));
+    object.insert("age_seconds".to_string(), json!(age_seconds));
+    Ok(forecast)
 }
 
 fn http_get(
@@ -348,6 +431,12 @@ fn cell_float(cell: &SQLiteValue) -> Result<f64, WorkerError> {
         _ => Err(WorkerError::hostcall("SQLite number cell is invalid")),
     }
 }
+fn cell_int(cell: &SQLiteValue) -> Result<i64, WorkerError> {
+    match cell {
+        SQLiteValue::Integer(value) => Ok(*value),
+        _ => Err(WorkerError::hostcall("SQLite integer cell is invalid")),
+    }
+}
 fn object_string<'a>(
     value: &'a serde_json::Map<String, Value>,
     key: &str,
@@ -453,5 +542,13 @@ mod tests {
             timezone: "auto".into(),
         };
         assert!(validate_location(&value).is_err());
+    }
+
+    #[test]
+    fn cache_freshness_boundaries_are_explicit() {
+        assert_eq!(usable_cache_state(600), Some("fresh"));
+        assert_eq!(usable_cache_state(601), Some("stale"));
+        assert_eq!(usable_cache_state(86_400), Some("stale"));
+        assert_eq!(usable_cache_state(86_401), None);
     }
 }

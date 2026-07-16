@@ -236,7 +236,7 @@ func TestExamplePluginPackagesAreCompleteAndInstallable(t *testing.T) {
 	}{
 		"memos": {
 			pluginID: "dev.redevplugin.examples.memos",
-			methods:  []string{"memos.delete", "memos.get", "memos.initialize", "memos.list", "memos.save", "memos.togglePin"},
+			methods:  []string{"memos.bootstrap", "memos.delete", "memos.get", "memos.list", "memos.save", "memos.togglePin"},
 			stores:   []string{"memos"},
 		},
 		"weather": {
@@ -329,12 +329,12 @@ func TestSQLiteExamplesDeclareMinimalBrokerAccessAndOwnSchemaInitialization(t *t
 		{
 			plugin: "memos",
 			methods: map[string]string{
-				"memos.initialize": `{"storage":[{"store_id":"memos","operations":["exec"]}]}`,
-				"memos.list":       `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
-				"memos.get":        `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
-				"memos.save":       `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
-				"memos.delete":     `{"storage":[{"store_id":"memos","operations":["exec"]}]}`,
-				"memos.togglePin":  `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.bootstrap": `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.list":      `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
+				"memos.get":       `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
+				"memos.save":      `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.delete":    `{"storage":[{"store_id":"memos","operations":["exec"]}]}`,
+				"memos.togglePin": `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
 			},
 			database: "memos.sqlite",
 		},
@@ -346,7 +346,7 @@ func TestSQLiteExamplesDeclareMinimalBrokerAccessAndOwnSchemaInitialization(t *t
 				"weather.locations.list":   `{"storage":[{"store_id":"weather","operations":["query"]}]}`,
 				"weather.locations.save":   `{"storage":[{"store_id":"weather","operations":["exec"]}]}`,
 				"weather.locations.remove": `{"storage":[{"store_id":"weather","operations":["exec"]}]}`,
-				"weather.forecast":         `{"network":[{"connector_id":"forecast","transport":"http","operations":["http"],"http_methods":["GET"]}]}`,
+				"weather.forecast":         `{"storage":[{"store_id":"weather","operations":["query","exec"]}],"network":[{"connector_id":"forecast","transport":"http","operations":["http"],"http_methods":["GET"]}]}`,
 			},
 			database: "weather.sqlite",
 		},

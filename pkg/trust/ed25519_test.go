@@ -111,7 +111,7 @@ func TestEd25519VerifierRejectsRevokedKey(t *testing.T) {
 
 func TestEd25519VerifierAcceptsSignedReleaseMetadata(t *testing.T) {
 	pkg, pub, priv, verifier := signedFixture(t)
-	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v3","plugin_id":"com.example.trust","version":"1.0.0"}`)
+	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v4","plugin_id":"com.example.trust","version":"1.0.0"}`)
 	signature := ed25519.Sign(priv, metadata)
 	release := releaseMetadataFixture(pkg, "test-key")
 
@@ -135,7 +135,7 @@ func TestEd25519VerifierAcceptsSignedReleaseMetadata(t *testing.T) {
 
 func TestEd25519VerifierRejectsTamperedReleaseMetadataSignature(t *testing.T) {
 	pkg, _, priv, verifier := signedFixture(t)
-	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v3","plugin_id":"com.example.trust","version":"1.0.0"}`)
+	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v4","plugin_id":"com.example.trust","version":"1.0.0"}`)
 	signature := ed25519.Sign(priv, metadata)
 	metadata[0] = '['
 
@@ -153,7 +153,7 @@ func TestEd25519VerifierRejectsTamperedReleaseMetadataSignature(t *testing.T) {
 
 func TestEd25519VerifierRejectsRevokedReleaseMetadataKey(t *testing.T) {
 	pkg, pub, priv, _ := signedFixture(t)
-	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v3","plugin_id":"com.example.trust","version":"1.0.0"}`)
+	metadata := []byte(`{"schema_version":"redevplugin.release_metadata.v4","plugin_id":"com.example.trust","version":"1.0.0"}`)
 	signature := ed25519.Sign(priv, metadata)
 	verifier := Ed25519Verifier{
 		Keyring: StaticKeyring{Keys: []SigningKey{{
@@ -285,7 +285,7 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "manifest.json"), `{
-		"schema_version": "redevplugin.manifest.v3",
+		"schema_version": "redevplugin.manifest.v4",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.trust",
@@ -293,7 +293,7 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v3"
+			"ui_protocol_version": "plugin-ui-v4"
 		},
 		"surfaces": [
 			{"surface_id": "trust.view", "kind": "view", "label": "Trust", "entry": "ui/index.html"}

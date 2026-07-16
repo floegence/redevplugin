@@ -262,6 +262,7 @@ function requestAllowed(request, credentiallessScenario) {
     ["/packages/redevplugin-ui/dist/platform.js", "GET"],
     ["/packages/redevplugin-ui/dist/surface-scope.js", "GET"],
     ["/packages/redevplugin-ui/dist/surface.js", "GET"],
+    ["/packages/redevplugin-ui/dist/ui-reconciler.js", "GET"],
     ["/packages/redevplugin-ui/dist/http.js", "GET"],
     ["/packages/redevplugin-ui/dist/opaque-surface-policy.gen.js", "GET"],
     ["/__browser_harness/diagnostics", "GET"],

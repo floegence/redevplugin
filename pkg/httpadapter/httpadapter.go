@@ -1904,6 +1904,8 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrPluginStateVersionMismatch):
 		return security.ErrStateVersionMismatch
+	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
+		return security.ErrUIProtocolUnsupported
 	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, bridge.ErrSurfaceSessionAlreadyExists):
@@ -1916,6 +1918,8 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 func httpStatusForOpenSurfaceError(err error) int {
 	switch {
 	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+		return http.StatusConflict
+	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return http.StatusConflict
 	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
 		return http.StatusServiceUnavailable
@@ -2043,6 +2047,8 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 	switch {
 	case errors.Is(err, host.ErrPluginStateVersionMismatch):
 		return security.ErrStateVersionMismatch
+	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
+		return security.ErrUIProtocolUnsupported
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):
@@ -2090,6 +2096,8 @@ func httpStatusForManagementError(err error) int {
 	}
 	switch {
 	case errors.Is(err, host.ErrPluginStateVersionMismatch):
+		return http.StatusConflict
+	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return http.StatusConflict
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrArchiveNotFound), errors.Is(err, storage.ErrNamespaceNotFound):
 		return http.StatusBadRequest

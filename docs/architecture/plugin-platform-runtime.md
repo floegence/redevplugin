@@ -248,23 +248,23 @@ renderer.
 
 Machine-readable contracts are first-class platform artifacts:
 
-- `spec/openapi/plugin-platform-v3.yaml`;
-- `spec/plugin/manifest-v3.schema.json`;
+- `spec/openapi/plugin-platform-v4.yaml`;
+- `spec/plugin/manifest-v4.schema.json`;
 - `spec/plugin/package-signature-v1.schema.json`;
-- `spec/plugin/release-metadata-v3.schema.json`;
+- `spec/plugin/release-metadata-v4.schema.json`;
 - `spec/plugin/source-policy-v1.schema.json`;
 - `spec/plugin/source-revocations-v1.schema.json`;
 - `spec/plugin/token-ticket-v2.schema.json`;
-- `spec/plugin/bridge-v3.schema.json`;
+- `spec/plugin/bridge-v4.schema.json`;
 - `spec/plugin/opaque-surface-document-v2.schema.json`;
-- `spec/plugin/opaque-surface-transport-v2.schema.json`;
-- `spec/plugin/compatibility-manifest-v3.schema.json`;
+- `spec/plugin/opaque-surface-transport-v3.schema.json`;
+- `spec/plugin/compatibility-manifest-v4.schema.json`;
 - `spec/plugin/release-manifest-v3.schema.json`;
 - `spec/plugin/ipc-v2.schema.json`;
 - `spec/plugin/wasm-worker-v2.schema.json`;
 - `spec/plugin/worker-invocation-v2.schema.json`;
 - `spec/plugin/network-grant-v1.schema.json`;
-- `spec/plugin/error-codes-v1.schema.json`;
+- `spec/plugin/error-codes-v2.schema.json`;
 - `spec/plugin/target-classifier-v1.json`;
 - `spec/plugin/contract-registry-v1.json`, the generated inventory and SHA-256
   identity for every public contract above.

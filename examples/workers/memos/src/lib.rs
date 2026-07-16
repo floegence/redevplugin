@@ -40,7 +40,7 @@ struct IDParams {
 
 fn handle(request: WorkerRequest) -> WorkerResult {
     match request.method.as_str() {
-        "memos.initialize" => initialize(),
+        "memos.bootstrap" => bootstrap(),
         "memos.list" => list_notes(decode(request.params)?),
         "memos.get" => get_note(decode(request.params)?),
         "memos.save" => save_note(decode(request.params)?),
@@ -48,6 +48,32 @@ fn handle(request: WorkerRequest) -> WorkerResult {
         "memos.togglePin" => toggle_pin(decode(request.params)?),
         _ => Err(WorkerError::invalid_request("unsupported memos method")),
     }
+}
+
+fn bootstrap() -> WorkerResult {
+    initialize()?;
+    let page = list_notes(ListParams {
+        query: String::new(),
+        offset: 0,
+        limit: default_page_size(),
+        pinned_only: false,
+    })?;
+    let selected_note = page
+        .get("notes")
+        .and_then(Value::as_array)
+        .and_then(|notes| notes.first())
+        .and_then(|note| note.get("id"))
+        .and_then(Value::as_str)
+        .map(note_by_id)
+        .transpose()?
+        .and_then(|value| value.get("note").cloned());
+    Ok(json!({
+        "notes": page.get("notes").cloned().unwrap_or_else(|| json!([])),
+        "total": page.get("total").cloned().unwrap_or_else(|| json!(0)),
+        "offset": 0,
+        "has_more": page.get("has_more").cloned().unwrap_or(json!(false)),
+        "selected_note": selected_note
+    }))
 }
 
 fn initialize() -> WorkerResult {

@@ -1,5 +1,5 @@
 {
-  "schema_version": "redevplugin.manifest.v3",
+  "schema_version": "redevplugin.manifest.v4",
   "publisher": {
     "publisher_id": "example.generated",
     "display_name": "Example Generated"
@@ -10,7 +10,7 @@
     "version": "1.0.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.1.0",
-    "ui_protocol_version": "plugin-ui-v3"
+    "ui_protocol_version": "plugin-ui-v4"
   },
   "surfaces": [
     {

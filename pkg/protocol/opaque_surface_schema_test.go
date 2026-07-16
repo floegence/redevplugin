@@ -68,13 +68,14 @@ func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
 }
 
 func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
-	schema := readPluginSchema(t, "opaque-surface-transport-v2.schema.json")
+	schema := readPluginSchema(t, "opaque-surface-transport-v3.schema.json")
 	refs := requireObjectArray(t, schema["oneOf"], "opaque transport oneOf")
 	wantRefs := map[string]bool{
 		"#/$defs/port_envelope":     false,
 		"#/$defs/port_ack":          false,
 		"#/$defs/initialize":        false,
 		"#/$defs/first_paint":       false,
+		"#/$defs/first_commit":      false,
 		"#/$defs/worker_ready":      false,
 		"#/$defs/surface_error":     false,
 		"#/$defs/asset_read":        false,
