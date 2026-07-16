@@ -2606,7 +2606,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     var state = {
         feed: { memos: [], total: 0, hasMore: false, query: "", view: "all", tag: "", date: "", loading: false, errorMessage: "" },
         composer: { content: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false },
-        facets: { month: currentMonth(), tags: [], days: [], archivedTotal: 0, loading: false, errorMessage: "" },
+        facets: { month: currentMonth(), tags: [], days: [], allTotal: 0, pinnedTotal: 0, archivedTotal: 0, loading: false, errorMessage: "" },
         editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
         ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() }
     };
@@ -2939,10 +2939,12 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         state.ui.toast = "";
         await render();
         try {
-            await bridge.call("memos.publish", { content: state.composer.content });
+            const hadUnloadedRows = state.feed.hasMore;
+            const response = await bridge.call("memos.publish", { content: state.composer.content });
+            const reconcileFacets = applyMemoTransition(void 0, response.data.memo);
             state.composer = { content: "", dirty: false, revision: state.composer.revision + 1, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false };
             showToast("Memo published");
-            await Promise.all([refreshFeed(false), refreshFacets()]);
+            scheduleReconciliation(hadUnloadedRows, reconcileFacets);
         }
         catch (error) {
             state.composer.saveState = "error";
@@ -3009,6 +3011,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const id = state.editing.id;
         const content = state.editing.content;
         const revision = state.editing.revision;
+        const previousMemo = memoById(id);
+        const hadUnloadedRows = state.feed.hasMore;
         state.editing.dirty = false;
         state.editing.saveState = "saving";
         state.editing.errorMessage = "";
@@ -3016,7 +3020,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const currentSave = (async () => {
             try {
                 const response = await bridge.call("memos.update", { id, content });
-                replaceMemo(response.data.memo);
+                const reconcileFacets = applyMemoTransition(previousMemo, response.data.memo);
                 if (state.editing.id === id && state.editing.revision === revision) {
                     state.editing.content = response.data.memo.content;
                     state.editing.originalContent = response.data.memo.content;
@@ -3026,7 +3030,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
                     state.editing.dirty = true;
                     scheduleEditSave();
                 }
-                void refreshFacets().then(render).catch(() => void 0);
+                scheduleReconciliation(hadUnloadedRows, reconcileFacets);
                 return true;
             }
             catch (error) {
@@ -3075,13 +3079,17 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         await mutateMemo(memo.id, "memos.setArchived", { id: memo.id, value: !memo.archived }, "Memos could not change this archive");
     }
     async function mutateMemo(id, method, params, fallback) {
+        const previousMemo = memoById(id);
+        if (!previousMemo)
+            return;
+        const hadUnloadedRows = state.feed.hasMore;
         state.ui.pendingIds.add(id);
         state.ui.toast = "";
         await render();
         try {
             const response = await bridge.call(method, params);
-            replaceMemo(response.data.memo);
-            await Promise.all([refreshFeed(false), refreshFacets()]);
+            const reconcileFacets = applyMemoTransition(previousMemo, response.data.memo);
+            scheduleReconciliation(hadUnloadedRows, reconcileFacets);
         }
         catch (error) {
             showToast(readableError(error, fallback));
@@ -3128,6 +3136,10 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const id = state.ui.deleteId;
         if (!id || state.ui.busy)
             return;
+        const previousMemo = memoById(id);
+        if (!previousMemo)
+            return;
+        const hadUnloadedRows = state.feed.hasMore;
         state.ui.deleteId = "";
         state.ui.busy = true;
         await render();
@@ -3136,8 +3148,9 @@ Please report this to https://github.com/markedjs/marked.`, e) {
             if (state.editing.id === id)
                 resetEditing();
             state.ui.expandedIds.delete(id);
+            const reconcileFacets = applyMemoTransition(previousMemo, void 0);
             showToast("Memo deleted");
-            await Promise.all([refreshFeed(false), refreshFacets()]);
+            scheduleReconciliation(hadUnloadedRows, reconcileFacets);
         }
         catch (error) {
             showToast(readableError(error, "Memos could not delete this memo"));
@@ -3158,12 +3171,13 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const content = toggleTaskMarker(memo.content, index, event.checked === true);
         if (content === memo.content)
             return;
+        const hadUnloadedRows = state.feed.hasMore;
         state.ui.pendingIds.add(id);
         await render();
         try {
             const response = await bridge.call("memos.update", { id, content });
-            replaceMemo(response.data.memo);
-            await refreshFacets();
+            const reconcileFacets = applyMemoTransition(memo, response.data.memo);
+            scheduleReconciliation(hadUnloadedRows, reconcileFacets);
         }
         catch (error) {
             showToast(readableError(error, "Memos could not update this task"));
@@ -3210,8 +3224,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
                     ] },
                 searchForm(),
                 { type: "element", key: "view-nav", tag: "nav", attributes: { class: "view-nav", "aria-label": "Memo views" }, children: [
-                        viewButton("all", "All memos", "icon-inbox", state.feed.total),
-                        viewButton("pinned", "Pinned", "icon-pin", void 0),
+                        viewButton("all", "All memos", "icon-inbox", state.facets.allTotal),
+                        viewButton("pinned", "Pinned", "icon-pin", state.facets.pinnedTotal),
                         viewButton("archived", "Archived", "icon-archive", state.facets.archivedTotal)
                     ] },
                 calendar(),
@@ -3445,14 +3459,126 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         state.facets.month = result.month;
         state.facets.tags = result.tags;
         state.facets.days = result.days;
+        state.facets.allTotal = result.all_total;
+        state.facets.pinnedTotal = result.pinned_total;
         state.facets.archivedTotal = result.archived_total;
         state.facets.loading = false;
         state.facets.errorMessage = "";
     }
-    function replaceMemo(memo) {
-        const index = state.feed.memos.findIndex((candidate) => candidate.id === memo.id);
-        if (index >= 0)
-            state.feed.memos[index] = memo;
+    function applyMemoTransition(previous, next) {
+        const previousActive = Boolean(previous && !previous.archived);
+        const nextActive = Boolean(next && !next.archived);
+        const previousPinned = Boolean(previous && !previous.archived && previous.pinned);
+        const nextPinned = Boolean(next && !next.archived && next.pinned);
+        const previousArchived = Boolean(previous?.archived);
+        const nextArchived = Boolean(next?.archived);
+        state.facets.allTotal = adjustedCount(state.facets.allTotal, previousActive, nextActive);
+        state.facets.pinnedTotal = adjustedCount(state.facets.pinnedTotal, previousPinned, nextPinned);
+        state.facets.archivedTotal = adjustedCount(state.facets.archivedTotal, previousArchived, nextArchived);
+        applyFeedTransition(previous, next);
+        const tagFacetWasCapped = state.facets.tags.length >= 64;
+        const tagsChanged = applyTagTransition(previousActive ? previous?.tags ?? [] : [], nextActive ? next?.tags ?? [] : []);
+        applyDayTransition(previousActive ? memoFacetDate(previous) : "", nextActive ? memoFacetDate(next) : "");
+        return tagsChanged && tagFacetWasCapped;
+    }
+    function applyFeedTransition(previous, next) {
+        const previousMatches = Boolean(previous && memoMatchesCurrentFeed(previous));
+        const nextMatches = Boolean(next && memoMatchesCurrentFeed(next));
+        state.feed.total = adjustedCount(state.feed.total, previousMatches, nextMatches);
+        const previousIndex = previous ? state.feed.memos.findIndex((memo) => memo.id === previous.id) : -1;
+        const capacity = Math.max(PAGE_SIZE, state.feed.memos.length);
+        const transitionIds = new Set([previous?.id, next?.id].filter((id) => Boolean(id)));
+        const memos = state.feed.memos.filter((memo) => !transitionIds.has(memo.id));
+        if (next && nextMatches && (previousIndex >= 0 || !previous || !previousMatches))
+            memos.push(next);
+        memos.sort(compareMemos);
+        state.feed.memos = memos.slice(0, capacity);
+        state.feed.hasMore = state.feed.memos.length < state.feed.total;
+    }
+    function memoMatchesCurrentFeed(memo) {
+        if (state.feed.view === "archived" ? !memo.archived : memo.archived)
+            return false;
+        if (state.feed.view === "pinned" && !memo.pinned)
+            return false;
+        const query = state.feed.query.trim().toLowerCase();
+        if (query && !memo.content.toLowerCase().includes(query))
+            return false;
+        if (state.feed.tag && !memo.tags.includes(state.feed.tag))
+            return false;
+        return !state.feed.date || memoFacetDate(memo) === state.feed.date;
+    }
+    function compareMemos(left, right) {
+        if (left.pinned !== right.pinned)
+            return left.pinned ? -1 : 1;
+        const created = right.created_at.localeCompare(left.created_at);
+        return created || right.id.localeCompare(left.id);
+    }
+    function applyTagTransition(previousTags, nextTags) {
+        const previous = new Set(previousTags);
+        const next = new Set(nextTags);
+        const changed = previous.size !== next.size || [...previous].some((tag) => !next.has(tag));
+        if (!changed)
+            return false;
+        const counts = new Map(state.facets.tags.map((facet) => [facet.tag, facet.count]));
+        for (const tag of new Set([...previous, ...next])) {
+            const count = (counts.get(tag) ?? 0) - Number(previous.has(tag)) + Number(next.has(tag));
+            if (count > 0)
+                counts.set(tag, count);
+            else
+                counts.delete(tag);
+        }
+        state.facets.tags = [...counts.entries()].map(([tag, count]) => ({ tag, count })).sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag)).slice(0, 64);
+        return true;
+    }
+    function applyDayTransition(previousDate, nextDate) {
+        if (previousDate === nextDate)
+            return;
+        const counts = new Map(state.facets.days.map((day) => [day.date, day.count]));
+        for (const [date, delta] of [[previousDate, -1], [nextDate, 1]]) {
+            if (!date.startsWith(`${state.facets.month}-`))
+                continue;
+            const count = (counts.get(date) ?? 0) + delta;
+            if (count > 0)
+                counts.set(date, count);
+            else
+                counts.delete(date);
+        }
+        state.facets.days = [...counts.entries()].map(([date, count]) => ({ date, count })).sort((left, right) => left.date.localeCompare(right.date));
+    }
+    function memoFacetDate(memo) {
+        if (!memo)
+            return "";
+        const createdAt = new Date(memo.created_at);
+        if (Number.isNaN(createdAt.getTime()))
+            return "";
+        const shifted = new Date(createdAt.getTime() + utcOffsetMinutes * 6e4);
+        return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+    }
+    function adjustedCount(current, previous, next) {
+        return Math.max(0, current - Number(previous) + Number(next));
+    }
+    function scheduleReconciliation(feed, facets) {
+        if (!feed && !facets)
+            return;
+        void (async () => {
+            let changed = false;
+            if (feed) {
+                try {
+                    changed = await refreshFeed(false) || changed;
+                }
+                catch {
+                }
+            }
+            if (facets) {
+                try {
+                    changed = await refreshFacets() || changed;
+                }
+                catch {
+                }
+            }
+            if (changed)
+                await render();
+        })();
     }
     function memoById(id) {
         return state.feed.memos.find((memo) => memo.id === id);

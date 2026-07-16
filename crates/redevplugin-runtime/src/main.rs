@@ -3010,6 +3010,57 @@ mod tests {
     }
 
     #[test]
+    fn compiled_memos_worker_returns_distinct_navigation_totals() {
+        let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
+        let mut hostcall_count = 0;
+        let execution = execute_worker_module_v2(
+            module,
+            "redevplugin_worker_invoke",
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.facets","params":{"month":"2026-07","utc_offset_minutes":0}}"#,
+            TEST_WORKER_MEMORY_LIMIT_BYTES,
+            |hostcall| {
+                let WorkerHostcallRequest::StorageSQLite(request_json) = hostcall else {
+                    return Err("unexpected non-SQLite memos hostcall".to_string());
+                };
+                hostcall_count += 1;
+                let request: serde_json::Value = serde_json::from_str(&request_json)
+                    .map_err(|err| format!("decode memos SQLite request: {err}"))?;
+                let sql = request["sql"]
+                    .as_str()
+                    .ok_or_else(|| "memos SQLite request omitted sql".to_string())?;
+                let (columns, rows) = if sql.starts_with("WITH RECURSIVE split") {
+                    (serde_json::json!(["tag", "count(*)"]), serde_json::json!([]))
+                } else if sql.starts_with("SELECT date(created_at") {
+                    (serde_json::json!(["date", "count(*)"]), serde_json::json!([]))
+                } else if sql.starts_with("SELECT COALESCE(SUM(CASE WHEN archived = 0") {
+                    (
+                        serde_json::json!(["all_total", "pinned_total", "archived_total"]),
+                        serde_json::json!([[{"int": 2}, {"int": 1}, {"int": 3}]]),
+                    )
+                } else {
+                    return Err(format!("unexpected memos facets query: {sql}"));
+                };
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "database": "memos.sqlite",
+                    "columns": columns,
+                    "rows": rows,
+                    "usage": sqlite_usage_fixture()
+                })
+                .to_string())
+            },
+        )
+        .expect("compiled memos facets executes");
+
+        assert_eq!(hostcall_count, 3);
+        let response: serde_json::Value =
+            serde_json::from_str(&execution.response_json).expect("decode memos facets response");
+        assert_eq!(response["data"]["all_total"], 2);
+        assert_eq!(response["data"]["pinned_total"], 1);
+        assert_eq!(response["data"]["archived_total"], 3);
+    }
+
+    #[test]
     fn executes_compiled_example_worker_publish_with_portable_dispatch() {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
         let mut hostcall_count = 0;

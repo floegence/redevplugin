@@ -97,6 +97,35 @@ func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
 	}
 }
 
+func TestMemosKeepsNavigationCountsIndependentFromTheActiveFeed(t *testing.T) {
+	root := repositoryRoot(t)
+	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	workerSource := readMemosProductFile(t, root, "examples/workers/memos/src/lib.rs")
+	manifest := readMemosProductFile(t, root, "examples/plugins/memos/manifest.json")
+	combined := uiSource + workerSource + manifest
+
+	for _, required := range []string{
+		`all_total`,
+		`pinned_total`,
+		`archived_total`,
+		`allTotal: number`,
+		`pinnedTotal: number`,
+		`viewButton("all", "All memos", "icon-inbox", state.facets.allTotal)`,
+		`viewButton("pinned", "Pinned", "icon-pin", state.facets.pinnedTotal)`,
+		`applyMemoTransition`,
+		`applyFeedTransition`,
+		`adjustedCount`,
+		`SUM(CASE WHEN archived = 0 AND pinned = 1 THEN 1 ELSE 0 END)`,
+	} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("Memos navigation count flow is missing %q", required)
+		}
+	}
+	if strings.Contains(uiSource, `viewButton("pinned", "Pinned", "icon-pin", undefined)`) {
+		t.Fatal("Memos must render a zero pinned count instead of omitting the count node")
+	}
+}
+
 func TestMemosKeepsBoundedStorageAndCompatibleMigration(t *testing.T) {
 	root := repositoryRoot(t)
 	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")

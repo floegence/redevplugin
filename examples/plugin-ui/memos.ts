@@ -13,7 +13,14 @@ type Memo = {
 type Draft = { content: string; updated_at: string };
 type TagFacet = { tag: string; count: number };
 type DayFacet = { date: string; count: number };
-type FacetResult = { month: string; tags: TagFacet[]; days: DayFacet[]; archived_total: number };
+type FacetResult = {
+  month: string;
+  tags: TagFacet[];
+  days: DayFacet[];
+  all_total: number;
+  pinned_total: number;
+  archived_total: number;
+};
 type ListResult = { memos: Memo[]; total: number; offset: number; has_more: boolean };
 type BootstrapResult = ListResult & { draft: Draft | null; facets: FacetResult };
 type SaveState = "idle" | "unsaved" | "saving" | "saved" | "error";
@@ -45,6 +52,8 @@ type MemosState = {
     month: string;
     tags: TagFacet[];
     days: DayFacet[];
+    allTotal: number;
+    pinnedTotal: number;
     archivedTotal: number;
     loading: boolean;
     errorMessage: string;
@@ -82,7 +91,7 @@ const utcOffsetMinutes = -new Date().getTimezoneOffset();
 const state: MemosState = {
   feed: { memos: [], total: 0, hasMore: false, query: "", view: "all", tag: "", date: "", loading: false, errorMessage: "" },
   composer: { content: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false },
-  facets: { month: currentMonth(), tags: [], days: [], archivedTotal: 0, loading: false, errorMessage: "" },
+  facets: { month: currentMonth(), tags: [], days: [], allTotal: 0, pinnedTotal: 0, archivedTotal: 0, loading: false, errorMessage: "" },
   editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
   ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() },
 };
@@ -406,10 +415,12 @@ async function publishMemo(): Promise<void> {
   state.ui.toast = "";
   await render();
   try {
-    await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.publish", { content: state.composer.content });
+    const hadUnloadedRows = state.feed.hasMore;
+    const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.publish", { content: state.composer.content });
+    const reconcileFacets = applyMemoTransition(undefined, response.data.memo);
     state.composer = { content: "", dirty: false, revision: state.composer.revision + 1, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false };
     showToast("Memo published");
-    await Promise.all([refreshFeed(false), refreshFacets()]);
+    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
   } catch (error) {
     state.composer.saveState = "error";
     state.composer.errorMessage = readableError(error, "Memos could not publish this memo");
@@ -471,6 +482,8 @@ async function flushEdit(): Promise<boolean> {
   const id = state.editing.id;
   const content = state.editing.content;
   const revision = state.editing.revision;
+  const previousMemo = memoById(id);
+  const hadUnloadedRows = state.feed.hasMore;
   state.editing.dirty = false;
   state.editing.saveState = "saving";
   state.editing.errorMessage = "";
@@ -478,7 +491,7 @@ async function flushEdit(): Promise<boolean> {
   const currentSave = (async (): Promise<boolean> => {
     try {
       const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.update", { id, content });
-      replaceMemo(response.data.memo);
+      const reconcileFacets = applyMemoTransition(previousMemo, response.data.memo);
       if (state.editing.id === id && state.editing.revision === revision) {
         state.editing.content = response.data.memo.content;
         state.editing.originalContent = response.data.memo.content;
@@ -487,7 +500,7 @@ async function flushEdit(): Promise<boolean> {
         state.editing.dirty = true;
         scheduleEditSave();
       }
-      void refreshFacets().then(render).catch(() => undefined);
+      scheduleReconciliation(hadUnloadedRows, reconcileFacets);
       return true;
     } catch (error) {
       if (state.editing.id === id) {
@@ -533,13 +546,16 @@ async function setArchived(id?: string): Promise<void> {
 }
 
 async function mutateMemo(id: string, method: string, params: Record<string, string | boolean>, fallback: string): Promise<void> {
+  const previousMemo = memoById(id);
+  if (!previousMemo) return;
+  const hadUnloadedRows = state.feed.hasMore;
   state.ui.pendingIds.add(id);
   state.ui.toast = "";
   await render();
   try {
     const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>(method, params);
-    replaceMemo(response.data.memo);
-    await Promise.all([refreshFeed(false), refreshFacets()]);
+    const reconcileFacets = applyMemoTransition(previousMemo, response.data.memo);
+    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
   } catch (error) {
     showToast(readableError(error, fallback));
   } finally {
@@ -584,6 +600,9 @@ async function cancelDelete(): Promise<void> {
 async function confirmDelete(): Promise<void> {
   const id = state.ui.deleteId;
   if (!id || state.ui.busy) return;
+  const previousMemo = memoById(id);
+  if (!previousMemo) return;
+  const hadUnloadedRows = state.feed.hasMore;
   state.ui.deleteId = "";
   state.ui.busy = true;
   await render();
@@ -591,8 +610,9 @@ async function confirmDelete(): Promise<void> {
     await bridge.call("memos.delete", { id });
     if (state.editing.id === id) resetEditing();
     state.ui.expandedIds.delete(id);
+    const reconcileFacets = applyMemoTransition(previousMemo, undefined);
     showToast("Memo deleted");
-    await Promise.all([refreshFeed(false), refreshFacets()]);
+    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
   } catch (error) {
     showToast(readableError(error, "Memos could not delete this memo"));
   } finally {
@@ -609,12 +629,13 @@ async function toggleTask(event: PluginUIActionEvent): Promise<void> {
   if (!memo || !Number.isInteger(index) || index < 0 || state.ui.pendingIds.has(id)) return;
   const content = toggleTaskMarker(memo.content, index, event.checked === true);
   if (content === memo.content) return;
+  const hadUnloadedRows = state.feed.hasMore;
   state.ui.pendingIds.add(id);
   await render();
   try {
     const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.update", { id, content });
-    replaceMemo(response.data.memo);
-    await refreshFacets();
+    const reconcileFacets = applyMemoTransition(memo, response.data.memo);
+    scheduleReconciliation(hadUnloadedRows, reconcileFacets);
   } catch (error) {
     showToast(readableError(error, "Memos could not update this task"));
   } finally {
@@ -662,8 +683,8 @@ function explorer(): PluginUIVNode {
     ] },
     searchForm(),
     { type: "element", key: "view-nav", tag: "nav", attributes: { class: "view-nav", "aria-label": "Memo views" }, children: [
-      viewButton("all", "All memos", "icon-inbox", state.feed.total),
-      viewButton("pinned", "Pinned", "icon-pin", undefined),
+      viewButton("all", "All memos", "icon-inbox", state.facets.allTotal),
+      viewButton("pinned", "Pinned", "icon-pin", state.facets.pinnedTotal),
       viewButton("archived", "Archived", "icon-archive", state.facets.archivedTotal),
     ] },
     calendar(),
@@ -917,14 +938,126 @@ function applyFacets(result: FacetResult): void {
   state.facets.month = result.month;
   state.facets.tags = result.tags;
   state.facets.days = result.days;
+  state.facets.allTotal = result.all_total;
+  state.facets.pinnedTotal = result.pinned_total;
   state.facets.archivedTotal = result.archived_total;
   state.facets.loading = false;
   state.facets.errorMessage = "";
 }
 
-function replaceMemo(memo: Memo): void {
-  const index = state.feed.memos.findIndex((candidate) => candidate.id === memo.id);
-  if (index >= 0) state.feed.memos[index] = memo;
+function applyMemoTransition(previous: Memo | undefined, next: Memo | undefined): boolean {
+  const previousActive = Boolean(previous && !previous.archived);
+  const nextActive = Boolean(next && !next.archived);
+  const previousPinned = Boolean(previous && !previous.archived && previous.pinned);
+  const nextPinned = Boolean(next && !next.archived && next.pinned);
+  const previousArchived = Boolean(previous?.archived);
+  const nextArchived = Boolean(next?.archived);
+
+  state.facets.allTotal = adjustedCount(state.facets.allTotal, previousActive, nextActive);
+  state.facets.pinnedTotal = adjustedCount(state.facets.pinnedTotal, previousPinned, nextPinned);
+  state.facets.archivedTotal = adjustedCount(state.facets.archivedTotal, previousArchived, nextArchived);
+  applyFeedTransition(previous, next);
+  const tagFacetWasCapped = state.facets.tags.length >= 64;
+  const tagsChanged = applyTagTransition(previousActive ? previous?.tags ?? [] : [], nextActive ? next?.tags ?? [] : []);
+  applyDayTransition(previousActive ? memoFacetDate(previous) : "", nextActive ? memoFacetDate(next) : "");
+  return tagsChanged && tagFacetWasCapped;
+}
+
+function applyFeedTransition(previous: Memo | undefined, next: Memo | undefined): void {
+  const previousMatches = Boolean(previous && memoMatchesCurrentFeed(previous));
+  const nextMatches = Boolean(next && memoMatchesCurrentFeed(next));
+  state.feed.total = adjustedCount(state.feed.total, previousMatches, nextMatches);
+
+  const previousIndex = previous ? state.feed.memos.findIndex((memo) => memo.id === previous.id) : -1;
+  const capacity = Math.max(PAGE_SIZE, state.feed.memos.length);
+  const transitionIds = new Set([previous?.id, next?.id].filter((id): id is string => Boolean(id)));
+  const memos = state.feed.memos.filter((memo) => !transitionIds.has(memo.id));
+  if (next && nextMatches && (previousIndex >= 0 || !previous || !previousMatches)) memos.push(next);
+  memos.sort(compareMemos);
+  state.feed.memos = memos.slice(0, capacity);
+  state.feed.hasMore = state.feed.memos.length < state.feed.total;
+}
+
+function memoMatchesCurrentFeed(memo: Memo): boolean {
+  if (state.feed.view === "archived" ? !memo.archived : memo.archived) return false;
+  if (state.feed.view === "pinned" && !memo.pinned) return false;
+  const query = state.feed.query.trim().toLowerCase();
+  if (query && !memo.content.toLowerCase().includes(query)) return false;
+  if (state.feed.tag && !memo.tags.includes(state.feed.tag)) return false;
+  return !state.feed.date || memoFacetDate(memo) === state.feed.date;
+}
+
+function compareMemos(left: Memo, right: Memo): number {
+  if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+  const created = right.created_at.localeCompare(left.created_at);
+  return created || right.id.localeCompare(left.id);
+}
+
+function applyTagTransition(previousTags: string[], nextTags: string[]): boolean {
+  const previous = new Set(previousTags);
+  const next = new Set(nextTags);
+  const changed = previous.size !== next.size || [...previous].some((tag) => !next.has(tag));
+  if (!changed) return false;
+
+  const counts = new Map(state.facets.tags.map((facet) => [facet.tag, facet.count]));
+  for (const tag of new Set([...previous, ...next])) {
+    const count = (counts.get(tag) ?? 0) - Number(previous.has(tag)) + Number(next.has(tag));
+    if (count > 0) counts.set(tag, count);
+    else counts.delete(tag);
+  }
+  state.facets.tags = [...counts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag))
+    .slice(0, 64);
+  return true;
+}
+
+function applyDayTransition(previousDate: string, nextDate: string): void {
+  if (previousDate === nextDate) return;
+  const counts = new Map(state.facets.days.map((day) => [day.date, day.count]));
+  for (const [date, delta] of [[previousDate, -1], [nextDate, 1]] as const) {
+    if (!date.startsWith(`${state.facets.month}-`)) continue;
+    const count = (counts.get(date) ?? 0) + delta;
+    if (count > 0) counts.set(date, count);
+    else counts.delete(date);
+  }
+  state.facets.days = [...counts.entries()]
+    .map(([date, count]) => ({ date, count }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function memoFacetDate(memo: Memo | undefined): string {
+  if (!memo) return "";
+  const createdAt = new Date(memo.created_at);
+  if (Number.isNaN(createdAt.getTime())) return "";
+  const shifted = new Date(createdAt.getTime() + utcOffsetMinutes * 60_000);
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+}
+
+function adjustedCount(current: number, previous: boolean, next: boolean): number {
+  return Math.max(0, current - Number(previous) + Number(next));
+}
+
+function scheduleReconciliation(feed: boolean, facets: boolean): void {
+  if (!feed && !facets) return;
+  void (async () => {
+    let changed = false;
+    if (feed) {
+      try {
+        changed = await refreshFeed(false) || changed;
+      } catch {
+        // The mutation result already projected a usable local state.
+      }
+    }
+    if (facets) {
+      try {
+        changed = await refreshFacets() || changed;
+      } catch {
+        // A future bootstrap or month change will reconcile capped tag facets.
+      }
+    }
+    if (changed) await render();
+  })();
 }
 
 function memoById(id: string): Memo | undefined {

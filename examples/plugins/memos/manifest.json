@@ -4,7 +4,7 @@
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.memos",
     "display_name": "Memos",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.5.0",
     "ui_protocol_version": "plugin-ui-v4"
@@ -74,11 +74,13 @@
           },
           "facets": {
             "type": "object", "additionalProperties": false,
-            "required": ["month", "tags", "days", "archived_total"],
+            "required": ["month", "tags", "days", "all_total", "pinned_total", "archived_total"],
             "properties": {
               "month": { "type": "string" },
               "tags": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tag_facet" } },
               "days": { "type": "array", "maxItems": 31, "items": { "$ref": "#/$defs/day_facet" } },
+              "all_total": { "type": "integer", "minimum": 0 },
+              "pinned_total": { "type": "integer", "minimum": 0 },
               "archived_total": { "type": "integer", "minimum": 0 }
             }
           },
@@ -151,11 +153,13 @@
         }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["month", "tags", "days", "archived_total"],
+        "type": "object", "additionalProperties": false, "required": ["month", "tags", "days", "all_total", "pinned_total", "archived_total"],
         "properties": {
           "month": { "type": "string" },
           "tags": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tag_facet" } },
           "days": { "type": "array", "maxItems": 31, "items": { "$ref": "#/$defs/day_facet" } },
+          "all_total": { "type": "integer", "minimum": 0 },
+          "pinned_total": { "type": "integer", "minimum": 0 },
           "archived_total": { "type": "integer", "minimum": 0 }
         },
         "$defs": {

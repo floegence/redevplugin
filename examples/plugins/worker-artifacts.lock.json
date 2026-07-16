@@ -12,7 +12,7 @@
     "crates/redevplugin-worker-sdk/src/hostcalls.rs": "534e6c557fa43813d58f092c047bab00df1683c6408e8f0b5786cf9f5bbe314b",
     "crates/redevplugin-worker-sdk/src/lib.rs": "15dcf96fa0ff0fe862df759edd32b21310098604aed1edb16c9c973b8abb89e6",
     "examples/workers/memos/Cargo.toml": "d15b519944df9fddd426e5e29f8ae8470286a3f6dadf2d733cb67e1816c26708",
-    "examples/workers/memos/src/lib.rs": "6390a753892bc24d04dd691cb72cf8697b0f5b692c04398a5dfd9e7c5d0ecd0e",
+    "examples/workers/memos/src/lib.rs": "535462be4f093d1e6851080785d2948e6669952ffa3e34a91a9e164371996f12",
     "examples/workers/sky-strike/Cargo.toml": "03e64084c4890bc314f4de87572328d6ecc4905d939f163724d662f0279e921b",
     "examples/workers/sky-strike/src/lib.rs": "44203dcc92a8785137a0c1697743003f19f208e61c56ada7e7a34035aaf4e010",
     "examples/workers/weather/Cargo.toml": "4866cc437436390ad89782df0b12f9ffa66baec767c11c35af1e9d3399c97272",
@@ -22,7 +22,7 @@
     "scripts/canonical_wasm_builder.mjs": "b97d8802d0c192a17dcdcd30a704380b89af313f73b12c6eed9174236c908d1d"
   },
   "artifacts": {
-    "examples/plugins/memos/workers/memos.wasm": "2d8b6409fa8171b18170fe819a281a450da1d567bb491259ecd68376b88a6ec8",
+    "examples/plugins/memos/workers/memos.wasm": "d54c5dd446595ab77b1d007b36cddfe76c6353acd5ae1853fb11e456fed58006",
     "examples/plugins/sky-strike/workers/sky-strike.wasm": "45982616d8c222ee52dc11608753cfc999c0a92ea83d07b368fb729131f40dd7",
     "examples/plugins/weather/workers/weather.wasm": "f745733e74f7e8c73fd9fcf343b9876e5305ab7c8bd9a8b9eb9d153fbdcdbe7b"
   }

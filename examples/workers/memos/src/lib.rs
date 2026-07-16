@@ -355,17 +355,20 @@ fn facets(params: FacetsParams) -> WorkerResult {
             Ok(json!({"date": cell_text(&row[0])?, "count": cell_int(&row[1])?}))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let archived_response = query(
-        "SELECT count(*) FROM notes WHERE archived = 1",
+    let summary_response = query(
+        "SELECT COALESCE(SUM(CASE WHEN archived = 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN archived = 0 AND pinned = 1 THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN archived = 1 THEN 1 ELSE 0 END), 0) FROM notes",
         vec![],
         1,
         4_096,
     )?;
+    let (all_total, pinned_total, archived_total) = summary_counts(&summary_response)?;
     Ok(json!({
         "month": params.month,
         "tags": tags,
         "days": days,
-        "archived_total": first_count(&archived_response)?
+        "all_total": all_total,
+        "pinned_total": pinned_total,
+        "archived_total": archived_total
     }))
 }
 
@@ -521,6 +524,26 @@ fn first_count(response: &QueryResponse) -> Result<usize, WorkerError> {
         .transpose()?
         .unwrap_or(0)
         .max(0) as usize)
+}
+
+fn summary_counts(response: &QueryResponse) -> Result<(usize, usize, usize), WorkerError> {
+    let Some(row) = rows(response).first() else {
+        return Ok((0, 0, 0));
+    };
+    summary_counts_from_row(row)
+}
+
+fn summary_counts_from_row(row: &[SQLiteValue]) -> Result<(usize, usize, usize), WorkerError> {
+    if row.len() != 3 {
+        return Err(WorkerError::hostcall(
+            "memos summary row has an unexpected column count",
+        ));
+    }
+    Ok((
+        cell_int(&row[0])?.max(0) as usize,
+        cell_int(&row[1])?.max(0) as usize,
+        cell_int(&row[2])?.max(0) as usize,
+    ))
 }
 
 fn page_has_more(offset: usize, loaded: usize, total: usize) -> bool {
@@ -841,5 +864,17 @@ mod tests {
     fn content_limit_counts_unicode_characters() {
         assert!(validate_content(&"界".repeat(MAX_CONTENT_CHARS), false).is_ok());
         assert!(validate_content(&"界".repeat(MAX_CONTENT_CHARS + 1), false).is_err());
+    }
+
+    #[test]
+    fn summary_counts_keep_active_pinned_and_archived_totals_distinct() {
+        let counts = summary_counts_from_row(&[
+            SQLiteValue::Integer(7),
+            SQLiteValue::Integer(2),
+            SQLiteValue::Integer(3),
+        ])
+        .expect("summary row");
+        assert_eq!(counts, (7, 2, 3));
+        assert!(summary_counts_from_row(&[SQLiteValue::Integer(1)]).is_err());
     }
 }

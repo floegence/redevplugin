@@ -68,6 +68,9 @@ try {
   assert.deepEqual(explorerStyle, { backgroundColor: "rgb(238, 240, 243)", width: "256px" });
   await memos.locator(".memo-composer").waitFor();
   assert.equal(await memos.locator(".memo-feed .memo-card").count(), 0, "an empty timeline must keep the composer usable");
+  await memos.getByRole("button", { name: "All memos 0", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Pinned 0", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
   const composer = memos.getByPlaceholder("What's on your mind?");
   await composer.fill("# Smoke timeline memo\n\n- [ ] verify task writeback\n\n#smoke");
   await memos.getByText("Draft pending", { exact: true }).waitFor();
@@ -82,14 +85,20 @@ try {
   assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "", "publish trigger must clear the composer draft");
   const smokeCard = () => memos.locator(".memo-card").filter({ hasText: "Smoke timeline memo" });
   await smokeCard().waitFor();
+  await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Pinned 0", exact: true }).waitFor();
   await smokeCard().getByRole("heading", { name: "Smoke timeline memo" }).waitFor();
   const task = smokeCard().getByRole("checkbox");
   await task.check();
   await waitFor(async () => await task.isChecked(), 5_000, "Markdown task writeback");
   const pinMemo = smokeCard().getByRole("button", { name: "Pin memo" });
   await waitFor(async () => await pinMemo.isEnabled(), 5_000, "memo actions after task update");
+  const facetsCallsBeforePin = methodCalls.filter((body) => body.includes('"method":"memos.facets"')).length;
   await pinMemo.click();
   await smokeCard().getByRole("button", { name: "Unpin memo" }).waitFor();
+  await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Pinned 1", exact: true }).waitFor();
+  assert.equal(methodCalls.filter((body) => body.includes('"method":"memos.facets"')).length, facetsCallsBeforePin, "pinning must project summary counts without a redundant facets read");
 
   await smokeCard().getByRole("button", { name: "More memo actions" }).click();
   await smokeCard().getByRole("menuitem", { name: "Edit" }).click();
@@ -157,16 +166,24 @@ try {
   await memos.getByRole("button", { name: "Save", exact: true }).click();
   const lifecycleCard = () => memos.locator(".memo-card").filter({ hasText: "Lifecycle draft" });
   await lifecycleCard().waitFor();
+  await memos.getByRole("button", { name: "All memos 2", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Pinned 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
 
   await editedCard().getByRole("button", { name: "More memo actions" }).click();
   await editedCard().getByRole("menuitem", { name: "Archive" }).click();
   await editedCard().waitFor({ state: "detached" });
-  await memos.getByRole("button", { name: /^Archived/ }).click();
+  await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Pinned 0", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Archived 1", exact: true }).click();
+  await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
   await editedCard().waitFor();
   await editedCard().getByRole("button", { name: "More memo actions" }).click();
   await editedCard().getByRole("menuitem", { name: "Restore" }).click();
   await editedCard().waitFor({ state: "detached" });
-  await memos.getByRole("button", { name: /^All memos/ }).click();
+  await memos.getByRole("button", { name: "All memos 2", exact: true }).click();
+  await memos.getByRole("button", { name: "Pinned 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
 
   await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
   const firstMenuItem = lifecycleCard().getByRole("menuitem", { name: "Edit" });
@@ -214,6 +231,9 @@ try {
   await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
   await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
   await memos.getByText("Memo deleted", { exact: true }).waitFor();
+  await memos.getByRole("button", { name: "All memos 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Pinned 1", exact: true }).waitFor();
+  await memos.getByRole("button", { name: "Archived 0", exact: true }).waitFor();
   await memos.locator(".memos-toast").waitFor({ state: "detached", timeout: 5_000 });
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-memos-desktop.png"), fullPage: false });
 
