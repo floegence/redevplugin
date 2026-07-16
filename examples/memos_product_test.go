@@ -7,109 +7,129 @@ import (
 	"testing"
 )
 
-func TestMemosUsesOneAutosaveAndPinInteractionModel(t *testing.T) {
-	root := repositoryRoot(t)
-	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
-	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
-
-	if strings.Count(source, `data-redevplugin-action": "set-pinned"`) != 1 {
-		t.Fatal("Memos must expose exactly one explicit pin action")
-	}
-	for _, required := range []string{
-		`scheduleAutosave`,
-		`scheduleAutosave();
-  void render();`,
-		`flushDraft`,
-		`if (!(await flushDraft())) return`,
-		`state.editor.dirty && state.editor.saveState === "error"`,
-		`.memo-title`,
-		`.editor-pin`,
-		`.save-indicator`,
-		`cursor: pointer`,
-	} {
-		if !strings.Contains(source+styles, required) {
-			t.Fatalf("Memos autosave interaction is missing %q", required)
-		}
-	}
-	for _, forbidden := range []string{`save-now`, `toggle-pin`, `edit-pinned`, `Save now`, `children: ["Done"]`} {
-		if strings.Contains(source, forbidden) {
-			t.Fatalf("Memos still exposes duplicate save or pin interaction %q", forbidden)
-		}
-	}
-}
-
-func TestMemosUsesConsumerFirstInformationArchitecture(t *testing.T) {
+func TestMemosUsesSafeDraftAndSerializedEditing(t *testing.T) {
 	root := repositoryRoot(t)
 	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
 	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
 	combined := source + styles
 
+	if strings.Count(source, `data-redevplugin-action": "set-pinned"`) != 1 {
+		t.Fatal("Memos must expose pin as the one explicit card-header action")
+	}
 	for _, required := range []string{
-		`library: {`,
-		`editor: {`,
-		`ui: {`,
+		`DRAFT_DELAY_MS = 500`,
+		`EDIT_DELAY_MS = 700`,
 		`SEARCH_DELAY_MS = 250`,
-		`if (sequence !== searchSequence) return false;`,
-		`data-redevplugin-action": "search-query"`,
-		`groupedNotes`,
-		`pinned-group`,
-		`recent-group`,
-		`empty-welcome`,
-		`Write a memo`,
-		`autofocus: true`,
-		`editor-canvas`,
-		`editor-footer`,
-		`field-sizing: content`,
-		`role: "dialog"`,
-		`"aria-modal": true`,
-		`backgroundDisabled`,
-		`@media (max-width: 640px)`,
+		`draftSaveInFlight`,
+		`editSaveInFlight`,
+		`return state.composer.dirty ? flushComposer() : true`,
+		`return state.editing.dirty ? flushEdit() : true`,
+		`if (!(await canLeaveEdit())) return`,
+		`memos.draft.save`,
+		`memos.publish`,
+		`memos.update`,
+		`save-indicator`,
+		`Memos could not protect this draft`,
+		`Memos could not save your changes`,
 	} {
 		if !strings.Contains(combined, required) {
-			t.Fatalf("Memos consumer product flow is missing %q", required)
+			t.Fatalf("Memos persistence flow is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{
-		`libraryOverview`,
-		`library-overview`,
-		`overview-stats`,
-		`memoContextRail`,
-		`memo-context-rail`,
-		`contextStat`,
-		`context-stat`,
-		`context-ribbon`,
-		`Private library`,
-		`At a glance`,
-	} {
-		if strings.Contains(combined, forbidden) {
-			t.Fatalf("Memos still contains dashboard-oriented structure %q", forbidden)
+	for _, forbidden := range []string{`memos.save`, `memos.get`, `memos.togglePin`, `edit-title`, `Untitled memo`} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("Memos retained the old document contract %q", forbidden)
 		}
 	}
 }
 
-func TestMemosKeepsBoundedStorageAndCompleteMobileEditing(t *testing.T) {
+func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
+	root := repositoryRoot(t)
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	markdown := readMemosProductFile(t, root, "examples/plugin-ui/memos-markdown.ts")
+	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
+	combined := source + markdown + styles
+
+	for _, required := range []string{
+		`feed: {`,
+		`composer: {`,
+		`facets: {`,
+		`editing: {`,
+		`ui: {`,
+		`if (sequence !== feedSequence) return false`,
+		`memos-explorer`,
+		`memo-composer`,
+		`memo-feed`,
+		`calendar-grid`,
+		`tag-list`,
+		`explorer-scrim`,
+		`marked.lexer`,
+		`toggleTaskMarker`,
+		`markdown-table`,
+		`markdown-code-block`,
+		`markdown-raw`,
+		`data-redevplugin-action": "toggle-task"`,
+		`role: "dialog"`,
+		`"aria-modal": true`,
+		`autofocus: true`,
+		`@media (max-width: 640px)`,
+		`@media (prefers-color-scheme: dark)`,
+		`grid-template-columns: 256px minmax(0, 1fr)`,
+		`width: min(100%, 784px)`,
+	} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("Memos timeline product flow is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`memos-library`,
+		`empty-welcome`,
+		`editor-canvas`,
+		`library-overview`,
+		`memo-context-rail`,
+		`Private library`,
+		`At a glance`,
+		`tag: "a"`,
+	} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("Memos retained obsolete or unsafe UI structure %q", forbidden)
+		}
+	}
+}
+
+func TestMemosKeepsBoundedStorageAndCompatibleMigration(t *testing.T) {
 	root := repositoryRoot(t)
 	uiSource := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
 	workerSource := readMemosProductFile(t, root, "examples/workers/memos/src/lib.rs")
+	manifest := readMemosProductFile(t, root, "examples/plugins/memos/manifest.json")
 	styles := readMemosProductFile(t, root, "examples/plugins/memos/ui/assets/styles.css")
-	combined := uiSource + workerSource + styles
+	combined := uiSource + workerSource + manifest + styles
 
 	for _, required := range []string{
-		`memos.get`,
-		`confirm-delete`,
-		`cancel-delete`,
-		`back-to-list`,
-		`load-more-memos`,
-		`view-editor`,
-		`toggle-memo-menu`,
-		`max-width: none`,
-		`border-radius: 0`,
+		`DEFAULT_PAGE_SIZE: usize = 10`,
+		`params.limit.clamp(1, 10)`,
 		`LIMIT ? OFFSET ?`,
-		`substr(body, 1, 180)`,
-		`@media (max-width: 640px)`,
+		`MAX_CONTENT_CHARS: usize = 20_000`,
+		`MAX_QUERY_CHARS: usize = 200`,
+		`MAX_TAGS: usize = 32`,
+		`MAX_TAG_LENGTH: usize = 40`,
+		`MAX_SQLITE_RESPONSE_BYTES: u64 = 393_216`,
+		`PRAGMA table_info(notes)`,
+		`ALTER TABLE notes ADD COLUMN content`,
+		`CREATE TABLE IF NOT EXISTS drafts`,
+		`clear_memos_draft_after_publish`,
+		`title = ?, body = ?, content = ?`,
+		`"schema_version": 2`,
+		`"from_version": 1, "to_version": 2`,
+		`memos.setArchived`,
+		`confirm-delete`,
+		`load-more-memos`,
+		`min-height: 44px`,
+		`button[value] > * { pointer-events: none; }`,
+		`@media (max-width: 380px)`,
 	} {
 		if !strings.Contains(combined, required) {
-			t.Fatalf("Memos bounded mobile flow is missing %q", required)
+			t.Fatalf("Memos bounded storage or migration flow is missing %q", required)
 		}
 	}
 	if strings.Contains(workerSource, `"max_rows": 500`) {

@@ -2989,12 +2989,12 @@ mod tests {
         let execution = execute_worker_module_v2(
             module,
             "redevplugin_worker_invoke",
-            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{"query":""}}"#,
+            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{"query":"","view":"all","tag":"","date":"","utc_offset_minutes":0,"offset":0,"limit":10}}"#,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             |request| match request {
                 WorkerHostcallRequest::StorageSQLite(request_json) => {
                     if request_json.contains(r#""operation":"query""#) {
-                        Ok(r#"{"ok":true,"database":"memos.sqlite","columns":["id","title","body","pinned","created_at","updated_at"],"rows":[],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":0,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
+                        Ok(r#"{"ok":true,"database":"memos.sqlite","columns":[],"rows":[],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":0,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
                     } else {
                         Ok(r#"{"ok":true,"database":"memos.sqlite","rows_affected":0,"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":0,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
                     }
@@ -3005,24 +3005,24 @@ mod tests {
         .expect("compiled example worker executes with portable dispatch");
         assert_eq!(
             execution.response_json,
-            r#"{"ok":true,"data":{"has_more":false,"notes":[],"offset":0,"total":0}}"#
+            r#"{"ok":true,"data":{"has_more":false,"memos":[],"offset":0,"total":0}}"#
         );
     }
 
     #[test]
-    fn executes_compiled_example_worker_save_with_portable_dispatch() {
+    fn executes_compiled_example_worker_publish_with_portable_dispatch() {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
         let mut hostcall_count = 0;
         let execution = execute_worker_module_v2(
             module,
             "redevplugin_worker_invoke",
-            br#"{"schema_version":"redevplugin.worker_request.v2","method":"memos.save","params":{"id":"","title":"Smoke memo","body":"Stored through SQLite","pinned":true}}"#,
+            br##"{"schema_version":"redevplugin.worker_request.v2","method":"memos.publish","params":{"content":"# Smoke memo\n\nStored through SQLite #work"}}"##,
             TEST_WORKER_MEMORY_LIMIT_BYTES,
             |request| match request {
                 WorkerHostcallRequest::StorageSQLite(request_json) => {
                     hostcall_count += 1;
                     if request_json.contains(r#""operation":"query""#) {
-                        Ok(r#"{"ok":true,"database":"memos.sqlite","columns":["id","title","body","pinned","created_at","updated_at"],"rows":[[{"text":"note_0123456789abcdef"},{"text":"Smoke memo"},{"text":"Stored through SQLite"},{"int":1},{"text":"2026-07-14T00:00:00Z"},{"text":"2026-07-14T00:00:00Z"}]],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
+                        Ok(r##"{"ok":true,"database":"memos.sqlite","columns":["id","content","pinned","archived","tags","created_at","updated_at"],"rows":[[{"text":"memo_0123456789abcdef"},{"text":"# Smoke memo\n\nStored through SQLite #work"},{"int":0},{"int":0},{"text":"work"},{"text":"2026-07-14T00:00:00Z"},{"text":"2026-07-14T00:00:00Z"}]],"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"##.to_string())
                     } else {
                         Ok(r#"{"ok":true,"database":"memos.sqlite","rows_affected":1,"usage":{"plugin_instance_id":"plugini_test","store_id":"memos","usage_bytes":256,"quota_bytes":1048576,"usage_files":1,"quota_files":1000}}"#.to_string())
                     }
@@ -3030,17 +3030,18 @@ mod tests {
                 request => unexpected_hostcall(request),
             },
         )
-        .expect("compiled example worker save executes with portable dispatch");
+        .expect("compiled example worker publish executes with portable dispatch");
 
         assert_eq!(hostcall_count, 2);
         let redevplugin_ipc::WorkerResponseV2::Success(data) =
             redevplugin_ipc::parse_worker_response_v2(&execution.response_json)
                 .expect("valid worker response")
         else {
-            panic!("save must return a successful worker response");
+            panic!("publish must return a successful worker response");
         };
-        assert!(data.contains(r#""id":"note_0123456789abcdef""#), "{data}");
-        assert!(data.contains(r#""pinned":true"#), "{data}");
+        assert!(data.contains(r#""id":"memo_0123456789abcdef""#), "{data}");
+        assert!(data.contains(r#""tags":["work"]"#), "{data}");
+        assert!(data.contains(r#""archived":false"#), "{data}");
     }
 
     #[test]
@@ -3048,7 +3049,7 @@ mod tests {
         let module = include_bytes!("../../../examples/plugins/memos/workers/memos.wasm");
         let execute_page = |offset: usize| {
             let request = format!(
-                r#"{{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{{"query":"","offset":{offset},"limit":24,"pinned_only":true}}}}"#
+                r#"{{"schema_version":"redevplugin.worker_request.v2","method":"memos.list","params":{{"query":"","view":"pinned","tag":"","date":"","utc_offset_minutes":0,"offset":{offset},"limit":10}}}}"#
             );
             execute_worker_module_v2(
                 module,
@@ -3074,7 +3075,9 @@ mod tests {
                         })
                         .to_string());
                     }
-                    if !sql.contains("WHERE pinned = 1") || !sql.contains("LIMIT ? OFFSET ?") {
+                    if !sql.contains("archived = ? AND pinned = ?")
+                        || !sql.contains("LIMIT ? OFFSET ?")
+                    {
                         return Err(format!("unexpected memos page query: {sql}"));
                     }
                     let request_offset = request["args"]
@@ -3083,15 +3086,16 @@ mod tests {
                         .and_then(|value| value["int"].as_u64())
                         .ok_or_else(|| "memos page query omitted offset".to_string())?
                         as usize;
-                    let page_len = if request_offset < 48 { 24 } else { 13 };
+                    let page_len = if request_offset < 60 { 10 } else { 1 };
                     let rows = (0..page_len)
                         .map(|index| {
                             let absolute = request_offset + index;
                             serde_json::json!([
-                                {"text": format!("note_{absolute:04}")},
-                                {"text": format!("Pinned memo {}", absolute + 1)},
-                                {"text": "A bounded summary"},
+                                {"text": format!("memo_{absolute:04}")},
+                                {"text": format!("Pinned memo {} #work", absolute + 1)},
                                 {"int": 1},
+                                {"int": 0},
+                                {"text": "work"},
                                 {"text": "2026-07-14T00:00:00Z"},
                                 {"text": "2026-07-14T00:00:00Z"}
                             ])
@@ -3100,7 +3104,7 @@ mod tests {
                     Ok(serde_json::json!({
                         "ok": true,
                         "database": "memos.sqlite",
-                        "columns": ["id", "title", "body", "pinned", "created_at", "updated_at"],
+                        "columns": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
                         "rows": rows,
                         "usage": sqlite_usage_fixture()
                     })
@@ -3112,21 +3116,21 @@ mod tests {
 
         let first: serde_json::Value =
             serde_json::from_str(&execute_page(0).response_json).expect("decode first memos page");
-        assert_eq!(first["data"]["notes"].as_array().map(Vec::len), Some(24));
+        assert_eq!(first["data"]["memos"].as_array().map(Vec::len), Some(10));
         assert_eq!(first["data"]["has_more"], true);
         assert_eq!(first["data"]["total"], 61);
 
-        let second: serde_json::Value = serde_json::from_str(&execute_page(24).response_json)
+        let second: serde_json::Value = serde_json::from_str(&execute_page(10).response_json)
             .expect("decode second memos page");
-        assert_eq!(second["data"]["notes"].as_array().map(Vec::len), Some(24));
+        assert_eq!(second["data"]["memos"].as_array().map(Vec::len), Some(10));
         assert_eq!(second["data"]["has_more"], true);
-        assert_eq!(second["data"]["offset"], 24);
+        assert_eq!(second["data"]["offset"], 10);
 
         let third: serde_json::Value =
-            serde_json::from_str(&execute_page(48).response_json).expect("decode third memos page");
-        assert_eq!(third["data"]["notes"].as_array().map(Vec::len), Some(13));
+            serde_json::from_str(&execute_page(60).response_json).expect("decode final memos page");
+        assert_eq!(third["data"]["memos"].as_array().map(Vec::len), Some(1));
         assert_eq!(third["data"]["has_more"], false);
-        assert_eq!(third["data"]["offset"], 48);
+        assert_eq!(third["data"]["offset"], 60);
     }
 
     #[test]

@@ -12,7 +12,7 @@ const evidenceDir = resolve(process.env.REDEVPLUGIN_EXAMPLES_EVIDENCE_DIR || "di
 await mkdir(evidenceDir, { recursive: true });
 
 const browser = await chromium.launch({ headless: true });
-const desktop = await browser.newPage({ viewport: { width: 1440, height: 920 }, deviceScaleFactor: 1 });
+const desktop = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
 const consoleLines = [];
 const pageErrors = [];
 const apiFailureReads = [];
@@ -59,41 +59,55 @@ try {
   assert.equal(await desktop.locator("#plugin-inspector").getAttribute("aria-hidden"), "true");
 
   let memos = await pluginFrame(desktop, "Memos");
-  const memosLibraryStyle = await waitForComputedStyles(
-    memos.locator(".memos-library"),
-    ["backgroundColor", "color"],
-    (style) => style.backgroundColor === "rgb(247, 248, 250)" && style.color === "rgb(21, 23, 26)",
-    "stable Memos library styles",
+  const explorerStyle = await waitForComputedStyles(
+    memos.locator(".memos-explorer"),
+    ["backgroundColor", "width"],
+    (style) => style.backgroundColor === "rgb(238, 240, 243)" && style.width === "256px",
+    "stable Memos explorer styles",
   );
-  assert.equal(memosLibraryStyle.backgroundColor, "rgb(247, 248, 250)", "Memos must use a calm consumer library surface");
-  assert.equal(memosLibraryStyle.color, "rgb(21, 23, 26)");
-  await memos.locator(".empty-welcome").waitFor();
-  assert.equal(await memos.locator(".memo-title").count(), 0, "an empty library must not open a duplicate blank editor");
-  assert.equal(await memos.locator(".library-overview, .memo-context-rail").count(), 0, "dashboard overview and permanent metadata rail must be removed");
-  await memos.getByRole("button", { name: "New memo" }).click();
-  const desktopMemoTitle = memos.getByPlaceholder("Untitled");
-  await desktopMemoTitle.waitFor();
-  assert.equal(await desktopMemoTitle.evaluate((element) => document.activeElement === element), true, "creating a memo must focus the title");
-  assert.equal(await memos.locator(".editor-canvas").evaluate((element) => element.getBoundingClientRect().width <= 781), true, "Memos desktop writing canvas must remain comfortably readable");
-  await desktopMemoTitle.fill("Smoke memo");
-  await memos.getByPlaceholder("Start writing...").fill("This memo survives a full Showcase reload.");
-  await memos.getByText("Unsaved", { exact: true }).waitFor();
-  await memos.getByRole("button", { name: "Pin memo" }).click();
-  await memos.locator(".memo-list").getByText("Smoke memo", { exact: true }).waitFor({ timeout: 10_000 });
-  await memos.getByText("Saved", { exact: true }).waitFor();
+  assert.deepEqual(explorerStyle, { backgroundColor: "rgb(238, 240, 243)", width: "256px" });
+  await memos.locator(".memo-composer").waitFor();
+  assert.equal(await memos.locator(".memo-feed .memo-card").count(), 0, "an empty timeline must keep the composer usable");
+  const composer = memos.getByPlaceholder("What's on your mind?");
+  await composer.fill("# Smoke timeline memo\n\n- [ ] verify task writeback\n\n#smoke");
+  await memos.getByText("Draft pending", { exact: true }).waitFor();
+  await memos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
 
   await desktop.reload({ waitUntil: "domcontentloaded" });
   memos = await pluginFrame(desktop, "Memos");
-  await memos.locator(".memo-list").getByText("Smoke memo", { exact: true }).waitFor();
-  await memos.locator(".memo-list").getByText("Smoke memo", { exact: true }).click();
-  await memos.getByPlaceholder("Untitled").fill("Persistent smoke memo");
-  await memos.getByText("Unsaved", { exact: true }).waitFor();
-  await memos.locator(".memo-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
-  await memos.getByText("Saved", { exact: true }).waitFor();
+  await memos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "# Smoke timeline memo\n\n- [ ] verify task writeback\n\n#smoke", "safe draft must survive a full reload");
+  await memos.getByRole("button", { name: "Save", exact: true }).click();
+  await memos.getByText("Memo published", { exact: true }).waitFor();
+  assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "", "publish trigger must clear the composer draft");
+  const smokeCard = () => memos.locator(".memo-card").filter({ hasText: "Smoke timeline memo" });
+  await smokeCard().waitFor();
+  await smokeCard().getByRole("heading", { name: "Smoke timeline memo" }).waitFor();
+  const task = smokeCard().getByRole("checkbox");
+  await task.check();
+  await waitFor(async () => await task.isChecked(), 5_000, "Markdown task writeback");
+  const pinMemo = smokeCard().getByRole("button", { name: "Pin memo" });
+  await waitFor(async () => await pinMemo.isEnabled(), 5_000, "memo actions after task update");
+  await pinMemo.click();
+  await smokeCard().getByRole("button", { name: "Unpin memo" }).waitFor();
+
+  await smokeCard().getByRole("button", { name: "More memo actions" }).click();
+  await smokeCard().getByRole("menuitem", { name: "Edit" }).click();
+  const activeEditCard = memos.locator(".memo-card.editing");
+  const editContent = activeEditCard.getByRole("textbox", { name: "Edit memo content" });
+  await editContent.fill("## Edited timeline memo\n\n- [x] shipped\n\n| Area | State |\n| --- | --- |\n| Draft | Safe |\n\n<script>alert('blocked')</script>\n\n[Reference](https://example.com) #smoke");
+  await activeEditCard.getByText("Unsaved", { exact: true }).waitFor();
+  await activeEditCard.getByText("Saved", { exact: true }).waitFor({ timeout: 10_000 });
+  await activeEditCard.getByRole("button", { name: "Done" }).click();
+  const editedCard = () => memos.locator(".memo-card").filter({ hasText: "Edited timeline memo" });
+  await editedCard().locator("table").waitFor();
+  assert.equal(await editedCard().locator("a, img, script").count(), 0, "Markdown must not create arbitrary links, images, or raw HTML elements");
+  await editedCard().getByText("<script>alert('blocked')</script>", { exact: true }).waitFor();
+
   const listCallsBeforeSearch = methodCalls.filter((body) => body.includes('"method":"memos.list"')).length;
-  await memos.getByPlaceholder("Search memos").fill("Persistent");
+  await memos.getByPlaceholder("Search memos").fill("Edited timeline");
   await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.list"')).length > listCallsBeforeSearch, 5_000, "debounced Memos search call");
-  await memos.locator(".memo-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
+  await editedCard().waitFor();
   let releaseStaleSearch;
   const staleSearchGate = new Promise((resolveGate) => { releaseStaleSearch = resolveGate; });
   let staleSearchIntercepted = false;
@@ -113,46 +127,55 @@ try {
   });
   await memos.getByPlaceholder("Search memos").fill("Stale request");
   await waitFor(() => staleSearchIntercepted, 5_000, "stale Memos search request");
-  await memos.getByPlaceholder("Search memos").fill("Persistent");
-  await memos.locator(".memo-list").getByText("Persistent smoke memo", { exact: true }).waitFor();
+  await memos.getByPlaceholder("Search memos").fill("Edited timeline");
+  await editedCard().waitFor();
   releaseStaleSearch();
   await desktop.waitForTimeout(100);
-  assert.equal(await memos.getByText("Memos need a moment", { exact: true }).count(), 0, "a stale search failure must not replace the latest result");
+  assert.equal(await memos.getByText("Timeline unavailable", { exact: true }).count(), 0, "a stale search failure must not replace the latest result");
   await desktop.unroute("**/_redevplugin/api/plugins/rpc");
-  const listCallsBeforeClear = methodCalls.filter((body) => body.includes('"method":"memos.list"')).length;
-  await memos.getByPlaceholder("Search memos").fill("");
-  await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.list"')).length > listCallsBeforeClear, 5_000, "cleared Memos search call");
 
-  const quiescedTitle = memos.getByPlaceholder("Untitled");
-  const quiescedBody = memos.getByPlaceholder("Start writing...");
-  await quiescedTitle.fill("Quiesced smoke memo");
-  assert.equal(await quiescedTitle.evaluate((element) => element.value), "Quiesced smoke memo", "title input must retain its local edit");
-  await quiescedBody.fill("This edit is persisted by the surface quiesce lifecycle.");
-  assert.equal(await quiescedTitle.evaluate((element) => element.value), "Quiesced smoke memo", "body input must not mutate the title control");
-  assert.equal(await quiescedBody.evaluate((element) => element.value), "This edit is persisted by the surface quiesce lifecycle.", "body input must retain its local edit");
-  await memos.getByText("Unsaved", { exact: true }).waitFor();
-  const saveCallsBeforeQuiesce = methodCalls.filter((body) => body.includes('"method":"memos.save"')).length;
+  await memos.getByRole("button", { name: "Clear filters" }).click();
+  await editedCard().waitFor();
+  await editedCard().getByRole("button", { name: "#smoke" }).click();
+  await memos.locator('.calendar-grid button.has-memos').first().click();
+  await editedCard().waitFor();
+  await memos.getByRole("button", { name: "Clear filters" }).click();
+
+  const lifecycleComposer = memos.getByPlaceholder("What's on your mind?");
+  await lifecycleComposer.fill("Lifecycle draft #later");
+  await memos.getByText("Draft pending", { exact: true }).waitFor();
+  const saveCallsBeforeQuiesce = methodCalls.filter((body) => body.includes('"method":"memos.draft.save"')).length;
   const weatherNavigation = desktop.locator('#plugin-list button[data-slug="weather"]');
   await weatherNavigation.click();
-  await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.save"')).length > saveCallsBeforeQuiesce, 5_000, "Memos quiesce save call");
+  await waitFor(() => methodCalls.filter((body) => body.includes('"method":"memos.draft.save"')).length > saveCallsBeforeQuiesce, 5_000, "Memos quiesce draft call");
+  await pluginFrame(desktop, "Weather");
   assert.equal(await weatherNavigation.evaluate((element) => document.activeElement === element), true, "switching apps must preserve navigation focus");
   await desktop.locator('#plugin-list button[data-slug="memos"]').click();
   memos = await pluginFrame(desktop, "Memos");
-  await memos.locator(".memo-list").getByText("Quiesced smoke memo", { exact: true }).waitFor({ timeout: 10_000 });
+  await memos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await memos.getByPlaceholder("What's on your mind?").inputValue(), "Lifecycle draft #later", "quiesced composer draft must be restored");
+  await memos.getByRole("button", { name: "Save", exact: true }).click();
+  const lifecycleCard = () => memos.locator(".memo-card").filter({ hasText: "Lifecycle draft" });
+  await lifecycleCard().waitFor();
 
-  await memos.getByRole("button", { name: "New memo" }).click();
-  await memos.getByPlaceholder("Untitled").fill("Delete confirmation memo");
-  await memos.getByPlaceholder("Start writing...").fill("This note verifies that deletion is deliberate.");
-  await memos.getByText("Unsaved", { exact: true }).waitFor();
-  await memos.getByText("Saved", { exact: true }).waitFor();
-  await memos.getByRole("button", { name: "More memo actions" }).click();
-  const memoDeleteMenuItem = memos.getByRole("menuitem", { name: "Delete memo" });
-  await memoDeleteMenuItem.waitFor();
-  assert.equal(await memoDeleteMenuItem.evaluate((element) => document.activeElement === element), true, "the memo menu must move focus to its first action");
-  await memoDeleteMenuItem.press("Escape");
-  await waitFor(async () => memos.getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "memo menu focus restoration");
-  await memos.getByRole("button", { name: "More memo actions" }).click();
-  await memos.getByRole("menuitem", { name: "Delete memo" }).click();
+  await editedCard().getByRole("button", { name: "More memo actions" }).click();
+  await editedCard().getByRole("menuitem", { name: "Archive" }).click();
+  await editedCard().waitFor({ state: "detached" });
+  await memos.getByRole("button", { name: /^Archived/ }).click();
+  await editedCard().waitFor();
+  await editedCard().getByRole("button", { name: "More memo actions" }).click();
+  await editedCard().getByRole("menuitem", { name: "Restore" }).click();
+  await editedCard().waitFor({ state: "detached" });
+  await memos.getByRole("button", { name: /^All memos/ }).click();
+
+  await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
+  const firstMenuItem = lifecycleCard().getByRole("menuitem", { name: "Edit" });
+  await firstMenuItem.waitFor();
+  assert.equal(await firstMenuItem.evaluate((element) => document.activeElement === element), true, "the memo menu must focus its first action");
+  await firstMenuItem.press("Escape");
+  await waitFor(async () => lifecycleCard().getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "memo menu focus restoration");
+  await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
+  await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
   const deleteMemoDialog = memos.getByRole("dialog", { name: "Delete memo" });
   await deleteMemoDialog.waitFor();
   await waitFor(async () => memos.getByRole("button", { name: "Keep memo" }).evaluate((element) => document.activeElement === element), 2_000, "delete dialog safe-action focus");
@@ -166,13 +189,7 @@ try {
   await deleteMemoDialog.getByRole("button", { name: "Delete memo" }).press("Tab");
   assert.equal(await memos.getByRole("button", { name: "Keep memo" }).evaluate((element) => document.activeElement === element), true, "delete dialog must keep forward tab focus inside the modal");
   await memos.getByRole("button", { name: "Keep memo" }).press("Escape");
-  await waitFor(async () => memos.getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "delete dialog focus restoration");
-  await memos.getByRole("button", { name: "More memo actions" }).click();
-  await memos.getByRole("menuitem", { name: "Delete memo" }).click();
-  await memos.getByRole("button", { name: "Keep memo" }).click();
-  await memos.locator(".memo-list").getByText("Delete confirmation memo", { exact: true }).waitFor();
-  await memos.getByPlaceholder("Start writing...").fill("This unsaved edit must survive a failed deletion.");
-  await memos.getByText("Unsaved", { exact: true }).waitFor();
+  await waitFor(async () => lifecycleCard().getByRole("button", { name: "More memo actions" }).evaluate((element) => document.activeElement === element), 2_000, "delete dialog focus restoration");
   let rejectMemoDelete = true;
   await desktop.route("**/_redevplugin/api/plugins/rpc", async (route) => {
     const requestBody = route.request().postDataJSON();
@@ -187,17 +204,17 @@ try {
     }
     await route.continue();
   });
-  await memos.getByRole("button", { name: "More memo actions" }).click();
-  await memos.getByRole("menuitem", { name: "Delete memo" }).click();
+  await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
+  await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
   await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
-  await memos.getByText("Memos could not delete this note", { exact: true }).waitFor();
-  assert.equal(await memos.getByPlaceholder("Start writing...").inputValue(), "This unsaved edit must survive a failed deletion.", "failed deletion must preserve the active draft");
+  await memos.getByText("Memos could not delete this memo", { exact: true }).waitFor();
+  await lifecycleCard().waitFor();
   await desktop.unroute("**/_redevplugin/api/plugins/rpc");
-  await memos.getByText("Saved", { exact: true }).waitFor();
-  await memos.getByRole("button", { name: "More memo actions" }).click();
-  await memos.getByRole("menuitem", { name: "Delete memo" }).click();
+  await lifecycleCard().getByRole("button", { name: "More memo actions" }).click();
+  await lifecycleCard().getByRole("menuitem", { name: "Delete" }).click();
   await memos.getByRole("dialog", { name: "Delete memo" }).getByRole("button", { name: "Delete memo" }).click();
   await memos.getByText("Memo deleted", { exact: true }).waitFor();
+  await memos.locator(".memos-toast").waitFor({ state: "detached", timeout: 5_000 });
   await desktop.screenshot({ path: resolve(evidenceDir, "examples-memos-desktop.png"), fullPage: false });
 
   await desktop.locator('#plugin-list button[data-slug="weather"]').click();
@@ -260,7 +277,7 @@ try {
     let startedAt = performance.now();
     await desktop.locator('#plugin-list button[data-slug="memos"]').click();
     const switchedMemos = await pluginFrame(desktop, "Memos");
-    await switchedMemos.locator(".memos-library").waitFor({ state: "visible", timeout: 10_000 });
+    await switchedMemos.locator(".memos-workspace").waitFor({ state: "visible", timeout: 10_000 });
     pluginSwitchSamplesMs.push(performance.now() - startedAt);
 
     startedAt = performance.now();
@@ -340,26 +357,19 @@ try {
   await mobile.locator("#inspector-close").click();
   await mobile.locator('#plugin-inspector[data-open="false"]').waitFor();
   await waitFor(async () => await mobile.locator("#plugin-inspector").evaluate((element) => getComputedStyle(element).visibility === "hidden"), 2_000, "closed mobile app details sheet to be hidden");
-  await mobileMemos.getByRole("button", { name: "New memo" }).click();
-  const mobileMemoTitle = mobileMemos.getByPlaceholder("Untitled");
-  await mobileMemoTitle.waitFor();
-  assert.equal(await mobileMemoTitle.evaluate((element) => document.activeElement === element), true, "mobile memo creation must focus the title");
-  const mobileMemoCanvas = await waitForComputedStyles(
-    mobileMemos.locator(".editor-canvas"),
-    ["borderTopWidth", "borderRadius", "maxWidth"],
-    (style) => style.borderTopWidth === "0px" && style.borderRadius === "0px" && style.maxWidth === "none",
-    "compact Memos canvas styles",
-  );
-  assert.deepEqual(mobileMemoCanvas, { borderTopWidth: "0px", borderRadius: "0px", maxWidth: "none" });
-  await mobileMemoTitle.fill("A quiet place for today");
-  await mobileMemos.getByPlaceholder("Start writing...").fill("Created from the compact mobile editor.");
-  assert.equal(await mobileMemoTitle.evaluate((element) => element.tagName), "TEXTAREA", "memo titles must use a wrapping editor control");
-  assert.equal(await mobileMemoTitle.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "mobile memo titles must not clip horizontally");
-  await mobileMemos.getByText("Unsaved", { exact: true }).waitFor();
-  await mobileMemos.getByText("Saved", { exact: true }).waitFor();
-  await mobileMemos.getByRole("button", { name: "Back to memos" }).click();
-  await mobileMemos.locator(".memo-list").getByText("A quiet place for today", { exact: true }).waitFor();
-  assert.equal(await mobileMemos.locator(".memo-context-rail").count(), 0, "mobile Memos must not carry a hidden legacy context rail");
+  await mobileMemos.getByRole("button", { name: "Open explorer" }).click();
+  await mobileMemos.locator(".memos-explorer").waitFor();
+  await assertMinimumTouchSize(mobileMemos.getByRole("button", { name: "Close explorer" }), 44);
+  await assertMinimumTouchSize(mobileMemos.locator(".calendar-grid button").first(), 44);
+  await mobileMemos.getByRole("button", { name: "Close explorer" }).click();
+  const mobileComposer = mobileMemos.getByPlaceholder("What's on your mind?");
+  await mobileComposer.fill("### Mobile timeline memo\n\nCreated from the compact composer. #mobile");
+  assert.equal(await mobileComposer.evaluate((element) => element.scrollWidth <= element.clientWidth), true, "mobile composer must not clip horizontally");
+  await mobileMemos.getByText("Draft protected", { exact: true }).waitFor({ timeout: 10_000 });
+  await mobileMemos.getByRole("button", { name: "Save", exact: true }).click();
+  await mobileMemos.locator(".memo-card").filter({ hasText: "Mobile timeline memo" }).waitFor();
+  await assertMinimumTouchSize(mobileMemos.locator(".memo-card").filter({ hasText: "Mobile timeline memo" }).getByRole("button", { name: "More memo actions" }), 44);
+  await mobileMemos.locator(".memos-toast").waitFor({ state: "detached", timeout: 5_000 });
   await mobile.screenshot({ path: resolve(evidenceDir, "examples-memos-mobile.png"), fullPage: false });
 
   await mobile.locator('#mobile-plugin-list button[data-slug="weather"]').click();
@@ -384,18 +394,18 @@ try {
   assert.deepEqual(mobileErrors, []);
   await mobile.close();
 
-  const compact = await browser.newPage({ viewport: { width: 320, height: 568 }, deviceScaleFactor: 1 });
+  const compact = await browser.newPage({ viewport: { width: 360, height: 720 }, deviceScaleFactor: 1 });
   const compactErrors = [];
   compact.on("pageerror", (error) => compactErrors.push(error.message));
   await compact.goto(`${baseURL}?plugin=memos`, { waitUntil: "domcontentloaded" });
   const compactMemos = await pluginFrame(compact, "Memos");
   await assertNoHorizontalOverflow(compact);
   await assertNoHorizontalOverflow(compact.frameLocator('iframe[title="Memos plugin"]'));
-  let rejectedMemoSaves = 2;
+  let rejectedMemoUpdates = 2;
   await compact.route("**/_redevplugin/api/plugins/rpc", async (route) => {
     const requestBody = route.request().postDataJSON();
-    if (rejectedMemoSaves > 0 && requestBody?.method === "memos.save") {
-      rejectedMemoSaves -= 1;
+    if (rejectedMemoUpdates > 0 && requestBody?.method === "memos.update") {
+      rejectedMemoUpdates -= 1;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -405,17 +415,25 @@ try {
     }
     await route.continue();
   });
-  await compactMemos.getByRole("button", { name: "New memo" }).click();
-  await compactMemos.getByPlaceholder("Untitled").fill("Protected pocket draft");
-  await compactMemos.getByPlaceholder("Start writing...").fill("This draft remains editable while persistence is unavailable.");
-  await compactMemos.getByText("Memos could not save your changes", { exact: true }).waitFor({ timeout: 10_000 });
-  await assertMinimumTouchSize(compactMemos.getByRole("button", { name: "More memo actions" }), 44);
-  await compactMemos.getByRole("button", { name: "Back to memos" }).click();
-  await compactMemos.getByPlaceholder("Untitled").waitFor();
-  assert.equal(await compactMemos.getByPlaceholder("Untitled").inputValue(), "Protected pocket draft", "failed persistence must block navigation and preserve the draft");
+  const compactCard = compactMemos.locator(".memo-card").filter({ hasText: "Edited timeline memo" });
+  await compactCard.getByRole("button", { name: "More memo actions" }).click();
+  await compactCard.getByRole("menuitem", { name: "Edit" }).click();
+  const compactEditCard = compactMemos.locator(".memo-card.editing");
+  const protectedEdit = compactEditCard.getByRole("textbox", { name: "Edit memo content" });
+  await protectedEdit.fill("## Protected timeline edit\n\nThis edit remains active while persistence is unavailable. #smoke");
+  const protectedEditError = compactEditCard.locator(".save-state.error");
+  await protectedEditError.waitFor({ state: "visible", timeout: 10_000 });
+  assert.match(await protectedEditError.innerText(), /Memos could not save your changes/);
+  await compactMemos.getByRole("button", { name: "Open explorer" }).click();
+  await compactMemos.getByRole("button", { name: /^Archived/ }).click();
+  assert.equal(await protectedEdit.inputValue(), "## Protected timeline edit\n\nThis edit remains active while persistence is unavailable. #smoke", "failed persistence must block filtering and preserve the edit");
+  await compactMemos.getByRole("button", { name: "Close explorer" }).click();
   await compact.unroute("**/_redevplugin/api/plugins/rpc");
-  await compactMemos.getByRole("button", { name: "Back to memos" }).click();
-  await compactMemos.locator(".memo-list").getByText("Protected pocket draft", { exact: true }).waitFor({ timeout: 10_000 });
+  await compactEditCard.getByRole("button", { name: "Retry" }).click();
+  await compactEditCard.getByText("Saved", { exact: true }).waitFor({ timeout: 10_000 });
+  await compactEditCard.getByRole("button", { name: "Done" }).click();
+  await compactMemos.locator(".memo-card").filter({ hasText: "Protected timeline edit" }).waitFor();
+  await compact.screenshot({ path: resolve(evidenceDir, "examples-memos-compact.png"), fullPage: false });
   await compact.goto(`${baseURL}?plugin=weather`, { waitUntil: "domcontentloaded" });
   const compactWeather = await pluginFrame(compact, "Weather");
   await compactWeather.getByRole("heading", { name: "Paris" }).waitFor({ timeout: 20_000 });
@@ -464,7 +482,7 @@ try {
     high_score_save_and_reload_verified: true,
     premium_webp_artwork_loaded: true,
     distinct_consumer_visual_systems_verified: true,
-    responsive_viewports: ["1440x920", "390x844", "320x568"],
+    responsive_viewports: ["1280x800", "390x844", "360x720"],
     console_errors: unexpectedConsole,
     page_errors: pageErrors,
     api_failures: apiFailures,
@@ -478,6 +496,7 @@ try {
     page_errors: pageErrors,
     api_failures: await Promise.all(apiFailureReads),
     method_calls: methodCalls,
+    method_results: await Promise.all(methodResults),
   };
   throw new Error(`examples smoke failed: ${JSON.stringify(diagnostics)}`, { cause: error });
 } finally {

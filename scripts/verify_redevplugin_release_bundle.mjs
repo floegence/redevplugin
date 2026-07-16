@@ -797,6 +797,7 @@ function verifyNoticeEvidence(bundleDir) {
     "## Go Modules",
     "## Bundled Assets",
     "| wasmi |",
+    "| marked |",
     "| typescript |",
     "| modernc.org/sqlite |",
     "| kenney-space-shooter-remastered |",
@@ -857,7 +858,7 @@ function verifyNoticeEvidence(bundleDir) {
 			referencedFiles.add(file.path);
 		}
 	}
-	for (const requiredPackage of ["asset:kenney-space-shooter-remastered@", "rust:wasmi@", "npm:typescript@", "go:modernc.org/sqlite@"]) {
+	for (const requiredPackage of ["asset:kenney-space-shooter-remastered@", "rust:wasmi@", "npm:marked@", "npm:typescript@", "go:modernc.org/sqlite@"]) {
 		if (![...packageIDs].some((packageID) => packageID.startsWith(requiredPackage))) {
 			fail(`third-party license manifest must include ${requiredPackage}`);
 		}

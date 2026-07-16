@@ -1,105 +1,136 @@
 import { PluginBridgeClient, type PluginMethodResult, type PluginUIActionEvent, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
+import { renderMarkdown, toggleTaskMarker } from "./memos-markdown.js";
 
-type Memo = { id: string; title: string; body: string; pinned: boolean; created_at: string; updated_at: string };
-type MemoSummary = { id: string; title: string; preview: string; pinned: boolean; created_at: string; updated_at: string };
-type MemoDraft = { id: string; title: string; body: string; pinned: boolean; created_at: string; updated_at: string };
-type MemoListResult = { notes: MemoSummary[]; total: number; offset: number; has_more: boolean };
-type MemosBootstrapResult = MemoListResult & { selected_note: Memo | null };
+type Memo = {
+  id: string;
+  content: string;
+  pinned: boolean;
+  archived: boolean;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+};
+type Draft = { content: string; updated_at: string };
+type TagFacet = { tag: string; count: number };
+type DayFacet = { date: string; count: number };
+type FacetResult = { month: string; tags: TagFacet[]; days: DayFacet[]; archived_total: number };
+type ListResult = { memos: Memo[]; total: number; offset: number; has_more: boolean };
+type BootstrapResult = ListResult & { draft: Draft | null; facets: FacetResult };
 type SaveState = "idle" | "unsaved" | "saving" | "saved" | "error";
-type SearchState = "idle" | "searching" | "error";
-type Overlay = "none" | "memo-actions" | "delete-confirmation";
-type FocusTarget = "none" | "title" | "menu-item" | "menu-button";
+type FeedView = "all" | "pinned" | "archived";
+type FocusTarget = "none" | "composer" | "menu-item" | "menu-button";
 
 type MemosState = {
-  library: {
-    notes: MemoSummary[];
+  feed: {
+    memos: Memo[];
     total: number;
     hasMore: boolean;
     query: string;
-    filter: "all" | "pinned";
-    searchState: SearchState;
+    view: FeedView;
+    tag: string;
+    date: string;
+    loading: boolean;
     errorMessage: string;
   };
-  editor: {
-    mode: "none" | "draft" | "saved";
-    selectedId: string;
-    returnId: string;
-    draft: MemoDraft;
+  composer: {
+    content: string;
+    dirty: boolean;
+    revision: number;
+    saveState: SaveState;
+    errorMessage: string;
+    updatedAt: string;
+    expanded: boolean;
+  };
+  facets: {
+    month: string;
+    tags: TagFacet[];
+    days: DayFacet[];
+    archivedTotal: number;
+    loading: boolean;
+    errorMessage: string;
+  };
+  editing: {
+    id: string;
+    content: string;
+    originalContent: string;
     dirty: boolean;
     revision: number;
     saveState: SaveState;
     errorMessage: string;
   };
   ui: {
-    screen: "library" | "editor";
-    overlay: Overlay;
+    ready: boolean;
     busy: boolean;
+    drawerOpen: boolean;
+    menuId: string;
+    deleteId: string;
     focusTarget: FocusTarget;
+    focusId: string;
     toast: string;
+    expandedIds: Set<string>;
+    pendingIds: Set<string>;
   };
 };
 
-const PAGE_SIZE = 24;
-const AUTOSAVE_DELAY_MS = 700;
+const PAGE_SIZE = 10;
+const DRAFT_DELAY_MS = 500;
+const EDIT_DELAY_MS = 700;
 const SEARCH_DELAY_MS = 250;
+const MAX_CONTENT_CHARS = 20_000;
 const bridge = new PluginBridgeClient({ timeoutMs: 20_000 });
+const utcOffsetMinutes = -new Date().getTimezoneOffset();
 const state: MemosState = {
-  library: {
-    notes: [],
-    total: 0,
-    hasMore: false,
-    query: "",
-    filter: "all",
-    searchState: "idle",
-    errorMessage: "",
-  },
-  editor: {
-    mode: "none",
-    selectedId: "",
-    returnId: "",
-    draft: emptyDraft(),
-    dirty: false,
-    revision: 0,
-    saveState: "idle",
-    errorMessage: "",
-  },
-  ui: {
-    screen: "library",
-    overlay: "none",
-    busy: false,
-    focusTarget: "none",
-    toast: "",
-  },
+  feed: { memos: [], total: 0, hasMore: false, query: "", view: "all", tag: "", date: "", loading: false, errorMessage: "" },
+  composer: { content: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false },
+  facets: { month: currentMonth(), tags: [], days: [], archivedTotal: 0, loading: false, errorMessage: "" },
+  editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
+  ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() },
 };
 
-let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+let draftTimer: ReturnType<typeof setTimeout> | undefined;
+let editTimer: ReturnType<typeof setTimeout> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
-let saveInFlight: Promise<boolean> | undefined;
-let searchSequence = 0;
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+let draftSaveInFlight: Promise<boolean> | undefined;
+let editSaveInFlight: Promise<boolean> | undefined;
+let feedSequence = 0;
+let facetsSequence = 0;
 
-bridge.onAction("new-memo", () => void createMemo());
-bridge.onAction("select-memo", (event) => void selectMemo(event.value));
-bridge.onAction("back-to-list", () => void returnToList());
-bridge.onAction("search-query", (event) => updateSearch(event.value ?? ""));
+bridge.onAction("toggle-explorer", () => void toggleExplorer());
+bridge.onAction("close-explorer", () => void closeExplorer());
+bridge.onAction("search-query", (event) => updateSearch(event));
 bridge.onAction("search-memos", (event) => submitSearch(event));
 bridge.onAction("clear-search", () => clearSearch());
-bridge.onAction("filter-memos", (event) => void setFilter(event.value));
+bridge.onAction("filter-view", (event) => void setView(event.value));
+bridge.onAction("filter-tag", (event) => void setTag(event.value));
+bridge.onAction("filter-date", (event) => void setDate(event.value));
+bridge.onAction("clear-filters", () => void clearFilters());
+bridge.onAction("previous-month", () => void moveMonth(-1));
+bridge.onAction("next-month", () => void moveMonth(1));
 bridge.onAction("load-more-memos", () => void loadMore());
-bridge.onAction("edit-title", (event) => updateDraft("title", event.value ?? ""));
-bridge.onAction("edit-body", (event) => updateDraft("body", event.value ?? ""));
-bridge.onAction("retry-save", () => void flushDraft());
-bridge.onAction("set-pinned", () => void setPinned());
-bridge.onAction("toggle-memo-menu", () => void toggleMemoMenu());
+bridge.onAction("composer-content", (event) => updateComposer(event));
+bridge.onAction("expand-composer", () => void expandComposer());
+bridge.onAction("retry-draft", () => void flushComposer());
+bridge.onAction("publish-memo", () => void publishMemo());
+bridge.onAction("edit-memo", (event) => void beginEdit(event.value));
+bridge.onAction("edit-content", (event) => updateEdit(event));
+bridge.onAction("finish-edit", () => void finishEdit());
+bridge.onAction("retry-edit", () => void flushEdit());
+bridge.onAction("set-pinned", (event) => void setPinned(event.value));
+bridge.onAction("toggle-memo-menu", (event) => void toggleMemoMenu(event.value));
 bridge.onAction("close-memo-menu", () => void closeMemoMenu());
-bridge.onAction("delete-memo", () => void requestDelete());
+bridge.onAction("set-archived", (event) => void setArchived(event.value));
+bridge.onAction("request-delete", (event) => void requestDelete(event.value));
 bridge.onAction("cancel-delete", () => void cancelDelete());
 bridge.onAction("confirm-delete", () => void confirmDelete());
+bridge.onAction("toggle-task", (event) => void toggleTask(event));
+bridge.onAction("toggle-expanded", (event) => void toggleExpanded(event.value));
 bridge.onLifecycle(async (event) => {
-  if (event.type === "hidden") await flushDraft();
   if (event.type === "dispose") {
-    clearAutosave();
-    clearSearchTimer();
-    await flushDraft();
+    clearTimers();
+    await Promise.all([flushComposer(), flushEdit()]);
+  } else if (event.type === "hidden") {
+    await Promise.all([flushComposer(), flushEdit()]);
   }
 });
 
@@ -110,377 +141,804 @@ async function initialize(): Promise<void> {
   state.ui.busy = true;
   await render();
   try {
-    const response = await bridge.call<PluginMethodResult<MemosBootstrapResult>>("memos.bootstrap", {});
-    state.library.notes = response.data.notes;
-    state.library.total = response.data.total;
-    state.library.hasMore = response.data.has_more;
-    if (response.data.selected_note) {
-      const note = response.data.selected_note;
-      state.editor.mode = "saved";
-      state.editor.selectedId = note.id;
-      state.editor.returnId = note.id;
-      state.editor.draft = draftFrom(note);
-      state.editor.saveState = "saved";
+    const response = await bridge.call<PluginMethodResult<BootstrapResult>>("memos.bootstrap", {
+      month: state.facets.month,
+      utc_offset_minutes: utcOffsetMinutes,
+    });
+    applyList(response.data);
+    applyFacets(response.data.facets);
+    if (response.data.draft) {
+      state.composer.content = response.data.draft.content;
+      state.composer.updatedAt = response.data.draft.updated_at;
+      state.composer.saveState = "saved";
+      state.composer.expanded = true;
     }
+    state.ui.ready = true;
   } catch (error) {
-    state.library.searchState = "error";
-    state.library.errorMessage = readableError(error, "Memos is temporarily unavailable");
+    state.feed.errorMessage = readableError(error, "Memos is temporarily unavailable");
   } finally {
     state.ui.busy = false;
     await render();
   }
 }
 
-async function refreshNotes(append: boolean, sequence = ++searchSequence): Promise<boolean> {
-  const offset = append ? state.library.notes.length : 0;
-  let response: PluginMethodResult<MemoListResult>;
+async function refreshFeed(append: boolean, sequence = ++feedSequence): Promise<boolean> {
+  const offset = append ? state.feed.memos.length : 0;
+  let response: PluginMethodResult<ListResult>;
   try {
-    response = await bridge.call<PluginMethodResult<MemoListResult>>("memos.list", {
-      query: state.library.query,
+    response = await bridge.call<PluginMethodResult<ListResult>>("memos.list", {
+      query: state.feed.query,
+      view: state.feed.view,
+      tag: state.feed.tag,
+      date: state.feed.date,
+      utc_offset_minutes: utcOffsetMinutes,
       offset,
       limit: PAGE_SIZE,
-      pinned_only: state.library.filter === "pinned",
     });
   } catch (error) {
-    if (sequence !== searchSequence) return false;
+    if (sequence !== feedSequence) return false;
     throw error;
   }
-  if (sequence !== searchSequence) return false;
-  state.library.notes = append ? dedupeSummaries([...state.library.notes, ...response.data.notes]) : response.data.notes;
-  state.library.total = response.data.total;
-  state.library.hasMore = response.data.has_more;
-  state.library.searchState = "idle";
-  state.library.errorMessage = "";
+  if (sequence !== feedSequence) return false;
+  state.feed.memos = append ? dedupeMemos([...state.feed.memos, ...response.data.memos]) : response.data.memos;
+  state.feed.total = response.data.total;
+  state.feed.hasMore = response.data.has_more;
+  state.feed.loading = false;
+  state.feed.errorMessage = "";
   return true;
 }
 
-async function loadMemo(id: string, openEditor = true): Promise<void> {
-  const response = await bridge.call<PluginMethodResult<{ note: Memo }>>("memos.get", { id });
-  state.editor.mode = "saved";
-  state.editor.selectedId = response.data.note.id;
-  state.editor.returnId = response.data.note.id;
-  state.editor.draft = draftFrom(response.data.note);
-  state.editor.dirty = false;
-  state.editor.saveState = "saved";
-  state.editor.errorMessage = "";
-  state.ui.overlay = "none";
-  if (openEditor) state.ui.screen = "editor";
-}
-
-async function createMemo(): Promise<void> {
-  if ((saveInFlight || state.editor.dirty) && !(await flushDraft())) return;
-  state.editor.returnId = state.editor.selectedId;
-  state.editor.mode = "draft";
-  state.editor.selectedId = "";
-  state.editor.draft = emptyDraft();
-  state.editor.dirty = false;
-  state.editor.saveState = "idle";
-  state.editor.errorMessage = "";
-  state.ui.screen = "editor";
-  state.ui.overlay = "none";
-  state.ui.toast = "";
-  await renderWithFocus("title");
-}
-
-async function selectMemo(id?: string): Promise<void> {
-  if (!id) return;
-  if (id === state.editor.selectedId) {
-    state.ui.screen = "editor";
-    await render();
-    return;
+async function refreshFacets(sequence = ++facetsSequence): Promise<boolean> {
+  let response: PluginMethodResult<FacetResult>;
+  try {
+    response = await bridge.call<PluginMethodResult<FacetResult>>("memos.facets", {
+      month: state.facets.month,
+      utc_offset_minutes: utcOffsetMinutes,
+    });
+  } catch (error) {
+    if (sequence !== facetsSequence) return false;
+    throw error;
   }
-  if (!(await flushDraft())) return;
-  await runBusy(async () => loadMemo(id));
+  if (sequence !== facetsSequence) return false;
+  applyFacets(response.data);
+  return true;
 }
 
-async function returnToList(): Promise<void> {
-  if (!(await flushDraft())) return;
-  state.ui.overlay = "none";
-  state.ui.screen = "library";
+async function reloadFeed(fallback: string): Promise<void> {
+  const sequence = ++feedSequence;
+  state.feed.loading = true;
+  state.feed.errorMessage = "";
+  await render();
+  try {
+    await refreshFeed(false, sequence);
+  } catch (error) {
+    state.feed.loading = false;
+    state.feed.errorMessage = readableError(error, fallback);
+  }
   await render();
 }
 
-function updateSearch(value: string): void {
-  state.library.query = value.slice(0, 200);
-  state.library.searchState = "searching";
-  state.library.errorMessage = "";
-  const sequence = ++searchSequence;
+function updateSearch(event: PluginUIActionEvent): void {
+  if (event.event !== "input" && event.event !== "change") return;
+  state.feed.query = (event.value ?? "").slice(0, 200);
+  state.feed.loading = true;
+  state.feed.errorMessage = "";
+  const sequence = ++feedSequence;
   clearSearchTimer();
   searchTimer = setTimeout(() => {
     searchTimer = undefined;
     void performSearch(sequence);
   }, SEARCH_DELAY_MS);
+  void render();
 }
 
 function submitSearch(event: PluginUIActionEvent): void {
-  const value = String(event.form_data?.query ?? state.library.query);
-  state.library.query = value.slice(0, 200);
-  const sequence = ++searchSequence;
+  state.feed.query = String(event.form_data?.query ?? state.feed.query).slice(0, 200);
+  const sequence = ++feedSequence;
   clearSearchTimer();
   void performSearch(sequence);
 }
 
 function clearSearch(): void {
-  state.library.query = "";
-  const sequence = ++searchSequence;
+  state.feed.query = "";
+  const sequence = ++feedSequence;
   clearSearchTimer();
   void performSearch(sequence);
 }
 
 async function performSearch(sequence: number): Promise<void> {
-  state.library.searchState = "searching";
+  state.feed.loading = true;
+  state.feed.errorMessage = "";
   await render();
   try {
-    await refreshNotes(false, sequence);
+    await refreshFeed(false, sequence);
   } catch (error) {
-    state.library.searchState = "error";
-    state.library.errorMessage = readableError(error, "Search is temporarily unavailable");
+    if (sequence === feedSequence) {
+      state.feed.loading = false;
+      state.feed.errorMessage = readableError(error, "Search is temporarily unavailable");
+    }
   }
   await render();
 }
 
-function clearSearchTimer(): void {
-  if (searchTimer !== undefined) clearTimeout(searchTimer);
-  searchTimer = undefined;
+async function setView(value?: string): Promise<void> {
+  const next: FeedView = value === "pinned" ? "pinned" : value === "archived" ? "archived" : "all";
+  if (next === state.feed.view) return;
+  if (!(await canLeaveEdit())) return;
+  state.feed.view = next;
+  state.ui.drawerOpen = false;
+  await reloadFeed("Memos could not update this view");
 }
 
-async function setFilter(value?: string): Promise<void> {
-  const next = value === "pinned" ? "pinned" : "all";
-  if (next === state.library.filter) return;
-  state.library.filter = next;
-  state.library.searchState = "searching";
+async function setTag(value?: string): Promise<void> {
+  const next = (value ?? "").toLowerCase().slice(0, 40);
+  if (next === state.feed.tag) return;
+  if (!(await canLeaveEdit())) return;
+  state.feed.tag = next;
+  state.ui.drawerOpen = false;
+  await reloadFeed("Memos could not filter this tag");
+}
+
+async function setDate(value?: string): Promise<void> {
+  const next = value ?? "";
+  if (next === state.feed.date) return;
+  if (!(await canLeaveEdit())) return;
+  state.feed.date = next;
+  state.ui.drawerOpen = false;
+  await reloadFeed("Memos could not filter this date");
+}
+
+async function clearFilters(): Promise<void> {
+  if (!(await canLeaveEdit())) return;
+  state.feed.query = "";
+  state.feed.tag = "";
+  state.feed.date = "";
+  state.feed.view = "all";
   clearSearchTimer();
-  const sequence = ++searchSequence;
+  await reloadFeed("Memos could not clear these filters");
+}
+
+async function moveMonth(direction: -1 | 1): Promise<void> {
+  const [year, month] = state.facets.month.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1 + direction, 1));
+  state.facets.month = `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}`;
+  state.facets.loading = true;
   await render();
   try {
-    await refreshNotes(false, sequence);
+    await refreshFacets();
   } catch (error) {
-    state.library.searchState = "error";
-    state.library.errorMessage = readableError(error, "Memos could not update this view");
+    state.facets.loading = false;
+    state.facets.errorMessage = readableError(error, "Calendar is temporarily unavailable");
   }
   await render();
 }
 
 async function loadMore(): Promise<void> {
-  if (!state.library.hasMore || state.library.searchState === "searching") return;
-  state.library.searchState = "searching";
-  const sequence = ++searchSequence;
+  if (state.feed.loading || !state.feed.hasMore) return;
+  const sequence = ++feedSequence;
+  state.feed.loading = true;
   await render();
   try {
-    await refreshNotes(true, sequence);
+    await refreshFeed(true, sequence);
   } catch (error) {
-    state.library.searchState = "error";
-    state.library.errorMessage = readableError(error, "More memos could not be loaded");
+    state.feed.loading = false;
+    state.feed.errorMessage = readableError(error, "More memos could not be loaded");
   }
   await render();
 }
 
-function updateDraft(field: "title" | "body", value: string): void {
-  state.editor.draft[field] = field === "title" ? value.slice(0, 160) : value.slice(0, 20_000);
-  state.editor.dirty = true;
-  state.editor.revision += 1;
-  state.editor.saveState = "unsaved";
-  state.editor.errorMessage = "";
-  state.ui.overlay = "none";
+function updateComposer(event: PluginUIActionEvent): void {
+  if (event.event === "click") {
+    state.composer.expanded = true;
+    void render();
+    return;
+  }
+  if (event.event !== "input" && event.event !== "change") return;
+  const content = limitCharacters(event.value ?? "", MAX_CONTENT_CHARS);
+  if (content === state.composer.content) return;
+  state.composer.content = content;
+  state.composer.expanded = true;
+  state.composer.dirty = true;
+  state.composer.revision += 1;
+  state.composer.saveState = "unsaved";
+  state.composer.errorMessage = "";
   state.ui.toast = "";
-  scheduleAutosave();
+  scheduleDraftSave();
   void render();
 }
 
-function scheduleAutosave(): void {
-  clearAutosave();
-  autosaveTimer = setTimeout(() => {
-    autosaveTimer = undefined;
-    void flushDraft();
-  }, AUTOSAVE_DELAY_MS);
+async function expandComposer(): Promise<void> {
+  state.composer.expanded = true;
+  await renderWithFocus("composer");
 }
 
-function clearAutosave(): void {
-  if (autosaveTimer !== undefined) clearTimeout(autosaveTimer);
-  autosaveTimer = undefined;
+function scheduleDraftSave(): void {
+  clearDraftTimer();
+  draftTimer = setTimeout(() => {
+    draftTimer = undefined;
+    void flushComposer();
+  }, DRAFT_DELAY_MS);
 }
 
-async function flushDraft(): Promise<boolean> {
-  clearAutosave();
-  if (saveInFlight) {
-    const saved = await saveInFlight;
+async function flushComposer(): Promise<boolean> {
+  clearDraftTimer();
+  if (draftSaveInFlight) {
+    const saved = await draftSaveInFlight;
     if (!saved) return false;
-    return state.editor.dirty ? flushDraft() : true;
+    return state.composer.dirty ? flushComposer() : true;
   }
-  if (!state.editor.dirty) return true;
-  if (!state.editor.draft.title.trim() && !state.editor.draft.body.trim()) {
-    state.editor.dirty = false;
-    state.editor.saveState = "idle";
-    return true;
-  }
-
-  const revision = state.editor.revision;
-  const snapshot = { ...state.editor.draft, title: state.editor.draft.title.trim() || "Untitled memo" };
-  state.editor.dirty = false;
-  state.editor.saveState = "saving";
-  state.editor.errorMessage = "";
+  if (!state.composer.dirty) return true;
+  const revision = state.composer.revision;
+  const snapshot = state.composer.content;
+  state.composer.dirty = false;
+  state.composer.saveState = "saving";
+  state.composer.errorMessage = "";
   await render();
   const currentSave = (async (): Promise<boolean> => {
     try {
-      const response = await bridge.call<PluginMethodResult<{ note: Memo }>>("memos.save", {
-        id: snapshot.id,
-        title: snapshot.title,
-        body: snapshot.body,
-        pinned: snapshot.pinned,
-      });
-      const note = response.data.note;
-      state.editor.mode = "saved";
-      state.editor.selectedId = note.id;
-      state.editor.returnId = note.id;
-      state.editor.draft.id = note.id;
-      state.editor.draft.created_at = note.created_at;
-      state.editor.draft.updated_at = note.updated_at;
-      updateSummaryForCurrentView(note);
-      if (state.editor.revision === revision) {
-        state.editor.draft = draftFrom(note);
-        state.editor.saveState = "saved";
+      const response = await bridge.call<PluginMethodResult<{ draft: Draft | null }>>("memos.draft.save", { content: snapshot });
+      if (state.composer.revision === revision) {
+        state.composer.updatedAt = response.data.draft?.updated_at ?? "";
+        state.composer.saveState = snapshot.trim() ? "saved" : "idle";
       } else {
-        state.editor.dirty = true;
-        scheduleAutosave();
+        state.composer.dirty = true;
+        scheduleDraftSave();
       }
-      state.editor.errorMessage = "";
       return true;
     } catch (error) {
-      state.editor.dirty = true;
-      state.editor.saveState = "error";
-      state.editor.errorMessage = readableError(error, "Memos could not save your changes");
+      state.composer.dirty = true;
+      state.composer.saveState = "error";
+      state.composer.errorMessage = readableError(error, "Memos could not protect this draft");
       return false;
     }
   })();
-  saveInFlight = currentSave;
+  draftSaveInFlight = currentSave;
   const saved = await currentSave;
-  if (saveInFlight === currentSave) saveInFlight = undefined;
+  if (draftSaveInFlight === currentSave) draftSaveInFlight = undefined;
   await render();
   return saved;
 }
 
-async function setPinned(): Promise<void> {
-  if (!state.editor.draft.id) {
-    state.editor.draft.pinned = !state.editor.draft.pinned;
-    state.editor.dirty = true;
-    state.editor.revision += 1;
-    state.editor.saveState = "unsaved";
-    scheduleAutosave();
-    await render();
-    return;
-  }
-  if (!(await flushDraft())) return;
-  await runBusy(async () => {
-    const response = await bridge.call<PluginMethodResult<{ note: Memo }>>("memos.togglePin", { id: state.editor.draft.id });
-    state.editor.draft = draftFrom(response.data.note);
-    state.editor.selectedId = response.data.note.id;
-    state.editor.returnId = response.data.note.id;
-    state.editor.saveState = "saved";
-    updateSummaryForCurrentView(response.data.note);
-  });
-}
-
-async function toggleMemoMenu(): Promise<void> {
-  if (state.ui.overlay === "memo-actions") {
-    await closeMemoMenu();
-    return;
-  }
-  state.ui.overlay = "memo-actions";
-  await renderWithFocus("menu-item");
-}
-
-async function closeMemoMenu(): Promise<void> {
-  state.ui.overlay = "none";
-  await renderWithFocus("menu-button");
-}
-
-async function requestDelete(): Promise<void> {
-  clearAutosave();
-  if (saveInFlight) {
-    state.ui.busy = true;
-    await render();
-    await saveInFlight;
-    state.ui.busy = false;
-  }
-  state.ui.overlay = "delete-confirmation";
-  await render();
-}
-
-async function cancelDelete(): Promise<void> {
-  state.ui.overlay = "none";
-  await renderWithFocus("menu-button");
-}
-
-async function confirmDelete(): Promise<void> {
-  const id = state.editor.draft.id;
-  clearAutosave();
-  state.ui.overlay = "none";
-  if (!id) {
-    await discardDraft();
-    state.ui.toast = "Draft discarded";
-    await render();
-    return;
-  }
-  const deleted = await runBusy(async () => {
-    await bridge.call("memos.delete", { id });
-    state.editor.dirty = false;
-    const deletedIndex = state.library.notes.findIndex((note) => note.id === id);
-    if (deletedIndex >= 0) {
-      state.library.notes.splice(deletedIndex, 1);
-      state.library.total = Math.max(0, state.library.total - 1);
-    }
-    state.library.hasMore = state.library.notes.length < state.library.total;
-    state.editor = {
-      mode: "none",
-      selectedId: "",
-      returnId: "",
-      draft: emptyDraft(),
-      dirty: false,
-      revision: state.editor.revision,
-      saveState: "idle",
-      errorMessage: "",
-    };
-    state.ui.screen = "library";
-    if (state.library.notes[0]) await loadMemo(state.library.notes[0].id, false);
-    state.ui.toast = "Memo deleted";
-  }, "Memos could not delete this note");
-  if (!deleted && state.editor.dirty) scheduleAutosave();
-}
-
-async function discardDraft(): Promise<void> {
-  clearAutosave();
-  const returnId = state.editor.returnId;
-  state.editor = {
-    mode: "none",
-    selectedId: "",
-    returnId: "",
-    draft: emptyDraft(),
-    dirty: false,
-    revision: state.editor.revision,
-    saveState: "idle",
-    errorMessage: "",
-  };
-  state.ui.overlay = "none";
-  state.ui.screen = "library";
-  if (returnId) await runBusy(async () => loadMemo(returnId, false));
-  else await render();
-}
-
-async function runBusy(action: () => Promise<void>, fallback = "Memos is temporarily unavailable"): Promise<boolean> {
-  if (state.ui.busy) return false;
+async function publishMemo(): Promise<void> {
+  if (state.ui.busy || !state.composer.content.trim()) return;
+  if (!(await flushComposer())) return;
   state.ui.busy = true;
   state.ui.toast = "";
   await render();
   try {
-    await action();
-    return true;
+    await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.publish", { content: state.composer.content });
+    state.composer = { content: "", dirty: false, revision: state.composer.revision + 1, saveState: "idle", errorMessage: "", updatedAt: "", expanded: false };
+    showToast("Memo published");
+    await Promise.all([refreshFeed(false), refreshFacets()]);
   } catch (error) {
-    state.ui.toast = readableError(error, fallback);
-    return false;
+    state.composer.saveState = "error";
+    state.composer.errorMessage = readableError(error, "Memos could not publish this memo");
   } finally {
     state.ui.busy = false;
     await render();
   }
+}
+
+async function beginEdit(id?: string): Promise<void> {
+  if (!id || state.ui.pendingIds.has(id)) return;
+  if (state.editing.id === id) {
+    await renderWithFocus("none");
+    return;
+  }
+  if (!(await canLeaveEdit())) return;
+  const memo = memoById(id);
+  if (!memo) return;
+  state.editing = { id, content: memo.content, originalContent: memo.content, dirty: false, revision: state.editing.revision + 1, saveState: "saved", errorMessage: "" };
+  state.ui.menuId = "";
+  await render();
+}
+
+function updateEdit(event: PluginUIActionEvent): void {
+  if (event.event !== "input" && event.event !== "change" || !state.editing.id) return;
+  const content = limitCharacters(event.value ?? "", MAX_CONTENT_CHARS);
+  if (content === state.editing.content) return;
+  state.editing.content = content;
+  state.editing.dirty = true;
+  state.editing.revision += 1;
+  state.editing.saveState = "unsaved";
+  state.editing.errorMessage = "";
+  scheduleEditSave();
+  void render();
+}
+
+function scheduleEditSave(): void {
+  clearEditTimer();
+  editTimer = setTimeout(() => {
+    editTimer = undefined;
+    void flushEdit();
+  }, EDIT_DELAY_MS);
+}
+
+async function flushEdit(): Promise<boolean> {
+  clearEditTimer();
+  if (editSaveInFlight) {
+    const saved = await editSaveInFlight;
+    if (!saved) return false;
+    return state.editing.dirty ? flushEdit() : true;
+  }
+  if (!state.editing.id || !state.editing.dirty) return true;
+  if (!state.editing.content.trim()) {
+    state.editing.saveState = "error";
+    state.editing.errorMessage = "A memo cannot be empty";
+    await render();
+    return false;
+  }
+  const id = state.editing.id;
+  const content = state.editing.content;
+  const revision = state.editing.revision;
+  state.editing.dirty = false;
+  state.editing.saveState = "saving";
+  state.editing.errorMessage = "";
+  await render();
+  const currentSave = (async (): Promise<boolean> => {
+    try {
+      const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.update", { id, content });
+      replaceMemo(response.data.memo);
+      if (state.editing.id === id && state.editing.revision === revision) {
+        state.editing.content = response.data.memo.content;
+        state.editing.originalContent = response.data.memo.content;
+        state.editing.saveState = "saved";
+      } else if (state.editing.id === id) {
+        state.editing.dirty = true;
+        scheduleEditSave();
+      }
+      void refreshFacets().then(render).catch(() => undefined);
+      return true;
+    } catch (error) {
+      if (state.editing.id === id) {
+        state.editing.dirty = true;
+        state.editing.saveState = "error";
+        state.editing.errorMessage = readableError(error, "Memos could not save your changes");
+      }
+      return false;
+    }
+  })();
+  editSaveInFlight = currentSave;
+  const saved = await currentSave;
+  if (editSaveInFlight === currentSave) editSaveInFlight = undefined;
+  await render();
+  return saved;
+}
+
+async function finishEdit(): Promise<void> {
+  if (!(await flushEdit())) return;
+  resetEditing();
+  await render();
+}
+
+async function canLeaveEdit(): Promise<boolean> {
+  if (!(await flushEdit())) return false;
+  resetEditing();
+  return true;
+}
+
+async function setPinned(id?: string): Promise<void> {
+  const memo = id ? memoById(id) : undefined;
+  if (!memo || state.ui.pendingIds.has(memo.id)) return;
+  if (state.editing.id === memo.id && !(await flushEdit())) return;
+  await mutateMemo(memo.id, "memos.setPinned", { id: memo.id, value: !memo.pinned }, "Memos could not change this pin");
+}
+
+async function setArchived(id?: string): Promise<void> {
+  const memo = id ? memoById(id) : undefined;
+  if (!memo || state.ui.pendingIds.has(memo.id)) return;
+  if (state.editing.id === memo.id && !(await flushEdit())) return;
+  state.ui.menuId = "";
+  await mutateMemo(memo.id, "memos.setArchived", { id: memo.id, value: !memo.archived }, "Memos could not change this archive");
+}
+
+async function mutateMemo(id: string, method: string, params: Record<string, string | boolean>, fallback: string): Promise<void> {
+  state.ui.pendingIds.add(id);
+  state.ui.toast = "";
+  await render();
+  try {
+    const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>(method, params);
+    replaceMemo(response.data.memo);
+    await Promise.all([refreshFeed(false), refreshFacets()]);
+  } catch (error) {
+    showToast(readableError(error, fallback));
+  } finally {
+    state.ui.pendingIds.delete(id);
+    await render();
+  }
+}
+
+async function toggleMemoMenu(id?: string): Promise<void> {
+  if (!id) return;
+  if (state.ui.menuId === id) {
+    await closeMemoMenu();
+    return;
+  }
+  state.ui.menuId = id;
+  state.ui.focusId = id;
+  state.ui.focusTarget = "menu-item";
+  await render();
+  state.ui.focusTarget = "none";
+}
+
+async function closeMemoMenu(): Promise<void> {
+  if (!state.ui.menuId) return;
+  state.ui.menuId = "";
+  await renderWithFocus("menu-button");
+}
+
+async function requestDelete(id?: string): Promise<void> {
+  if (!id) return;
+  if (state.editing.id === id && !(await flushEdit())) return;
+  state.ui.menuId = "";
+  state.ui.deleteId = id;
+  state.ui.focusId = id;
+  await render();
+}
+
+async function cancelDelete(): Promise<void> {
+  state.ui.deleteId = "";
+  await renderWithFocus("menu-button");
+}
+
+async function confirmDelete(): Promise<void> {
+  const id = state.ui.deleteId;
+  if (!id || state.ui.busy) return;
+  state.ui.deleteId = "";
+  state.ui.busy = true;
+  await render();
+  try {
+    await bridge.call("memos.delete", { id });
+    if (state.editing.id === id) resetEditing();
+    state.ui.expandedIds.delete(id);
+    showToast("Memo deleted");
+    await Promise.all([refreshFeed(false), refreshFacets()]);
+  } catch (error) {
+    showToast(readableError(error, "Memos could not delete this memo"));
+  } finally {
+    state.ui.busy = false;
+    await render();
+  }
+}
+
+async function toggleTask(event: PluginUIActionEvent): Promise<void> {
+  if (event.event !== "change" && event.event !== "click") return;
+  const [id, rawIndex] = (event.value ?? "").split(":");
+  const memo = memoById(id);
+  const index = Number(rawIndex);
+  if (!memo || !Number.isInteger(index) || index < 0 || state.ui.pendingIds.has(id)) return;
+  const content = toggleTaskMarker(memo.content, index, event.checked === true);
+  if (content === memo.content) return;
+  state.ui.pendingIds.add(id);
+  await render();
+  try {
+    const response = await bridge.call<PluginMethodResult<{ memo: Memo }>>("memos.update", { id, content });
+    replaceMemo(response.data.memo);
+    await refreshFacets();
+  } catch (error) {
+    showToast(readableError(error, "Memos could not update this task"));
+  } finally {
+    state.ui.pendingIds.delete(id);
+    await render();
+  }
+}
+
+async function toggleExpanded(id?: string): Promise<void> {
+  if (!id) return;
+  if (state.ui.expandedIds.has(id)) state.ui.expandedIds.delete(id);
+  else state.ui.expandedIds.add(id);
+  await render();
+}
+
+async function toggleExplorer(): Promise<void> {
+  state.ui.drawerOpen = !state.ui.drawerOpen;
+  await render();
+}
+
+async function closeExplorer(): Promise<void> {
+  state.ui.drawerOpen = false;
+  await render();
+}
+
+function render(): Promise<void> {
+  return bridge.render({
+    type: "element",
+    key: "memos-root",
+    tag: "main",
+    attributes: { class: `memos-app${state.ui.drawerOpen ? " explorer-open" : ""}` },
+    children: [explorerScrim(), explorer(), workspace(), deleteDialog(), toast()],
+  });
+}
+
+function explorerScrim(): PluginUIVNode | string {
+  return state.ui.drawerOpen ? { type: "element", key: "explorer-scrim", tag: "button", attributes: { class: "explorer-scrim", type: "button", tabindex: -1, "aria-label": "Dismiss explorer", "data-redevplugin-action": "close-explorer" }, children: [] } : "";
+}
+
+function explorer(): PluginUIVNode {
+  return { type: "element", key: "memos-explorer", tag: "aside", attributes: { class: "memos-explorer", "aria-label": "Explore memos", "data-redevplugin-escape-action": "close-explorer" }, children: [
+    { type: "element", key: "explorer-header", tag: "header", attributes: { class: "explorer-header" }, children: [
+      brand("explorer"),
+      { type: "element", key: "explorer-close", tag: "button", attributes: { class: "icon-button explorer-close", type: "button", title: "Close explorer", "aria-label": "Close explorer", "data-redevplugin-action": "close-explorer" }, children: [{ type: "element", key: "explorer-close-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] },
+    ] },
+    searchForm(),
+    { type: "element", key: "view-nav", tag: "nav", attributes: { class: "view-nav", "aria-label": "Memo views" }, children: [
+      viewButton("all", "All memos", "icon-inbox", state.feed.total),
+      viewButton("pinned", "Pinned", "icon-pin", undefined),
+      viewButton("archived", "Archived", "icon-archive", state.facets.archivedTotal),
+    ] },
+    calendar(),
+    tagsPanel(),
+  ] };
+}
+
+function brand(prefix: string): PluginUIVNode {
+  return { type: "element", key: `${prefix}-brand`, tag: "div", attributes: { class: "brand-lockup" }, children: [
+    { type: "element", key: `${prefix}-brand-mark`, tag: "span", attributes: { class: "brand-mark", "aria-hidden": true }, children: [] },
+    { type: "element", key: `${prefix}-brand-name`, tag: "strong", children: ["Memos"] },
+  ] };
+}
+
+function searchForm(): PluginUIVNode {
+  return { type: "element", key: "search-form", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
+    { type: "element", key: "search-symbol", tag: "span", attributes: { class: "icon icon-search", "aria-hidden": true }, children: [] },
+    { type: "element", key: "search-input", tag: "input", attributes: { type: "search", name: "query", value: state.feed.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: state.ui.busy, "data-redevplugin-action": "search-query" }, children: [] },
+    state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : "",
+  ] };
+}
+
+function viewButton(value: FeedView, label: string, icon: string, count?: number): PluginUIVNode {
+  return { type: "element", key: `view-${value}`, tag: "button", attributes: { type: "button", value, "aria-pressed": state.feed.view === value, disabled: state.ui.busy, "data-redevplugin-action": "filter-view" }, children: [
+    { type: "element", key: `view-${value}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
+    { type: "element", key: `view-${value}-label`, tag: "span", children: [label] },
+    count !== undefined ? { type: "element", key: `view-${value}-count`, tag: "small", children: [String(count)] } : "",
+  ] };
+}
+
+function calendar(): PluginUIVNode {
+  const dayCounts = new Map(state.facets.days.map((day) => [day.date, day.count]));
+  return { type: "element", key: "calendar", tag: "section", attributes: { class: "calendar", "aria-label": "Memo calendar" }, children: [
+    { type: "element", key: "calendar-heading", tag: "header", children: [
+      { type: "element", key: "calendar-title", tag: "h2", children: [formatMonth(state.facets.month)] },
+      { type: "element", key: "calendar-controls", tag: "div", children: [
+        calendarMoveButton("previous-month", "Previous month", "icon-chevron-left"),
+        calendarMoveButton("next-month", "Next month", "icon-chevron-right"),
+      ] },
+    ] },
+    { type: "element", key: "calendar-weekdays", tag: "div", attributes: { class: "calendar-weekdays", "aria-hidden": true }, children: ["M", "T", "W", "T", "F", "S", "S"].map((label, index) => ({ type: "element", key: `weekday-${index}`, tag: "span", children: [label] })) },
+    { type: "element", key: "calendar-grid", tag: "div", attributes: { class: "calendar-grid" }, children: calendarCells(state.facets.month).map<PluginUIVNode>((cell, index) => {
+      if (!cell) return { type: "element", key: `calendar-blank-${index}`, tag: "span", attributes: { class: "calendar-blank", "aria-hidden": true }, children: [] } as PluginUIVNode;
+      const count = dayCounts.get(cell.date) ?? 0;
+      return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: state.ui.busy, "data-redevplugin-action": "filter-date" }, children: [String(cell.day)] } as PluginUIVNode;
+    }) },
+    state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", "data-redevplugin-action": "filter-date" }, children: ["Clear date"] } : "",
+    state.facets.errorMessage ? { type: "element", key: "calendar-error", tag: "p", attributes: { class: "facet-error", role: "status" }, children: [state.facets.errorMessage] } : "",
+  ] };
+}
+
+function calendarMoveButton(action: string, label: string, icon: string): PluginUIVNode {
+  return { type: "element", key: action, tag: "button", attributes: { class: "calendar-button", type: "button", title: label, "aria-label": label, disabled: state.facets.loading, "data-redevplugin-action": action }, children: [{ type: "element", key: `${action}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] }] };
+}
+
+function tagsPanel(): PluginUIVNode {
+  return { type: "element", key: "tags-panel", tag: "section", attributes: { class: "tags-panel", "aria-label": "Tags" }, children: [
+    { type: "element", key: "tags-heading", tag: "header", children: [
+      { type: "element", key: "tags-title", tag: "h2", children: ["Tags"] },
+      state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", "data-redevplugin-action": "filter-tag" }, children: ["Clear"] } : "",
+    ] },
+    state.facets.tags.length ? { type: "element", key: "tag-list", tag: "ul", attributes: { class: "tag-list" }, children: state.facets.tags.map((facet) => ({ type: "element", key: `tag-${facet.tag}`, tag: "li", children: [
+      { type: "element", key: `tag-${facet.tag}-button`, tag: "button", attributes: { type: "button", value: facet.tag, "aria-pressed": state.feed.tag === facet.tag, disabled: state.ui.busy, "data-redevplugin-action": "filter-tag" }, children: [
+        { type: "element", key: `tag-${facet.tag}-hash`, tag: "span", attributes: { class: "tag-hash", "aria-hidden": true }, children: ["#"] },
+        { type: "element", key: `tag-${facet.tag}-label`, tag: "span", children: [facet.tag] },
+        { type: "element", key: `tag-${facet.tag}-count`, tag: "small", children: [String(facet.count)] },
+      ] },
+    ] })) } : { type: "element", key: "tags-empty", tag: "p", attributes: { class: "tags-empty" }, children: ["Tags in your memos appear here."] },
+  ] };
+}
+
+function workspace(): PluginUIVNode {
+  return { type: "element", key: "workspace", tag: "section", attributes: { class: "memos-workspace", "aria-label": "Memos timeline" }, children: [
+    { type: "element", key: "mobile-header", tag: "header", attributes: { class: "mobile-header" }, children: [
+      { type: "element", key: "mobile-menu", tag: "button", attributes: { class: "icon-button", type: "button", title: "Open explorer", "aria-label": "Open explorer", "aria-expanded": state.ui.drawerOpen, "data-redevplugin-action": "toggle-explorer" }, children: [{ type: "element", key: "mobile-menu-icon", tag: "span", attributes: { class: "icon icon-menu", "aria-hidden": true }, children: [] }] },
+      brand("mobile"),
+      { type: "element", key: "mobile-spacer", tag: "span", attributes: { class: "mobile-spacer", "aria-hidden": true }, children: [] },
+    ] },
+    { type: "element", key: "feed-shell", tag: "div", attributes: { class: "feed-shell" }, children: [composer(), feedHeader(), feedContent()] },
+  ] };
+}
+
+function composer(): PluginUIVNode {
+  const expanded = state.composer.expanded || Boolean(state.composer.content);
+  return { type: "element", key: "memo-composer", tag: "section", attributes: { class: `memo-composer${expanded ? " expanded" : ""}`, "aria-label": "Create a memo" }, children: [
+    { type: "element", key: "composer-main", tag: "div", attributes: { class: "composer-main" }, children: [
+      { type: "element", key: "composer-avatar", tag: "span", attributes: { class: "composer-avatar", "aria-hidden": true }, children: ["M"] },
+      { type: "element", key: "composer-copy", tag: "div", attributes: { class: "composer-copy" }, children: [
+        { type: "element", key: "composer-input", tag: "textarea", attributes: { name: "content", value: state.composer.content, maxlength: MAX_CONTENT_CHARS, rows: expanded ? 7 : 2, placeholder: "What's on your mind?", "aria-label": "Memo content", autofocus: state.ui.focusTarget === "composer", disabled: state.ui.busy, "data-redevplugin-action": "composer-content" }, children: [] },
+        !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", "data-redevplugin-action": "expand-composer" }, children: ["Create a memo"] } : "",
+      ] },
+    ] },
+    expanded ? { type: "element", key: "composer-footer", tag: "footer", attributes: { class: "composer-footer" }, children: [
+      { type: "element", key: "composer-meta", tag: "div", attributes: { class: "composer-meta" }, children: [
+        { type: "element", key: "markdown-label", tag: "span", attributes: { class: "markdown-label" }, children: ["Markdown"] },
+        { type: "element", key: "composer-count", tag: "span", children: [`${characterCount(state.composer.content)} / ${MAX_CONTENT_CHARS}`] },
+        draftStatus(),
+      ] },
+      { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: state.ui.busy || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? "Saving..." : "Save"] },
+    ] } : "",
+  ] };
+}
+
+function draftStatus(): PluginUIVNode | string {
+  if (state.composer.saveState === "idle") return "";
+  const label = state.composer.saveState === "saving" ? "Protecting draft..." : state.composer.saveState === "unsaved" ? "Draft pending" : state.composer.saveState === "saved" ? "Draft protected" : state.composer.errorMessage;
+  return { type: "element", key: "draft-status", tag: "span", attributes: { class: `save-state ${state.composer.saveState}`, role: "status" }, children: [
+    { type: "element", key: "draft-state-mark", tag: "span", attributes: { class: "state-dot", "aria-hidden": true }, children: [] },
+    label,
+    state.composer.saveState === "error" ? { type: "element", key: "retry-draft", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-draft" }, children: ["Retry"] } : "",
+  ] };
+}
+
+function feedHeader(): PluginUIVNode {
+  const label = activeFeedLabel();
+  const filtered = state.feed.view !== "all" || Boolean(state.feed.query || state.feed.tag || state.feed.date);
+  return { type: "element", key: "feed-header", tag: "header", attributes: { class: "feed-header" }, children: [
+    { type: "element", key: "feed-heading-copy", tag: "div", children: [
+      { type: "element", key: "feed-title", tag: "h1", children: [label] },
+      { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? "Updating timeline..." : `${state.feed.total} ${state.feed.total === 1 ? "memo" : "memos"}`] },
+    ] },
+    filtered ? { type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "clear-filters" }, children: ["Clear filters"] } : "",
+  ] };
+}
+
+function feedContent(): PluginUIVNode {
+  return { type: "element", key: "feed-content", tag: "div", attributes: { class: "memo-feed", "aria-busy": state.feed.loading }, children: [
+    state.feed.errorMessage ? feedMessage("feed-error", "Timeline unavailable", state.feed.errorMessage, "error") : "",
+    !state.feed.errorMessage && !state.feed.memos.length && state.feed.loading ? feedLoading() : "",
+    !state.feed.errorMessage && !state.feed.memos.length && !state.feed.loading ? feedEmpty() : "",
+    ...state.feed.memos.map(memoCard),
+    state.feed.hasMore ? { type: "element", key: "load-more", tag: "button", attributes: { class: "load-more", type: "button", disabled: state.feed.loading || state.ui.busy, "data-redevplugin-action": "load-more-memos" }, children: [state.feed.loading ? "Loading..." : "Load more"] } : "",
+  ] };
+}
+
+function memoCard(memo: Memo): PluginUIVNode {
+  const editing = state.editing.id === memo.id;
+  const pending = state.ui.pendingIds.has(memo.id);
+  const expanded = state.ui.expandedIds.has(memo.id);
+  const markdown = renderMarkdown(memo.content, `md-${memo.id}`, { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived });
+  return { type: "element", key: `memo-${memo.id}`, tag: "article", attributes: { class: `memo-card${memo.pinned ? " pinned" : ""}${memo.archived ? " archived" : ""}${editing ? " editing" : ""}`, "aria-label": `Memo from ${formatDocumentDate(memo.created_at)}` }, children: [
+    { type: "element", key: `memo-${memo.id}-header`, tag: "header", attributes: { class: "memo-card-header" }, children: [
+      { type: "element", key: `memo-${memo.id}-identity`, tag: "div", attributes: { class: "memo-identity" }, children: [
+        { type: "element", key: `memo-${memo.id}-avatar`, tag: "span", attributes: { class: "memo-avatar", "aria-hidden": true }, children: ["M"] },
+        { type: "element", key: `memo-${memo.id}-byline`, tag: "div", children: [
+          { type: "element", key: `memo-${memo.id}-author`, tag: "strong", children: [memo.archived ? "Archived memo" : "Memos"] },
+          { type: "element", key: `memo-${memo.id}-date`, tag: "time", attributes: { title: formatDocumentDate(memo.created_at) }, children: [formatMemoDate(memo.created_at)] },
+        ] },
+      ] },
+      { type: "element", key: `memo-${memo.id}-actions`, tag: "div", attributes: { class: "memo-card-actions" }, children: [
+        { type: "element", key: `memo-${memo.id}-pin`, tag: "button", attributes: { class: `icon-button pin-button${memo.pinned ? " active" : ""}`, type: "button", value: memo.id, title: memo.pinned ? "Unpin memo" : "Pin memo", "aria-label": memo.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": memo.pinned, disabled: pending || state.ui.busy, "data-redevplugin-action": "set-pinned" }, children: [{ type: "element", key: `memo-${memo.id}-pin-icon`, tag: "span", attributes: { class: "icon icon-pin", "aria-hidden": true }, children: [] }] },
+        { type: "element", key: `memo-${memo.id}-more`, tag: "button", attributes: { class: "icon-button memo-more", type: "button", value: memo.id, title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.menuId === memo.id, autofocus: state.ui.focusTarget === "menu-button" && state.ui.focusId === memo.id && !state.ui.deleteId, disabled: pending || state.ui.busy, "data-redevplugin-action": "toggle-memo-menu" }, children: [{ type: "element", key: `memo-${memo.id}-more-icon`, tag: "span", attributes: { class: "icon icon-more", "aria-hidden": true }, children: [] }] },
+        state.ui.menuId === memo.id ? memoMenu(memo) : "",
+      ] },
+    ] },
+    editing ? editMemo(memo) : { type: "element", key: `memo-${memo.id}-body`, tag: "div", attributes: { class: "markdown-body" }, children: markdown.nodes },
+    !editing && markdown.truncated ? { type: "element", key: `memo-${memo.id}-expand`, tag: "button", attributes: { class: "expand-content", type: "button", value: memo.id, "data-redevplugin-action": "toggle-expanded" }, children: [expanded ? "Show less" : "Show more"] } : "",
+    memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, "data-redevplugin-action": "filter-tag" }, children: [`#${tag}`] })) } : "",
+  ] };
+}
+
+function editMemo(memo: Memo): PluginUIVNode {
+  return { type: "element", key: `memo-${memo.id}-editor`, tag: "div", attributes: { class: "inline-editor" }, children: [
+    { type: "element", key: `memo-${memo.id}-textarea`, tag: "textarea", attributes: { name: "content", value: state.editing.content, maxlength: MAX_CONTENT_CHARS, rows: 8, "aria-label": "Edit memo content", disabled: state.ui.busy, "data-redevplugin-action": "edit-content" }, children: [] },
+    { type: "element", key: `memo-${memo.id}-edit-footer`, tag: "footer", children: [
+      editStatus(),
+      { type: "element", key: `memo-${memo.id}-edit-count`, tag: "span", children: [`${characterCount(state.editing.content)} / ${MAX_CONTENT_CHARS}`] },
+      { type: "element", key: `memo-${memo.id}-done`, tag: "button", attributes: { class: "primary-button compact", type: "button", disabled: state.editing.saveState === "saving", "data-redevplugin-action": "finish-edit" }, children: ["Done"] },
+    ] },
+  ] };
+}
+
+function editStatus(): PluginUIVNode {
+  const label = state.editing.saveState === "saving" ? "Saving..." : state.editing.saveState === "unsaved" ? "Unsaved" : state.editing.saveState === "saved" ? "Saved" : state.editing.errorMessage;
+  return { type: "element", key: "edit-save-indicator", tag: "span", attributes: { class: `save-state ${state.editing.saveState} save-indicator`, role: "status" }, children: [
+    { type: "element", key: "edit-state-dot", tag: "span", attributes: { class: "state-dot", "aria-hidden": true }, children: [] },
+    label,
+    state.editing.saveState === "error" ? { type: "element", key: "retry-edit", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-edit" }, children: ["Retry"] } : "",
+  ] };
+}
+
+function memoMenu(memo: Memo): PluginUIVNode {
+  return { type: "element", key: `memo-${memo.id}-menu`, tag: "div", attributes: { class: "memo-menu", role: "menu", "aria-label": "Memo actions", "data-redevplugin-escape-action": "close-memo-menu" }, children: [
+    menuButton(memo.id, "edit-memo", "Edit", "icon-edit", true),
+    menuButton(memo.id, "set-archived", memo.archived ? "Restore" : "Archive", "icon-archive"),
+    menuButton(memo.id, "request-delete", "Delete", "icon-trash", false, true),
+  ] };
+}
+
+function menuButton(id: string, action: string, label: string, icon: string, autofocus = false, danger = false): PluginUIVNode {
+  return { type: "element", key: `memo-${id}-menu-${action}`, tag: "button", attributes: { class: danger ? "danger" : "", type: "button", role: "menuitem", value: id, autofocus: autofocus && state.ui.focusTarget === "menu-item", "data-redevplugin-action": action }, children: [
+    { type: "element", key: `memo-${id}-menu-${action}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
+    label,
+  ] };
+}
+
+function deleteDialog(): PluginUIVNode | string {
+  if (!state.ui.deleteId) return "";
+  return { type: "element", key: "delete-layer", tag: "div", attributes: { class: "dialog-layer" }, children: [
+    { type: "element", key: "delete-scrim", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
+    { type: "element", key: "delete-dialog", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
+      { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: ["!"] },
+      { type: "element", key: "delete-copy", tag: "div", children: [
+        { type: "element", key: "delete-title", tag: "h2", children: ["Delete this memo?"] },
+        { type: "element", key: "delete-message", tag: "p", children: ["This action cannot be undone."] },
+      ] },
+      { type: "element", key: "delete-actions", tag: "div", attributes: { class: "delete-actions" }, children: [
+        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: true, "data-redevplugin-action": "cancel-delete" }, children: ["Keep memo"] },
+        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", "data-redevplugin-action": "confirm-delete" }, children: ["Delete memo"] },
+      ] },
+    ] },
+  ] };
+}
+
+function feedLoading(): PluginUIVNode {
+  return { type: "element", key: "feed-loading", tag: "div", attributes: { class: "feed-loading", role: "status" }, children: [
+    { type: "element", key: "loading-line-1", tag: "span", children: [] },
+    { type: "element", key: "loading-line-2", tag: "span", children: [] },
+    { type: "element", key: "loading-line-3", tag: "span", children: [] },
+  ] };
+}
+
+function feedEmpty(): PluginUIVNode {
+  const filtered = Boolean(state.feed.query || state.feed.tag || state.feed.date || state.feed.view !== "all");
+  return feedMessage("feed-empty", filtered ? "No matching memos" : "Your timeline is ready", filtered ? "Try clearing a filter or searching for something else." : "Write above and save your first memo. The editor is always within reach.", "empty");
+}
+
+function feedMessage(key: string, title: string, message: string, variant: string): PluginUIVNode {
+  return { type: "element", key, tag: "section", attributes: { class: `feed-message ${variant}`, role: variant === "error" ? "status" : "region" }, children: [
+    { type: "element", key: `${key}-mark`, tag: "span", attributes: { class: "message-mark", "aria-hidden": true }, children: [variant === "error" ? "!" : "+"] },
+    { type: "element", key: `${key}-copy`, tag: "div", children: [
+      { type: "element", key: `${key}-title`, tag: "h2", children: [title] },
+      { type: "element", key: `${key}-message`, tag: "p", children: [message] },
+    ] },
+  ] };
+}
+
+function toast(): PluginUIVNode | string {
+  return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [state.ui.toast] } : "";
+}
+
+function applyList(result: ListResult): void {
+  state.feed.memos = result.memos;
+  state.feed.total = result.total;
+  state.feed.hasMore = result.has_more;
+  state.feed.loading = false;
+  state.feed.errorMessage = "";
+}
+
+function applyFacets(result: FacetResult): void {
+  state.facets.month = result.month;
+  state.facets.tags = result.tags;
+  state.facets.days = result.days;
+  state.facets.archivedTotal = result.archived_total;
+  state.facets.loading = false;
+  state.facets.errorMessage = "";
+}
+
+function replaceMemo(memo: Memo): void {
+  const index = state.feed.memos.findIndex((candidate) => candidate.id === memo.id);
+  if (index >= 0) state.feed.memos[index] = memo;
+}
+
+function memoById(id: string): Memo | undefined {
+  return state.feed.memos.find((memo) => memo.id === id);
+}
+
+function resetEditing(): void {
+  clearEditTimer();
+  state.editing = { id: "", content: "", originalContent: "", dirty: false, revision: state.editing.revision, saveState: "idle", errorMessage: "" };
+}
+
+function dedupeMemos(memos: Memo[]): Memo[] {
+  const seen = new Set<string>();
+  return memos.filter((memo) => !seen.has(memo.id) && Boolean(seen.add(memo.id)));
 }
 
 async function renderWithFocus(target: FocusTarget): Promise<void> {
@@ -489,320 +947,109 @@ async function renderWithFocus(target: FocusTarget): Promise<void> {
   state.ui.focusTarget = "none";
 }
 
-function render(): Promise<void> {
-  return bridge.render({
-    type: "element",
-    key: "memos-root",
-    tag: "main",
-    attributes: { class: `memos-app view-${state.ui.screen}` },
-    children: [libraryPane(), editorPane(), toast()],
-  });
+function activeFeedLabel(): string {
+  if (state.feed.query) return `Search: ${state.feed.query}`;
+  if (state.feed.tag) return `#${state.feed.tag}`;
+  if (state.feed.date) return formatCalendarDate(state.feed.date);
+  if (state.feed.view === "pinned") return "Pinned";
+  if (state.feed.view === "archived") return "Archived";
+  return "Timeline";
 }
 
-function libraryPane(): PluginUIVNode {
-  const groups = groupedNotes();
-  const hasNotes = state.library.notes.length > 0;
-  return {
-    type: "element", key: "library-pane", tag: "aside", attributes: { class: "memos-library", "aria-label": "Memo library" }, children: [
-      { type: "element", key: "library-toolbar", tag: "header", attributes: { class: "library-toolbar" }, children: [
-        { type: "element", key: "library-brand", tag: "div", attributes: { class: "brand-lockup" }, children: [
-          { type: "element", key: "library-brand-mark", tag: "span", attributes: { class: "brand-mark", "aria-hidden": true }, children: [] },
-          { type: "element", key: "library-brand-copy", tag: "div", children: [
-            { type: "element", key: "library-title", tag: "h1", children: ["Memos"] },
-            { type: "element", key: "library-count", tag: "p", children: [libraryCountLabel()] },
-          ] },
-        ] },
-        { type: "element", key: "new-memo", tag: "button", attributes: { class: "new-memo-button", type: "button", title: "New memo", "aria-label": "New memo", disabled: backgroundDisabled(), "data-redevplugin-action": "new-memo" }, children: [
-          { type: "element", key: "new-memo-icon", tag: "span", attributes: { class: "icon-plus", "aria-hidden": true }, children: [] },
-        ] },
-      ] },
-      { type: "element", key: "search-form", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
-        { type: "element", key: "search-icon", tag: "span", attributes: { class: "search-icon", "aria-hidden": true }, children: [] },
-        { type: "element", key: "search-query", tag: "input", attributes: { type: "search", name: "query", value: state.library.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: backgroundDisabled(), "data-redevplugin-action": "search-query" } },
-        state.library.query ? { type: "element", key: "clear-search", tag: "button", attributes: { class: "clear-search", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: backgroundDisabled(), "data-redevplugin-action": "clear-search" }, children: [
-          { type: "element", key: "clear-search-icon", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] },
-        ] } : "",
-      ] },
-      { type: "element", key: "library-filters", tag: "div", attributes: { class: "library-filters", role: "group", "aria-label": "Memo filter" }, children: [
-        filterButton("all", "All"),
-        filterButton("pinned", "Pinned"),
-      ] },
-      { type: "element", key: "library-content", tag: "div", attributes: { class: "library-content" }, children: [
-        state.library.searchState === "searching" && !hasNotes ? libraryLoading() : "",
-        state.library.searchState === "error" ? libraryError() : "",
-        state.library.searchState !== "error" && !hasNotes ? libraryEmpty() : "",
-        groups.pinned.length > 0 ? memoGroup("Pinned", "pinned-group", groups.pinned) : "",
-        groups.recent.length > 0 ? memoGroup(state.library.filter === "pinned" ? "Pinned" : "Recent", "recent-group", groups.recent) : "",
-        state.library.hasMore ? { type: "element", key: "load-more", tag: "button", attributes: { class: "load-more", type: "button", disabled: backgroundDisabled() || state.library.searchState === "searching", "data-redevplugin-action": "load-more-memos" }, children: [state.library.searchState === "searching" ? "Loading..." : "Load more"] } : "",
-      ] },
-    ],
-  };
+function currentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}`;
 }
 
-function groupedNotes(): { pinned: MemoSummary[]; recent: MemoSummary[] } {
-  if (state.library.filter === "pinned") return { pinned: [], recent: state.library.notes };
-  return {
-    pinned: state.library.notes.filter((note) => note.pinned),
-    recent: state.library.notes.filter((note) => !note.pinned),
-  };
-}
-
-function memoGroup(label: string, className: string, notes: MemoSummary[]): PluginUIVNode {
-  return { type: "element", key: `memo-group-${className}`, tag: "section", attributes: { class: `memo-group ${className}`, "aria-label": label }, children: [
-    { type: "element", key: `memo-group-${className}-title`, tag: "h2", children: [label] },
-    { type: "element", key: `memo-group-${className}-list`, tag: "ul", attributes: { class: "memo-list" }, children: notes.map(noteItem) },
-  ] };
-}
-
-function noteItem(note: MemoSummary): PluginUIVNode {
-  return { type: "element", key: `memo-${note.id}`, tag: "li", children: [
-    { type: "element", key: `memo-${note.id}-select`, tag: "button", attributes: {
-      class: "memo-row", type: "button", value: note.id, disabled: backgroundDisabled(), "aria-pressed": note.id === state.editor.selectedId,
-      "data-redevplugin-action": "select-memo",
-    }, children: [
-      { type: "element", key: `memo-${note.id}-copy`, tag: "span", attributes: { class: "memo-copy" }, children: [
-        { type: "element", key: `memo-${note.id}-title`, tag: "strong", children: [note.title] },
-        { type: "element", key: `memo-${note.id}-preview`, tag: "span", children: [preview(note.preview) || "A blank page"] },
-        { type: "element", key: `memo-${note.id}-date`, tag: "small", children: [formatMemoDate(note.updated_at)] },
-      ] },
-      note.pinned ? { type: "element", key: `memo-${note.id}-pinned`, tag: "span", attributes: { class: "pinned-mark", title: "Pinned", "aria-label": "Pinned" }, children: [
-        { type: "element", key: `memo-${note.id}-pinned-icon`, tag: "span", attributes: { class: "icon-pin", "aria-hidden": true }, children: [] },
-      ] } : "",
-    ] },
-  ] };
-}
-
-function editorPane(): PluginUIVNode {
-  if (state.editor.mode === "none") return emptyWelcome();
-  const words = wordCount(state.editor.draft.body);
-  return { type: "element", key: "editor-pane", tag: "section", attributes: { class: "editor-pane", "aria-label": "Memo editor" }, children: [
-    { type: "element", key: "editor-toolbar", tag: "header", attributes: { class: "editor-toolbar mobile-editor-bar" }, children: [
-      { type: "element", key: "editor-back", tag: "button", attributes: { class: "back-button", type: "button", title: "Back to memos", "aria-label": "Back to memos", disabled: backgroundDisabled(), "data-redevplugin-action": "back-to-list" }, children: [
-        { type: "element", key: "editor-back-icon", tag: "span", attributes: { class: "icon-back", "aria-hidden": true }, children: [] },
-      ] },
-      saveIndicator(),
-      { type: "element", key: "editor-actions", tag: "div", attributes: { class: "editor-actions" }, children: [
-        { type: "element", key: "editor-pin", tag: "button", attributes: { class: "editor-pin", type: "button", title: state.editor.draft.pinned ? "Unpin memo" : "Pin memo", "aria-label": state.editor.draft.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": state.editor.draft.pinned, disabled: backgroundDisabled(), "data-redevplugin-action": "set-pinned" }, children: [
-          { type: "element", key: "editor-pin-icon", tag: "span", attributes: { class: "icon-pin", "aria-hidden": true }, children: [] },
-        ] },
-        { type: "element", key: "editor-more", tag: "button", attributes: { class: "memo-more", type: "button", title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.overlay === "memo-actions", autofocus: state.ui.focusTarget === "menu-button", disabled: backgroundDisabled(), "data-redevplugin-action": "toggle-memo-menu" }, children: [
-          { type: "element", key: "editor-more-icon", tag: "span", attributes: { class: "icon-more", "aria-hidden": true }, children: [] },
-        ] },
-      ] },
-      state.ui.overlay === "memo-actions" ? memoMenu() : "",
-    ] },
-    { type: "element", key: "editor-scroll", tag: "div", attributes: { class: "editor-scroll" }, children: [
-      { type: "element", key: "editor-document", tag: "article", attributes: { class: "editor-canvas" }, children: [
-        { type: "element", key: "editor-date", tag: "p", attributes: { class: "memo-date" }, children: [formatDocumentDate(state.editor.draft.created_at)] },
-        { type: "element", key: "editor-title", tag: "textarea", attributes: {
-          class: "memo-title", name: "title", placeholder: "Untitled", rows: 1, maxlength: 160,
-          value: state.editor.draft.title, autofocus: state.ui.focusTarget === "title", disabled: backgroundDisabled(), "aria-label": "Memo title", "data-redevplugin-action": "edit-title",
-        } },
-        { type: "element", key: "editor-body", tag: "textarea", attributes: {
-          class: "memo-body", name: "body", value: state.editor.draft.body, placeholder: "Start writing...", maxlength: 20000, disabled: backgroundDisabled(),
-          "aria-label": "Memo body", "data-redevplugin-action": "edit-body",
-        } },
-        { type: "element", key: "editor-footer", tag: "footer", attributes: { class: "editor-footer" }, children: [
-          { type: "element", key: "editor-word-count", tag: "span", attributes: { class: "word-count" }, children: [`${words} ${words === 1 ? "word" : "words"}`] },
-          { type: "element", key: "editor-updated", tag: "span", children: [state.editor.draft.updated_at ? `Updated ${formatMemoDate(state.editor.draft.updated_at).toLowerCase()}` : "Not saved yet"] },
-        ] },
-      ] },
-    ] },
-    state.ui.overlay === "delete-confirmation" ? deleteDialog() : "",
-  ] };
-}
-
-function emptyWelcome(): PluginUIVNode {
-  return { type: "element", key: "editor-pane", tag: "section", attributes: { class: "editor-pane empty-welcome", "aria-label": "Start a memo" }, children: [
-    { type: "element", key: "welcome-artwork", tag: "div", attributes: { class: "empty-artwork", "aria-hidden": true }, children: [] },
-    { type: "element", key: "welcome-kicker", tag: "p", attributes: { class: "empty-kicker" }, children: [formatNotebookDate()] },
-    { type: "element", key: "welcome-title", tag: "h2", children: ["Keep a thought close"] },
-    { type: "element", key: "welcome-copy", tag: "p", children: ["A private place for notes, plans, and passing ideas."] },
-    { type: "element", key: "welcome-new", tag: "button", attributes: { class: "write-memo-button", type: "button", disabled: state.ui.busy, "data-redevplugin-action": "new-memo" }, children: [
-      { type: "element", key: "welcome-new-icon", tag: "span", attributes: { class: "icon-plus", "aria-hidden": true }, children: [] },
-      { type: "element", key: "welcome-new-label", tag: "span", children: ["Write a memo"] },
-    ] },
-  ] };
-}
-
-function saveIndicator(): PluginUIVNode {
-  const label = saveLabel();
-  return { type: "element", key: "save-indicator", tag: "div", attributes: { class: `save-indicator ${state.editor.saveState}`, role: "status" }, children: [
-    { type: "element", key: "save-indicator-mark", tag: "span", attributes: { class: "save-mark", "aria-hidden": true }, children: [] },
-    { type: "element", key: "save-indicator-label", tag: "span", children: [label] },
-    state.editor.dirty && state.editor.saveState === "error" ? { type: "element", key: "retry-save", tag: "button", attributes: { class: "retry-save", type: "button", disabled: backgroundDisabled(), "data-redevplugin-action": "retry-save" }, children: ["Retry"] } : "",
-  ] };
-}
-
-function saveLabel(): string {
-  if (state.editor.saveState === "saving") return "Saving...";
-  if (state.editor.saveState === "saved") return "Saved";
-  if (state.editor.saveState === "unsaved") return "Unsaved";
-  if (state.editor.saveState === "error") return state.editor.errorMessage || "Save failed";
-  return state.editor.mode === "draft" ? "New memo" : "Saved";
-}
-
-function memoMenu(): PluginUIVNode {
-  return { type: "element", key: "memo-menu", tag: "div", attributes: { class: "memo-menu", role: "menu", "aria-label": "Memo actions", "data-redevplugin-escape-action": "close-memo-menu" }, children: [
-    state.editor.draft.id
-      ? { type: "element", key: "memo-menu-delete", tag: "button", attributes: { type: "button", role: "menuitem", autofocus: state.ui.focusTarget === "menu-item", disabled: state.ui.busy, "data-redevplugin-action": "delete-memo" }, children: [
-        { type: "element", key: "memo-menu-delete-icon", tag: "span", attributes: { class: "icon-trash", "aria-hidden": true }, children: [] },
-        { type: "element", key: "memo-menu-delete-label", tag: "span", children: ["Delete memo"] },
-      ] }
-      : { type: "element", key: "memo-menu-delete", tag: "button", attributes: { type: "button", role: "menuitem", autofocus: state.ui.focusTarget === "menu-item", "data-redevplugin-action": "delete-memo" }, children: [
-        { type: "element", key: "memo-menu-delete-icon", tag: "span", attributes: { class: "icon-trash", "aria-hidden": true }, children: [] },
-        { type: "element", key: "memo-menu-delete-label", tag: "span", children: ["Discard draft"] },
-      ] },
-  ] };
-}
-
-function deleteDialog(): PluginUIVNode {
-  const draft = !state.editor.draft.id;
-  return { type: "element", key: "delete-layer", tag: "div", attributes: { class: "dialog-layer" }, children: [
-    { type: "element", key: "delete-scrim", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": draft ? "Cancel discard" : "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
-    { type: "element", key: "delete-dialog", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": draft ? "Discard draft" : "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
-      { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: ["!"] },
-      { type: "element", key: "delete-copy", tag: "div", attributes: { class: "delete-copy" }, children: [
-        { type: "element", key: "delete-title", tag: "h2", children: [draft ? "Discard this draft?" : "Delete this memo?"] },
-        { type: "element", key: "delete-message", tag: "p", children: [draft ? "Your unsaved writing will be removed." : "This cannot be undone."] },
-      ] },
-      { type: "element", key: "delete-actions", tag: "div", attributes: { class: "delete-actions" }, children: [
-        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "button quiet", type: "button", autofocus: true, "data-redevplugin-action": "cancel-delete" }, children: [draft ? "Keep writing" : "Keep memo"] },
-        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "button danger", type: "button", "data-redevplugin-action": "confirm-delete" }, children: [draft ? "Discard draft" : "Delete memo"] },
-      ] },
-    ] },
-  ] };
-}
-
-function filterButton(value: "all" | "pinned", label: string): PluginUIVNode {
-  return { type: "element", key: `filter-${value}`, tag: "button", attributes: {
-    type: "button", value, "aria-pressed": state.library.filter === value, disabled: backgroundDisabled() || state.library.searchState === "searching", "data-redevplugin-action": "filter-memos",
-  }, children: [label] };
-}
-
-function backgroundDisabled(): boolean {
-  return state.ui.busy || state.ui.overlay === "delete-confirmation";
-}
-
-function libraryLoading(): PluginUIVNode {
-  return { type: "element", key: "library-loading", tag: "div", attributes: { class: "library-message", role: "status" }, children: [
-    { type: "element", key: "library-loading-mark", tag: "span", attributes: { class: "loading-mark", "aria-hidden": true }, children: [] },
-    { type: "element", key: "library-loading-label", tag: "strong", children: ["Finding your memos"] },
-  ] };
-}
-
-function libraryError(): PluginUIVNode {
-  return { type: "element", key: "library-error", tag: "div", attributes: { class: "library-message error", role: "status" }, children: [
-    { type: "element", key: "library-error-title", tag: "strong", children: ["Memos need a moment"] },
-    { type: "element", key: "library-error-message", tag: "span", children: [state.library.errorMessage] },
-  ] };
-}
-
-function libraryEmpty(): PluginUIVNode {
-  const searching = Boolean(state.library.query);
-  const pinned = state.library.filter === "pinned";
-  const variant = searching ? "search-empty" : pinned ? "pinned-empty" : "default-empty";
-  return { type: "element", key: "library-empty", tag: "div", attributes: { class: `library-message library-empty ${variant}` }, children: [
-    { type: "element", key: "library-empty-title", tag: "strong", children: [searching ? "No matches" : pinned ? "Nothing pinned" : "No memos yet"] },
-    { type: "element", key: "library-empty-message", tag: "span", children: [searching ? "Try another phrase." : pinned ? "Pinned notes will stay within easy reach." : "Use the plus button to begin."] },
-  ] };
-}
-
-function toast(): PluginUIVNode | string {
-  return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [state.ui.toast] } : "";
-}
-
-function libraryCountLabel(): string {
-  if (state.ui.busy) return "Opening your notes...";
-  if (state.library.total === 0) return "Private notes";
-  return `${state.library.total} ${state.library.total === 1 ? "memo" : "memos"}`;
-}
-
-function updateSummaryForCurrentView(note: Memo): void {
-  const summary = summaryFrom(note);
-  const index = state.library.notes.findIndex((candidate) => candidate.id === summary.id);
-  if (!summaryMatchesCurrentView(note)) {
-    if (index >= 0) {
-      state.library.notes.splice(index, 1);
-      state.library.total = Math.max(0, state.library.total - 1);
-    }
-    state.library.hasMore = state.library.notes.length < state.library.total;
-    return;
+function calendarCells(month: string): Array<{ date: string; day: number; today: boolean } | null> {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const weekday = new Date(Date.UTC(year, monthNumber - 1, 1)).getUTCDay();
+  const leading = (weekday + 6) % 7;
+  const today = localDateKey(new Date());
+  const cells: Array<{ date: string; day: number; today: boolean } | null> = Array.from({ length: leading }, () => null);
+  for (let day = 1; day <= days; day += 1) {
+    const date = `${year}-${pad(monthNumber)}-${pad(day)}`;
+    cells.push({ date, day, today: date === today });
   }
-  if (index >= 0) state.library.notes[index] = summary;
-  else {
-    state.library.notes.unshift(summary);
-    state.library.total += 1;
-  }
-  state.library.notes.sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updated_at.localeCompare(left.updated_at));
-  state.library.hasMore = state.library.notes.length < state.library.total;
+  return cells;
 }
 
-function summaryMatchesCurrentView(note: Memo): boolean {
-  if (state.library.filter === "pinned" && !note.pinned) return false;
-  const query = state.library.query.trim().toLowerCase();
-  if (!query) return true;
-  return `${note.title}\n${note.body}`.toLowerCase().includes(query);
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function dedupeSummaries(notes: MemoSummary[]): MemoSummary[] {
-  const seen = new Set<string>();
-  return notes.filter((note) => {
-    if (seen.has(note.id)) return false;
-    seen.add(note.id);
-    return true;
-  });
+function formatMonth(value: string): string {
+  const [year, month] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("en", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)));
 }
 
-function emptyDraft(): MemoDraft {
-  return { id: "", title: "", body: "", pinned: false, created_at: "", updated_at: "" };
-}
-
-function draftFrom(note: Memo): MemoDraft {
-  return { ...note };
-}
-
-function summaryFrom(note: Memo): MemoSummary {
-  return { id: note.id, title: note.title, preview: note.body.slice(0, 180), pinned: note.pinned, created_at: note.created_at, updated_at: note.updated_at };
-}
-
-function preview(value: string): string {
-  return normalizedWords(value).join(" ");
-}
-
-function wordCount(value: string): number {
-  return normalizedWords(value).length;
-}
-
-function normalizedWords(value: string): string[] {
-  return value
-    .replaceAll("\n", " ")
-    .replaceAll("\r", " ")
-    .replaceAll("\t", " ")
-    .split(" ")
-    .filter(Boolean);
-}
-
-function formatNotebookDate(): string {
-  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
+function formatCalendarDate(value: string): string {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("en", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 function formatDocumentDate(value: string): string {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return formatNotebookDate();
-  return new Intl.DateTimeFormat("en", { month: "long", day: "numeric", year: "numeric" }).format(date);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Recently";
+  return new Intl.DateTimeFormat("en", { month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
 }
 
 function formatMemoDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Just now";
   const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) return new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" }).format(date);
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  const delta = now.getTime() - date.getTime();
+  if (delta >= 0 && delta < 60_000) return "Just now";
+  if (delta >= 0 && delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))}m`;
+  if (date.toDateString() === now.toDateString()) return new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" }).format(date);
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date);
+}
+
+function limitCharacters(value: string, maximum: number): string {
+  return Array.from(value).slice(0, maximum).join("");
+}
+
+function characterCount(value: string): number {
+  return Array.from(value).length;
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function clearTimers(): void {
+  clearDraftTimer();
+  clearEditTimer();
+  clearSearchTimer();
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  toastTimer = undefined;
+}
+
+function showToast(message: string): void {
+  if (toastTimer !== undefined) clearTimeout(toastTimer);
+  state.ui.toast = message;
+  toastTimer = setTimeout(() => {
+    toastTimer = undefined;
+    if (state.ui.toast !== message) return;
+    state.ui.toast = "";
+    void render();
+  }, 2_600);
+}
+
+function clearDraftTimer(): void {
+  if (draftTimer !== undefined) clearTimeout(draftTimer);
+  draftTimer = undefined;
+}
+
+function clearEditTimer(): void {
+  if (editTimer !== undefined) clearTimeout(editTimer);
+  editTimer = undefined;
+}
+
+function clearSearchTimer(): void {
+  if (searchTimer !== undefined) clearTimeout(searchTimer);
+  searchTimer = undefined;
 }
 
 function readableError(error: unknown, fallback: string): string {

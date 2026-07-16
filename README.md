@@ -484,12 +484,15 @@ capabilities.
 - `redevplugin examples-server <state-root> <runtime-path>` starts the
   user-facing Examples Showcase with Memos, Weather, and Sky Strike. Every
   example uses the Go Host, HTTP adapter, real Rust runtime, installable plugin
-  package, and persisted plugin storage. Memos is a complete consumer notebook:
-  its calm library groups pinned and recent notes, instant search invalidates
-  stale requests, the focused editor autosaves without exposing a false saved
-  state, failed persistence preserves the draft and blocks navigation, surface
-  quiesce flushes pending edits, and compact layouts provide an explicit
-  list/editor flow with modal deletion confirmation. The Showcase asks
+  package, and persisted plugin storage. Memos is a complete private Markdown
+  timeline: its always-available composer persists a safe draft before explicit
+  publication, the feed renders controlled Markdown VNodes without admitting
+  raw HTML, images, or arbitrary navigation, and search invalidates stale
+  requests. Tags, local-date calendar facets, pinning, and archives share one
+  bounded query contract. Published memo edits use serialized autosave; failed
+  persistence preserves the active edit and blocks navigation, surface quiesce
+  flushes pending drafts and edits, and compact layouts use a full-height
+  explorer drawer with modal deletion confirmation. The Showcase asks
   `PluginSurfaceHost.create(...)` to create a fresh
   opaque `srcdoc` iframe and mount only its `element`; no caller-provided
   iframe, plugin server, subdomain, cookie bootstrap, GET asset
@@ -500,15 +503,17 @@ capabilities.
   platform conformance fixtures. `npm run test:browser-harness:smoke`
   proves opaque origin isolation, parent DOM/cookie/storage denial, blocked
   direct network and browser persistence APIs, first paint before lazy assets,
-  RPC, parent-owned stream redemption, confirmation, Memos autosave, search,
-  pinning, persistence, deletion recovery, and navigation protection, Weather
+  RPC, parent-owned stream redemption, confirmation, Memos draft recovery,
+  Markdown tasks, autosave, search, facets, pinning, archives, persistence,
+  deletion recovery, and navigation protection, Weather
   network and saved-location behavior, atomic forecast replacement, Sky Strike
   canvas/FPS/input and semantic
   accessibility behavior,
   Rust runtime storage and network calls, and deterministic worker/iframe
-  disposal. Memos requests 24 summaries per UI page while its worker enforces a
-  hard maximum of 30 rows; a compiled-WASM regression proves a 61-item pinned
-  library returns 24, 24, and 13 items without an unbounded response. Committed
+  disposal. Memos requests at most 10 complete memo records per page and its
+  worker clamps every caller to that same limit; a compiled-WASM regression
+  proves a 61-item pinned timeline returns bounded 10-item pages and a one-item
+  tail without an unbounded response. Committed
   example workers are canonical Linux/amd64 `wasm32-unknown-unknown` artifacts
   tied to the recursive local Cargo dependency source snapshot by
   `examples/plugins/worker-artifacts.lock.json`; `npm run examples:generate`

@@ -59,9 +59,9 @@ var examplePluginSpecs = []examplePluginSpec{
 		SurfaceID:        "memos.view",
 		Name:             "Memos",
 		Category:         "Productivity",
-		Description:      "A focused notes workspace with search, pinning, editing, and persistent storage.",
+		Description:      "A private Markdown timeline with safe drafts, search, tags, pinning, and archives.",
 		Icon:             "/assets/memos-v2.webp",
-		Capabilities:     []string{"SQLite storage", "Search", "Pinned notes"},
+		Capabilities:     []string{"Safe drafts", "Markdown timeline", "Tags and calendar"},
 	},
 	{
 		Slug:             "weather",

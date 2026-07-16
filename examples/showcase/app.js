@@ -3352,6 +3352,7 @@
     setReloadDisabled(true);
     surfaceHost = void 0;
     restoreNavigationFocus(navigationTrigger);
+    let surfaceError;
     try {
       const next = await surfaceSlot.open(
         request("/api/open", { slug: plugin.slug }).then((bootstrap) => ({
@@ -3359,6 +3360,7 @@
           hostTransport: createReDevPluginSurfaceTransport(),
           confirm: confirmAction,
           onError: (error) => {
+            surfaceError ??= error;
             if (sequence === openSequence) showError(error);
           }
         }))
@@ -3373,7 +3375,7 @@
       elements.placeholder.hidden = true;
       elements.stage.setAttribute("aria-busy", "false");
     } catch (error) {
-      if (sequence === openSequence) showError(error);
+      if (sequence === openSequence) showError(surfaceError ?? error);
     } finally {
       if (sequence === openSequence) setReloadDisabled(false);
     }

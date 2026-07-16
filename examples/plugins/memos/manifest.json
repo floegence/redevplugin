@@ -4,7 +4,7 @@
   "plugin": {
     "plugin_id": "dev.redevplugin.examples.memos",
     "display_name": "Memos",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "api_version": "plugin-v1",
     "min_runtime_version": "0.5.0",
     "ui_protocol_version": "plugin-ui-v4"
@@ -31,32 +31,64 @@
       "effect": "write",
       "execution": "sync",
       "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": { "type": "object", "additionalProperties": false, "properties": {} },
-      "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["notes", "total", "offset", "has_more", "selected_note"],
+      "request_schema": {
+        "type": "object", "additionalProperties": false,
+        "required": ["month", "utc_offset_minutes"],
         "properties": {
-          "notes": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/summary" } },
+          "month": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+          "utc_offset_minutes": { "type": "integer", "minimum": -840, "maximum": 840 }
+        }
+      },
+      "response_schema": {
+        "type": "object", "additionalProperties": false,
+        "required": ["memos", "total", "offset", "has_more", "draft", "facets"],
+        "properties": {
+          "memos": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/memo" } },
           "total": { "type": "integer", "minimum": 0 },
           "offset": { "type": "integer", "const": 0 },
           "has_more": { "type": "boolean" },
-          "selected_note": { "oneOf": [{ "$ref": "#/$defs/note" }, { "type": "null" }] }
+          "draft": { "oneOf": [{ "$ref": "#/$defs/draft" }, { "type": "null" }] },
+          "facets": { "$ref": "#/$defs/facets" }
         },
         "$defs": {
-          "summary": {
+          "memo": {
             "type": "object", "additionalProperties": false,
-            "required": ["id", "title", "preview", "pinned", "created_at", "updated_at"],
+            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
             "properties": {
-              "id": { "type": "string" }, "title": { "type": "string" }, "preview": { "type": "string" },
-              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": { "type": "string" },
+              "content": { "type": "string", "maxLength": 20000 },
+              "pinned": { "type": "boolean" },
+              "archived": { "type": "boolean" },
+              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+              "created_at": { "type": "string" },
+              "updated_at": { "type": "string" }
             }
           },
-          "note": {
+          "draft": {
             "type": "object", "additionalProperties": false,
-            "required": ["id", "title", "body", "pinned", "created_at", "updated_at"],
+            "required": ["content", "updated_at"],
             "properties": {
-              "id": { "type": "string" }, "title": { "type": "string" }, "body": { "type": "string" },
-              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "content": { "type": "string", "maxLength": 20000 },
+              "updated_at": { "type": "string" }
             }
+          },
+          "facets": {
+            "type": "object", "additionalProperties": false,
+            "required": ["month", "tags", "days", "archived_total"],
+            "properties": {
+              "month": { "type": "string" },
+              "tags": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tag_facet" } },
+              "days": { "type": "array", "maxItems": 31, "items": { "$ref": "#/$defs/day_facet" } },
+              "archived_total": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "tag_facet": {
+            "type": "object", "additionalProperties": false, "required": ["tag", "count"],
+            "properties": { "tag": { "type": "string", "maxLength": 40 }, "count": { "type": "integer", "minimum": 1 } }
+          },
+          "day_facet": {
+            "type": "object", "additionalProperties": false, "required": ["date", "count"],
+            "properties": { "date": { "type": "string" }, "count": { "type": "integer", "minimum": 1 } }
           }
         }
       },
@@ -69,28 +101,37 @@
       "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
       "request_schema": {
         "type": "object", "additionalProperties": false,
+        "required": ["query", "view", "tag", "date", "utc_offset_minutes", "offset", "limit"],
         "properties": {
           "query": { "type": "string", "maxLength": 200 },
+          "view": { "type": "string", "enum": ["all", "pinned", "archived"] },
+          "tag": { "type": "string", "maxLength": 40, "pattern": "^$|^[a-z0-9_/-]+$" },
+          "date": { "type": "string", "pattern": "^$|^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$" },
+          "utc_offset_minutes": { "type": "integer", "minimum": -840, "maximum": 840 },
           "offset": { "type": "integer", "minimum": 0, "maximum": 100000 },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 30 },
-          "pinned_only": { "type": "boolean" }
+          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
         }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["notes", "total", "offset", "has_more"],
+        "type": "object", "additionalProperties": false, "required": ["memos", "total", "offset", "has_more"],
         "properties": {
-          "notes": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/note" } },
+          "memos": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/memo" } },
           "total": { "type": "integer", "minimum": 0 },
           "offset": { "type": "integer", "minimum": 0 },
           "has_more": { "type": "boolean" }
         },
         "$defs": {
-          "note": {
+          "memo": {
             "type": "object", "additionalProperties": false,
-            "required": ["id", "title", "preview", "pinned", "created_at", "updated_at"],
+            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
             "properties": {
-              "id": { "type": "string" }, "title": { "type": "string" }, "preview": { "type": "string" },
-              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": { "type": "string" },
+              "content": { "type": "string", "maxLength": 20000 },
+              "pinned": { "type": "boolean" },
+              "archived": { "type": "boolean" },
+              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+              "created_at": { "type": "string" },
+              "updated_at": { "type": "string" }
             }
           }
         }
@@ -98,49 +139,164 @@
       "broker_access": { "storage": [{ "store_id": "memos", "operations": ["query"] }] }
     },
     {
-      "method": "memos.get",
+      "method": "memos.facets",
       "effect": "read",
       "execution": "sync",
       "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string" } } },
+      "request_schema": {
+        "type": "object", "additionalProperties": false, "required": ["month", "utc_offset_minutes"],
+        "properties": {
+          "month": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+          "utc_offset_minutes": { "type": "integer", "minimum": -840, "maximum": 840 }
+        }
+      },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["note"],
-        "properties": { "note": { "$ref": "#/$defs/note" } },
+        "type": "object", "additionalProperties": false, "required": ["month", "tags", "days", "archived_total"],
+        "properties": {
+          "month": { "type": "string" },
+          "tags": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/tag_facet" } },
+          "days": { "type": "array", "maxItems": 31, "items": { "$ref": "#/$defs/day_facet" } },
+          "archived_total": { "type": "integer", "minimum": 0 }
+        },
         "$defs": {
-          "note": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "title", "body", "pinned", "created_at", "updated_at"],
-            "properties": {
-              "id": { "type": "string" }, "title": { "type": "string" }, "body": { "type": "string" },
-              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
-            }
+          "tag_facet": {
+            "type": "object", "additionalProperties": false, "required": ["tag", "count"],
+            "properties": { "tag": { "type": "string", "maxLength": 40 }, "count": { "type": "integer", "minimum": 1 } }
+          },
+          "day_facet": {
+            "type": "object", "additionalProperties": false, "required": ["date", "count"],
+            "properties": { "date": { "type": "string" }, "count": { "type": "integer", "minimum": 1 } }
           }
         }
       },
       "broker_access": { "storage": [{ "store_id": "memos", "operations": ["query"] }] }
     },
     {
-      "method": "memos.save",
+      "method": "memos.draft.save",
       "effect": "write",
       "execution": "sync",
       "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
       "request_schema": {
-        "type": "object", "additionalProperties": false, "required": ["title", "body"],
+        "type": "object", "additionalProperties": false, "required": ["content"],
+        "properties": { "content": { "type": "string", "maxLength": 20000 } }
+      },
+      "response_schema": {
+        "type": "object", "additionalProperties": false, "required": ["draft"],
+        "properties": { "draft": { "oneOf": [{ "$ref": "#/$defs/draft" }, { "type": "null" }] } },
+        "$defs": {
+          "draft": {
+            "type": "object", "additionalProperties": false, "required": ["content", "updated_at"],
+            "properties": { "content": { "type": "string", "maxLength": 20000 }, "updated_at": { "type": "string" } }
+          }
+        }
+      },
+      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+    },
+    {
+      "method": "memos.publish",
+      "effect": "write",
+      "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "request_schema": {
+        "type": "object", "additionalProperties": false, "required": ["content"],
+        "properties": { "content": { "type": "string", "minLength": 1, "maxLength": 20000 } }
+      },
+      "response_schema": {
+        "type": "object", "additionalProperties": false, "required": ["memo"],
+        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "$defs": {
+          "memo": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "properties": {
+              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
+              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
+              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+            }
+          }
+        }
+      },
+      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+    },
+    {
+      "method": "memos.update",
+      "effect": "write",
+      "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "request_schema": {
+        "type": "object", "additionalProperties": false, "required": ["id", "content"],
         "properties": {
-          "id": { "type": "string" }, "title": { "type": "string", "minLength": 1, "maxLength": 160 },
-          "body": { "type": "string", "maxLength": 20000 }, "pinned": { "type": "boolean" }
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" },
+          "content": { "type": "string", "minLength": 1, "maxLength": 20000 }
         }
       },
       "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["note"],
-        "properties": { "note": { "$ref": "#/$defs/note" } },
+        "type": "object", "additionalProperties": false, "required": ["memo"],
+        "properties": { "memo": { "$ref": "#/$defs/memo" } },
         "$defs": {
-          "note": {
+          "memo": {
             "type": "object", "additionalProperties": false,
-            "required": ["id", "title", "body", "pinned", "created_at", "updated_at"],
+            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
             "properties": {
-              "id": { "type": "string" }, "title": { "type": "string" }, "body": { "type": "string" },
-              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
+              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
+              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+            }
+          }
+        }
+      },
+      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+    },
+    {
+      "method": "memos.setPinned",
+      "effect": "write",
+      "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "request_schema": {
+        "type": "object", "additionalProperties": false, "required": ["id", "value"],
+        "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" }, "value": { "type": "boolean" } }
+      },
+      "response_schema": {
+        "type": "object", "additionalProperties": false, "required": ["memo"],
+        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "$defs": {
+          "memo": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "properties": {
+              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
+              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
+              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
+            }
+          }
+        }
+      },
+      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+    },
+    {
+      "method": "memos.setArchived",
+      "effect": "write",
+      "execution": "sync",
+      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
+      "request_schema": {
+        "type": "object", "additionalProperties": false, "required": ["id", "value"],
+        "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" }, "value": { "type": "boolean" } }
+      },
+      "response_schema": {
+        "type": "object", "additionalProperties": false, "required": ["memo"],
+        "properties": { "memo": { "$ref": "#/$defs/memo" } },
+        "$defs": {
+          "memo": {
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "content", "pinned", "archived", "tags", "created_at", "updated_at"],
+            "properties": {
+              "id": { "type": "string" }, "content": { "type": "string", "maxLength": 20000 },
+              "pinned": { "type": "boolean" }, "archived": { "type": "boolean" },
+              "tags": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "maxLength": 40 } },
+              "created_at": { "type": "string" }, "updated_at": { "type": "string" }
             }
           }
         }
@@ -152,40 +308,24 @@
       "effect": "delete",
       "execution": "sync",
       "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string" } } },
-      "response_schema": { "type": "object", "additionalProperties": false, "required": ["deleted_id"], "properties": { "deleted_id": { "type": "string" } } },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec"] }] }
-    },
-    {
-      "method": "memos.togglePin",
-      "effect": "write",
-      "execution": "sync",
-      "route": { "kind": "worker", "worker_id": "memos_backend", "export": "redevplugin_worker_invoke" },
-      "request_schema": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string" } } },
-      "response_schema": {
-        "type": "object", "additionalProperties": false, "required": ["note"],
-        "properties": { "note": { "$ref": "#/$defs/note" } },
-        "$defs": {
-          "note": {
-            "type": "object", "additionalProperties": false,
-            "required": ["id", "title", "body", "pinned", "created_at", "updated_at"],
-            "properties": {
-              "id": { "type": "string" }, "title": { "type": "string" }, "body": { "type": "string" },
-              "pinned": { "type": "boolean" }, "created_at": { "type": "string" }, "updated_at": { "type": "string" }
-            }
-          }
-        }
+      "request_schema": {
+        "type": "object", "additionalProperties": false, "required": ["id"],
+        "properties": { "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$" } }
       },
-      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec", "query"] }] }
+      "response_schema": {
+        "type": "object", "additionalProperties": false, "required": ["deleted_id"],
+        "properties": { "deleted_id": { "type": "string" } }
+      },
+      "broker_access": { "storage": [{ "store_id": "memos", "operations": ["exec"] }] }
     }
   ],
   "storage": { "stores": [{
     "store_id": "memos", "kind": "sqlite", "scope": "user", "quota_bytes": 8388608, "quota_files": 8,
-    "schema_version": 1,
+    "schema_version": 2,
     "migration": {
-      "from_version": 0, "to_version": 1, "reversible": true, "requires_worker": true,
-      "estimated_bytes": 0, "max_duration_ms": 2000, "data_loss_risk": false,
-      "steps_hash": "sha256:redevplugin-example-memos-worker-migration-v1"
+      "from_version": 1, "to_version": 2, "reversible": true, "requires_worker": true,
+      "estimated_bytes": 8388608, "max_duration_ms": 5000, "data_loss_risk": false,
+      "steps_hash": "sha256:redevplugin-example-memos-worker-migration-v2"
     }
   }] }
 }

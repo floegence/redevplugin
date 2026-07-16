@@ -148,13 +148,17 @@ async function openPlugin(
   setReloadDisabled(true);
   surfaceHost = undefined;
   restoreNavigationFocus(navigationTrigger);
+  let surfaceError: unknown;
   try {
     const next = await surfaceSlot.open(
       request<PluginSurfaceBootstrapResult>("/api/open", { slug: plugin.slug }).then((bootstrap) => ({
         bootstrap: toPluginSurfaceHostBootstrap(bootstrap),
         hostTransport: createReDevPluginSurfaceTransport(),
         confirm: confirmAction,
-        onError: (error) => { if (sequence === openSequence) showError(error); },
+        onError: (error) => {
+          surfaceError ??= error;
+          if (sequence === openSequence) showError(error);
+        },
       })),
     );
     next.element.title = `${plugin.name} plugin`;
@@ -167,7 +171,7 @@ async function openPlugin(
     elements.placeholder.hidden = true;
     elements.stage.setAttribute("aria-busy", "false");
   } catch (error) {
-    if (sequence === openSequence) showError(error);
+    if (sequence === openSequence) showError(surfaceError ?? error);
   } finally {
     if (sequence === openSequence) setReloadDisabled(false);
   }

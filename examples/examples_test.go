@@ -236,7 +236,7 @@ func TestExamplePluginPackagesAreCompleteAndInstallable(t *testing.T) {
 	}{
 		"memos": {
 			pluginID: "dev.redevplugin.examples.memos",
-			methods:  []string{"memos.bootstrap", "memos.delete", "memos.get", "memos.list", "memos.save", "memos.togglePin"},
+			methods:  []string{"memos.bootstrap", "memos.delete", "memos.draft.save", "memos.facets", "memos.list", "memos.publish", "memos.setArchived", "memos.setPinned", "memos.update"},
 			stores:   []string{"memos"},
 		},
 		"weather": {
@@ -329,12 +329,15 @@ func TestSQLiteExamplesDeclareMinimalBrokerAccessAndOwnSchemaInitialization(t *t
 		{
 			plugin: "memos",
 			methods: map[string]string{
-				"memos.bootstrap": `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
-				"memos.list":      `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
-				"memos.get":       `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
-				"memos.save":      `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
-				"memos.delete":    `{"storage":[{"store_id":"memos","operations":["exec"]}]}`,
-				"memos.togglePin": `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.bootstrap":   `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.list":        `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
+				"memos.facets":      `{"storage":[{"store_id":"memos","operations":["query"]}]}`,
+				"memos.draft.save":  `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.publish":     `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.update":      `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.setPinned":   `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.setArchived": `{"storage":[{"store_id":"memos","operations":["exec","query"]}]}`,
+				"memos.delete":      `{"storage":[{"store_id":"memos","operations":["exec"]}]}`,
 			},
 			database: "memos.sqlite",
 		},
@@ -611,8 +614,8 @@ func TestExampleInterfacesUseDistinctConsumerProductDesigns(t *testing.T) {
 		{
 			name:      "memos writing app",
 			paths:     []string{"examples/plugins/memos/ui/assets/styles.css", "examples/plugin-ui/memos.ts"},
-			required:  []string{"memos-library", "library-toolbar", "memo-list", "empty-welcome", "editor-toolbar", "editor-canvas", "editor-footer", "save-indicator", "memo-menu", "delete-dialog", "mobile-editor-bar", "--memos-coral", "--memos-cobalt", "--memos-green"},
-			forbidden: []string{"library-overview", "overview-stats", "memo-context-rail", "context-stat", "context-ribbon", "Private library", "At a glance"},
+			required:  []string{"memos-explorer", "search-form", "view-nav", "calendar-grid", "tag-list", "memo-composer", "memo-feed", "memo-card", "save-indicator", "memo-menu", "delete-dialog", "mobile-header", "--memos-coral", "--memos-cobalt", "--memos-green", "--memos-amber"},
+			forbidden: []string{"memos-library", "empty-welcome", "library-overview", "overview-stats", "memo-context-rail", "context-stat", "context-ribbon", "Private library", "At a glance"},
 		},
 		{
 			name:      "weather lifestyle app",
