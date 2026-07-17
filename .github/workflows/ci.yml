@@ -99,6 +99,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
+      - run: rustup show
       - name: Shell syntax
         run: |
           bash -n scripts/check_redevplugin_platform.sh
@@ -108,6 +109,7 @@ jobs:
           bash -n scripts/check_redevplugin_stress.sh
           bash -n scripts/check_redevplugin_ui_bridge.sh
           bash -n scripts/check_redevplugin_performance.sh
+          bash -n scripts/check_redevplugin_property_gates.sh
           bash -n scripts/build_redevplugin_release.sh
           bash -n scripts/assert_github_release_absent.sh
           bash -n scripts/verify_github_release_identity.sh
@@ -128,6 +130,7 @@ jobs:
           node --check scripts/measure_redevplugin_ui_performance.mjs
           node --check scripts/measure_redevplugin_renderer_performance.mjs
       - run: ./scripts/check_redevplugin_stress.sh --fast --summary dist/redevplugin-stress-fast.json
+      - run: ./scripts/check_redevplugin_property_gates.sh --fast
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

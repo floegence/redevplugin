@@ -610,3 +610,46 @@ mod tests {
         InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
 }
+
+#[cfg(test)]
+mod property_gates {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn scheduler_never_exceeds_configured_queue_capacity(
+            queue_capacity in 1usize..=32,
+            jobs in prop::collection::vec(("[a-z][a-z0-9]{0,4}", "[a-z][a-z0-9]{0,4}"), 0..64),
+        ) {
+            let scheduler = InvocationScheduler::new(queue_capacity.max(1), 1);
+            for (index, (plugin, _suffix)) in jobs.into_iter().enumerate() {
+                let request = format!("r{index}");
+                let _ = scheduler.enqueue(property_job(&request, &plugin));
+                prop_assert!(scheduler.metrics().queued <= queue_capacity);
+            }
+        }
+
+        #[test]
+        fn scheduler_round_robin_never_repeats_a_plugin_while_another_is_ready(
+            first in "[a-z][a-z0-9]{0,4}",
+            second in "[a-z][a-z0-9]{0,4}",
+        ) {
+            prop_assume!(first != second);
+            let scheduler = InvocationScheduler::new(8, 1);
+            scheduler.enqueue(property_job("first-1", &first)).unwrap();
+            scheduler.enqueue(property_job("first-2", &first)).unwrap();
+            scheduler.enqueue(property_job("second-1", &second)).unwrap();
+            let first_job = scheduler.take().unwrap();
+            let second_job = scheduler.take().unwrap();
+            prop_assert_ne!(first_job.plugin_instance_id, second_job.plugin_instance_id);
+        }
+    }
+
+    fn property_job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
+        let frame = format!(
+            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+        );
+        InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
+    }
+}

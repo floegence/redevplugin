@@ -24,6 +24,8 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: rustup show
+      - name: High-risk parser fuzzing
+        run: ./scripts/check_redevplugin_property_gates.sh --stress
       - name: Full platform performance evidence
         run: |
           ./scripts/check_redevplugin_performance.sh \

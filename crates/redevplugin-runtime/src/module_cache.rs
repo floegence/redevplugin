@@ -776,3 +776,55 @@ mod tests {
         .expect("valid worker module")
     }
 }
+
+#[cfg(test)]
+mod property_gates {
+    use super::*;
+    use proptest::prelude::*;
+
+    const ABI_VERSION: &str = "redevplugin-wasm-worker-v2";
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn module_cache_respects_entry_and_source_budgets(
+            max_entries in 1usize..=8,
+            key_suffixes in prop::collection::vec("[a-z][a-z0-9]{0,8}", 1..=16),
+        ) {
+            let source = property_worker_module();
+            let budget = source.len() * max_entries.max(1);
+            let cache = ModuleCache::new(property_engine(), max_entries, budget);
+            for (index, suffix) in key_suffixes.into_iter().enumerate() {
+                let source = source.clone();
+                let cancellation = Cancellation::new();
+                let _ = cache.get_or_compile(
+                    &format!("sha256:{index}:{suffix}"),
+                    ABI_VERSION,
+                    &cancellation,
+                    move || Ok(source),
+                );
+                let metrics = cache.metrics();
+                prop_assert!(metrics.entries <= max_entries);
+                prop_assert!(metrics.source_bytes <= budget);
+            }
+        }
+    }
+
+    fn property_engine() -> wasmi::Engine {
+        let mut config = wasmi::Config::default();
+        config.consume_fuel(true);
+        wasmi::Engine::new(&config)
+    }
+
+    fn property_worker_module() -> Vec<u8> {
+        wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
+                (func (export "redevplugin_worker_dealloc") (param i32 i32))
+                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64) i64.const 0))"#,
+        )
+        .expect("valid worker module")
+    }
+}

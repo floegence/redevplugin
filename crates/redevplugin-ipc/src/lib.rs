@@ -81,6 +81,67 @@ pub enum FrameType {
     Diagnostic,
 }
 
+#[cfg(test)]
+mod property_gates {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn ipc_frame_parser_is_total(input in any::<String>()) {
+            let _ = decode_runtime_input_frame(&input);
+            let _ = parse_frame_identity_v3(&input);
+        }
+
+        #[test]
+        fn runtime_limits_keep_derived_capacities_bounded(
+            worker_count in 1usize..=64,
+            queue_capacity in 1usize..=64,
+            per_plugin_concurrency in 1usize..=64,
+            module_cache_entries in 1usize..=1024,
+            module_cache_source_bytes in 1usize..=(128 * 1024 * 1024),
+        ) {
+            let limits = RuntimeLimits {
+                worker_count,
+                queue_capacity,
+                per_plugin_concurrency,
+                module_cache_entries,
+                module_cache_source_bytes,
+            };
+            let validated = limits.validate().expect("generated limits are within bounds");
+            prop_assert_eq!(validated.hostcall_active_route_capacity(), worker_count);
+            prop_assert_eq!(
+                validated.hostcall_canceled_route_capacity().unwrap(),
+                worker_count + queue_capacity,
+            );
+            prop_assert_eq!(validated.compile_flight_route_capacity(), worker_count);
+        }
+
+        #[test]
+        fn lease_signature_payload_is_stable_for_valid_fields(
+            lease_id in "[a-z][a-z0-9_]{0,24}",
+            token_id in "[a-z][a-z0-9_]{0,24}",
+            nonce in prop::collection::vec(any::<u8>(), 16..=32),
+            method in "worker\\.[a-z][a-z0-9_]{0,16}",
+        ) {
+            let nonce = nonce.into_iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+            let fixture: serde_json::Value = serde_json::from_str(include_str!("../../../testdata/contracts/runtime-lease-signature-v1.json")).unwrap();
+            let mut lease = fixture.get("lease").cloned().unwrap();
+            lease["lease_id"] = serde_json::Value::String(lease_id);
+            lease["token_id"] = serde_json::Value::String(token_id);
+            lease["lease_nonce"] = serde_json::Value::String(nonce);
+            lease["method"] = serde_json::Value::String(method.clone());
+            let typed: WorkerLeasePayload = serde_json::from_value(lease).unwrap();
+            let first = runtime_lease_signature_payload_json(&typed, method.as_str()).unwrap();
+            let second = runtime_lease_signature_payload_json(&typed, method.as_str()).unwrap();
+            prop_assert_eq!(&first, &second);
+            let parsed: serde_json::Value = serde_json::from_str(&first).unwrap();
+            prop_assert!(parsed.is_object());
+            prop_assert!(parsed.get("signature").is_none());
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawIPCFrame {
