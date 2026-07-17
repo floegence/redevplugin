@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/mutation"
@@ -2506,6 +2505,8 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
 	case isCapabilityBusinessError(err):
 		return security.ErrCapabilityError
+	case isUnattestedStructuredRPCError(err):
+		return security.ErrContractMismatch
 	case isWorkerExecutionError(err):
 		return errorCodeForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
@@ -2826,6 +2827,8 @@ func httpStatusForRPCError(err error) int {
 	switch {
 	case isCapabilityBusinessError(err):
 		return http.StatusUnprocessableEntity
+	case isUnattestedStructuredRPCError(err):
+		return http.StatusBadGateway
 	case isWorkerExecutionError(err):
 		return httpStatusForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
@@ -2851,6 +2854,8 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
 	case isCapabilityBusinessError(err):
 		return security.ErrCapabilityError
+	case isUnattestedStructuredRPCError(err):
+		return security.ErrContractMismatch
 	case isWorkerExecutionError(err):
 		return errorCodeForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):
@@ -2873,8 +2878,7 @@ func errorCodeForIntentError(err error) security.ErrorCode {
 }
 
 func errorDetailsForRPCError(err error) errorDetails {
-	var businessError *capability.BusinessError
-	if errors.As(err, &businessError) {
+	if businessError, ok := host.AsValidatedCapabilityBusinessError(err); ok {
 		return errorDetails{
 			CapabilityID:         businessError.CapabilityID,
 			CapabilityVersion:    businessError.CapabilityVersion,
@@ -2883,8 +2887,7 @@ func errorDetailsForRPCError(err error) errorDetails {
 			BusinessErrorDetails: businessError.Details,
 		}
 	}
-	var workerError *runtimeclient.WorkerExecutionError
-	if errors.As(err, &workerError) {
+	if workerError, ok := host.AsValidatedWorkerExecutionError(err); ok {
 		if errorCodeForWorkerExecutionError(err) != security.ErrWorkerError {
 			return errorDetails{}
 		}
@@ -2898,20 +2901,28 @@ func errorDetailsForRPCError(err error) errorDetails {
 }
 
 func isCapabilityBusinessError(err error) bool {
-	var businessError *capability.BusinessError
-	return errors.As(err, &businessError)
+	_, ok := host.AsValidatedCapabilityBusinessError(err)
+	return ok
+}
+
+func isUnattestedStructuredRPCError(err error) bool {
+	return host.HasUnattestedRPCStructuredError(err)
 }
 
 func isWorkerExecutionError(err error) bool {
-	var workerError *runtimeclient.WorkerExecutionError
-	return errors.As(err, &workerError)
+	_, ok := host.AsValidatedWorkerExecutionError(err)
+	return ok
 }
 
 func errorCodeForWorkerExecutionError(err error) security.ErrorCode {
-	var workerError *runtimeclient.WorkerExecutionError
-	if !errors.As(err, &workerError) {
+	workerError, ok := host.AsValidatedWorkerExecutionError(err)
+	if !ok {
 		return security.ErrRuntimeUnavailable
 	}
+	return errorCodeForWorkerExecutionErrorValue(workerError)
+}
+
+func errorCodeForWorkerExecutionErrorValue(workerError runtimeclient.WorkerExecutionError) security.ErrorCode {
 	if workerError.Origin == runtimeclient.WorkerErrorOriginPlugin {
 		return security.ErrWorkerError
 	}
@@ -2941,7 +2952,11 @@ func errorCodeForWorkerExecutionError(err error) security.ErrorCode {
 }
 
 func httpStatusForWorkerExecutionError(err error) int {
-	switch errorCodeForWorkerExecutionError(err) {
+	return httpStatusForWorkerExecutionErrorCode(errorCodeForWorkerExecutionError(err))
+}
+
+func httpStatusForWorkerExecutionErrorCode(code security.ErrorCode) int {
+	switch code {
 	case security.ErrInvalidRequest:
 		return http.StatusBadRequest
 	case security.ErrNetworkTargetDenied, security.ErrGrantInvalid, security.ErrLeaseInvalid:
@@ -2975,6 +2990,8 @@ func httpStatusForIntentError(err error) int {
 	switch {
 	case isCapabilityBusinessError(err):
 		return http.StatusUnprocessableEntity
+	case isUnattestedStructuredRPCError(err):
+		return http.StatusBadGateway
 	case isWorkerExecutionError(err):
 		return httpStatusForWorkerExecutionError(err)
 	case errors.Is(err, host.ErrMethodRequestContract):

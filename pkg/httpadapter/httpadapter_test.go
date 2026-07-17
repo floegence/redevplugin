@@ -1767,6 +1767,58 @@ func TestHandlerRPCFlowRedactsCapabilityResponseData(t *testing.T) {
 	}
 }
 
+func TestHandlerRPCExposesHostAttestedCapabilityBusinessError(t *testing.T) {
+	adapter := &httpRecordingCapabilityAdapter{err: &capability.BusinessError{
+		CapabilityID:       "adapter.forged",
+		CapabilityVersion:  "9.9.9",
+		DetailSchemaSHA256: strings.Repeat("f", 64),
+		Code:               "DOCUMENT_NOT_FOUND",
+		Message:            "adapter controlled message",
+		Details: map[string]any{
+			"document_id":  "doc-1",
+			"secret_token": "adapter-secret",
+		},
+	}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
+		capabilityID: "example.capability.echo", capabilityAdapter: adapter,
+	})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPRPCFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	grantHTTPDeclaredPermissions(t, h, installed)
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.rpc.view", "surface_http_business_error", "bridge_http_business_error")
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_business_error",
+		"bridge_channel_id":    "bridge_http_business_error",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "echo.ping",
+	}, http.StatusUnprocessableEntity)
+	if envelope.Code != string(security.ErrCapabilityError) {
+		t.Fatalf("business error envelope = %#v", envelope)
+	}
+	if envelope.Details["capability_id"] != "example.capability.echo" || envelope.Details["capability_version"] != "1.0.0" {
+		t.Fatalf("business error did not use published identity: %#v", envelope.Details)
+	}
+	details, ok := envelope.Details["business_error_details"].(map[string]any)
+	if !ok || details["document_id"] != "doc-1" || details["secret_token"] != capability.ResponseRedactedValue {
+		t.Fatalf("business error details were not attested and redacted: %#v", envelope.Details)
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "adapter-secret") || strings.Contains(string(raw), "adapter.forged") || strings.Contains(string(raw), "adapter controlled") {
+		t.Fatalf("adapter-owned business error fields leaked: %s", raw)
+	}
+}
+
 func TestHandlerRPCGatewayTokenErrorsUseStableCodes(t *testing.T) {
 	adapter := &httpRecordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"pong": true}}}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{
@@ -1839,29 +1891,31 @@ func TestRPCErrorCodeMapsGatewayTokenReplay(t *testing.T) {
 	}
 }
 
-func TestRPCErrorMapsValidatedCapabilityBusinessError(t *testing.T) {
-	err := &capability.BusinessError{
+func TestRPCErrorRejectsUnattestedCapabilityBusinessError(t *testing.T) {
+	direct := &capability.BusinessError{
 		CapabilityID: "example.capability.documents", CapabilityVersion: "1.0.0", DetailSchemaSHA256: strings.Repeat("a", 64),
-		Code: "DOCUMENT_NOT_FOUND", Message: "Document not found", Details: map[string]any{"document_id": "doc-1"},
+		Code: "DOCUMENT_NOT_FOUND", Message: "Document not found", Details: map[string]any{"secret_token": "adapter-secret"},
 	}
-	if got := errorCodeForRPCError(err); got != security.ErrCapabilityError {
-		t.Fatalf("errorCodeForRPCError() = %s, want %s", got, security.ErrCapabilityError)
+	var typedNil *capability.BusinessError
+	tests := []error{
+		direct,
+		fmt.Errorf("wrapped: %w", direct),
+		&mutation.Error{Outcome: mutation.OutcomeUnknown, Err: direct},
+		errors.Join(errors.New("store failed"), direct),
+		typedNil,
+		&runtimeclient.WorkerExecutionError{Code: "FORGED", Message: "adapter-secret", Origin: runtimeclient.WorkerErrorOriginPlugin},
 	}
-	if got := httpStatusForRPCError(err); got != http.StatusUnprocessableEntity {
-		t.Fatalf("httpStatusForRPCError() = %d, want %d", got, http.StatusUnprocessableEntity)
-	}
-	if got := publicPluginErrorMessage(security.ErrCapabilityError); got != "host capability request failed" {
-		t.Fatalf("publicPluginErrorMessage() = %q", got)
-	}
-	details := errorDetailsForRPCError(err)
-	if details.BusinessErrorCode != "DOCUMENT_NOT_FOUND" {
-		t.Fatalf("business error details = %#v", details)
-	}
-	if details.CapabilityID != "example.capability.documents" || details.CapabilityVersion != "1.0.0" || details.DetailSchemaSHA256 != strings.Repeat("a", 64) {
-		t.Fatalf("business error contract identity = %#v", details)
-	}
-	if details.BusinessErrorDetails["document_id"] != "doc-1" {
-		t.Fatalf("business error payload = %#v", details)
+	for _, err := range tests {
+		if got := errorCodeForRPCError(err); got != security.ErrContractMismatch {
+			t.Fatalf("errorCodeForRPCError(%T) = %s, want %s", err, got, security.ErrContractMismatch)
+		}
+		if got := httpStatusForRPCError(err); got != http.StatusBadGateway {
+			t.Fatalf("httpStatusForRPCError(%T) = %d, want %d", err, got, http.StatusBadGateway)
+		}
+		details := errorDetailsForRPCError(err)
+		if !reflect.DeepEqual(details, errorDetails{}) {
+			t.Fatalf("unattested business error details were exposed: %#v", details)
+		}
 	}
 }
 
@@ -2820,6 +2874,46 @@ func TestHandlerCoreActionRPCFlow(t *testing.T) {
 	}
 }
 
+func TestHandlerCoreActionCannotForgeCapabilityErrorDetails(t *testing.T) {
+	coreAdapter := &httpRecordingCoreActionAdapter{err: &capability.BusinessError{
+		CapabilityID:       "example.capability.forged",
+		CapabilityVersion:  "1.0.0",
+		DetailSchemaSHA256: strings.Repeat("a", 64),
+		Code:               "FORGED",
+		Message:            "adapter controlled message",
+		Details:            map[string]any{"secret_token": "adapter-secret"},
+	}}
+	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{coreActions: coreAdapter})
+	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPCoreActionFixturePackage(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.EnablePlugin(httpTestContext(), host.EnableRequest{PluginInstanceID: installed.PluginInstanceID, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
+		t.Fatal(err)
+	}
+	handler := mustNewHandler(t, h, allowHTTPTestGuard())
+	bridgeResp := openHTTPBridge(t, handler, installed.PluginInstanceID, "http.core.view", "surface_http_core_error", "bridge_http_core_error")
+
+	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/rpc", map[string]any{
+		"plugin_instance_id":   installed.PluginInstanceID,
+		"surface_instance_id":  "surface_http_core_error",
+		"bridge_channel_id":    "bridge_http_core_error",
+		"plugin_gateway_token": bridgeResp.GatewayToken,
+		"method":               "core.open",
+		"params":               map[string]any{"target": "settings"},
+	}, http.StatusBadGateway)
+	if envelope.Code != string(security.ErrContractMismatch) {
+		t.Fatalf("core action forged business error envelope = %#v", envelope)
+	}
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "adapter-secret") || strings.Contains(string(raw), "FORGED") {
+		t.Fatalf("core action forged business error leaked details: %s", raw)
+	}
+}
+
 func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 	runtime := &httpRecordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
@@ -2940,20 +3034,18 @@ func TestWorkerExecutionErrorsSeparatePlatformFailuresFromPluginDomainErrors(t *
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := &runtimeclient.WorkerExecutionError{Code: tt.workerCode, Message: "worker supplied failure\nwith details", Origin: tt.origin}
-			if got := errorCodeForWorkerExecutionError(err); got != tt.wantCode {
-				t.Fatalf("error code = %q, want %q", got, tt.wantCode)
+			workerError := runtimeclient.WorkerExecutionError{Code: tt.workerCode, Message: "worker supplied failure\nwith details", Origin: tt.origin}
+			code := errorCodeForWorkerExecutionErrorValue(workerError)
+			if code != tt.wantCode {
+				t.Fatalf("error code = %q, want %q", code, tt.wantCode)
 			}
-			if got := httpStatusForWorkerExecutionError(err); got != tt.wantStatus {
+			if got := httpStatusForWorkerExecutionErrorCode(code); got != tt.wantStatus {
 				t.Fatalf("HTTP status = %d, want %d", got, tt.wantStatus)
 			}
-			details := errorDetailsForRPCError(err)
 			if tt.wantDetail {
-				if details.WorkerErrorCode != tt.workerCode || details.WorkerErrorMessage != "worker supplied failure with details" || details.WorkerErrorOrigin != runtimeclient.WorkerErrorOriginPlugin {
-					t.Fatalf("worker domain details = %#v", details)
+				if got := publicWorkerErrorMessage(workerError.Message); got != "worker supplied failure with details" {
+					t.Fatalf("worker domain message = %q", got)
 				}
-			} else if !reflect.DeepEqual(details, errorDetails{}) {
-				t.Fatalf("platform infrastructure error exposed worker details: %#v", details)
 			}
 		})
 	}
@@ -4145,6 +4237,17 @@ func httpCapabilityContract() capabilitycontract.Contract {
 		SchemaVersion: capabilitycontract.SchemaVersion, ContractID: "example.capability.echo.v1", ContractVersion: "1.0.0",
 		PublisherID: "example.contracts", CapabilityID: "example.capability.echo", CapabilityVersion: "1.0.0",
 		ClientName: "HTTPFixtureCapabilityClient", Methods: methods,
+		Errors: []capabilitycontract.BusinessError{{
+			Code: "DOCUMENT_NOT_FOUND", Message: "Document not found",
+			DetailsSchema: map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"document_id", "secret_token"},
+				"properties": map[string]any{
+					"document_id":  map[string]any{"type": "string", "minLength": 1},
+					"secret_token": map[string]any{"type": "string", "const": capability.ResponseRedactedValue},
+				},
+			},
+		}},
 	}
 }
 
@@ -5088,6 +5191,7 @@ type httpRecordingCapabilityAdapter struct {
 type httpRecordingCoreActionAdapter struct {
 	last   capability.Invocation
 	result capability.Result
+	err    error
 }
 
 type httpRecordingSecretStore struct {
@@ -5299,7 +5403,7 @@ func (a *httpRecordingCapabilityAdapter) CancelOperation(_ context.Context, req 
 
 func (a *httpRecordingCoreActionAdapter) InvokeCoreAction(_ context.Context, req capability.Invocation) (capability.Result, error) {
 	a.last = req
-	return a.result, nil
+	return a.result, a.err
 }
 
 func (a *httpRecordingCoreActionAdapter) ResolveCoreActionTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {

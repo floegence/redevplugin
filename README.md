@@ -361,11 +361,22 @@ capabilities.
   `isPluginRiskPlan()` so trusted parent UI can render the typed plan without
   brittle ad hoc shape checks.
 - Capability, worker, and core-action method results pass through the Host-owned
-  `capability.DefaultResponseRedactionPolicy` before they are returned to the
-  plugin surface or HTTP adapter. The default policy clones structured
-  `data` payloads, including typed risk-plan `details`, and redacts sensitive
-  keys plus container-shaped env, label, and mount secret values while preserving
-  safe identifiers such as token IDs and secret refs, hashes, and fingerprints.
+  `capability.PrepareResponseData` boundary before they are returned to the
+  plugin surface or HTTP adapter. The boundary budgets native Go structures
+  before marshaling, converts their encoded representation to an independent,
+  bounded JSON data tree, rejects ambiguous or non-JSON values, redacts
+  sensitive keys plus container-shaped env, label, and mount secret values, and
+  then revalidates the final tree against the same closed limits. Custom
+  marshalers remain trusted host-adapter code: the platform bounds and validates
+  their output but cannot isolate allocations or CPU used inside those methods.
+  Response structs may use reflective `omitzero`, but custom `IsZero` methods are
+  rejected because a second observation could change the wire shape.
+  Business-error details use the same path and are exposed
+  only after the Host attests them against the published capability contract.
+  Adapter failures are likewise projected once into an immutable Host error:
+  stable platform classifications and validated public details are preserved,
+  while the original error graph and adapter-controlled error text are discarded
+  before cleanup, diagnostics, or HTTP mapping.
 - `redevplugin version` emits a host-consumable compatibility manifest with the
   current platform version matrix plus SHA-256 hashes for the released OpenAPI,
   manifest, signature, release-metadata, source-policy, source-revocations,

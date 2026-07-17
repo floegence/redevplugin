@@ -3629,7 +3629,7 @@ export class PluginSurfaceHost {
     mutationOutcome?: PluginMutationOutcome,
   ): void {
     const errorDetails = details === undefined ? undefined : normalizePluginJSONObject(details);
-    this.#postToRenderer(removeUndefined({
+    const response = removeUndefined({
       type: "redevplugin.bridge.response",
       id,
       ok: false,
@@ -3637,7 +3637,19 @@ export class PluginSurfaceHost {
       error,
       error_details: errorDetails,
       mutation_outcome: mutationOutcome,
-    }));
+    });
+    if (!messageWithinLimit(response)) {
+      this.#postToRenderer(removeUndefined({
+        type: "redevplugin.bridge.response",
+        id,
+        ok: false,
+        error_code: "PLUGIN_JSON_LIMIT_EXCEEDED",
+        error: "Plugin error response exceeds the bridge message limit",
+        mutation_outcome: mutationOutcome,
+      }));
+      return;
+    }
+    this.#postToRenderer(response);
   }
 
   #postToRenderer(message: unknown): void {

@@ -57,6 +57,31 @@
 - Require capability preflight plans to use the closed
   `redevplugin.capability.risk_plan.v1` contract, and resolve capability adapters
   only by exact signed contract pin.
+- Replace the type-specific response redaction policy with
+  `capability.PrepareResponseData`: adapter results and business-error details
+  now pass through one fixed JSON normalization and redaction boundary before
+  response-schema validation. Native Go trees are structurally budgeted before
+  encoding, and both encoded input and the final redacted tree are strictly
+  size- and shape-checked. Stateful custom `IsZero` response semantics are
+  rejected without invocation.
+
+### Fixed
+
+- Require a private Host attestation before the HTTP adapter can expose a
+  published capability business error. Business errors that bypass the exact
+  capability validation path, including wrapped, joined, typed-nil, or forged
+  values from other adapters, now fail closed as contract mismatches.
+- Project adapter failures once into an immutable Host-owned RPC error before
+  cleanup, rejection reporting, or HTTP mapping. Only allowlisted stable errors,
+  RuntimeManager-attested worker failures, capability-attested business errors,
+  and explicit mutation outcomes survive; adapter error objects and messages do
+  not.
+- Bind each immutable Host RPC error proof to the call that created it. A
+  capability, CoreAction, target, or runtime adapter cannot replay a previously
+  attested capability or worker failure into a later call.
+- Bound trusted-parent error responses with the same bridge message limit as
+  success responses and return `PLUGIN_JSON_LIMIT_EXCEEDED` without oversized
+  details instead of allowing the sandbox receiver to time out silently.
 
 ### Removed
 

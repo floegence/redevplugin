@@ -1630,6 +1630,15 @@ func (h *Host) MintBridgeToken(ctx context.Context, req MintBridgeTokenRequest) 
 }
 
 func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (result CallMethodResult, resultErr error) {
+	ctx = withRPCErrorScope(ctx)
+	var resolvedCall *resolvedMethodCall
+	defer func() {
+		resultErr = finalizeRPCError(ctx, resultErr)
+		if resultErr != nil && resolvedCall != nil {
+			reportErr := h.reportMethodRejectionSafely(ctx, resolvedCall.record, resolvedCall.method.Method, req.SurfaceInstanceID, resultErr)
+			resultErr = mergeRPCFailures(ctx, resultErr, reportErr)
+		}
+	}()
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -1644,11 +1653,7 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 	if err != nil {
 		return CallMethodResult{}, err
 	}
-	defer func() {
-		if resultErr != nil {
-			resultErr = errors.Join(resultErr, h.reportMethodRejection(ctx, call.record, call.method.Method, req.SurfaceInstanceID, resultErr))
-		}
-	}()
+	resolvedCall = &call
 	if methodRequiresConfirmation(call.method) {
 		if err := h.validateMethodRequest(call.record, call.method, req.Params); err != nil {
 			return CallMethodResult{}, err
@@ -1733,7 +1738,11 @@ func (h *Host) CallPluginMethod(ctx context.Context, req CallMethodRequest) (res
 	return result, nil
 }
 
-func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodConfirmationRequest) (PrepareMethodConfirmationResult, error) {
+func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodConfirmationRequest) (response PrepareMethodConfirmationResult, resultErr error) {
+	ctx = withRPCErrorScope(ctx)
+	defer func() {
+		resultErr = finalizeRPCError(ctx, resultErr)
+	}()
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return PrepareMethodConfirmationResult{}, err
@@ -1845,7 +1854,11 @@ func (h *Host) PrepareMethodConfirmation(ctx context.Context, req PrepareMethodC
 	}, nil
 }
 
-func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodConfirmationRequest) (RejectMethodConfirmationResult, error) {
+func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodConfirmationRequest) (response RejectMethodConfirmationResult, resultErr error) {
+	ctx = withRPCErrorScope(ctx)
+	defer func() {
+		resultErr = finalizeRPCError(ctx, resultErr)
+	}()
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return RejectMethodConfirmationResult{}, err
@@ -1893,11 +1906,12 @@ func (h *Host) RejectMethodConfirmation(ctx context.Context, req RejectMethodCon
 		RevokeEpoch:          record.RevokeEpoch,
 		Now:                  req.Now,
 	})
+	err = finalizeRPCError(ctx, err)
 	if errors.Is(err, security.ErrInvalidConfirmationIntent) ||
 		errors.Is(err, security.ErrConfirmationIntentNotFound) ||
 		errors.Is(err, security.ErrConfirmationIntentExpired) ||
 		errors.Is(err, security.ErrConfirmationIntentScopeMismatch) {
-		return RejectMethodConfirmationResult{}, fmt.Errorf("%w: %v", ErrConfirmationInvalid, err)
+		return RejectMethodConfirmationResult{}, ErrConfirmationInvalid
 	}
 	if err != nil {
 		return RejectMethodConfirmationResult{}, err
@@ -1966,7 +1980,11 @@ func (h *Host) ListIntents(ctx context.Context, req ListIntentsRequest) ([]Inten
 	return intents, nil
 }
 
-func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (CallMethodResult, error) {
+func (h *Host) InvokeIntent(ctx context.Context, req InvokeIntentRequest) (response CallMethodResult, resultErr error) {
+	ctx = withRPCErrorScope(ctx)
+	defer func() {
+		resultErr = finalizeRPCError(ctx, resultErr)
+	}()
 	session, err := requireUserSession(ctx)
 	if err != nil {
 		return CallMethodResult{}, err
@@ -2049,7 +2067,8 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 	}
 	defer func() {
 		if resultErr != nil {
-			resultErr = errors.Join(resultErr, h.reportMethodRejection(ctx, record, req.Method, req.SurfaceInstanceID, resultErr))
+			resultErr = finalizeRPCError(ctx, resultErr)
+			resultErr = mergeRPCFailures(ctx, resultErr, h.reportMethodRejectionSafely(ctx, record, req.Method, req.SurfaceInstanceID, resultErr))
 		}
 	}()
 	if record.EnableState != registry.EnableEnabled {
@@ -2120,7 +2139,7 @@ func (h *Host) resolveMethodCall(ctx context.Context, req CallMethodRequest) (re
 func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (resolvedIntentCall, error) {
 	intentID := strings.TrimSpace(req.IntentID)
 	if intentID == "" {
-		return resolvedIntentCall{}, errors.New("intent_id is required")
+		return resolvedIntentCall{}, fmt.Errorf("%w: intent_id is required", ErrMethodRequestContract)
 	}
 	var candidates []registry.PluginRecord
 	if strings.TrimSpace(req.PluginInstanceID) != "" {
@@ -2171,10 +2190,10 @@ func (h *Host) resolveIntent(ctx context.Context, req InvokeIntentRequest) (reso
 		})
 	}
 	if len(matches) == 0 {
-		return resolvedIntentCall{}, fmt.Errorf("intent %q is not available", intentID)
+		return resolvedIntentCall{}, fmt.Errorf("%w: intent is not available", ErrMethodRequestContract)
 	}
 	if len(matches) > 1 && strings.TrimSpace(req.PluginInstanceID) == "" {
-		return resolvedIntentCall{}, fmt.Errorf("intent %q is ambiguous; plugin_instance_id is required", intentID)
+		return resolvedIntentCall{}, fmt.Errorf("%w: intent is ambiguous; plugin_instance_id is required", ErrMethodRequestContract)
 	}
 	resolved := matches[0]
 	decision, err := h.adapters.Policy.EvaluateLocalPolicy(ctx, req.session, pluginRefFromRecord(resolved.record), resolved.method)
@@ -3626,10 +3645,11 @@ func (h *Host) recordSourceSecurityFloor(ctx context.Context, snapshot SourcePol
 		RevocationMetadataSHA256: snapshot.RevocationEvidence.MetadataSHA256,
 	}
 	if _, err := h.adapters.Registry.PutSourceSecurityFloor(ctx, floor, registry.PutOptions{Now: now}); err != nil {
-		if errors.Is(err, registry.ErrSourceSecurityFloorRollback) {
-			return fmt.Errorf("%w: %v", ErrReleaseRefPolicyDenied, err)
+		projected := finalizeRPCError(ctx, err)
+		if errors.Is(projected, registry.ErrSourceSecurityFloorRollback) {
+			return ErrReleaseRefPolicyDenied
 		}
-		return err
+		return projected
 	}
 	return nil
 }
@@ -5774,13 +5794,13 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 	)
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			panicErr := fmt.Errorf("%w: %v", ErrMethodAdapterPanic, recovered)
+			panicErr := fmt.Errorf("%w: adapter panic", ErrMethodAdapterPanic)
 			h.revokeMethodStreamTicket(streamTicket)
 			if finish != nil {
 				panicErr = errors.Join(panicErr, finish(false, panicErr))
 			}
 			if dispatched {
-				panicErr = methodErrorAfterDispatch(method, panicErr)
+				panicErr = methodErrorAfterDispatch(ctx, method, panicErr)
 			}
 			response = CallMethodResult{}
 			responseErr = panicErr
@@ -5841,36 +5861,36 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 	default:
 		return CallMethodResult{}, fmt.Errorf("method route kind %q is invalid", method.Route.Kind)
 	}
+	err = finalizeRPCError(ctx, err)
 	if err != nil {
 		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
 		if dispatched {
-			err = methodErrorAfterDispatch(method, err)
+			err = methodErrorAfterDispatch(ctx, method, err)
 		}
 		return CallMethodResult{}, err
 	}
-	visibleData := capability.RedactResponseData(result.Data)
-	visibleData, err = normalizeMethodResponseData(visibleData)
+	visibleData, err := capability.PrepareResponseData(result.Data)
 	if err != nil {
 		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
-		return CallMethodResult{}, methodErrorAfterDispatch(method, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err))
+		return CallMethodResult{}, methodErrorAfterDispatch(ctx, method, fmt.Errorf("%w: method %q: %v", ErrMethodResponseContract, method.Method, err))
 	}
 	if err := h.validateMethodResponse(record, method, visibleData); err != nil {
 		h.revokeMethodStreamTicket(streamTicket)
 		if finish != nil {
 			err = errors.Join(err, finish(false, err))
 		}
-		return CallMethodResult{}, methodErrorAfterDispatch(method, err)
+		return CallMethodResult{}, methodErrorAfterDispatch(ctx, method, err)
 	}
 	if finish != nil {
 		if err := finish(true, nil); err != nil {
 			h.revokeMethodStreamTicket(streamTicket)
-			return CallMethodResult{}, methodErrorAfterDispatch(method, err)
+			return CallMethodResult{}, methodErrorAfterDispatch(ctx, method, err)
 		}
 	}
 	response = CallMethodResult{Data: visibleData, OperationID: operationID, StreamID: streamID}
@@ -5883,42 +5903,28 @@ func (h *Host) dispatchMethod(ctx context.Context, record registry.PluginRecord,
 	return response, nil
 }
 
-func methodErrorAfterDispatch(method manifest.MethodSpec, err error) error {
+func methodErrorAfterDispatch(ctx context.Context, method manifest.MethodSpec, err error) error {
+	err = finalizeRPCError(ctx, err)
 	if err == nil || method.Effect == manifest.MethodEffectRead {
 		return err
 	}
-	if _, explicit := mutation.Explicit(err); explicit {
+	if _, _, explicit, ok := closedRPCFailure(err); ok && explicit {
 		return err
 	}
-	return mutation.Unknown(err)
+	failure, _, _, ok := closedRPCFailure(err)
+	if !ok {
+		return &mutation.Error{Outcome: mutation.OutcomeUnknown, Err: newRPCFailure(rpcErrorScopeFromContext(ctx), []error{ErrMethodResponseContract}, nil, nil)}
+	}
+	return &mutation.Error{Outcome: mutation.OutcomeUnknown, Err: failure}
 }
 
-func normalizeMethodResponseData(data any) (any, error) {
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	var normalized any
-	if err := json.Unmarshal(raw, &normalized); err != nil {
-		return nil, err
-	}
-	return normalized, nil
-}
-
-func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err error) (normalizedErr error) {
-	if outcome, explicit := mutation.Explicit(err); explicit {
-		defer func() {
-			if normalizedErr != nil {
-				if _, preserved := mutation.Explicit(normalizedErr); preserved {
-					return
-				}
-				normalizedErr = &mutation.Error{Outcome: outcome, Err: normalizedErr}
-			}
-		}()
-	}
-	var businessError *capability.BusinessError
-	if !errors.As(err, &businessError) {
+func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err error) error {
+	businessError, outcome, explicitOutcome, ok := directCapabilityBusinessError(err)
+	if !ok {
 		return err
+	}
+	if businessError == nil {
+		return methodResponseContractError("invalid capability business error")
 	}
 	for _, published := range contract.Errors {
 		if published.Code != businessError.Code {
@@ -5932,13 +5938,12 @@ func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err 
 			if digestErr != nil {
 				return fmt.Errorf("%w: business error %s detail schema digest: %v", ErrMethodResponseContract, businessError.Code, digestErr)
 			}
-			return &capability.BusinessError{
+			return &validatedCapabilityErrorCandidate{businessError: capability.BusinessError{
 				CapabilityID: contract.CapabilityID, CapabilityVersion: contract.CapabilityVersion, DetailSchemaSHA256: digest,
 				Code: published.Code, Message: published.Message,
-			}
+			}, outcome: outcome, explicit: explicitOutcome}
 		}
-		redacted := capability.RedactResponseData(businessError.Details)
-		normalized, normalizeErr := normalizeMethodResponseData(redacted)
+		normalized, normalizeErr := capability.PrepareResponseData(businessError.Details)
 		if normalizeErr != nil {
 			return fmt.Errorf("%w: business error %s details: %v", ErrMethodResponseContract, businessError.Code, normalizeErr)
 		}
@@ -5953,10 +5958,10 @@ func normalizeCapabilityBusinessError(contract capabilitycontract.Contract, err 
 		if digestErr != nil {
 			return fmt.Errorf("%w: business error %s detail schema digest: %v", ErrMethodResponseContract, businessError.Code, digestErr)
 		}
-		return &capability.BusinessError{
+		return &validatedCapabilityErrorCandidate{businessError: capability.BusinessError{
 			CapabilityID: contract.CapabilityID, CapabilityVersion: contract.CapabilityVersion, DetailSchemaSHA256: digest,
 			Code: published.Code, Message: published.Message, Details: details,
-		}
+		}, outcome: outcome, explicit: explicitOutcome}
 	}
 	return fmt.Errorf("%w: undeclared business error code %q", ErrMethodResponseContract, businessError.Code)
 }
@@ -6080,7 +6085,7 @@ type workerMethodDispatch struct {
 func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, method manifest.MethodSpec, req CallMethodRequest) (dispatch workerMethodDispatch, responseErr error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			responseErr = fmt.Errorf("%w: %v", ErrMethodAdapterPanic, recovered)
+			responseErr = fmt.Errorf("%w: adapter panic", ErrMethodAdapterPanic)
 		}
 	}()
 	if h.adapters.RuntimeManager == nil {
@@ -6340,7 +6345,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		ExpiresAtUnixMillis: lease.ExpiresAtUnixMillis,
 	}, method.Method, rawPayload)
 	if err != nil {
-		return dispatch, err
+		return dispatch, validateWorkerErrorCandidate(err)
 	}
 	if len(rawResult) > 0 {
 		if err := json.Unmarshal(rawResult, &dispatch.result); err != nil {
@@ -6365,7 +6370,7 @@ func (h *Host) mintWorkerStorageHandleGrants(ctx context.Context, record registr
 			Now:                 now,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("mint worker storage grant for %q: %w", access.StoreID, err)
+			return nil, err
 		}
 		grants[access.StoreID] = result.HandleGrant.HandleGrantToken
 	}
@@ -6904,6 +6909,7 @@ func (h *Host) consumeConfirmationIntent(ctx context.Context, confirmationID str
 		ConfirmationID: confirmationID,
 		Now:            now,
 	})
+	err = finalizeRPCError(ctx, err)
 	if errors.Is(err, security.ErrConfirmationIntentNotFound) {
 		return security.ConfirmationIntentRecord{}, bridge.ErrTokenInvalid
 	}
@@ -7268,6 +7274,7 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 	if err == nil {
 		return nil
 	}
+	err = finalizeRPCError(ctx, err)
 	reason := methodRejectionReason(err)
 	var persistenceErr error
 	if h.adapters.Audit != nil {
@@ -7281,7 +7288,7 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 				"reason": reason,
 			},
 		}); auditErr != nil {
-			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: audit: %v", ErrSecurityEventPersistence, auditErr))
+			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: audit append failed", ErrSecurityEventPersistence))
 		}
 	}
 	if h.adapters.Diagnostics != nil {
@@ -7298,12 +7305,20 @@ func (h *Host) reportMethodRejection(ctx context.Context, record registry.Plugin
 				"reason":              reason,
 				"surface_instance_id": surfaceInstanceID,
 			},
-			InternalDetails: map[string]any{"error": err.Error()},
 		}); diagnosticErr != nil {
-			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: diagnostic: %v", ErrSecurityEventPersistence, diagnosticErr))
+			persistenceErr = errors.Join(persistenceErr, fmt.Errorf("%w: diagnostic append failed", ErrSecurityEventPersistence))
 		}
 	}
 	return persistenceErr
+}
+
+func (h *Host) reportMethodRejectionSafely(ctx context.Context, record registry.PluginRecord, method string, surfaceInstanceID string, err error) (reportErr error) {
+	defer func() {
+		if recover() != nil {
+			reportErr = fmt.Errorf("%w: rejection reporting panicked", ErrSecurityEventPersistence)
+		}
+	}()
+	return h.reportMethodRejection(ctx, record, method, surfaceInstanceID, err)
 }
 
 func methodRejectionReason(err error) string {
@@ -7346,8 +7361,8 @@ func methodRejectionReason(err error) string {
 }
 
 func isCapabilityBusinessError(err error) bool {
-	var businessError *capability.BusinessError
-	return errors.As(err, &businessError)
+	_, ok := AsValidatedCapabilityBusinessError(err)
+	return ok
 }
 
 func storageNamespacesFromManifest(record registry.PluginRecord) ([]storage.Namespace, error) {

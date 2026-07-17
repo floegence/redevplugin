@@ -11,6 +11,21 @@ import (
 	"github.com/floegence/redevplugin/pkg/capabilitycontract"
 )
 
+func TestNewBusinessErrorDoesNotTraverseAdapterDetails(t *testing.T) {
+	cycle := map[string]any{}
+	cycle["self"] = cycle
+	details := map[string]any{"payload": cycle}
+
+	businessError := NewBusinessError("FAILED", "failed", details)
+	if businessError.Details == nil || businessError.Details["payload"] == nil {
+		t.Fatalf("NewBusinessError() details = %#v", businessError.Details)
+	}
+	details["payload"] = "changed"
+	if businessError.Details["payload"] == "changed" {
+		t.Fatal("NewBusinessError() retained the caller's top-level map")
+	}
+}
+
 func TestRegistryOwnsExactContractPins(t *testing.T) {
 	t.Parallel()
 	registry := NewRegistry()

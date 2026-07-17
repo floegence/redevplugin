@@ -290,18 +290,41 @@ adapter.
 ## Capability Response Redaction
 
 Business capability adapters are host-owned, but their method result data leaves
-through ReDevPlugin. The Host applies `capability.DefaultResponseRedactionPolicy`
-to capability, worker, and core-action `data` before returning it to a sandbox
-surface or HTTP caller. The policy clones supported structured values and
-redacts sensitive keys, environment assignments, label values, typed risk-plan
-details, and mount paths that look like secrets while preserving safe display
-identifiers such as
-`*_id`, `*_ref`, `*_name`, `*_hash`, and fingerprints.
+through ReDevPlugin. The Host applies `capability.PrepareResponseData` to
+capability, worker, and core-action `data` before returning it to a sandbox
+surface or HTTP caller. Adapter values must first encode as one unambiguous JSON
+value within the fixed 512 KiB, 64-level, and 32768-node limits. Native Go maps,
+slices, arrays, pointers, and structs are budgeted before marshaling so an
+already oversized or cyclic tree is rejected before later custom marshalers are
+called. The Host then redacts sensitive keys, environment assignments, label
+values, and mount paths while preserving safe display identifiers such as
+`*_id`, `*_ref`, `*_name`, `*_hash`, and fingerprints. Redaction never converts
+an invalid Go value into an acceptable response, and the final redacted tree is
+rechecked so replacement text cannot expand it beyond the original limits.
 
-This redaction is a platform safety net. Capability adapters should still avoid
-returning raw vault payloads, Docker/Podman environment secrets, private mount
-paths, or credentials unless the response contract explicitly requires a
-redacted representation.
+Custom `MarshalJSON` and `MarshalText` implementations are executable
+host-adapter code, not sandboxed plugin code. ReDevPlugin strictly bounds and
+validates encoded bytes, but cannot prevent a host adapter from consuming
+resources inside these methods before they return. Hosts must apply their normal
+trust and review policy to adapter implementations; the response boundary does
+not claim to sandbox host code. An `omitzero` response field with a custom
+`IsZero` method is rejected without calling that method, eliminating a stateful
+double-observation path. Reflective zero-value checks remain supported.
+
+Published capability business-error details use the same normalization and
+redaction path before details-schema validation. A private Host attestation is
+the only proof accepted by the HTTP adapter; a host adapter cannot obtain a 422
+capability response by constructing or wrapping `capability.BusinessError`
+itself. Unattested, typed-nil, malformed, or oversized errors fail closed as a
+contract mismatch without exposing adapter-controlled details.
+
+Other adapter failures are reduced to an immutable Host-owned RPC failure before
+operation cleanup or rejection reporting. The reduction preserves only stable
+allowlisted platform classifications, worker fields attested only at the
+`RuntimeManager.InvokeWorker` boundary, capability business details attested only
+after published-contract validation, and `not_committed` or `unknown` mutation
+outcomes. It never records the adapter's error string in method-rejection
+diagnostics and never exposes the original error object to HTTP classification.
 
 ## Network Access
 

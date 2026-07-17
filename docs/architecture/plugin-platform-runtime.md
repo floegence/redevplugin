@@ -459,11 +459,31 @@ terminal writes are independently durable; startup and later execution
 entrypoints reconcile either partial terminal state, including after reopening
 SQLite stores, before the live execution lease is released.
 
-Method result `data` is also normalized at the Host boundary. Capability,
-worker, and core-action routes share the same `capability.DefaultResponseRedactionPolicy`
-before data is returned through `CallPluginMethod` or the mountable HTTP adapter,
-so product-owned adapters can rely on one platform response-safety pass for
-common env, label, mount, token, password, credential, and secret fields.
+Method result `data` is normalized at the Host boundary. Capability, worker,
+and core-action routes share `capability.PrepareResponseData` before data is
+returned through `CallPluginMethod` or the mountable HTTP adapter. It performs
+a structural budget pass over native Go values, followed by JSON marshal and
+strict decode before redaction. The resulting independent data tree rejects
+duplicate or prototype-sensitive keys, unsafe numbers, cycles, non-JSON values,
+excessive depth, excessive node count, and oversized payloads. The redacted
+canonical tree is checked a second time, so replacement values cannot expand the
+public response beyond the same fixed limits. A custom `MarshalJSON` or
+`MarshalText` implementation is host-adapter code; encoded output is checked by
+the same strict decoder, while custom method execution remains inside the host
+process and therefore outside the platform's resource isolation boundary.
+Custom `IsZero` methods on `omitzero` response fields are rejected rather than
+observed twice; ordinary `reflect.Value.IsZero` semantics remain supported.
+Normal results and published business-error details use this same pipeline before
+schema validation.
+
+Errors crossing a method adapter boundary are traversed once without invoking
+adapter `Error`, `Is`, or `As` methods and projected into a private immutable Host
+failure. The projection retains only allowlisted platform sentinels, a validated
+worker failure attested at `RuntimeManager.InvokeWorker`, an attested capability
+business error, and an explicit mutation outcome. Operation cleanup, rejection
+reporting, Go callers, and the HTTP adapter consume that projection; none of them
+retain or revisit the adapter error graph. A capability, policy, registry, or
+core-action adapter cannot forge either structured error type.
 
 The platform does not claim cross-store database transactions. When a workflow
 touches multiple stores, it must record durable stage, cleanup, audit, or

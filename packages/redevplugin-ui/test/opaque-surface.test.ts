@@ -1787,7 +1787,7 @@ test("trusted parent forwards validated capability error details without credent
   await waitFor(() => fetch.calls.length === 3);
   const response = [...channel.port1.sent].reverse().find((value) =>
     (value as { id?: string }).id === "rpc_1"
-  ) as { error_code?: string; error_details?: Record<string, unknown> };
+  ) as { error_code?: string; error_details?: Record<string, unknown>; mutation_outcome?: string };
   assert.equal(response.error_code, "PLUGIN_CAPABILITY_ERROR");
   assert.deepEqual(response.error_details, {
     capability_id: "example.capability.documents",
@@ -1798,6 +1798,57 @@ test("trusted parent forwards validated capability error details without credent
   });
   assert.equal(JSON.stringify(response).includes("gateway"), false);
   host.dispose();
+});
+
+test("trusted parent converts oversized capability error details into a bounded bridge error", async () => {
+  const frame = new FakeFrameWithoutCredentialless();
+  const fetch = new FakeFetch();
+  const channel = fakeChannel();
+  fetch.push(preparation());
+  fetch.push(gatewayLease());
+  const host = createSurfaceHost(frame, {
+    bootstrap: hostBootstrap,
+    bridgeChannelId: "bridge_12345678",
+    testMessageChannel: channel,
+    hostTransport: createReDevPluginSurfaceTransport({ fetch: fetch.fetch }),
+  });
+  const opening = host.open();
+  frame.load();
+  await waitFor(() => frame.transferred.length === 1);
+  channel.port2.postMessage({ type: "redevplugin.surface.first_paint" });
+  channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
+  await opening;
+
+  fetch.push({
+    ok: false,
+    error: {
+      code: "PLUGIN_CAPABILITY_ERROR",
+      message: "host capability request failed",
+      details: {
+        capability_id: "example.capability.documents",
+        capability_version: "1.0.0",
+        detail_schema_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        business_error_code: "DOCUMENT_NOT_FOUND",
+        business_error_details: { payload: "x".repeat(opaqueSurfaceRenderLimits.max_message_bytes) },
+      },
+      mutation_outcome: "not_committed",
+    },
+  }, 422);
+  channel.port2.postMessage({
+    type: "redevplugin.bridge.call",
+    request: { id: "rpc_103", method: "documents.get", params: { document_id: "doc-missing" } },
+  });
+  await waitFor(() => channel.port1.sent.some((value) =>
+    (value as { id?: string }).id === "rpc_103"
+  ));
+  const response = [...channel.port1.sent].reverse().find((value) =>
+    (value as { id?: string }).id === "rpc_103"
+  ) as { error_code?: string; error_details?: Record<string, unknown>; mutation_outcome?: string };
+  host.dispose();
+  assert.equal(response.error_code, "PLUGIN_JSON_LIMIT_EXCEEDED");
+  assert.equal(response.error_details, undefined);
+  assert.equal(response.mutation_outcome, "not_committed");
+  assert.equal(new TextEncoder().encode(JSON.stringify(response)).byteLength <= opaqueSurfaceRenderLimits.max_message_bytes, true);
 });
 
 test("trusted parent marks a lost RPC response as an unknown mutation outcome", async () => {

@@ -3141,7 +3141,7 @@
     }
     #postError(id, errorCode, error, details, mutationOutcome) {
       const errorDetails = details === void 0 ? void 0 : normalizePluginJSONObject(details);
-      this.#postToRenderer(removeUndefined({
+      const response = removeUndefined({
         type: "redevplugin.bridge.response",
         id,
         ok: false,
@@ -3149,7 +3149,19 @@
         error,
         error_details: errorDetails,
         mutation_outcome: mutationOutcome
-      }));
+      });
+      if (!messageWithinLimit(response)) {
+        this.#postToRenderer(removeUndefined({
+          type: "redevplugin.bridge.response",
+          id,
+          ok: false,
+          error_code: "PLUGIN_JSON_LIMIT_EXCEEDED",
+          error: "Plugin error response exceeds the bridge message limit",
+          mutation_outcome: mutationOutcome
+        }));
+        return;
+      }
+      this.#postToRenderer(response);
     }
     #postToRenderer(message) {
       if (!this.#port) {

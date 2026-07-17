@@ -1,18 +1,14 @@
 package capability
 
-import "strings"
+import (
+	"fmt"
+	"strings"
 
-const DefaultRedactedValue = "[REDACTED]"
+	"github.com/floegence/redevplugin/internal/jsonvalue"
+)
 
-type ResponseRedactionPolicy struct {
-	Replacement string
-	MaxDepth    int
-}
-
-var DefaultResponseRedactionPolicy = ResponseRedactionPolicy{
-	Replacement: DefaultRedactedValue,
-	MaxDepth:    64,
-}
+// ResponseRedactedValue is the only wire value used to replace sensitive response data.
+const ResponseRedactedValue = "[REDACTED]"
 
 type redactionMode int
 
@@ -27,121 +23,67 @@ type redactionContext struct {
 	mode redactionMode
 }
 
-func RedactResponseData(data any) any {
-	return DefaultResponseRedactionPolicy.Redact(data)
+// PrepareResponseData creates and redacts the bounded JSON value that may leave an adapter boundary.
+func PrepareResponseData(data any) (any, error) {
+	normalized, err := jsonvalue.Normalize(data)
+	if err != nil {
+		return nil, fmt.Errorf("prepare capability response: %w", err)
+	}
+	redacted := redactJSONValue(normalized, redactionContext{})
+	if err := jsonvalue.ValidateCanonical(redacted); err != nil {
+		return nil, fmt.Errorf("prepare capability response: %w", err)
+	}
+	return redacted, nil
 }
 
-func (p ResponseRedactionPolicy) Redact(data any) any {
-	replacement := strings.TrimSpace(p.Replacement)
-	if replacement == "" {
-		replacement = DefaultRedactedValue
-	}
-	maxDepth := p.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = DefaultResponseRedactionPolicy.MaxDepth
-	}
-	return p.redactValue(data, redactionContext{}, replacement, 0, maxDepth)
-}
-
-func (p ResponseRedactionPolicy) redactValue(value any, ctx redactionContext, replacement string, depth int, maxDepth int) any {
-	if depth > maxDepth {
-		return replacement
-	}
-
+func redactJSONValue(value any, ctx redactionContext) any {
 	switch v := value.(type) {
 	case nil:
 		return nil
-	case RiskPlan:
-		return p.redactRiskPlan(v, replacement, depth, maxDepth)
-	case *RiskPlan:
-		if v == nil {
-			return nil
-		}
-		return p.redactRiskPlan(*v, replacement, depth, maxDepth)
 	case map[string]any:
-		return p.redactAnyMap(v, ctx, replacement, depth, maxDepth)
-	case map[string]string:
-		return p.redactStringMap(v, ctx, replacement)
+		return redactJSONMap(v, ctx)
 	case []any:
 		out := make([]any, len(v))
 		for i, item := range v {
-			out[i] = p.redactValue(item, ctx, replacement, depth+1, maxDepth)
-		}
-		return out
-	case []string:
-		out := make([]string, len(v))
-		for i, item := range v {
-			out[i] = p.redactString(item, ctx, replacement)
+			out[i] = redactJSONValue(item, ctx)
 		}
 		return out
 	case string:
-		return p.redactString(v, ctx, replacement)
+		return redactString(v, ctx)
 	default:
 		return value
 	}
 }
 
-func (p ResponseRedactionPolicy) redactRiskPlan(plan RiskPlan, replacement string, depth int, maxDepth int) RiskPlan {
-	if plan.SchemaVersion == "" {
-		plan.SchemaVersion = RiskPlanSchemaVersion
-	}
-	if plan.Details != nil {
-		redacted, ok := p.redactValue(plan.Details, redactionContext{}, replacement, depth+1, maxDepth).(map[string]any)
-		if ok {
-			plan.Details = redacted
-		}
-	}
-	return plan
-}
-
-func (p ResponseRedactionPolicy) redactAnyMap(in map[string]any, ctx redactionContext, replacement string, depth int, maxDepth int) map[string]any {
+func redactJSONMap(in map[string]any, ctx redactionContext) map[string]any {
 	out := make(map[string]any, len(in))
 	for key, value := range in {
 		childCtx := childRedactionContext(ctx, key)
 		switch {
 		case ctx.mode == redactionModeEnv && isSensitiveEnvName(key):
-			out[key] = replacement
+			out[key] = ResponseRedactedValue
 		case ctx.mode == redactionModeLabels && isSensitiveDataKey(key):
-			out[key] = replacement
+			out[key] = ResponseRedactedValue
 		case ctx.mode == redactionModeMount && shouldRedactMountField(key, value):
-			out[key] = replacement
+			out[key] = ResponseRedactedValue
 		case isSensitiveDataKey(key):
-			out[key] = replacement
+			out[key] = ResponseRedactedValue
 		default:
-			out[key] = p.redactValue(value, childCtx, replacement, depth+1, maxDepth)
+			out[key] = redactJSONValue(value, childCtx)
 		}
 	}
 	return out
 }
 
-func (p ResponseRedactionPolicy) redactStringMap(in map[string]string, ctx redactionContext, replacement string) map[string]string {
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		switch {
-		case ctx.mode == redactionModeEnv && isSensitiveEnvName(key):
-			out[key] = replacement
-		case ctx.mode == redactionModeLabels && isSensitiveDataKey(key):
-			out[key] = replacement
-		case ctx.mode == redactionModeMount && shouldRedactMountField(key, value):
-			out[key] = replacement
-		case isSensitiveDataKey(key):
-			out[key] = replacement
-		default:
-			out[key] = p.redactString(value, childRedactionContext(ctx, key), replacement)
-		}
-	}
-	return out
-}
-
-func (p ResponseRedactionPolicy) redactString(value string, ctx redactionContext, replacement string) string {
+func redactString(value string, ctx redactionContext) string {
 	switch ctx.mode {
 	case redactionModeEnv:
-		return redactAssignmentString(value, replacement, isSensitiveEnvName)
+		return redactAssignmentString(value, ResponseRedactedValue, isSensitiveEnvName)
 	case redactionModeLabels:
-		return redactAssignmentString(value, replacement, isSensitiveDataKey)
+		return redactAssignmentString(value, ResponseRedactedValue, isSensitiveDataKey)
 	case redactionModeMount:
 		if isSensitiveMountPath(value) {
-			return replacement
+			return ResponseRedactedValue
 		}
 	}
 	return value
@@ -221,12 +163,6 @@ func valueContainsSensitiveMountPath(value any) bool {
 	switch v := value.(type) {
 	case string:
 		return isSensitiveMountPath(v)
-	case []string:
-		for _, item := range v {
-			if isSensitiveMountPath(item) {
-				return true
-			}
-		}
 	case []any:
 		for _, item := range v {
 			if valueContainsSensitiveMountPath(item) {
@@ -236,12 +172,6 @@ func valueContainsSensitiveMountPath(value any) bool {
 	case map[string]any:
 		for _, item := range v {
 			if valueContainsSensitiveMountPath(item) {
-				return true
-			}
-		}
-	case map[string]string:
-		for _, item := range v {
-			if isSensitiveMountPath(item) {
 				return true
 			}
 		}

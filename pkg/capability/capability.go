@@ -71,7 +71,14 @@ func (e *BusinessError) Error() string {
 }
 
 func NewBusinessError(code, message string, details map[string]any) *BusinessError {
-	return &BusinessError{Code: strings.TrimSpace(code), Message: strings.TrimSpace(message), Details: cloneMap(details)}
+	clonedDetails := make(map[string]any, len(details))
+	for key, value := range details {
+		clonedDetails[key] = value
+	}
+	if details == nil {
+		clonedDetails = nil
+	}
+	return &BusinessError{Code: strings.TrimSpace(code), Message: strings.TrimSpace(message), Details: clonedDetails}
 }
 
 type PluginIdentity struct {

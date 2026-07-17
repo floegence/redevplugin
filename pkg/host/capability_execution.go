@@ -685,7 +685,7 @@ func (h *Host) startMethodExecution(ctx context.Context, record registry.PluginR
 		return capability.Invocation{}, nil, nil, err
 	}
 	if err := h.reconcilePendingExecutionSetups(ctx, record.PluginInstanceID); err != nil {
-		return capability.Invocation{}, nil, nil, fmt.Errorf("reconcile failed execution setup: %w", err)
+		return capability.Invocation{}, nil, nil, err
 	}
 	if method.Execution == manifest.MethodExecutionOperation || method.Execution == manifest.MethodExecutionSubscription {
 		operationID, err := newCapabilityID("operation")

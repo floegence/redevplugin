@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,6 +40,36 @@ import (
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
 )
+
+type responseBoundaryContainer struct {
+	ID     string            `json:"id"`
+	Env    []string          `json:"env"`
+	Labels map[string]string `json:"labels"`
+}
+
+type responseBoundaryResult struct {
+	Containers []*responseBoundaryContainer `json:"containers"`
+}
+
+type responseBoundaryBusinessContext struct {
+	Entries []*responseBoundaryBusinessEntry `json:"entries"`
+}
+
+type responseBoundaryBusinessEntry struct {
+	SecretToken string `json:"secret_token"`
+}
+
+type responseBoundaryJSON string
+
+func (value responseBoundaryJSON) MarshalJSON() ([]byte, error) {
+	return []byte(value), nil
+}
+
+type responseBoundaryPanicJSON struct{}
+
+func (responseBoundaryPanicJSON) MarshalJSON() ([]byte, error) {
+	panic("response marshaler panic")
+}
 
 func mustManagementRevision(t testing.TB, h *Host, pluginInstanceID string) uint64 {
 	t.Helper()
@@ -3033,6 +3064,109 @@ func TestCallPluginMethodRejectsResponseSchemaViolation(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodNormalizesTypedResponseBeforeRedaction(t *testing.T) {
+	original := &responseBoundaryResult{Containers: []*responseBoundaryContainer{{
+		ID:  "container-1",
+		Env: []string{"PATH=/usr/bin", "DB_PASSWORD=adapter-secret"},
+		Labels: map[string]string{
+			"com.example.owner": "platform",
+			"secret_token":      "adapter-token",
+		},
+	}}}
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: original}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true,
+	})
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	labels := contract.Methods[0].ResponseSchema["properties"].(map[string]any)["containers"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["labels"].(map[string]any)
+	labels["properties"].(map[string]any)["secret_token"].(map[string]any)["const"] = capability.ResponseRedactedValue
+	verified := verifyFixtureCapabilityContract(t, contract)
+	if err := h.adapters.Capabilities.Register(capability.Registration{Contract: verified, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter}); err != nil {
+		t.Fatal(err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin,
+	), "rpc.view")
+
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	raw, err := json.Marshal(result.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); strings.Contains(got, "adapter-secret") || strings.Contains(got, "adapter-token") ||
+		!strings.Contains(got, capability.ResponseRedactedValue) {
+		t.Fatalf("typed response was not normalized before redaction: %s", got)
+	}
+	if original.Containers[0].Env[1] != "DB_PASSWORD=adapter-secret" || original.Containers[0].Labels["secret_token"] != "adapter-token" {
+		t.Fatalf("adapter-owned response was mutated: %#v", original)
+	}
+}
+
+func TestCallPluginMethodRedactsCustomJSONRepresentation(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: responseBoundaryJSON(
+		`{"containers":[{"id":"container-1","env":["DB_PASSWORD=custom-secret"]}]}`,
+	)}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+
+	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	})
+	if err != nil {
+		t.Fatalf("CallPluginMethod() error = %v", err)
+	}
+	raw, err := json.Marshal(result.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(raw); strings.Contains(got, "custom-secret") || !strings.Contains(got, capability.ResponseRedactedValue) {
+		t.Fatalf("custom JSON response was not redacted: %s", got)
+	}
+}
+
+func TestCallPluginMethodRejectsNonJSONValuesBeforeRedaction(t *testing.T) {
+	cycle := map[string]any{}
+	cycle["self"] = cycle
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "channel", value: make(chan int)},
+		{name: "function", value: func() {}},
+		{name: "not a number", value: math.NaN()},
+		{name: "cycle", value: cycle},
+		{name: "marshaler panic", value: responseBoundaryPanicJSON{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"secret_token": tc.value}}}
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{
+				developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+			})
+			installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+			_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+				PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+				BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+			})
+			if !errors.Is(err, ErrMethodResponseContract) {
+				t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+			}
+			if errors.Is(err, ErrMethodAdapterPanic) {
+				t.Fatalf("response normalization panic was misclassified as adapter panic: %v", err)
+			}
+		})
+	}
+}
+
 func TestCallPluginMethodMarksMutatingResponseFailureOutcomeUnknown(t *testing.T) {
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"unknown": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
@@ -3058,6 +3192,45 @@ func TestCallPluginMethodMarksMutatingResponseFailureOutcomeUnknown(t *testing.T
 	}
 	if capabilityAdapter.calls != 1 {
 		t.Fatalf("capability adapter calls = %d, want 1", capabilityAdapter.calls)
+	}
+}
+
+func TestCallPluginMethodMarksInvalidMutatingBusinessDetailsOutcomeUnknown(t *testing.T) {
+	contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+	contract.Errors = []capabilitycontract.BusinessError{{
+		Code: "ARCHIVE_FAILED", Message: "Archive failed",
+		DetailsSchema: fixtureClosedObject(map[string]any{
+			"password": map[string]any{"type": "string", "const": capability.ResponseRedactedValue},
+		}, []string{"password"}),
+	}}
+	verified := verifyFixtureCapabilityContract(t, contract)
+	capabilityAdapter := &recordingCapabilityAdapter{err: &mutation.Error{
+		Outcome: mutation.OutcomeNotCommitted,
+		Err: &capability.BusinessError{
+			Code: "ARCHIVE_FAILED", Message: "adapter controlled message",
+			Details: map[string]any{"password": make(chan int)},
+		},
+	}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
+	if err := h.adapters.Capabilities.Register(capability.Registration{
+		Contract: verified, TargetProjector: capabilityAdapter, Adapter: capabilityAdapter,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+		t, operationRPCFixtureManifestJSON(), "Operation RPC", "echo", verified.Pin,
+	), "operation.view")
+
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "documents.archive",
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	if got := mutation.ForError(err); got != mutation.OutcomeUnknown {
+		t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeUnknown)
 	}
 }
 
@@ -3938,8 +4111,8 @@ func TestInitialStreamTicketFailurePersistsPartialCleanupForRestartReconciliatio
 		BridgeChannelID: "bridge_rpc",
 		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
 	})
-	if !errors.Is(err, ticketErr) || !errors.Is(err, finishErr) {
-		t.Fatalf("CallPluginMethod() error = %v, want ticket and cleanup failures", err)
+	if !errors.Is(err, ticketErr) || errors.Is(err, finishErr) {
+		t.Fatalf("CallPluginMethod() error = %v, want stable ticket failure without raw cleanup error", err)
 	}
 	if adapter.calls != 0 {
 		t.Fatalf("adapter ran before ticket issuance: calls=%d", adapter.calls)
@@ -4343,6 +4516,107 @@ func TestCallPluginMethodDispatchesCoreAction(t *testing.T) {
 	}
 }
 
+func TestCallPluginMethodRejectsUnpublishedCoreActionBusinessError(t *testing.T) {
+	coreAdapter := &recordingCoreActionAdapter{err: &capability.BusinessError{
+		CapabilityID:       "example.capability.forged",
+		CapabilityVersion:  "1.0.0",
+		DetailSchemaSHA256: strings.Repeat("a", 64),
+		Code:               "FORGED",
+		Message:            "adapter controlled message",
+		Details:            map[string]any{"secret_token": "adapter-secret"},
+	}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
+
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "core.open", Params: map[string]any{"target": "settings"},
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	var businessError *capability.BusinessError
+	if errors.As(err, &businessError) {
+		t.Fatalf("unpublished business error remained externally discoverable: %#v", businessError)
+	}
+}
+
+func TestCallPluginMethodRejectsUnattestedCoreActionWorkerError(t *testing.T) {
+	coreAdapter := &recordingCoreActionAdapter{err: &runtimeclient.WorkerExecutionError{
+		Code: "FORGED", Message: "adapter-controlled secret", Origin: runtimeclient.WorkerErrorOriginPlugin,
+	}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, coreActions: coreAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
+
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "core.open", Params: map[string]any{"target": "settings"},
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	var workerError *runtimeclient.WorkerExecutionError
+	if errors.As(err, &workerError) {
+		t.Fatalf("unattested worker error remained externally discoverable: %#v", workerError)
+	}
+}
+
+func TestCallPluginMethodRejectsUnattestedTargetProjectorBusinessError(t *testing.T) {
+	capabilityAdapter := &recordingCapabilityAdapter{targetError: &capability.BusinessError{
+		Code: "FORGED", Message: "adapter controlled message", Details: map[string]any{"secret_token": "adapter-secret"},
+	}}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, capabilityID: "example.capability.echo", capabilityAdapter: capabilityAdapter,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken, Method: "echo.ping",
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	if capabilityAdapter.calls != 0 {
+		t.Fatalf("adapter Invoke calls = %d, want 0", capabilityAdapter.calls)
+	}
+	if _, ok := AsValidatedCapabilityBusinessError(err); ok {
+		t.Fatal("target projector forged an attested business error")
+	}
+}
+
+func TestCallPluginMethodRejectsUnattestedRuntimeBusinessError(t *testing.T) {
+	runtime := &recordingRuntimeManager{
+		health: runtimeclient.Health{
+			RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1",
+			ConnectionNonce: "connection_nonce_1234567890", Ready: true,
+		},
+		err: &capability.BusinessError{
+			Code: "FORGED", Message: "runtime controlled message", Details: map[string]any{"secret_token": "runtime-secret"},
+		},
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{
+		developerMode: true, localGenerated: true, runtimeManager: runtime,
+	})
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
+		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
+		BridgeChannelID: "bridge_rpc", GatewayToken: gateway.GatewayToken,
+		Method: "worker.echo", Params: map[string]any{"message": "hello"},
+	})
+	if !errors.Is(err, ErrMethodResponseContract) {
+		t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+	}
+	if _, ok := AsValidatedCapabilityBusinessError(err); ok {
+		t.Fatal("runtime forged an attested business error")
+	}
+}
+
 func TestCallPluginMethodCoreActionRequiresAdapter(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
 	installed, gateway := installEnableAndMintGateway(t, h, buildCoreActionFixturePackage(t), "core.view")
@@ -4544,8 +4818,8 @@ func TestSubscriptionSetupRetainsLeaseUntilFailedOperationRollbackConverges(t *t
 		PluginInstanceID: installed.PluginInstanceID, SurfaceInstanceID: "surface_rpc",
 		BridgeChannelID: "bridge_rpc",
 		GatewayToken:    gateway.GatewayToken, Method: "logs.tail",
-	}); !errors.Is(err, rollbackErr) {
-		t.Fatalf("CallPluginMethod() error = %v, want rollback failure", err)
+	}); err == nil || errors.Is(err, rollbackErr) {
+		t.Fatalf("CallPluginMethod() error = %v, want opaque rollback failure", err)
 	}
 	h.executions.mu.Lock()
 	activeLeases := len(h.executions.leases)
@@ -5746,8 +6020,8 @@ func TestOperationFailurePathsCloseHostOwnedHandle(t *testing.T) {
 			if failureDiagnostic == nil || failureDiagnostic.Message != executionFailedReason {
 				t.Fatalf("execution failure diagnostic mismatch: %#v", diagnostics.events)
 			}
-			if tc.internalCause != "" && failureDiagnostic.InternalDetails["error"] != tc.internalCause {
-				t.Fatalf("execution failure internal cause mismatch: %#v", failureDiagnostic)
+			if tc.internalCause != "" && failureDiagnostic.InternalDetails["error"] != errRPCUnavailable.Error() {
+				t.Fatalf("execution failure retained adapter-controlled cause: %#v", failureDiagnostic)
 			}
 			if err := tc.adapter.last.Execution.Operation.Complete(hostTestContext()); !errors.Is(err, capability.ErrExecutionRevoked) {
 				t.Fatalf("Operation.Complete() after failure error = %v, want %v", err, capability.ErrExecutionRevoked)
@@ -5807,6 +6081,12 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 				"required":             []any{"document_id"},
 				"properties": map[string]any{
 					"document_id": map[string]any{"type": "string", "minLength": 1},
+					"context": fixtureClosedObject(map[string]any{
+						"entries": map[string]any{"type": "array", "items": fixtureClosedObject(map[string]any{
+							"secret_token": map[string]any{"type": "string", "const": capability.ResponseRedactedValue},
+						}, []string{"secret_token"})},
+					}, []string{"entries"}),
+					"password": map[string]any{"type": "string", "const": capability.ResponseRedactedValue},
 				},
 			},
 		}}
@@ -5839,6 +6119,10 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		}}
 		h, installed, gateway, audits := newHost(t, adapter)
 		err := call(h, installed, gateway)
+		validated, ok := AsValidatedCapabilityBusinessError(err)
+		if !ok || validated.Code != "DOCUMENT_NOT_FOUND" || validated.Details["document_id"] != "doc-1" {
+			t.Fatalf("validated business error mismatch: %#v, ok=%v, err=%v", validated, ok, err)
+		}
 		var businessError *capability.BusinessError
 		if !errors.As(err, &businessError) || businessError.Code != "DOCUMENT_NOT_FOUND" || businessError.Message != "Document not found" ||
 			businessError.CapabilityID != "example.capability.echo" || businessError.CapabilityVersion != "1.0.0" ||
@@ -5851,6 +6135,94 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 		if got := mutation.ForError(err); got != mutation.OutcomeNotCommitted {
 			t.Fatalf("mutation.ForError() = %q, want %q", got, mutation.OutcomeNotCommitted)
 		}
+		validated.Details["document_id"] = "tampered"
+		again, ok := AsValidatedCapabilityBusinessError(err)
+		if !ok || again.Details["document_id"] != "doc-1" {
+			t.Fatalf("validated business error accessor exposed mutable state: %#v", again)
+		}
+	})
+
+	t.Run("typed details", func(t *testing.T) {
+		original := &responseBoundaryBusinessContext{Entries: []*responseBoundaryBusinessEntry{{SecretToken: "adapter-secret"}}}
+		adapter := &recordingCapabilityAdapter{err: &capability.BusinessError{
+			Code: "DOCUMENT_NOT_FOUND", Message: "adapter detail",
+			Details: map[string]any{"document_id": "doc-1", "context": original},
+		}}
+		h, installed, gateway, _ := newHost(t, adapter)
+		err := call(h, installed, gateway)
+		var businessError *capability.BusinessError
+		if !errors.As(err, &businessError) || businessError.Details == nil {
+			t.Fatalf("CallPluginMethod() error = %v, want declared BusinessError", err)
+		}
+		raw, marshalErr := json.Marshal(businessError.Details)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if got := string(raw); strings.Contains(got, "adapter-secret") || !strings.Contains(got, capability.ResponseRedactedValue) {
+			t.Fatalf("typed business details were not normalized before redaction: %s", got)
+		}
+		if original.Entries[0].SecretToken != "adapter-secret" {
+			t.Fatalf("adapter-owned business details were mutated: %#v", original)
+		}
+	})
+
+	t.Run("non JSON details fail before redaction", func(t *testing.T) {
+		adapter := &recordingCapabilityAdapter{err: &capability.BusinessError{
+			Code: "DOCUMENT_NOT_FOUND", Message: "adapter detail",
+			Details: map[string]any{"document_id": "doc-1", "password": make(chan int)},
+		}}
+		h, installed, gateway, _ := newHost(t, adapter)
+		err := call(h, installed, gateway)
+		if !errors.Is(err, ErrMethodResponseContract) {
+			t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+		}
+	})
+
+	t.Run("redacted details remain within response limit", func(t *testing.T) {
+		contract := fixtureVerifiedCapabilityContract(t, "example.capability.echo").Contract
+		contract.Errors = []capabilitycontract.BusinessError{{
+			Code:    "DETAILS_TOO_LARGE",
+			Message: "Details are too large",
+			DetailsSchema: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []any{"env"},
+				"properties": map[string]any{
+					"env": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				},
+			},
+		}}
+		verified := verifyFixtureCapabilityContract(t, contract)
+		environment := make([]any, 30000)
+		for index := range 30000 {
+			environment[index] = "API_TOKEN="
+		}
+		adapter := &recordingCapabilityAdapter{err: capability.NewBusinessError(
+			"DETAILS_TOO_LARGE", "adapter detail", map[string]any{"env": environment},
+		)}
+		h, _, _ := newTestHostWithOptions(t, testHostOptions{
+			developerMode: true, localGenerated: true, capabilityContract: &verified, capabilityAdapter: adapter,
+		})
+		installed, gateway := installEnableAndMintGateway(t, h, buildCapabilityPinnedFixturePackage(
+			t, rpcFixtureManifestJSON("1.0.0", "RPC"), "RPC", "echo", verified.Pin,
+		), "rpc.view")
+		err := call(h, installed, gateway)
+		if !errors.Is(err, ErrMethodResponseContract) {
+			t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
+		}
+		if _, ok := AsValidatedCapabilityBusinessError(err); ok {
+			t.Fatal("oversized redacted details retained a business-error attestation")
+		}
+	})
+
+	t.Run("typed nil", func(t *testing.T) {
+		var businessError *capability.BusinessError
+		adapter := &recordingCapabilityAdapter{err: businessError}
+		h, installed, gateway, _ := newHost(t, adapter)
+		err := call(h, installed, gateway)
+		if !errors.Is(err, ErrMethodResponseContract) || errors.Is(err, ErrMethodAdapterPanic) {
+			t.Fatalf("CallPluginMethod() error = %v, want response contract failure", err)
+		}
 	})
 
 	for _, tc := range []struct {
@@ -5859,11 +6231,12 @@ func TestCallPluginMethodValidatesPublishedBusinessErrors(t *testing.T) {
 	}{
 		{name: "undeclared code", err: capability.NewBusinessError("UNKNOWN", "unknown", nil)},
 		{name: "invalid details", err: capability.NewBusinessError("DOCUMENT_NOT_FOUND", "invalid", map[string]any{"unexpected": true})},
+		{name: "panicking business error As", err: panickingBusinessErrorAs{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter := &recordingCapabilityAdapter{err: tc.err}
 			h, installed, gateway, audits := newHost(t, adapter)
-			if err := call(h, installed, gateway); !errors.Is(err, ErrMethodResponseContract) {
+			if err := call(h, installed, gateway); !errors.Is(err, ErrMethodResponseContract) || errors.Is(err, ErrMethodAdapterPanic) {
 				t.Fatalf("CallPluginMethod() error = %v, want ErrMethodResponseContract", err)
 			}
 			if event, ok := audits.lastEvent("plugin.method.rejected"); !ok || event.Details["reason"] != "response_contract" {
@@ -7073,7 +7446,7 @@ func TestInvokeIntentRequiresPluginInstanceWhenAmbiguous(t *testing.T) {
 	grantDeclaredPermissions(t, h, first)
 	grantDeclaredPermissions(t, h, second)
 
-	if _, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{IntentID: "example.echo"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+	if _, err := h.InvokeIntent(hostTestContext(), InvokeIntentRequest{IntentID: "example.echo"}); err == nil || !errors.Is(err, ErrMethodRequestContract) {
 		t.Fatalf("InvokeIntent() ambiguity error = %v", err)
 	}
 }
@@ -8078,12 +8451,15 @@ func TestUserTriggeredDiagnosticHelpersAttachScopeAndHideInternalCause(t *testin
 	if len(diagnostics.events) != 2 {
 		t.Fatalf("diagnostic count = %d, want 2: %#v", len(diagnostics.events), diagnostics.events)
 	}
-	for _, event := range diagnostics.events {
+	for index, event := range diagnostics.events {
 		if event.OwnerSessionHash != "session_hash" || event.OwnerUserHash != "user_hash" || event.OwnerEnvHash != "env_hash" || event.SessionChannelIDHash != "channel_hash" {
 			t.Fatalf("diagnostic owner scope mismatch: %#v", event)
 		}
-		if event.InternalDetails["error"] == nil || !strings.Contains(fmt.Sprint(event.InternalDetails["error"]), sensitive) {
+		if index == 0 && (event.InternalDetails["error"] == nil || !strings.Contains(fmt.Sprint(event.InternalDetails["error"]), sensitive)) {
 			t.Fatalf("diagnostic internal cause mismatch: %#v", event)
+		}
+		if index == 1 && len(event.InternalDetails) != 0 {
+			t.Fatalf("method rejection retained adapter error details: %#v", event)
 		}
 		encoded, err := json.Marshal(event)
 		if err != nil {
@@ -10834,6 +11210,7 @@ type recordingCapabilityAdapter struct {
 	invokeEntered     chan<- struct{}
 	invokeRelease     <-chan struct{}
 	targetFields      map[string]any
+	targetError       error
 	mutateExecution   func(*capability.ExecutionBinding)
 }
 
@@ -11255,6 +11632,9 @@ func assertHostStreamStatus(t *testing.T, h *Host, streamID string, want stream.
 
 func (a *recordingCapabilityAdapter) ProjectTarget(_ context.Context, req capability.TargetResolutionRequest) (capability.TargetDescriptor, error) {
 	a.lastTarget = req
+	if a.targetError != nil {
+		return capability.TargetDescriptor{}, a.targetError
+	}
 	if a.targetFields != nil {
 		return capability.TargetDescriptor{Kind: "fixture", Fields: cloneParams(a.targetFields)}, nil
 	}
