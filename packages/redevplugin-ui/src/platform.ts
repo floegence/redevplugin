@@ -73,9 +73,13 @@ export type PluginRuntimeRefreshResult = PlatformSchemas["PluginRuntimeRefreshRe
 export type PluginSettingsField = PlatformSchemas["PluginSettingsField"];
 export type PluginSettingsSchema = PlatformSchemas["PluginSettingsSchema"];
 export type PluginSettingsSnapshot = PlatformSchemas["PluginSettingsSnapshot"];
-export type PluginSettingsPatchRequest = PlatformSchemas["PatchSettingsRequest"];
+type PluginSettingsPatchBase = Pick<PlatformSchemas["PatchSettingsRequest"], "expected_values_revision">;
+export type PluginSettingsPatchRequest = PluginSettingsPatchBase & (
+  | { set: Record<string, unknown>; remove?: [string, ...string[]] }
+  | { set?: Record<string, unknown>; remove: [string, ...string[]] }
+);
 
-export type PluginCapabilityContractPin = PlatformSchemas["host-capability-pin-v1.schema"];
+export type PluginCapabilityContractPin = PlatformSchemas["HostCapabilityPinV1"];
 export type PluginExecutionBinding = PlatformSchemas["ExecutionBinding"];
 export type PluginOperationRecord = PlatformSchemas["OperationRecord"];
 export type PluginOperationList = PlatformSchemas["PluginOperationList"];

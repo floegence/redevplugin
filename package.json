@@ -6,6 +6,7 @@
   "scripts": {
     "openapi:generate": "node scripts/generate_openapi_types.mjs",
     "openapi:check": "node scripts/generate_openapi_types.mjs --check",
+    "openapi-contract:test": "node --test scripts/openapi_contract_integrity.test.mjs",
     "error-codes:generate": "node scripts/generate_error_codes.mjs",
     "error-codes:check": "node scripts/generate_error_codes.mjs --check",
     "contracts:generate": "node scripts/generate_contract_registry.mjs",
@@ -35,7 +36,7 @@
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run contracts:check && npm run release-metadata:check && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run openapi-contract:test && npm run contracts:check && npm run release-metadata:check && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",
