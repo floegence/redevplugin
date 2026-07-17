@@ -117,7 +117,10 @@ const (
 	PackageTrustActionUpdate  PackageTrustAction = "update"
 )
 
-const installStageTTL = 30 * time.Minute
+const (
+	installStageTTL            = 30 * time.Minute
+	hostRuntimeShutdownTimeout = 5 * time.Second
+)
 
 type PackageTrustVerificationRequest struct {
 	Action               PackageTrustAction     `json:"action"`
@@ -551,7 +554,6 @@ type Host struct {
 	surfaceDocuments    *surfaceDocumentCache
 	methodSchemas       *methodSchemaCache
 	surfaceGenerationID string
-	managementMu        sync.Mutex
 	lifecycleLocks      *pluginLifecycleLockRegistry
 	executions          *executionLeaseRegistry
 	streamReads         *streamReadLockRegistry
@@ -1167,6 +1169,12 @@ func Open(ctx context.Context, adapters Adapters) (*Host, error) {
 	if host.executions.beginTerminalMaintenance(maintenanceNow) {
 		host.executions.finishTerminalMaintenance()
 	}
+	if err := host.adapters.RuntimeManager.BindHostServices(runtimeclient.RuntimeHostServices{
+		StreamSink: hostRuntimeStreamSink{executions: host.executions},
+	}); err != nil {
+		lifecycleCancel()
+		return nil, fmt.Errorf("bind runtime manager host services: %w", err)
+	}
 	return host, nil
 }
 
@@ -1188,11 +1196,34 @@ func (h *Host) Close() error {
 			h.executions.finishAll()
 		}
 		h.lifecycleWG.Wait()
-		if h.adapters.PluginData != nil {
-			h.closeErr = h.adapters.PluginData.Close()
+		var runtimeCloseErr error
+		if h.adapters.RuntimeManager != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), hostRuntimeShutdownTimeout)
+			runtimeCloseErr = h.adapters.RuntimeManager.Stop(shutdownCtx)
+			cancel()
 		}
+		var pluginDataCloseErr error
+		if h.adapters.PluginData != nil {
+			pluginDataCloseErr = h.adapters.PluginData.Close()
+		}
+		h.closeErr = errors.Join(runtimeCloseErr, pluginDataCloseErr)
 	})
 	return h.closeErr
+}
+
+// ensureOpen registers an admitted lifecycle call before Close can publish the closed state.
+func (h *Host) ensureOpen() (func(), error) {
+	if h == nil {
+		return nil, ErrHostClosed
+	}
+	h.lifecycleMu.RLock()
+	if h.closed {
+		h.lifecycleMu.RUnlock()
+		return nil, ErrHostClosed
+	}
+	h.lifecycleWG.Add(1)
+	h.lifecycleMu.RUnlock()
+	return h.lifecycleWG.Done, nil
 }
 
 func (h *Host) startLifecycleJob(run func(context.Context)) bool {
@@ -1249,7 +1280,7 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireRead(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, req.PluginInstanceID)
 	if err != nil {
 		return bridge.SurfaceBootstrap{}, err
 	}
@@ -2188,7 +2219,7 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	if pluginInstanceID == "" {
 		pluginInstanceID = defaultPluginInstanceID(pkg)
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(pluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, pluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2208,7 +2239,7 @@ func (h *Host) InstallReleaseRef(ctx context.Context, req InstallReleaseRefReque
 	if pluginInstanceID == "" {
 		pluginInstanceID = defaultPluginInstanceID(pkg)
 	}
-	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(pluginInstanceID)
+	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, pluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2297,7 +2328,7 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2327,7 +2358,7 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
-	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	unlockLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2566,7 +2597,7 @@ func parseSignedReleaseMetadata(ref PluginReleaseRef, metadataBytes []byte) (Plu
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata must contain exactly one JSON document", ErrReleaseRefVerificationFailed)
 	}
-	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v4" {
+	if strings.TrimSpace(envelope.SchemaVersion) != "redevplugin.release_metadata.v5" {
 		return PluginPackageRelease{}, fmt.Errorf("%w: release metadata schema_version is invalid", ErrReleaseRefVerificationFailed)
 	}
 	if envelope.ReleaseMetadataRef != ref.ReleaseMetadataRef {
@@ -3676,7 +3707,7 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -4204,6 +4235,11 @@ func (result RefreshEnabledPluginResult) MarshalJSON() ([]byte, error) {
 }
 
 func (h *Host) RefreshEnabledPlugins(ctx context.Context) ([]RefreshEnabledPluginResult, error) {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseOpen()
 	records, err := h.adapters.Registry.ListPlugins(ctx)
 	if err != nil {
 		return nil, err
@@ -4553,6 +4589,11 @@ func (h *Host) ListOperations(ctx context.Context, req ListOperationsRequest) (L
 }
 
 func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runtimeclient.ManagerHealth, error) {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	defer releaseOpen()
 	if h.adapters.RuntimeManager == nil {
 		return runtimeclient.ManagerHealth{}, errors.New("runtime manager is required")
 	}
@@ -4568,22 +4609,12 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 	return health, nil
 }
 
-func (h *Host) processSupervisorOptions(runtimePath string) runtimeclient.ProcessSupervisorOptions {
-	return runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:     runtimePath,
-		Diagnostics:     h.adapters.Diagnostics,
-		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:    h.adapters.PluginData,
-		StorageKV:       h.adapters.PluginData,
-		StorageSQLite:   h.adapters.PluginData,
-		Connectivity:    h.adapters.Connectivity,
-		NetworkExecutor: h.adapters.NetworkExecutor,
-		StreamSink:      hostRuntimeStreamSink{executions: h.executions},
-	}
-}
-
 func (h *Host) StopRuntime(ctx context.Context) error {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return err
+	}
+	defer releaseOpen()
 	var stopErr error
 	if h.adapters.RuntimeManager != nil {
 		stopErr = h.adapters.RuntimeManager.Stop(ctx)
@@ -4606,6 +4637,11 @@ func (h *Host) StopRuntime(ctx context.Context) error {
 }
 
 func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, error) {
+	releaseOpen, err := h.ensureOpen()
+	if err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	defer releaseOpen()
 	if h.adapters.RuntimeManager == nil {
 		return runtimeclient.ManagerHealth{}, nil
 	}
@@ -4838,7 +4874,7 @@ func (h *Host) ReadStream(ctx context.Context, req ReadStreamRequest) (ReadStrea
 		}
 	}
 
-	releaseLifecycle, err := h.lifecycleLocks.acquireRead(record.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, record.PluginInstanceID)
 	if err != nil {
 		return ReadStreamResult{}, err
 	}
@@ -4883,12 +4919,19 @@ func (h *Host) AcknowledgeStream(ctx context.Context, req AcknowledgeStreamReque
 		return stream.Record{}, err
 	}
 	defer release()
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
 	readReq := ReadStreamRequest{
 		StreamID: req.StreamID, StreamTicket: req.StreamTicket,
 		SurfaceInstanceID: req.SurfaceInstanceID, Now: req.Now,
 	}
+	streamRecord, _, _, err := h.resolveStreamReadAuthorization(ctx, readReq, session, lifecycleNow(req.Now))
+	if err != nil {
+		return stream.Record{}, err
+	}
+	releaseLifecycle, err := h.lifecycleLocks.acquireRead(ctx, streamRecord.PluginInstanceID)
+	if err != nil {
+		return stream.Record{}, err
+	}
+	defer releaseLifecycle()
 	_, _, validation, err := h.resolveStreamReadAuthorization(ctx, readReq, session, lifecycleNow(req.Now))
 	if err != nil {
 		return stream.Record{}, err
@@ -5093,7 +5136,7 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -5159,7 +5202,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -5209,7 +5252,7 @@ func (h *Host) DisablePlugin(ctx context.Context, req DisableRequest) (registry.
 	if err != nil {
 		return registry.PluginRecord{}, mutation.Unknown(err)
 	}
-	if len(streams) > 0 {
+	if streams.Changed > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.streams.disabled_transitioned", PluginID: disabled.PluginID, PluginInstanceID: disabled.PluginInstanceID})
 	}
 	var revokeErr error
@@ -5229,7 +5272,7 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -5303,7 +5346,7 @@ func (h *Host) UninstallPlugin(ctx context.Context, req UninstallRequest) (regis
 	if len(operations) > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.operations.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	}
-	if len(streams) > 0 {
+	if streams.Changed > 0 {
 		h.audit(ctx, AuditEvent{Type: "plugin.streams.uninstalled_transitioned", PluginID: record.PluginID, PluginInstanceID: record.PluginInstanceID})
 	}
 	if derivedErr != nil {
@@ -5323,6 +5366,11 @@ func (h *Host) DeleteRetainedData(ctx context.Context, req DeleteRetainedDataReq
 	if _, err := requireUserSession(ctx); err != nil {
 		return plugindata.Binding{}, err
 	}
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, req.PluginInstanceID)
+	if err != nil {
+		return plugindata.Binding{}, err
+	}
+	defer releaseLifecycle()
 	records, err := h.adapters.PluginData.ListRetained(ctx, plugindata.RetainedFilter{PluginInstanceID: req.PluginInstanceID})
 	if err != nil {
 		return plugindata.Binding{}, err
@@ -5341,12 +5389,15 @@ func (h *Host) BindRetainedData(ctx context.Context, req BindRetainedDataRequest
 	if _, err := requireUserSession(ctx); err != nil {
 		return plugindata.Binding{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
 	targetPluginInstanceID := strings.TrimSpace(req.TargetPluginInstanceID)
 	if strings.TrimSpace(req.SourcePluginInstanceID) == "" || targetPluginInstanceID == "" || req.ExpectedSourceBindingRevision == 0 || req.TargetExpectedManagementRevision == 0 {
 		return plugindata.Binding{}, plugindata.ErrInvalidArgument
 	}
+	releaseLifecycle, err := h.lifecycleLocks.acquireWriteMany(ctx, req.SourcePluginInstanceID, targetPluginInstanceID)
+	if err != nil {
+		return plugindata.Binding{}, err
+	}
+	defer releaseLifecycle()
 	target, err := h.adapters.Registry.GetPlugin(ctx, targetPluginInstanceID)
 	if err != nil {
 		return plugindata.Binding{}, err
@@ -5498,9 +5549,13 @@ func (h *Host) ImportPluginData(ctx context.Context, req ImportDataRequest) (reg
 	if _, err := requireUserSession(ctx); err != nil {
 		return registry.PluginRecord{}, err
 	}
-	h.managementMu.Lock()
-	defer h.managementMu.Unlock()
-	record, err := h.adapters.Registry.GetPlugin(ctx, req.PluginInstanceID)
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	releaseLifecycle, err := h.lifecycleLocks.acquireWrite(ctx, pluginInstanceID)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	defer releaseLifecycle()
+	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -6058,14 +6113,11 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if h.adapters.Assets == nil {
 		return workerMethodDispatch{}, errors.New("package asset store is required for worker methods")
 	}
-	workerAsset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, worker.Artifact)
-	if err != nil {
-		return workerMethodDispatch{}, fmt.Errorf("read worker artifact %q: %w", worker.Artifact, err)
+	workerEntry, ok := packageEntryByPath(record.PackageEntries, worker.Artifact)
+	if !ok || strings.TrimSpace(workerEntry.SHA256) == "" {
+		return workerMethodDispatch{}, fmt.Errorf("worker artifact %q metadata is unavailable", worker.Artifact)
 	}
-	if strings.TrimSpace(workerAsset.Entry.SHA256) == "" {
-		return workerMethodDispatch{}, fmt.Errorf("worker artifact %q is missing sha256", worker.Artifact)
-	}
-	targetDescriptorHashes, err := runtimeLeaseTargetDescriptorHashes(record, method, worker, workerAsset.Entry.SHA256)
+	targetDescriptorHashes, err := runtimeLeaseTargetDescriptorHashes(record, method, worker, workerEntry.SHA256)
 	if err != nil {
 		return workerMethodDispatch{}, err
 	}
@@ -6077,7 +6129,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		Kind: "worker",
 		Fields: map[string]any{
 			"worker_id":             worker.WorkerID,
-			"artifact_sha256":       workerAsset.Entry.SHA256,
+			"artifact_sha256":       workerEntry.SHA256,
 			"runtime_generation_id": runtimeBinding.RuntimeGenerationID,
 			"arguments":             params,
 		},
@@ -6153,7 +6205,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 		WorkerMode:           string(worker.Mode),
 		WorkerScope:          worker.Scope,
 		Artifact:             worker.Artifact,
-		ArtifactSHA256:       workerAsset.Entry.SHA256,
+		ArtifactSHA256:       workerEntry.SHA256,
 		ABI:                  worker.ABI,
 		Method:               method.Method,
 		Effect:               string(method.Effect),
@@ -6178,7 +6230,7 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 	if err != nil {
 		return dispatch, err
 	}
-	paramsBytes, err := json.Marshal(payload.Params)
+	paramsBytes, err := marshalWorkerCanonicalJSON(payload.Params)
 	if err != nil {
 		return dispatch, err
 	}
@@ -6351,12 +6403,22 @@ func normalizedWorkerBrokerAccess(access *manifest.MethodBrokerAccessSpec) manif
 }
 
 func workerBrokerAccessHash(access manifest.MethodBrokerAccessSpec) (string, error) {
-	raw, err := json.Marshal(access)
+	raw, err := marshalWorkerCanonicalJSON(access)
 	if err != nil {
 		return "", fmt.Errorf("marshal worker broker access: %w", err)
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func marshalWorkerCanonicalJSON(value any) ([]byte, error) {
+	var canonical bytes.Buffer
+	encoder := json.NewEncoder(&canonical)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'}), nil
 }
 
 func workerInvocationTargetHash(payload workerInvocationPayload) (string, error) {
@@ -6666,16 +6728,16 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 		if err != nil {
 			return capability.TargetDescriptor{}, "", err
 		}
-		workerAsset, err := h.adapters.Assets.ReadAsset(ctx, record.PackageHash, worker.Artifact)
-		if err != nil {
-			return capability.TargetDescriptor{}, "", fmt.Errorf("read worker artifact %q: %w", worker.Artifact, err)
+		workerEntry, ok := packageEntryByPath(record.PackageEntries, worker.Artifact)
+		if !ok || strings.TrimSpace(workerEntry.SHA256) == "" {
+			return capability.TargetDescriptor{}, "", fmt.Errorf("worker artifact %q metadata is unavailable", worker.Artifact)
 		}
 		arguments, err := deepCloneParams(req.Params)
 		if err != nil {
 			return capability.TargetDescriptor{}, "", err
 		}
 		target := capability.TargetDescriptor{Kind: "worker", Fields: map[string]any{
-			"worker_id": worker.WorkerID, "artifact_sha256": workerAsset.Entry.SHA256,
+			"worker_id": worker.WorkerID, "artifact_sha256": workerEntry.SHA256,
 			"runtime_generation_id": runtimeBinding.RuntimeGenerationID, "arguments": arguments,
 		}}
 		hash, err := canonicalDescriptorHash(target)

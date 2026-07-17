@@ -9,7 +9,11 @@ import {
 
 export type PluginUIAttributeValue = string | number | boolean;
 
-export type PluginUITextVNode = string;
+export type PluginUITextVNode = {
+  type: "text";
+  key: string;
+  text: string;
+};
 
 export type PluginUIElementVNode = {
   type: "element";
@@ -23,8 +27,7 @@ export type PluginUIVNode = PluginUITextVNode | PluginUIElementVNode;
 
 export type PluginUISetTextOperation = {
   type: "set_text";
-  parent_key: string;
-  child_index: number;
+  target_key: string;
   text: string;
 };
 
@@ -46,23 +49,20 @@ export type PluginUIPatchControlOperation = {
 export type PluginUIInsertChildOperation = {
   type: "insert_child";
   parent_key: string;
-  child_index: number;
+  before_key: string | null;
   node: PluginUIVNode;
 };
 
 export type PluginUIRemoveChildOperation = {
   type: "remove_child";
-  parent_key: string;
-  child_index: number;
-  child_key?: string;
+  target_key: string;
 };
 
 export type PluginUIMoveChildOperation = {
   type: "move_child";
+  target_key: string;
   parent_key: string;
-  child_key: string;
-  from_index: number;
-  to_index: number;
+  before_key: string | null;
 };
 
 export type PluginUIPatchOperation =
@@ -118,19 +118,22 @@ export function validatePluginUITree(tree: PluginUIVNode): PluginUIElementVNode 
     if (nodes > opaqueSurfaceRenderLimits.max_render_nodes || depth > opaqueSurfaceRenderLimits.max_render_depth) {
       throw new PluginUIReconcileError("Plugin UI tree exceeds structural limits");
     }
-    if (typeof node === "string") {
-      if (node.length > opaqueSurfaceRenderLimits.max_text_length) throw new PluginUIReconcileError("Plugin UI text exceeds limits");
+    if ((!isText(node) && !isElement(node)) || ancestors.has(node)) {
+      throw new PluginUIReconcileError("Plugin UI tree must contain plain keyed acyclic VNodes");
+    }
+    if (!keyPattern.test(node.key) || keys.has(node.key)) {
+      throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
+    }
+    keys.add(node.key);
+    if (node.type === "text") {
+      if (node.text.length > opaqueSurfaceRenderLimits.max_text_length) {
+        throw new PluginUIReconcileError("Plugin UI text exceeds limits");
+      }
       return;
     }
-    if (!isElement(node) || ancestors.has(node)) {
-      throw new PluginUIReconcileError("Plugin UI tree must contain plain acyclic VNodes");
-    }
+
     ancestors.add(node);
     try {
-      if (!keyPattern.test(node.key) || keys.has(node.key)) {
-        throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
-      }
-      keys.add(node.key);
       if (!allowedTags.has(node.tag)) {
         throw new PluginUIReconcileError(`Plugin UI tag is not allowed for ${node.key}`);
       }
@@ -157,10 +160,20 @@ export function validatePluginUITree(tree: PluginUIVNode): PluginUIElementVNode 
   return tree;
 }
 
+function isText(value: unknown): value is PluginUITextVNode {
+  return isPlainRecord(value) && hasExactKeys(value, ["type", "key", "text"]) &&
+    value.type === "text" && typeof value.key === "string" && typeof value.text === "string";
+}
+
 function isElement(value: unknown): value is PluginUIElementVNode {
   if (!isPlainRecord(value)) return false;
   return Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) &&
     value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

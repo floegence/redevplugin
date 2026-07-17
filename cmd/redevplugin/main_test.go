@@ -23,6 +23,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/plugindata"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/registry"
+	"github.com/floegence/redevplugin/pkg/runtimeclient"
 	"github.com/floegence/redevplugin/pkg/secrets"
 	"github.com/floegence/redevplugin/pkg/settings"
 	"github.com/floegence/redevplugin/pkg/storage"
@@ -431,6 +432,55 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 		t.Fatalf("generated scaffold runtime result mismatch: %#v", data)
 	}
 
+}
+
+func TestCommandRuntimeManagerRequiresExplicitShardCount(t *testing.T) {
+	ctx := cliContext(context.Background())
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, t.TempDir(), registryStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pluginData.Close() })
+	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
+		Path:            os.Args[0],
+		Diagnostics:     adapters.Diagnostics,
+		Assets:          adapters.Assets,
+		SurfaceTokens:   adapters.SurfaceTokens,
+		PluginData:      pluginData,
+		Connectivity:    adapters.Connectivity,
+		NetworkExecutor: adapters.NetworkExecutor,
+		ShardCount:      0,
+	})
+	if !errors.Is(err, runtimeclient.ErrRuntimeShardCount) {
+		t.Fatalf("newCommandRuntimeManager() error = %v, want %v", err, runtimeclient.ErrRuntimeShardCount)
+	}
+}
+
+func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
+	ctx := cliContext(context.Background())
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, t.TempDir(), registryStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pluginData.Close() })
+	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
+		Path:             os.Args[0],
+		Diagnostics:      adapters.Diagnostics,
+		Assets:           adapters.Assets,
+		SurfaceTokens:    adapters.SurfaceTokens,
+		PluginData:       pluginData,
+		Connectivity:     adapters.Connectivity,
+		NetworkExecutor:  adapters.NetworkExecutor,
+		ShardCount:       1,
+		HandshakeTimeout: 15 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("newCommandRuntimeManager() error = %v", err)
+	}
 }
 
 func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {

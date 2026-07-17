@@ -1,41 +1,163 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use redevplugin_ipc::ParsedWorkerInvocation;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+
+type CancellationNotifier = Arc<dyn Fn() + Send + Sync>;
+const RECENT_REQUEST_REPLAY_CAPACITY: usize = 1024;
+
+pub struct Cancellation {
+    canceled: AtomicBool,
+    state: Mutex<CancellationState>,
+}
+
+#[derive(Default)]
+struct CancellationState {
+    next_registration_id: u64,
+    registrations: HashMap<u64, CancellationNotifier>,
+}
+
+pub struct CancellationRegistration {
+    cancellation: Weak<Cancellation>,
+    registration_id: Option<u64>,
+}
+
+impl Cancellation {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            canceled: AtomicBool::new(false),
+            state: Mutex::new(CancellationState::default()),
+        })
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        self.canceled.load(Ordering::Acquire)
+    }
+
+    pub fn cancel(&self) {
+        let notifications = {
+            let mut state = self.state.lock().expect("cancellation mutex poisoned");
+            if self.canceled.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            state
+                .registrations
+                .drain()
+                .map(|(_, notify)| notify)
+                .collect::<Vec<_>>()
+        };
+        for notify in notifications {
+            notify();
+        }
+    }
+
+    pub fn register(
+        self: &Arc<Self>,
+        notify: impl Fn() + Send + Sync + 'static,
+    ) -> CancellationRegistration {
+        let mut state = self.state.lock().expect("cancellation mutex poisoned");
+        if self.canceled.load(Ordering::Acquire) {
+            return CancellationRegistration {
+                cancellation: Arc::downgrade(self),
+                registration_id: None,
+            };
+        }
+        state.next_registration_id = state
+            .next_registration_id
+            .checked_add(1)
+            .expect("cancellation registration id exhausted");
+        let registration_id = state.next_registration_id;
+        state
+            .registrations
+            .insert(registration_id, Arc::new(notify));
+        CancellationRegistration {
+            cancellation: Arc::downgrade(self),
+            registration_id: Some(registration_id),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("cancellation mutex poisoned")
+            .registrations
+            .len()
+    }
+}
+
+impl Drop for CancellationRegistration {
+    fn drop(&mut self) {
+        let Some(registration_id) = self.registration_id.take() else {
+            return;
+        };
+        let Some(cancellation) = self.cancellation.upgrade() else {
+            return;
+        };
+        cancellation
+            .state
+            .lock()
+            .expect("cancellation mutex poisoned")
+            .registrations
+            .remove(&registration_id);
+    }
+}
 
 pub enum InvocationSignal {
     HostcallResponse(String),
     Canceled,
 }
 
-#[derive(Debug)]
 pub struct InvocationJob {
     pub request_id: String,
     pub plugin_instance_id: String,
-    pub frame: String,
-    pub canceled: Arc<AtomicBool>,
+    pub invocation: Arc<ParsedWorkerInvocation>,
+    pub cancellation: Arc<Cancellation>,
     pub signal_sender: Sender<InvocationSignal>,
     pub signals: Receiver<InvocationSignal>,
 }
 
+impl std::fmt::Debug for InvocationJob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InvocationJob")
+            .field("request_id", &self.request_id)
+            .field("plugin_instance_id", &self.plugin_instance_id)
+            .field("canceled", &self.cancellation.is_canceled())
+            .finish_non_exhaustive()
+    }
+}
+
 impl InvocationJob {
-    pub fn new(request_id: String, plugin_instance_id: String, frame: String) -> Self {
+    pub fn new(invocation: ParsedWorkerInvocation) -> Result<Self, String> {
         let (signal_sender, signals) = mpsc::channel();
-        Self {
+        let request_id = invocation.request_id().to_string();
+        let plugin_instance_id = invocation.plugin_instance_id()?.to_string();
+        Ok(Self {
             request_id,
             plugin_instance_id,
-            frame,
-            canceled: Arc::new(AtomicBool::new(false)),
+            invocation: Arc::new(invocation),
+            cancellation: Cancellation::new(),
             signal_sender,
             signals,
-        }
+        })
     }
 }
 
 pub enum CancelDisposition {
-    Queued,
+    Queued(InvocationJob),
     Running,
+    Complete,
     Missing,
+}
+
+#[derive(Debug)]
+pub enum EnqueueError {
+    Capacity,
+    PluginCapacity,
+    Duplicate,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +176,7 @@ pub struct InvocationScheduler {
 struct SchedulerLimits {
     queue_capacity: usize,
     per_plugin_concurrency: usize,
+    per_plugin_capacity: usize,
 }
 
 #[derive(Default)]
@@ -62,13 +185,15 @@ struct SchedulerState {
     order: VecDeque<String>,
     active: HashMap<String, ActiveInvocation>,
     active_by_plugin: HashMap<String, usize>,
+    recent_request_ids: HashSet<String>,
+    recent_request_order: VecDeque<String>,
     queued: usize,
     shutdown: bool,
 }
 
 struct ActiveInvocation {
     plugin_instance_id: String,
-    canceled: Arc<AtomicBool>,
+    cancellation: Arc<Cancellation>,
     signal_sender: Sender<InvocationSignal>,
 }
 
@@ -78,16 +203,44 @@ impl InvocationScheduler {
             limits: SchedulerLimits {
                 queue_capacity,
                 per_plugin_concurrency,
+                per_plugin_capacity: per_plugin_concurrency
+                    + queue_capacity.min(per_plugin_concurrency),
             },
             state: Mutex::new(SchedulerState::default()),
             available: Condvar::new(),
         }
     }
 
-    pub fn enqueue(&self, job: InvocationJob) -> Result<(), InvocationJob> {
+    pub fn enqueue(&self, job: InvocationJob) -> Result<(), EnqueueError> {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
-        if state.shutdown || state.queued >= self.limits.queue_capacity {
-            return Err(job);
+        if state.shutdown {
+            return Err(EnqueueError::Shutdown);
+        }
+        if state.queued >= self.limits.queue_capacity {
+            return Err(EnqueueError::Capacity);
+        }
+        let plugin_active = state
+            .active_by_plugin
+            .get(&job.plugin_instance_id)
+            .copied()
+            .unwrap_or_default();
+        let plugin_queued = state
+            .queues
+            .get(&job.plugin_instance_id)
+            .map(VecDeque::len)
+            .unwrap_or_default();
+        if plugin_active.saturating_add(plugin_queued) >= self.limits.per_plugin_capacity {
+            return Err(EnqueueError::PluginCapacity);
+        }
+        if state.active.contains_key(&job.request_id)
+            || state.recent_request_ids.contains(&job.request_id)
+            || state.queues.values().any(|queue| {
+                queue
+                    .iter()
+                    .any(|queued| queued.request_id == job.request_id)
+            })
+        {
+            return Err(EnqueueError::Duplicate);
         }
         let plugin_instance_id = job.plugin_instance_id.clone();
         let queue = state.queues.entry(plugin_instance_id.clone()).or_default();
@@ -135,7 +288,7 @@ impl InvocationScheduler {
                     job.request_id.clone(),
                     ActiveInvocation {
                         plugin_instance_id,
-                        canceled: Arc::clone(&job.canceled),
+                        cancellation: Arc::clone(&job.cancellation),
                         signal_sender: job.signal_sender.clone(),
                     },
                 );
@@ -163,6 +316,7 @@ impl InvocationScheduler {
                 state.active_by_plugin.remove(&active.plugin_instance_id);
             }
         }
+        Self::remember_recent_request_id(&mut state, request_id);
         self.available.notify_all();
     }
 
@@ -184,21 +338,44 @@ impl InvocationScheduler {
                     })
             };
             if let Some((job, queue_empty)) = removed {
-                job.canceled.store(true, Ordering::Release);
+                job.cancellation.cancel();
                 state.queued -= 1;
                 if queue_empty {
                     state.queues.remove(&plugin_instance_id);
                     state.order.retain(|plugin| plugin != &plugin_instance_id);
                 }
-                return CancelDisposition::Queued;
+                Self::remember_recent_request_id(&mut state, &job.request_id);
+                return CancelDisposition::Queued(job);
             }
         }
         if let Some(active) = state.active.get(request_id) {
-            active.canceled.store(true, Ordering::Release);
+            active.cancellation.cancel();
             let _ = active.signal_sender.send(InvocationSignal::Canceled);
             return CancelDisposition::Running;
         }
+        if state.recent_request_ids.contains(request_id) {
+            return CancelDisposition::Complete;
+        }
         CancelDisposition::Missing
+    }
+
+    fn remember_recent_request_id(state: &mut SchedulerState, request_id: &str) {
+        if state.recent_request_ids.insert(request_id.to_string()) {
+            state.recent_request_order.push_back(request_id.to_string());
+            while state.recent_request_order.len() > RECENT_REQUEST_REPLAY_CAPACITY {
+                if let Some(oldest) = state.recent_request_order.pop_front() {
+                    state.recent_request_ids.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    pub fn signal(&self, request_id: &str, signal: InvocationSignal) -> bool {
+        let state = self.state.lock().expect("scheduler mutex poisoned");
+        state
+            .active
+            .get(request_id)
+            .is_some_and(|active| active.signal_sender.send(signal).is_ok())
     }
 
     pub fn metrics(&self) -> SchedulerMetrics {
@@ -209,38 +386,73 @@ impl InvocationScheduler {
         }
     }
 
-    pub fn shutdown(&self) {
+    pub fn shutdown(&self) -> Vec<InvocationJob> {
         let mut state = self.state.lock().expect("scheduler mutex poisoned");
         state.shutdown = true;
-        for queue in state.queues.values() {
-            for job in queue {
-                job.canceled.store(true, Ordering::Release);
+        let mut canceled = Vec::new();
+        for queue in state.queues.values_mut() {
+            while let Some(job) = queue.pop_front() {
+                job.cancellation.cancel();
+                canceled.push(job);
             }
+        }
+        for active in state.active.values() {
+            active.cancellation.cancel();
+            let _ = active.signal_sender.send(InvocationSignal::Canceled);
         }
         state.queues.clear();
         state.order.clear();
         state.queued = 0;
         self.available.notify_all();
+        canceled
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    #[test]
+    fn cancellation_notifies_registered_waiter_once_and_releases_registration() {
+        let cancellation = Cancellation::new();
+        let notified = Arc::new((Mutex::new(false), Condvar::new()));
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let waiter_notified = Arc::clone(&notified);
+        let waiter_notifications = Arc::clone(&notifications);
+        let registration = cancellation.register(move || {
+            waiter_notifications.fetch_add(1, Ordering::SeqCst);
+            let (lock, ready) = &*waiter_notified;
+            *lock.lock().unwrap() = true;
+            ready.notify_all();
+        });
+        assert_eq!(cancellation.waiter_count(), 1);
+
+        cancellation.cancel();
+        let (lock, ready) = &*notified;
+        let observed = ready
+            .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(1), |value| {
+                !*value
+            })
+            .unwrap();
+        assert!(*observed.0);
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+        assert_eq!(cancellation.waiter_count(), 0);
+
+        drop(registration);
+        cancellation.cancel();
+        assert_eq!(notifications.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn rotates_plugins_while_respecting_per_plugin_concurrency() {
         let scheduler = InvocationScheduler::new(8, 1);
-        for (request, plugin) in [("a1", "a"), ("a2", "a"), ("b1", "b")] {
-            scheduler
-                .enqueue(InvocationJob::new(
-                    request.to_string(),
-                    plugin.to_string(),
-                    "{}".to_string(),
-                ))
-                .unwrap();
-        }
+        scheduler.enqueue(job("a1", "a")).unwrap();
         let first = scheduler.take().unwrap();
+        for (request, plugin) in [("a2", "a"), ("b1", "b")] {
+            scheduler.enqueue(job(request, plugin)).unwrap();
+        }
         let second = scheduler.take().unwrap();
         assert_eq!(first.request_id, "a1");
         assert_eq!(second.request_id, "b1");
@@ -252,8 +464,50 @@ mod tests {
     fn removes_queued_invocation_on_cancel() {
         let scheduler = InvocationScheduler::new(2, 1);
         scheduler.enqueue(job("a1", "a")).unwrap();
-        assert!(matches!(scheduler.cancel("a1"), CancelDisposition::Queued));
+        assert!(matches!(
+            scheduler.cancel("a1"),
+            CancelDisposition::Queued(_)
+        ));
         assert_eq!(scheduler.metrics().queued, 0);
+    }
+
+    #[test]
+    fn queued_cancel_tombstones_request_id_against_replay() {
+        let scheduler = InvocationScheduler::new(2, 1);
+        scheduler.enqueue(job("a1", "a")).unwrap();
+        assert!(matches!(
+            scheduler.cancel("a1"),
+            CancelDisposition::Queued(_)
+        ));
+
+        assert!(matches!(
+            scheduler.enqueue(job("a1", "a")),
+            Err(EnqueueError::Duplicate)
+        ));
+    }
+
+    #[test]
+    fn queued_cancel_replay_tombstones_remain_bounded() {
+        let scheduler = InvocationScheduler::new(2, 1);
+        for index in 0..=RECENT_REQUEST_REPLAY_CAPACITY {
+            let request_id = format!("queued-{index}");
+            scheduler.enqueue(job(&request_id, "a")).unwrap();
+            assert!(matches!(
+                scheduler.cancel(&request_id),
+                CancelDisposition::Queued(_)
+            ));
+        }
+
+        scheduler
+            .enqueue(job("queued-0", "a"))
+            .expect("the oldest replay tombstone is evicted at the fixed capacity");
+        assert!(matches!(
+            scheduler.enqueue(job(
+                &format!("queued-{RECENT_REQUEST_REPLAY_CAPACITY}"),
+                "a"
+            )),
+            Err(EnqueueError::Duplicate)
+        ));
     }
 
     #[test]
@@ -266,12 +520,61 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_request_ids_across_queued_and_completed_work() {
+        let scheduler = InvocationScheduler::new(4, 1);
+        scheduler.enqueue(job("a1", "a")).unwrap();
+        assert!(matches!(
+            scheduler.enqueue(job("a1", "b")),
+            Err(EnqueueError::Duplicate)
+        ));
+        let invocation = scheduler.take().unwrap();
+        scheduler.finish(&invocation.request_id);
+        assert!(matches!(
+            scheduler.enqueue(job("a1", "a")),
+            Err(EnqueueError::Duplicate)
+        ));
+    }
+
+    #[test]
+    fn plugin_queue_saturation_does_not_block_other_plugins() {
+        let scheduler = InvocationScheduler::new(2, 1);
+        scheduler.enqueue(job("a-running", "a")).unwrap();
+        let running = scheduler.take().unwrap();
+        scheduler.enqueue(job("a-queued", "a")).unwrap();
+        assert!(matches!(
+            scheduler.enqueue(job("a-overflow", "a")),
+            Err(EnqueueError::PluginCapacity)
+        ));
+        scheduler.enqueue(job("b-ready", "b")).unwrap();
+        assert_eq!(scheduler.take().unwrap().request_id, "b-ready");
+        scheduler.finish(&running.request_id);
+        assert_eq!(scheduler.take().unwrap().request_id, "a-queued");
+    }
+
+    #[test]
+    fn burst_admission_matches_active_plus_reserved_plugin_capacity() {
+        let scheduler = InvocationScheduler::new(32, 4);
+        for index in 0..8 {
+            scheduler
+                .enqueue(job(&format!("a-{index}"), "a"))
+                .expect("active and reserved queue capacity accepts the burst");
+        }
+        assert!(matches!(
+            scheduler.enqueue(job("a-overflow", "a")),
+            Err(EnqueueError::PluginCapacity)
+        ));
+        scheduler
+            .enqueue(job("b-ready", "b"))
+            .expect("another plugin retains admission capacity");
+    }
+
+    #[test]
     fn marks_running_invocation_canceled_and_notifies_worker() {
         let scheduler = InvocationScheduler::new(2, 1);
         scheduler.enqueue(job("a1", "a")).unwrap();
         let invocation = scheduler.take().unwrap();
         assert!(matches!(scheduler.cancel("a1"), CancelDisposition::Running));
-        assert!(invocation.canceled.load(Ordering::Acquire));
+        assert!(invocation.cancellation.is_canceled());
         assert!(matches!(
             invocation.signals.recv().unwrap(),
             InvocationSignal::Canceled
@@ -288,20 +591,22 @@ mod tests {
 
     #[test]
     fn queued_cancel_preserves_round_robin_order() {
-        let scheduler = InvocationScheduler::new(4, 1);
+        let scheduler = InvocationScheduler::new(4, 2);
         scheduler.enqueue(job("a1", "a")).unwrap();
         scheduler.enqueue(job("a2", "a")).unwrap();
         scheduler.enqueue(job("b1", "b")).unwrap();
-        assert!(matches!(scheduler.cancel("a1"), CancelDisposition::Queued));
+        assert!(matches!(
+            scheduler.cancel("a1"),
+            CancelDisposition::Queued(_)
+        ));
         assert_eq!(scheduler.take().unwrap().request_id, "a2");
         assert_eq!(scheduler.take().unwrap().request_id, "b1");
     }
 
     fn job(request_id: &str, plugin_instance_id: &str) -> InvocationJob {
-        InvocationJob::new(
-            request_id.to_string(),
-            plugin_instance_id.to_string(),
-            "{}".to_string(),
-        )
+        let frame = format!(
+            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"{request_id}","runtime_generation_id":"g1","payload":{{"lease":{{}},"method":"worker.echo","invocation":{{"plugin_instance_id":"{plugin_instance_id}","method":"worker.echo"}}}}}}"#
+        );
+        InvocationJob::new(redevplugin_ipc::parse_worker_invocation(&frame).unwrap()).unwrap()
     }
 }

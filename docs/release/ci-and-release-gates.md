@@ -166,8 +166,8 @@ sink boundary.
 
 ## Performance Gates
 
-`scripts/check_redevplugin_performance.sh` supports `--fast`, `--full`, and
-`--release`.
+`scripts/check_redevplugin_performance.sh` supports `--fast`, `--smoke`,
+`--full`, and `--release`.
 
 - `--fast` runs deterministic admission, notification, backpressure, migration,
   TypeScript type, and renderer reconciliation tests in normal CI.
@@ -176,14 +176,20 @@ sink boundary.
   stream waiters, SQLite batch reads, Node reconciliation measurements, and a
   real Chromium opaque-surface renderer measurement. The weekly workflow uploads
   `performance-evidence-full.json`.
+- `--smoke` executes every scenario and records actual measurements without
+  enforcing absolute latency thresholds. It is used only by non-publishing
+  bundle smoke tests.
 - `--release` runs the same acceptance set with release gate identity before a
   bundle manifest or checksum is created.
 
-The generator requires the exact scenario set and rejects failed thresholds,
-duplicate metrics, invalid provenance, or contract-hash drift. The release
-bundle verifier validates `performance-evidence.json` against
-`performance-evidence-v1`, the selected release version and source commit, and
-the exact compatibility-manifest contract hashes.
+`performance-contract-v1.json` is the single machine-readable definition of the
+11 required scenarios and each scenario's sample count, metric name, unit,
+comparator, and limit. The generator and bundle verifier both consume that
+contract and reject any missing, extra, duplicate, or drifted metric. The
+release workflow generates immutable release evidence once on `ubuntu-24.04`;
+all runtime bundles validate and copy those exact bytes through
+`--performance-evidence`. `--skip-execution` and `--allow-smoke` are independent
+verifier permissions, and published bundles never enable `--allow-smoke`.
 
 ## Release Bundle
 
@@ -222,8 +228,8 @@ manifest, generated-client identity, host-neutral vocabulary, and generated
 license evidence. License verification checks the exact legal-file
 set and each manifest SHA-256; a dependency entry that names a license without
 redistributed legal text fails the build. Each runtime matrix runner executes
-its own Go and Rust binaries. The post-publication aggregate runner uses structural-only
-verification for foreign targets: it validates ELF/Mach-O architecture, every
+its own Go and Rust binaries. The post-publication aggregate runner uses
+`--skip-execution` verification for foreign targets: it validates ELF/Mach-O architecture, every
 manifest and contract hash, npm identity, and compatibility content without
 attempting to execute another operating system's binary. Standalone TypeScript
 consumer verification reads the exact compiler version, registry URL, and SRI

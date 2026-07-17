@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
-const source = join(root, "spec/plugin/error-codes-v2.schema.json");
+const source = join(root, "spec/plugin/error-codes-v3.schema.json");
 const output = join(root, "packages/redevplugin-ui/src/error-codes.gen.ts");
 const check = process.argv.includes("--check");
 const generated = check
@@ -18,7 +18,7 @@ const groups = [
   ["pluginClientErrorCodes", "typescript_client_error_code"],
 ];
 
-let contents = "// Generated from spec/plugin/error-codes-v2.schema.json. Do not edit.\n\n";
+let contents = "// Generated from spec/plugin/error-codes-v3.schema.json. Do not edit.\n\n";
 for (const [exportName, definitionName] of groups) {
   const values = definitions[definitionName]?.enum;
   if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {

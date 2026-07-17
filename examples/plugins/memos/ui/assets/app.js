@@ -276,11 +276,12 @@
         "reset"
     ];
     var opaqueSurfaceRenderLimits = {
-        "max_message_bytes": 262144,
+        "max_message_bytes": 524288,
         "max_in_flight_requests": 256,
         "max_renders_per_second": 60,
         "max_render_depth": 32,
         "max_render_nodes": 4096,
+        "max_patch_operations": 1024,
         "max_attributes_per_element": 64,
         "max_text_length": 65536,
         "max_attribute_value_length": 4096,
@@ -346,20 +347,21 @@
             if (nodes > opaqueSurfaceRenderLimits.max_render_nodes || depth > opaqueSurfaceRenderLimits.max_render_depth) {
                 throw new PluginUIReconcileError("Plugin UI tree exceeds structural limits");
             }
-            if (typeof node === "string") {
-                if (node.length > opaqueSurfaceRenderLimits.max_text_length)
-                    throw new PluginUIReconcileError("Plugin UI text exceeds limits");
-                return;
+            if (!isText(node) && !isElement(node) || ancestors.has(node)) {
+                throw new PluginUIReconcileError("Plugin UI tree must contain plain keyed acyclic VNodes");
             }
-            if (!isElement(node) || ancestors.has(node)) {
-                throw new PluginUIReconcileError("Plugin UI tree must contain plain acyclic VNodes");
+            if (!keyPattern.test(node.key) || keys.has(node.key)) {
+                throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
+            }
+            keys.add(node.key);
+            if (node.type === "text") {
+                if (node.text.length > opaqueSurfaceRenderLimits.max_text_length) {
+                    throw new PluginUIReconcileError("Plugin UI text exceeds limits");
+                }
+                return;
             }
             ancestors.add(node);
             try {
-                if (!keyPattern.test(node.key) || keys.has(node.key)) {
-                    throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
-                }
-                keys.add(node.key);
                 if (!allowedTags.has(node.tag)) {
                     throw new PluginUIReconcileError(`Plugin UI tag is not allowed for ${node.key}`);
                 }
@@ -387,10 +389,17 @@
         visit(tree, 1);
         return tree;
     }
+    function isText(value) {
+        return isPlainRecord(value) && hasExactKeys2(value, ["type", "key", "text"]) && value.type === "text" && typeof value.key === "string" && typeof value.text === "string";
+    }
     function isElement(value) {
         if (!isPlainRecord(value))
             return false;
         return Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) && value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
+    }
+    function hasExactKeys2(value, keys) {
+        const actual = Object.keys(value);
+        return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
     }
     function isPlainRecord(value) {
         if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -430,299 +439,275 @@
         return serialized.length <= opaqueSurfaceRenderLimits.max_attribute_value_length;
     }
     var editableValueTags = new Set(["input", "textarea", "select", "option"]);
-    var maxPluginUIPatchOperations = 1024;
+    var emptyAttributes = {};
+    var maxPluginUIPatchOperations = opaqueSurfaceRenderLimits.max_patch_operations;
     function reconcilePluginUITrees(current, next, options = {}) {
         validatePluginUITree(current);
         validatePluginUITree(next);
         if (current.key !== next.key || current.tag !== next.tag) {
             throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
         }
-        const operations = [];
+        const currentIndex = indexTree(current);
+        const nextIndex = indexTree(next);
         const transferredCanvasKeys = options.transferredCanvasKeys ?? new Set();
+        for (const key of transferredCanvasKeys) {
+            const left = currentIndex.byKey.get(key);
+            const right = nextIndex.byKey.get(key);
+            if (!left || !right) {
+                throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be removed`);
+            }
+            if (!sameNodeIdentity(left.node, right.node)) {
+                throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be replaced`);
+            }
+            if (left.parentKey !== right.parentKey || left.childIndex !== right.childIndex) {
+                throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be moved`);
+            }
+            if (left.node.type !== "element" || right.node.type !== "element" || !sameAttributes(left.node.attributes, right.node.attributes)) {
+                throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be patched`);
+            }
+        }
         const maxOperations = options.maxOperations ?? maxPluginUIPatchOperations;
         if (!Number.isSafeInteger(maxOperations) || maxOperations < 1 || maxOperations > maxPluginUIPatchOperations) {
             throw new PluginUIReconcileError(`Plugin UI maxOperations must be an integer between 1 and ${maxPluginUIPatchOperations}`);
         }
+        const operations = [];
         const append = (operation) => {
             if (operations.length >= maxOperations) {
                 throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
             }
             operations.push(operation);
         };
-        const ensureCanvasStable = (node, action) => {
-            if (typeof node === "string")
-                return;
-            if (transferredCanvasKeys.has(node.key)) {
-                throw new PluginUIReconcileError(`Transferred canvas ${node.key} cannot be ${action}`);
+        let structurallyChanged = currentIndex.byKey.size !== nextIndex.byKey.size;
+        const contentOperations = [];
+        const replacementKeys = new Set();
+        for (const key of nextIndex.order) {
+            const leftInfo = currentIndex.byKey.get(key);
+            const rightInfo = nextIndex.byKey.get(key);
+            const left = leftInfo?.node;
+            const right = rightInfo?.node;
+            if (!left || !right) {
+                structurallyChanged = true;
+                continue;
             }
-            for (const child of node.children ?? [])
-                ensureCanvasStable(child, action);
-        };
-        const reconcileElement = (left, right) => {
-            if (left.key !== right.key || left.tag !== right.tag) {
-                throw new PluginUIReconcileError(`Plugin UI element identity changed for ${left.key}`);
+            if (!sameNodeIdentity(left, right)) {
+                replacementKeys.add(key);
+                structurallyChanged = true;
+                continue;
             }
-            reconcileAttributes(left, right, options.controlEditRevisions, append);
-            const working = [...left.children ?? []];
-            const desired = right.children ?? [];
-            if (operations.length + estimateKeyedStructuralOperations(working, desired) > maxOperations) {
+            if (leftInfo.parentKey !== rightInfo.parentKey || leftInfo.childIndex !== rightInfo.childIndex) {
+                structurallyChanged = true;
+            }
+            if (left.type === "text" && right.type === "text") {
+                if (left.text !== right.text)
+                    contentOperations.push({ type: "set_text", target_key: key, text: right.text });
+            }
+            else if (left.type === "element" && right.type === "element") {
+                reconcileAttributes(left, right, options.controlEditRevisions, (operation) => contentOperations.push(operation));
+            }
+        }
+        if (replacementKeys.has(current.key)) {
+            throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
+        }
+        if (!structurallyChanged) {
+            if (contentOperations.length > maxOperations) {
                 throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
             }
-            const desiredIndexByKey = keyedChildIndexes(desired);
-            for (let index = working.length - 1; index >= 0; index -= 1) {
-                const child = working[index];
-                if (typeof child === "string")
-                    continue;
-                const desiredIndex = desiredIndexByKey.get(child.key);
-                const desiredChild = desiredIndex === void 0 ? void 0 : desired[desiredIndex];
-                if (typeof desiredChild !== "string" && desiredChild?.tag === child.tag)
-                    continue;
-                ensureCanvasStable(child, desiredIndex === void 0 ? "removed" : "replaced");
-                append({ type: "remove_child", parent_key: left.key, child_index: index, child_key: child.key });
-                working.splice(index, 1);
+            return contentOperations;
+        }
+        const removedRoots = [];
+        for (const key of currentIndex.order) {
+            if (key === current.key)
+                continue;
+            if (nextIndex.byKey.has(key) && !replacementKeys.has(key))
+                continue;
+            let ancestorKey = currentIndex.byKey.get(key)?.parentKey;
+            let coveredByRemovedAncestor = false;
+            while (ancestorKey) {
+                if (!nextIndex.byKey.has(ancestorKey) || replacementKeys.has(ancestorKey)) {
+                    coveredByRemovedAncestor = true;
+                    break;
+                }
+                ancestorKey = currentIndex.byKey.get(ancestorKey)?.parentKey;
             }
-            const workingIndexByKey = keyedChildIndexes(working);
-            const refreshWorkingIndexes = (start, end = working.length - 1) => {
-                for (let index = Math.max(0, start); index <= Math.min(end, working.length - 1); index += 1) {
-                    const child = working[index];
-                    if (typeof child !== "string")
-                        workingIndexByKey.set(child.key, index);
-                }
-            };
-            for (let index = 0; index < working.length; index += 1) {
-                const child = working[index];
-                if (typeof child !== "string" && transferredCanvasKeys.has(child.key)) {
-                    const nextIndex = desiredIndexByKey.get(child.key) ?? -1;
-                    if (nextIndex === -1)
-                        throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be removed`);
-                    if (nextIndex !== index)
-                        throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be moved`);
-                }
-            }
-            if (fullyKeyed(working) && fullyKeyed(desired)) {
-                reconcileKeyedChildren(left.key, working, desired, ensureCanvasStable, append);
-                for (let index = 0; index < desired.length; index += 1) {
-                    const present = working[index];
-                    const wanted = desired[index];
-                    if (present === void 0 || present.key !== wanted.key || present.tag !== wanted.tag) {
-                        throw new PluginUIReconcileError("Plugin UI keyed reconciliation became inconsistent");
-                    }
-                    reconcileElement(present, wanted);
-                    working[index] = wanted;
-                }
-                return;
-            }
-            for (let index = 0; index < desired.length; index += 1) {
-                const wanted = desired[index];
-                const present = working[index];
-                if (typeof wanted === "string") {
-                    if (typeof present === "string") {
-                        if (present !== wanted)
-                            append({ type: "set_text", parent_key: left.key, child_index: index, text: wanted });
-                        working[index] = wanted;
-                    }
-                    else {
-                        append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-                        working.splice(index, 0, wanted);
-                        refreshWorkingIndexes(index);
-                    }
-                    continue;
-                }
-                const foundIndex = typeof present !== "string" && present?.key === wanted.key ? index : workingIndexByKey.get(wanted.key) ?? -1;
-                if (foundIndex === -1) {
-                    append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-                    working.splice(index, 0, wanted);
-                    refreshWorkingIndexes(index);
+            if (!coveredByRemovedAncestor)
+                removedRoots.push(key);
+        }
+        const removedCoverage = new Set();
+        for (const key of removedRoots) {
+            collectSubtreeKeys(currentIndex, key, removedCoverage);
+            ensureCanvasStable(currentIndex, key, transferredCanvasKeys, "removed or replaced");
+            append({ type: "remove_child", target_key: key });
+        }
+        for (const operation of contentOperations) {
+            const targetKey = "target_key" in operation ? operation.target_key : void 0;
+            if (!targetKey || !removedCoverage.has(targetKey))
+                append(operation);
+        }
+        const coveredByFullInsertion = new Set();
+        for (const parentKey of nextIndex.order) {
+            if (coveredByFullInsertion.has(parentKey))
+                continue;
+            const parent = nextIndex.byKey.get(parentKey)?.node;
+            if (!parent || parent.type !== "element")
+                continue;
+            const desiredKeys = nextIndex.byKey.get(parentKey)?.childKeys ?? [];
+            const currentSequence = desiredKeys.map((key) => {
+                const currentInfo = currentIndex.byKey.get(key);
+                if (!currentInfo || removedCoverage.has(key) || currentInfo.parentKey !== parentKey)
+                    return -1;
+                return currentInfo.childIndex;
+            });
+            const stablePositions = longestIncreasingSubsequencePositions(currentSequence);
+            for (let index = desiredKeys.length - 1; index >= 0; index -= 1) {
+                const key = desiredKeys[index];
+                const beforeKey = desiredKeys[index + 1] ?? null;
+                const currentInfo = currentIndex.byKey.get(key);
+                const isAvailable = Boolean(currentInfo && !removedCoverage.has(key));
+                if (!isAvailable) {
+                    const node = nextIndex.byKey.get(key)?.node;
+                    if (!node)
+                        throw new PluginUIReconcileError("Plugin UI insertion index is inconsistent");
+                    const canInsertFullSubtree = !subtreeContainsAvailableKey(nextIndex, key, currentIndex, removedCoverage);
+                    const insertion = canInsertFullSubtree ? node : shallowNode(node);
+                    append({ type: "insert_child", parent_key: parentKey, before_key: beforeKey, node: insertion });
+                    if (canInsertFullSubtree)
+                        collectSubtreeKeys(nextIndex, key, coveredByFullInsertion);
                     continue;
                 }
-                const found = working[foundIndex];
-                if (typeof found === "string")
-                    throw new PluginUIReconcileError("Plugin UI keyed lookup became inconsistent");
-                if (found.tag !== wanted.tag) {
-                    ensureCanvasStable(found, "replaced");
-                    append({ type: "remove_child", parent_key: left.key, child_index: foundIndex, child_key: found.key });
-                    working.splice(foundIndex, 1);
-                    workingIndexByKey.delete(found.key);
-                    refreshWorkingIndexes(foundIndex);
-                    append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-                    working.splice(index, 0, wanted);
-                    refreshWorkingIndexes(index);
-                    continue;
+                if (currentInfo?.parentKey !== parentKey || !stablePositions.has(index)) {
+                    ensureCanvasStable(currentIndex, key, transferredCanvasKeys, "moved");
+                    append({ type: "move_child", target_key: key, parent_key: parentKey, before_key: beforeKey });
                 }
-                if (foundIndex !== index) {
-                    ensureCanvasStable(found, "moved");
-                    append({ type: "move_child", parent_key: left.key, child_key: found.key, from_index: foundIndex, to_index: index });
-                    working.splice(foundIndex, 1);
-                    working.splice(index, 0, found);
-                    refreshWorkingIndexes(Math.min(foundIndex, index), Math.max(foundIndex, index));
-                }
-                reconcileElement(found, wanted);
-                working[index] = wanted;
             }
-            for (let index = working.length - 1; index >= desired.length; index -= 1) {
-                const removed = working[index];
-                ensureCanvasStable(removed, "removed");
-                append({
-                    type: "remove_child",
-                    parent_key: left.key,
-                    child_index: index,
-                    ...typeof removed === "string" ? {} : { child_key: removed.key }
-                });
-                working.splice(index, 1);
-                if (typeof removed !== "string")
-                    workingIndexByKey.delete(removed.key);
-            }
-        };
-        reconcileElement(current, next);
+        }
         return operations;
     }
-    function keyedChildIndexes(children) {
-        const indexes = new Map();
-        for (let index = 0; index < children.length; index += 1) {
-            const child = children[index];
-            if (typeof child !== "string")
-                indexes.set(child.key, index);
-        }
-        return indexes;
-    }
-    function fullyKeyed(children) {
-        return children.every((child) => typeof child !== "string");
-    }
-    function reconcileKeyedChildren(parentKey, working, desired, ensureCanvasStable, append) {
-        const workingIndexByKey = keyedChildIndexes(working);
-        const retainedDesiredIndexes = [];
-        const retainedWorkingIndexes = [];
-        for (let desiredIndex = 0; desiredIndex < desired.length; desiredIndex += 1) {
-            const currentIndex = workingIndexByKey.get(desired[desiredIndex].key);
-            if (currentIndex !== void 0) {
-                retainedDesiredIndexes.push(desiredIndex);
-                retainedWorkingIndexes.push(currentIndex);
-            }
-        }
-        const stableDesiredIndexes = new Set(longestIncreasingSubsequenceIndexes(retainedWorkingIndexes).map((retainedIndex) => retainedDesiredIndexes[retainedIndex]));
-        const refreshWorkingIndexes = (start) => {
-            for (let index = Math.max(0, start); index < working.length; index += 1) {
-                workingIndexByKey.set(working[index].key, index);
+    function indexTree(root) {
+        const byKey = new Map();
+        const order = [];
+        const visit = (node, parentKey, childIndex, depth) => {
+            const children = node.type === "element" ? node.children ?? [] : [];
+            const childKeys = children.length > 0 ? children.map((child) => child.key) : void 0;
+            byKey.set(node.key, { node, parentKey, childIndex, ...childKeys ? { childKeys } : {}, depth });
+            order.push(node.key);
+            for (let index = 0; index < children.length; index += 1) {
+                visit(children[index], node.key, index, depth + 1);
             }
         };
-        for (let desiredIndex = desired.length - 1; desiredIndex >= 0; desiredIndex -= 1) {
-            const wanted = desired[desiredIndex];
-            const foundIndex = workingIndexByKey.get(wanted.key);
-            const anchor = desired[desiredIndex + 1];
-            const anchorIndex = anchor === void 0 ? working.length : workingIndexByKey.get(anchor.key);
-            if (anchorIndex === void 0) {
-                throw new PluginUIReconcileError("Plugin UI keyed anchor became inconsistent");
-            }
-            if (foundIndex === void 0) {
-                append({ type: "insert_child", parent_key: parentKey, child_index: anchorIndex, node: wanted });
-                working.splice(anchorIndex, 0, wanted);
-                refreshWorkingIndexes(anchorIndex);
-                continue;
-            }
-            if (stableDesiredIndexes.has(desiredIndex))
-                continue;
-            const toIndex = foundIndex < anchorIndex ? anchorIndex - 1 : anchorIndex;
-            if (foundIndex === toIndex)
-                continue;
-            const found = working[foundIndex];
-            ensureCanvasStable(found, "moved");
-            append({
-                type: "move_child",
-                parent_key: parentKey,
-                child_key: found.key,
-                from_index: foundIndex,
-                to_index: toIndex
-            });
-            working.splice(foundIndex, 1);
-            working.splice(toIndex, 0, found);
-            refreshWorkingIndexes(Math.min(foundIndex, toIndex));
-        }
-    }
-    function estimateKeyedStructuralOperations(current, next) {
-        const currentIndexes = keyedChildIndexes(current);
-        const currentByKey = keyedChildren(current);
-        const nextByKey = keyedChildren(next);
-        const retainedIndexes = [];
-        let inserted = 0;
-        for (const child of next) {
-            if (typeof child === "string")
-                continue;
-            const currentIndex = currentIndexes.get(child.key);
-            const currentChild = currentByKey.get(child.key);
-            if (currentIndex === void 0 || currentChild?.tag !== child.tag)
-                inserted += 1;
-            else
-                retainedIndexes.push(currentIndex);
-        }
-        let removed = 0;
-        for (const [key, child] of currentByKey) {
-            const nextChild = nextByKey.get(key);
-            if (!nextChild || nextChild.tag !== child.tag)
-                removed += 1;
-        }
-        return inserted + removed + retainedIndexes.length - longestIncreasingSubsequenceIndexes(retainedIndexes).length;
-    }
-    function keyedChildren(children) {
-        const keyed = new Map();
-        for (const child of children) {
-            if (typeof child !== "string")
-                keyed.set(child.key, child);
-        }
-        return keyed;
-    }
-    function longestIncreasingSubsequenceIndexes(values) {
-        const predecessors = new Array(values.length).fill(-1);
-        const tailIndexes = [];
-        for (let index = 0; index < values.length; index += 1) {
-            const value = values[index];
-            let low = 0;
-            let high = tailIndexes.length;
-            while (low < high) {
-                const middle = low + high >>> 1;
-                if ((values[tailIndexes[middle]] ?? Infinity) < value)
-                    low = middle + 1;
-                else
-                    high = middle;
-            }
-            if (low > 0)
-                predecessors[index] = tailIndexes[low - 1] ?? -1;
-            tailIndexes[low] = index;
-        }
-        const indexes = new Array(tailIndexes.length);
-        let cursor = tailIndexes[tailIndexes.length - 1] ?? -1;
-        for (let index = indexes.length - 1; index >= 0; index -= 1) {
-            indexes[index] = cursor;
-            cursor = predecessors[cursor] ?? -1;
-        }
-        return indexes;
+        visit(root, void 0, 0, 1);
+        return { byKey, order };
     }
     function reconcileAttributes(current, next, controlEditRevisions, append) {
-        const left = current.attributes ?? {};
-        const right = next.attributes ?? {};
-        const set = {};
-        const remove = [];
-        for (const [name, value] of Object.entries(right)) {
-            if (!isEditableControlAttribute(current.tag, name) && left[name] !== value)
-                set[name] = value;
+        const left = current.attributes;
+        const right = next.attributes;
+        let set;
+        let remove;
+        for (const name in right) {
+            const value = right[name];
+            if (!isEditableControlAttribute(current.tag, name) && left?.[name] !== value) {
+                (set ??= {})[name] = value;
+            }
         }
-        for (const name of Object.keys(left)) {
-            if (!isEditableControlAttribute(current.tag, name) && !(name in right))
-                remove.push(name);
+        for (const name in left) {
+            if (!isEditableControlAttribute(current.tag, name) && !(name in (right ?? emptyAttributes))) {
+                (remove ??= []).push(name);
+            }
         }
-        if (Object.keys(set).length > 0 || remove.length > 0) {
-            append({ type: "patch_attributes", target_key: current.key, set, remove });
+        if (set || remove) {
+            append({ type: "patch_attributes", target_key: current.key, set: set ?? {}, remove: remove ?? [] });
         }
-        const valueChanged = editableValueTags.has(current.tag) && left.value !== right.value;
-        const checkedChanged = current.tag === "input" && left.checked !== right.checked;
+        const valueChanged = editableValueTags.has(current.tag) && left?.value !== right?.value;
+        const checkedChanged = current.tag === "input" && left?.checked !== right?.checked;
         if (valueChanged || checkedChanged) {
             append({
                 type: "patch_control",
                 target_key: current.key,
                 edit_revision: controlEditRevisions?.get(current.key) ?? 0,
-                ...valueChanged ? { value: right.value === void 0 ? null : String(right.value) } : {},
-                ...checkedChanged ? { checked: right.checked === void 0 ? null : Boolean(right.checked) } : {}
+                ...valueChanged ? { value: right?.value === void 0 ? null : String(right.value) } : {},
+                ...checkedChanged ? { checked: right?.checked === void 0 ? null : Boolean(right.checked) } : {}
             });
         }
+    }
+    function longestIncreasingSubsequencePositions(values) {
+        const tails = [];
+        const predecessors = new Array(values.length).fill(-1);
+        for (let index = 0; index < values.length; index += 1) {
+            const value = values[index];
+            if (value < 0)
+                continue;
+            let low = 0;
+            let high = tails.length;
+            while (low < high) {
+                const middle = low + high >>> 1;
+                if ((values[tails[middle]] ?? Infinity) < value)
+                    low = middle + 1;
+                else
+                    high = middle;
+            }
+            if (low > 0)
+                predecessors[index] = tails[low - 1] ?? -1;
+            tails[low] = index;
+        }
+        const positions = new Set();
+        let cursor = tails[tails.length - 1] ?? -1;
+        while (cursor >= 0) {
+            positions.add(cursor);
+            cursor = predecessors[cursor] ?? -1;
+        }
+        return positions;
+    }
+    function collectSubtreeKeys(index, rootKey, output) {
+        const stack = [rootKey];
+        while (stack.length > 0) {
+            const key = stack.pop();
+            if (!key || output.has(key))
+                continue;
+            output.add(key);
+            stack.push(...index.byKey.get(key)?.childKeys ?? []);
+        }
+    }
+    function subtreeContainsAvailableKey(nextIndex, rootKey, currentIndex, removedCoverage) {
+        const stack = [...nextIndex.byKey.get(rootKey)?.childKeys ?? []];
+        while (stack.length > 0) {
+            const key = stack.pop();
+            if (!key)
+                continue;
+            if (currentIndex.byKey.has(key) && !removedCoverage.has(key))
+                return true;
+            stack.push(...nextIndex.byKey.get(key)?.childKeys ?? []);
+        }
+        return false;
+    }
+    function shallowNode(node) {
+        if (node.type === "text")
+            return node;
+        return {
+            type: "element",
+            key: node.key,
+            tag: node.tag,
+            ...node.attributes ? { attributes: node.attributes } : {},
+            children: []
+        };
+    }
+    function ensureCanvasStable(index, rootKey, transferredCanvasKeys, action) {
+        const stack = [rootKey];
+        while (stack.length > 0) {
+            const key = stack.pop();
+            if (!key)
+                continue;
+            if (transferredCanvasKeys.has(key)) {
+                throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be ${action}`);
+            }
+            stack.push(...index.byKey.get(key)?.childKeys ?? []);
+        }
+    }
+    function sameNodeIdentity(left, right) {
+        return left.type === right.type && (left.type === "text" || right.type === "element" && left.tag === right.tag);
+    }
+    function sameAttributes(left, right) {
+        const leftEntries = Object.entries(left ?? emptyAttributes);
+        const rightEntries = Object.entries(right ?? emptyAttributes);
+        return leftEntries.length === rightEntries.length && leftEntries.every(([name, value]) => right?.[name] === value);
     }
     function isEditableControlAttribute(tag, name) {
         const normalized = name.toLowerCase();
@@ -730,7 +715,8 @@
     }
     var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
     var maxPendingPluginBridgeRequests = 256;
-    var maxPluginBridgeMessageBytes = 256 * 1024;
+    var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
+    var maxPluginJSONStructuralNodes = 32 * 1024;
     var maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
     var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
     var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
@@ -1410,7 +1396,7 @@
     }
     function normalizePluginJSONValue(value, depth = 0, state2 = { nodes: 0, seen: new Set() }) {
         state2.nodes += 1;
-        if (state2.nodes > 4096 || depth > 64)
+        if (state2.nodes > maxPluginJSONStructuralNodes || depth > 64)
             throw new TypeError("JSON value exceeds structural limits");
         if (value === null || typeof value === "string" || typeof value === "boolean")
             return value;
@@ -2803,27 +2789,46 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     var Vt = g.parseInline;
     var en = b.parse;
     var tn = x.lex;
-    function renderMarkdown(content, keyPrefix, options = {}) {
+    var MARKDOWN_IDENTITY_ROOT = new RegExp("^[A-Za-z0-9][A-Za-z0-9._:-]*$");
+    var MAX_IDENTITY_ROOT_LENGTH = 112;
+    var MAX_IDENTITY_SLOTS = 4096;
+    function textNode(key, value) {
+        return { type: "text", key, text: value };
+    }
+    function renderMarkdown(content, identity, options = {}) {
         const context = {
             budget: options.expanded ? 320 : 180,
             blockLimit: options.expanded ? 48 : 16,
             blockCount: 0,
-            keyPrefix,
+            identity,
             taskMemoId: options.taskMemoId ?? "",
             taskIndex: 0,
             interactiveTasks: options.interactiveTasks === true,
             truncated: false
         };
-        try {
-            const tokens = g.lexer(content, { gfm: true, breaks: true });
-            return { nodes: renderBlocks(tokens, context, "b"), truncated: context.truncated };
+        const tokens = g.lexer(content, { gfm: true, breaks: true });
+        return { nodes: renderBlocks(tokens, context, "root"), truncated: context.truncated };
+    }
+    function createMarkdownIdentity(rootKey) {
+        if (rootKey.length === 0 || rootKey.length > MAX_IDENTITY_ROOT_LENGTH || !MARKDOWN_IDENTITY_ROOT.test(rootKey)) {
+            throw new TypeError("markdown identity root must be a valid UI identifier of at most 112 characters");
         }
-        catch {
-            return {
-                nodes: [{ type: "element", key: `${keyPrefix}-plain-text`, tag: "p", attributes: { class: "markdown-paragraph" }, children: [content] }],
-                truncated: false
-            };
-        }
+        const keys = new Map();
+        let next = 0;
+        return Object.freeze({
+            rootKey,
+            keyForSlot(slot) {
+                const existing = keys.get(slot);
+                if (existing !== void 0)
+                    return existing;
+                if (keys.size >= MAX_IDENTITY_SLOTS)
+                    throw new RangeError("markdown identity slot capacity exceeded");
+                const key = `${rootKey}-${next.toString(36)}`;
+                next += 1;
+                keys.set(slot, key);
+                return key;
+            }
+        });
     }
     function toggleTaskMarker(content, targetIndex, checked) {
         const lines = content.split("\n");
@@ -2849,73 +2854,67 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         }
         return content;
     }
-    function renderBlocks(tokens, context, path) {
+    function renderBlocks(tokens, context, scope) {
         const output = [];
-        for (let index = 0; index < tokens.length; index += 1) {
+        const entries = slotEntries(context, scope, "block", tokens.filter((token) => token.type !== "space" && token.type !== "def"));
+        for (const { item: token, key } of entries) {
             if (context.blockCount >= context.blockLimit || context.budget <= 0) {
                 context.truncated = true;
                 break;
             }
-            const token = tokens[index];
-            if (token.type === "space" || token.type === "def")
-                continue;
             context.blockCount += 1;
-            const key = keyFor(context, `${path}-${index}`);
-            const node = renderBlock(token, context, key, `${path}-${index}`);
+            const node = renderBlock(token, context, key);
             if (node !== void 0)
                 output.push(node);
         }
         return output;
     }
-    function renderBlock(token, context, key, path) {
+    function renderBlock(token, context, key) {
         if (!claim(context))
             return void 0;
         switch (token.type) {
             case "heading": {
                 const heading = token;
                 const tag = heading.depth <= 1 ? "h2" : heading.depth === 2 ? "h3" : "h4";
-                return { type: "element", key, tag, attributes: { class: `markdown-heading level-${Math.min(heading.depth, 4)}` }, children: renderInline(heading.tokens, context, `${path}-i`) };
+                return { type: "element", key, tag, attributes: { class: `markdown-heading level-${Math.min(heading.depth, 4)}` }, children: renderInline(heading.tokens, context, key) };
             }
             case "paragraph": {
                 const paragraph = token;
-                return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: renderInline(paragraph.tokens, context, `${path}-i`) };
+                return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: renderInline(paragraph.tokens, context, key) };
             }
             case "code": {
                 const code = token;
                 return { type: "element", key, tag: "pre", attributes: { class: "markdown-code-block" }, children: [
-                        { type: "element", key: `${key}-code`, tag: "code", attributes: code.lang ? { class: "markdown-code", title: code.lang } : { class: "markdown-code" }, children: [code.text] }
+                        { type: "element", key: `${key}-code`, tag: "code", attributes: code.lang ? { class: "markdown-code", title: code.lang } : { class: "markdown-code" }, children: [textNode(`${key}-code-text`, code.text)] }
                     ] };
             }
             case "blockquote": {
                 const quote = token;
-                return { type: "element", key, tag: "div", attributes: { class: "markdown-quote" }, children: renderBlocks(quote.tokens, context, `${path}-q`) };
+                return { type: "element", key, tag: "div", attributes: { class: "markdown-quote" }, children: renderBlocks(quote.tokens, context, key) };
             }
             case "hr":
                 return { type: "element", key, tag: "div", attributes: { class: "markdown-rule", role: "separator" }, children: [] };
             case "list":
-                return renderList(token, context, key, path);
+                return renderList(token, context, key);
             case "table":
-                return renderTable(token, context, key, path);
+                return renderTable(token, context, key);
             case "html": {
                 const html = token;
-                return { type: "element", key, tag: "code", attributes: { class: "markdown-raw" }, children: [html.text] };
+                return { type: "element", key, tag: "code", attributes: { class: "markdown-raw" }, children: [textNode(`${key}-text`, html.text)] };
             }
             case "text": {
                 const text = token;
-                return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: text.tokens ? renderInline(text.tokens, context, `${path}-i`) : [text.text] };
+                return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: text.tokens ? renderInline(text.tokens, context, key) : [textNode(`${key}-text`, text.text)] };
             }
             default: {
-                const nestedTokens = "tokens" in token && Array.isArray(token.tokens) ? token.tokens : void 0;
-                const nested = nestedTokens ? renderInline(nestedTokens, context, `${path}-n`) : [token.raw];
-                return { type: "element", key, tag: "p", attributes: { class: "markdown-paragraph" }, children: nested };
+                throw new TypeError(`unsupported markdown block token: ${token.type}`);
             }
         }
     }
-    function renderList(token, context, key, path) {
-        const items = token.items.map((item, index) => {
-            const itemKey = `${key}-item-${index}`;
+    function renderList(token, context, key) {
+        const items = slotEntries(context, key, "item", token.items).map(({ item, key: itemKey }) => {
             if (!claim(context))
-                return "";
+                return textNode(`${itemKey}-empty`, "");
             const children = [];
             if (item.task) {
                 const taskIndex = context.taskIndex++;
@@ -2936,28 +2935,28 @@ Please report this to https://github.com/markedjs/marked.`, e) {
                 });
             }
             const bodyTokens = item.task ? item.tokens.filter((token2) => token2.type !== "checkbox") : item.tokens;
-            children.push({ type: "element", key: `${itemKey}-body`, tag: "div", attributes: { class: "markdown-list-copy" }, children: renderBlocks(bodyTokens, context, `${path}-item-${index}`) });
+            children.push({ type: "element", key: `${itemKey}-body`, tag: "div", attributes: { class: "markdown-list-copy" }, children: renderBlocks(bodyTokens, context, itemKey) });
             return { type: "element", key: itemKey, tag: "li", attributes: item.task ? { class: "markdown-list-item task-item" } : { class: "markdown-list-item" }, children };
         });
         return { type: "element", key, tag: token.ordered ? "ol" : "ul", attributes: { class: token.ordered ? "markdown-list ordered" : "markdown-list" }, children: items };
     }
-    function renderTable(token, context, key, path) {
-        const header = token.header.map((cell, index) => ({
+    function renderTable(token, context, key) {
+        const header = slotEntries(context, key, "head", token.header).map(({ item: cell, key: cellKey }) => ({
             type: "element",
-            key: `${key}-head-${index}`,
+            key: cellKey,
             tag: "th",
             attributes: { scope: "col" },
-            children: renderInline(cell.tokens, context, `${path}-head-${index}`)
+            children: renderInline(cell.tokens, context, cellKey)
         }));
-        const body = token.rows.map((row, rowIndex) => ({
+        const body = slotEntries(context, key, "row", token.rows).map(({ item: row, key: rowKey }) => ({
             type: "element",
-            key: `${key}-row-${rowIndex}`,
+            key: rowKey,
             tag: "tr",
-            children: row.map((cell, cellIndex) => ({
+            children: slotEntries(context, rowKey, "cell", row).map(({ item: cell, key: cellKey }) => ({
                 type: "element",
-                key: `${key}-cell-${rowIndex}-${cellIndex}`,
+                key: cellKey,
                 tag: "td",
-                children: renderInline(cell.tokens, context, `${path}-cell-${rowIndex}-${cellIndex}`)
+                children: renderInline(cell.tokens, context, cellKey)
             }))
         }));
         return { type: "element", key, tag: "div", attributes: { class: "markdown-table-wrap" }, children: [
@@ -2967,52 +2966,51 @@ Please report this to https://github.com/markedjs/marked.`, e) {
                     ] }
             ] };
     }
-    function renderInline(tokens, context, path) {
+    function renderInline(tokens, context, scope) {
         const output = [];
-        for (let index = 0; index < tokens.length; index += 1) {
+        const entries = slotEntries(context, scope, "inline", tokens);
+        for (const { item: token, key } of entries) {
             if (!claim(context))
                 break;
-            const token = tokens[index];
-            const key = keyFor(context, `${path}-${index}`);
             switch (token.type) {
                 case "text": {
                     const text = token;
-                    output.push(...text.tokens ? renderInline(text.tokens, context, `${path}-${index}-t`) : [text.text]);
+                    output.push(...text.tokens ? renderInline(text.tokens, context, key) : [textNode(key, text.text)]);
                     break;
                 }
                 case "escape":
-                    output.push(token.text);
+                    output.push(textNode(key, token.text));
                     break;
                 case "strong":
-                    output.push({ type: "element", key, tag: "strong", children: renderInline(token.tokens, context, `${path}-${index}-s`) });
+                    output.push({ type: "element", key, tag: "strong", children: renderInline(token.tokens, context, key) });
                     break;
                 case "em":
-                    output.push({ type: "element", key, tag: "em", children: renderInline(token.tokens, context, `${path}-${index}-e`) });
+                    output.push({ type: "element", key, tag: "em", children: renderInline(token.tokens, context, key) });
                     break;
                 case "del":
-                    output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-strike" }, children: renderInline(token.tokens, context, `${path}-${index}-d`) });
+                    output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-strike" }, children: renderInline(token.tokens, context, key) });
                     break;
                 case "codespan":
-                    output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-inline-code" }, children: [token.text] });
+                    output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-inline-code" }, children: [textNode(`${key}-text`, token.text)] });
                     break;
                 case "br":
                     output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-break", "aria-hidden": true }, children: [] });
                     break;
                 case "link": {
                     const link = token;
-                    output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-link", title: link.href }, children: renderInline(link.tokens, context, `${path}-${index}-l`) });
+                    output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-link", title: link.href }, children: renderInline(link.tokens, context, key) });
                     break;
                 }
                 case "image": {
                     const image = token;
-                    output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-image-reference", title: image.href }, children: [`[Image: ${image.text || "untitled"}]`] });
+                    output.push({ type: "element", key, tag: "span", attributes: { class: "markdown-image-reference", title: image.href }, children: [textNode(`${key}-text`, `[Image: ${image.text || "untitled"}]`)] });
                     break;
                 }
                 case "html":
-                    output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-raw inline" }, children: [token.text] });
+                    output.push({ type: "element", key, tag: "code", attributes: { class: "markdown-raw inline" }, children: [textNode(`${key}-text`, token.text)] });
                     break;
                 default:
-                    output.push(token.raw);
+                    throw new TypeError(`unsupported markdown inline token: ${token.type}`);
             }
         }
         return output;
@@ -3025,8 +3023,14 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         context.budget -= 1;
         return true;
     }
-    function keyFor(context, suffix) {
-        return `${context.keyPrefix}-${suffix}`;
+    function slotEntries(context, scope, kind, items) {
+        return items.map((item, index) => {
+            const slot = `${scope}/${kind}:${index}`;
+            return { item, key: context.identity.keyForSlot(slot) };
+        });
+    }
+    function textNode2(key, value) {
+        return { type: "text", key, text: value };
     }
     var PAGE_SIZE = 10;
     var MAX_VISIBLE_MEMOS = PAGE_SIZE;
@@ -3043,6 +3047,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
         ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", deleteError: "", syncState: "ready", syncError: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() }
     };
+    var markdownIdentities = new Map();
     var draftTimer;
     var editTimer;
     var searchTimer;
@@ -3785,7 +3790,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         return state.ui.busy || state.ui.syncState !== "ready";
     }
     function explorerScrim() {
-        return state.ui.drawerOpen ? { type: "element", key: "explorer-scrim", tag: "button", attributes: { class: "explorer-scrim", type: "button", tabindex: -1, "aria-label": "Dismiss explorer", "data-redevplugin-action": "close-explorer" }, children: [] } : "";
+        return state.ui.drawerOpen ? { type: "element", key: "explorer-scrim", tag: "button", attributes: { class: "explorer-scrim", type: "button", tabindex: -1, "aria-label": "Dismiss explorer", "data-redevplugin-action": "close-explorer" }, children: [] } : textNode2("explorer-scrim-text-empty", "");
     }
     function explorer() {
         return { type: "element", key: "memos-explorer", tag: "aside", attributes: { class: "memos-explorer", "aria-label": "Explore memos", "data-redevplugin-escape-action": "close-explorer" }, children: [
@@ -3806,42 +3811,50 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     function brand(prefix) {
         return { type: "element", key: `${prefix}-brand`, tag: "div", attributes: { class: "brand-lockup" }, children: [
                 { type: "element", key: `${prefix}-brand-mark`, tag: "span", attributes: { class: "brand-mark", "aria-hidden": true }, children: [] },
-                { type: "element", key: `${prefix}-brand-name`, tag: "strong", children: ["Memos"] }
+                { type: "element", key: `${prefix}-brand-name`, tag: "strong", children: [textNode2(`${prefix}-brand-name-text`, "Memos")] }
             ] };
     }
     function searchForm() {
         return { type: "element", key: "search-form", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
                 { type: "element", key: "search-symbol", tag: "span", attributes: { class: "icon icon-search", "aria-hidden": true }, children: [] },
                 { type: "element", key: "search-input", tag: "input", attributes: { type: "search", name: "query", value: state.feed.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: interactionBlocked(), "data-redevplugin-action": "search-query" }, children: [] },
-                state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: interactionBlocked(), "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : ""
+                state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: interactionBlocked(), "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : textNode2("search-form-text-2", "")
             ] };
     }
     function viewButton(value, label, icon, count) {
         return { type: "element", key: `view-${value}`, tag: "button", attributes: { type: "button", value, "aria-pressed": state.feed.view === value, disabled: interactionBlocked(), "data-redevplugin-action": "filter-view" }, children: [
                 { type: "element", key: `view-${value}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
-                { type: "element", key: `view-${value}-label`, tag: "span", children: [label] },
-                count !== void 0 ? { type: "element", key: `view-${value}-count`, tag: "small", children: [String(count)] } : ""
+                { type: "element", key: `view-${value}-label`, tag: "span", children: [textNode2(`view-${value}-label-text`, label)] },
+                count !== void 0 ? { type: "element", key: `view-${value}-count`, tag: "small", children: [textNode2(`view-${value}-count-text`, String(count))] } : textNode2(`view-${value}-text-2`, "")
             ] };
     }
     function calendar() {
         const dayCounts = new Map(state.facets.days.map((day) => [day.date, day.count]));
         return { type: "element", key: "calendar", tag: "section", attributes: { class: "calendar", "aria-label": "Memo calendar" }, children: [
                 { type: "element", key: "calendar-heading", tag: "header", children: [
-                        { type: "element", key: "calendar-title", tag: "h2", children: [formatMonth(state.facets.month)] },
+                        { type: "element", key: "calendar-title", tag: "h2", children: [textNode2("calendar-title-text", formatMonth(state.facets.month))] },
                         { type: "element", key: "calendar-controls", tag: "div", children: [
                                 calendarMoveButton("previous-month", "Previous month", "icon-chevron-left"),
                                 calendarMoveButton("next-month", "Next month", "icon-chevron-right")
                             ] }
                     ] },
-                { type: "element", key: "calendar-weekdays", tag: "div", attributes: { class: "calendar-weekdays", "aria-hidden": true }, children: ["M", "T", "W", "T", "F", "S", "S"].map((label, index) => ({ type: "element", key: `weekday-${index}`, tag: "span", children: [label] })) },
+                { type: "element", key: "calendar-weekdays", tag: "div", attributes: { class: "calendar-weekdays", "aria-hidden": true }, children: [
+                        { id: "monday", label: "M" },
+                        { id: "tuesday", label: "T" },
+                        { id: "wednesday", label: "W" },
+                        { id: "thursday", label: "T" },
+                        { id: "friday", label: "F" },
+                        { id: "saturday", label: "S" },
+                        { id: "sunday", label: "S" }
+                    ].map(({ id, label }) => ({ type: "element", key: `weekday-${id}`, tag: "span", children: [textNode2(`weekday-${id}-text`, label)] })) },
                 { type: "element", key: "calendar-grid", tag: "div", attributes: { class: "calendar-grid" }, children: calendarCells(state.facets.month).map((cell, index) => {
                         if (!cell)
                             return { type: "element", key: `calendar-blank-${index}`, tag: "span", attributes: { class: "calendar-blank", "aria-hidden": true }, children: [] };
                         const count = dayCounts.get(cell.date) ?? 0;
-                        return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [String(cell.day)] };
+                        return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [textNode2(`calendar-${cell.date}-text`, String(cell.day))] };
                     }) },
-                state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: ["Clear date"] } : "",
-                state.facets.errorMessage ? { type: "element", key: "calendar-error", tag: "p", attributes: { class: "facet-error", role: "status" }, children: [state.facets.errorMessage] } : ""
+                state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [textNode2("calendar-clear-text", "Clear date")] } : textNode2("calendar-text-3", ""),
+                state.facets.errorMessage ? { type: "element", key: "calendar-error", tag: "p", attributes: { class: "facet-error", role: "status" }, children: [textNode2("calendar-error-text", state.facets.errorMessage)] } : textNode2("calendar-text-4", "")
             ] };
     }
     function calendarMoveButton(action, label, icon) {
@@ -3850,16 +3863,16 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     function tagsPanel() {
         return { type: "element", key: "tags-panel", tag: "section", attributes: { class: "tags-panel", "aria-label": "Tags" }, children: [
                 { type: "element", key: "tags-heading", tag: "header", children: [
-                        { type: "element", key: "tags-title", tag: "h2", children: ["Tags"] },
-                        state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: ["Clear"] } : ""
+                        { type: "element", key: "tags-title", tag: "h2", children: [textNode2("tags-title-text", "Tags")] },
+                        state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [textNode2("tags-clear-text", "Clear")] } : textNode2("tags-heading-text-1", "")
                     ] },
                 state.facets.tags.length ? { type: "element", key: "tag-list", tag: "ul", attributes: { class: "tag-list" }, children: state.facets.tags.map((facet) => ({ type: "element", key: `tag-${facet.tag}`, tag: "li", children: [
                             { type: "element", key: `tag-${facet.tag}-button`, tag: "button", attributes: { type: "button", value: facet.tag, "aria-pressed": state.feed.tag === facet.tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [
-                                    { type: "element", key: `tag-${facet.tag}-hash`, tag: "span", attributes: { class: "tag-hash", "aria-hidden": true }, children: ["#"] },
-                                    { type: "element", key: `tag-${facet.tag}-label`, tag: "span", children: [facet.tag] },
-                                    { type: "element", key: `tag-${facet.tag}-count`, tag: "small", children: [String(facet.count)] }
+                                    { type: "element", key: `tag-${facet.tag}-hash`, tag: "span", attributes: { class: "tag-hash", "aria-hidden": true }, children: [textNode2(`tag-${facet.tag}-hash-text`, "#")] },
+                                    { type: "element", key: `tag-${facet.tag}-label`, tag: "span", children: [textNode2(`tag-${facet.tag}-label-text`, facet.tag)] },
+                                    { type: "element", key: `tag-${facet.tag}-count`, tag: "small", children: [textNode2(`tag-${facet.tag}-count-text`, String(facet.count))] }
                                 ] }
-                        ] })) } : { type: "element", key: "tags-empty", tag: "p", attributes: { class: "tags-empty" }, children: ["Tags in your memos appear here."] }
+                        ] })) } : { type: "element", key: "tags-empty", tag: "p", attributes: { class: "tags-empty" }, children: [textNode2("tags-empty-text", "Tags in your memos appear here.")] }
             ] };
     }
     function workspace() {
@@ -3875,44 +3888,44 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     }
     function syncNotice() {
         if (state.ui.syncState === "ready")
-            return "";
+            return textNode2("sync-notice-text-empty", "");
         const syncing = state.ui.syncState === "syncing";
         return { type: "element", key: "sync-notice", tag: "section", attributes: { class: `sync-notice ${state.ui.syncState}`, role: "status" }, children: [
                 { type: "element", key: "sync-notice-copy", tag: "div", children: [
-                        { type: "element", key: "sync-notice-title", tag: "strong", children: [syncing ? "Refreshing timeline" : "Timeline refresh required"] },
-                        { type: "element", key: "sync-notice-message", tag: "p", children: [syncing ? "Confirming the latest saved state..." : state.ui.syncError] }
+                        { type: "element", key: "sync-notice-title", tag: "strong", children: [syncing ? textNode2("sync-notice-title-text", "Refreshing timeline") : textNode2("sync-notice-title-text", "Timeline refresh required")] },
+                        { type: "element", key: "sync-notice-message", tag: "p", children: [syncing ? textNode2("sync-notice-message-text", "Confirming the latest saved state...") : textNode2("sync-notice-message-text", state.ui.syncError)] }
                     ] },
-                !syncing ? { type: "element", key: "sync-notice-retry", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "retry-sync" }, children: ["Retry"] } : ""
+                !syncing ? { type: "element", key: "sync-notice-retry", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "retry-sync" }, children: [textNode2("sync-notice-retry-text", "Retry")] } : textNode2("sync-notice-text-1", "")
             ] };
     }
     function composer() {
         const expanded = state.composer.expanded || Boolean(state.composer.content);
         return { type: "element", key: "memo-composer", tag: "section", attributes: { class: `memo-composer${expanded ? " expanded" : ""}`, "aria-label": "Create a memo" }, children: [
                 { type: "element", key: "composer-main", tag: "div", attributes: { class: "composer-main" }, children: [
-                        { type: "element", key: "composer-avatar", tag: "span", attributes: { class: "composer-avatar", "aria-hidden": true }, children: ["M"] },
+                        { type: "element", key: "composer-avatar", tag: "span", attributes: { class: "composer-avatar", "aria-hidden": true }, children: [textNode2("composer-avatar-text", "M")] },
                         { type: "element", key: "composer-copy", tag: "div", attributes: { class: "composer-copy" }, children: [
                                 { type: "element", key: "composer-input", tag: "textarea", attributes: { name: "content", value: state.composer.content, maxlength: MAX_CONTENT_CHARS, rows: expanded ? 7 : 2, placeholder: "What's on your mind?", "aria-label": "Memo content", autofocus: state.ui.focusTarget === "composer", disabled: interactionBlocked(), "data-redevplugin-action": "composer-content" }, children: [] },
-                                !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "expand-composer" }, children: ["Create a memo"] } : ""
+                                !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "expand-composer" }, children: [textNode2("composer-expand-text", "Create a memo")] } : textNode2("composer-copy-text-1", "")
                             ] }
                     ] },
                 expanded ? { type: "element", key: "composer-footer", tag: "footer", attributes: { class: "composer-footer" }, children: [
                         { type: "element", key: "composer-meta", tag: "div", attributes: { class: "composer-meta" }, children: [
-                                { type: "element", key: "markdown-label", tag: "span", attributes: { class: "markdown-label" }, children: ["Markdown"] },
-                                { type: "element", key: "composer-count", tag: "span", children: [`${characterCount(state.composer.content)} / ${MAX_CONTENT_CHARS}`] },
+                                { type: "element", key: "markdown-label", tag: "span", attributes: { class: "markdown-label" }, children: [textNode2("markdown-label-text", "Markdown")] },
+                                { type: "element", key: "composer-count", tag: "span", children: [textNode2("composer-count-text", `${characterCount(state.composer.content)} / ${MAX_CONTENT_CHARS}`)] },
                                 draftStatus()
                             ] },
-                        { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: interactionBlocked() || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? "Saving..." : "Save"] }
-                    ] } : ""
+                        { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: interactionBlocked() || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? textNode2("publish-text", "Saving...") : textNode2("publish-text", "Save")] }
+                    ] } : textNode2("memo-composer-text-1", "")
             ] };
     }
     function draftStatus() {
         if (state.composer.saveState === "idle")
-            return "";
+            return textNode2("draft-status-text-empty", "");
         const label = state.composer.saveState === "saving" ? "Protecting draft..." : state.composer.saveState === "unsaved" ? "Draft pending" : state.composer.saveState === "saved" ? "Draft protected" : state.composer.errorMessage;
         return { type: "element", key: "draft-status", tag: "span", attributes: { class: `save-state ${state.composer.saveState}`, role: "status" }, children: [
                 { type: "element", key: "draft-state-mark", tag: "span", attributes: { class: "state-dot", "aria-hidden": true }, children: [] },
-                label,
-                state.composer.saveState === "error" ? { type: "element", key: "retry-draft", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-draft" }, children: ["Retry"] } : ""
+                textNode2("draft-status-text-1", label),
+                state.composer.saveState === "error" ? { type: "element", key: "retry-draft", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-draft" }, children: [textNode2("retry-draft-text", "Retry")] } : textNode2("draft-status-text-2", "")
             ] };
     }
     function feedHeader() {
@@ -3920,51 +3933,51 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const filtered = state.feed.view !== "all" || Boolean(state.feed.query || state.feed.tag || state.feed.date);
         const actions = [];
         if (state.feed.windowed) {
-            actions.push({ type: "element", key: "newest-memos", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "newest-memos" }, children: ["Back to newest"] });
+            actions.push({ type: "element", key: "newest-memos", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "newest-memos" }, children: [textNode2("newest-memos-text", "Back to newest")] });
         }
         if (filtered) {
-            actions.push({ type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "clear-filters" }, children: ["Clear filters"] });
+            actions.push({ type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "clear-filters" }, children: [textNode2("clear-filters-text", "Clear filters")] });
         }
         return { type: "element", key: "feed-header", tag: "header", attributes: { class: "feed-header" }, children: [
                 { type: "element", key: "feed-heading-copy", tag: "div", children: [
-                        { type: "element", key: "feed-title", tag: "h1", children: [label] },
-                        { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? "Updating timeline..." : state.feed.windowed ? `${state.feed.memos.length} older memos` : `${state.feed.memos.length} recent memos`] }
+                        { type: "element", key: "feed-title", tag: "h1", children: [textNode2("feed-title-text", label)] },
+                        { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? textNode2("feed-count-text", "Updating timeline...") : state.feed.windowed ? textNode2("feed-count-text", `${state.feed.memos.length} older memos`) : textNode2("feed-count-text", `${state.feed.memos.length} recent memos`)] }
                     ] },
-                actions.length ? { type: "element", key: "feed-header-actions", tag: "div", attributes: { class: "feed-header-actions" }, children: actions } : ""
+                actions.length ? { type: "element", key: "feed-header-actions", tag: "div", attributes: { class: "feed-header-actions" }, children: actions } : textNode2("feed-header-text-1", "")
             ] };
     }
     function feedContent() {
         return { type: "element", key: "feed-content", tag: "div", attributes: { class: "memo-feed", "aria-busy": state.feed.loading }, children: [
-                state.feed.errorMessage ? feedMessage("feed-error", "Timeline unavailable", state.feed.errorMessage, "error") : "",
-                !state.feed.errorMessage && !state.feed.memos.length && state.feed.loading ? feedLoading() : "",
-                !state.feed.errorMessage && !state.feed.memos.length && !state.feed.loading ? feedEmpty() : "",
+                state.feed.errorMessage ? feedMessage("feed-error", "Timeline unavailable", state.feed.errorMessage, "error") : textNode2("feed-content-text", ""),
+                !state.feed.errorMessage && !state.feed.memos.length && state.feed.loading ? feedLoading() : textNode2("feed-content-text-1", ""),
+                !state.feed.errorMessage && !state.feed.memos.length && !state.feed.loading ? feedEmpty() : textNode2("feed-content-text-2", ""),
                 ...state.feed.memos.map(memoCard),
-                state.feed.hasMore ? { type: "element", key: "load-older", tag: "button", attributes: { class: "feed-pagination", type: "button", disabled: state.feed.loading || interactionBlocked(), "data-redevplugin-action": "load-older-memos" }, children: [state.feed.loading ? "Loading older..." : "Show older memos"] } : ""
+                state.feed.hasMore ? { type: "element", key: "load-older", tag: "button", attributes: { class: "feed-pagination", type: "button", disabled: state.feed.loading || interactionBlocked(), "data-redevplugin-action": "load-older-memos" }, children: [state.feed.loading ? textNode2("load-older-text", "Loading older...") : textNode2("load-older-text", "Show older memos")] } : textNode2("feed-content-text-4", "")
             ] };
     }
     function memoCard(memo) {
         const editing = state.editing.id === memo.id;
         const pending = state.ui.pendingIds.has(memo.id);
         const expanded = state.ui.expandedIds.has(memo.id);
-        const markdown = renderMarkdown(memo.content, `md-${memo.id}`, { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived && !interactionBlocked() });
+        const markdown = renderMarkdown(memo.content, markdownIdentityFor(memo.id), { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived && !interactionBlocked() });
         return { type: "element", key: `memo-${memo.id}`, tag: "article", attributes: { class: `memo-card${memo.pinned ? " pinned" : ""}${memo.archived ? " archived" : ""}${editing ? " editing" : ""}`, "aria-label": `Memo from ${formatDocumentDate(memo.created_at)}` }, children: [
                 { type: "element", key: `memo-${memo.id}-header`, tag: "header", attributes: { class: "memo-card-header" }, children: [
                         { type: "element", key: `memo-${memo.id}-identity`, tag: "div", attributes: { class: "memo-identity" }, children: [
-                                { type: "element", key: `memo-${memo.id}-avatar`, tag: "span", attributes: { class: "memo-avatar", "aria-hidden": true }, children: ["M"] },
+                                { type: "element", key: `memo-${memo.id}-avatar`, tag: "span", attributes: { class: "memo-avatar", "aria-hidden": true }, children: [textNode2(`memo-${memo.id}-avatar-text`, "M")] },
                                 { type: "element", key: `memo-${memo.id}-byline`, tag: "div", children: [
-                                        { type: "element", key: `memo-${memo.id}-author`, tag: "strong", children: [memo.archived ? "Archived memo" : "Memos"] },
-                                        { type: "element", key: `memo-${memo.id}-date`, tag: "time", attributes: { title: formatDocumentDate(memo.created_at) }, children: [formatMemoDate(memo.created_at)] }
+                                        { type: "element", key: `memo-${memo.id}-author`, tag: "strong", children: [memo.archived ? textNode2(`memo-${memo.id}-author-text`, "Archived memo") : textNode2(`memo-${memo.id}-author-text`, "Memos")] },
+                                        { type: "element", key: `memo-${memo.id}-date`, tag: "time", attributes: { title: formatDocumentDate(memo.created_at) }, children: [textNode2(`memo-${memo.id}-date-text`, formatMemoDate(memo.created_at))] }
                                     ] }
                             ] },
                         { type: "element", key: `memo-${memo.id}-actions`, tag: "div", attributes: { class: "memo-card-actions" }, children: [
                                 { type: "element", key: `memo-${memo.id}-pin`, tag: "button", attributes: { class: `icon-button pin-button${memo.pinned ? " active" : ""}`, type: "button", value: memo.id, title: memo.pinned ? "Unpin memo" : "Pin memo", "aria-label": memo.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": memo.pinned, disabled: pending || interactionBlocked(), "data-redevplugin-action": "set-pinned" }, children: [{ type: "element", key: `memo-${memo.id}-pin-icon`, tag: "span", attributes: { class: "icon icon-pin", "aria-hidden": true }, children: [] }] },
                                 { type: "element", key: `memo-${memo.id}-more`, tag: "button", attributes: { class: "icon-button memo-more", type: "button", value: memo.id, title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.menuId === memo.id, autofocus: state.ui.focusTarget === "menu-button" && state.ui.focusId === memo.id && !state.ui.deleteId, disabled: pending || interactionBlocked(), "data-redevplugin-action": "toggle-memo-menu" }, children: [{ type: "element", key: `memo-${memo.id}-more-icon`, tag: "span", attributes: { class: "icon icon-more", "aria-hidden": true }, children: [] }] },
-                                state.ui.menuId === memo.id ? memoMenu(memo) : ""
+                                state.ui.menuId === memo.id ? memoMenu(memo) : textNode2(`memo-${memo.id}-actions-text-2`, "")
                             ] }
                     ] },
                 editing ? editMemo(memo) : { type: "element", key: `memo-${memo.id}-body`, tag: "div", attributes: { class: "markdown-body" }, children: markdown.nodes },
-                !editing && markdown.truncated ? { type: "element", key: `memo-${memo.id}-expand`, tag: "button", attributes: { class: "expand-content", type: "button", value: memo.id, "data-redevplugin-action": "toggle-expanded" }, children: [expanded ? "Show less" : "Show more"] } : "",
-                memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [`#${tag}`] })) } : ""
+                !editing && markdown.truncated ? { type: "element", key: `memo-${memo.id}-expand`, tag: "button", attributes: { class: "expand-content", type: "button", value: memo.id, "data-redevplugin-action": "toggle-expanded" }, children: [expanded ? textNode2(`memo-${memo.id}-expand-text`, "Show less") : textNode2(`memo-${memo.id}-expand-text`, "Show more")] } : textNode2(`memo-${memo.id}-text-2`, ""),
+                memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [textNode2(`memo-${memo.id}-tag-${tag}-text`, `#${tag}`)] })) } : textNode2(`memo-${memo.id}-text-3`, "")
             ] };
     }
     function editMemo(memo) {
@@ -3972,8 +3985,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
                 { type: "element", key: `memo-${memo.id}-textarea`, tag: "textarea", attributes: { name: "content", value: state.editing.content, maxlength: MAX_CONTENT_CHARS, rows: 8, "aria-label": "Edit memo content", disabled: interactionBlocked(), "data-redevplugin-action": "edit-content" }, children: [] },
                 { type: "element", key: `memo-${memo.id}-edit-footer`, tag: "footer", children: [
                         editStatus(),
-                        { type: "element", key: `memo-${memo.id}-edit-count`, tag: "span", children: [`${characterCount(state.editing.content)} / ${MAX_CONTENT_CHARS}`] },
-                        { type: "element", key: `memo-${memo.id}-done`, tag: "button", attributes: { class: "primary-button compact", type: "button", disabled: state.editing.saveState === "saving", "data-redevplugin-action": "finish-edit" }, children: ["Done"] }
+                        { type: "element", key: `memo-${memo.id}-edit-count`, tag: "span", children: [textNode2(`memo-${memo.id}-edit-count-text`, `${characterCount(state.editing.content)} / ${MAX_CONTENT_CHARS}`)] },
+                        { type: "element", key: `memo-${memo.id}-done`, tag: "button", attributes: { class: "primary-button compact", type: "button", disabled: state.editing.saveState === "saving", "data-redevplugin-action": "finish-edit" }, children: [textNode2(`memo-${memo.id}-done-text`, "Done")] }
                     ] }
             ] };
     }
@@ -3981,8 +3994,8 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         const label = state.editing.saveState === "saving" ? "Saving..." : state.editing.saveState === "unsaved" ? "Unsaved" : state.editing.saveState === "saved" ? "Saved" : state.editing.errorMessage;
         return { type: "element", key: "edit-save-indicator", tag: "span", attributes: { class: `save-state ${state.editing.saveState} save-indicator`, role: "status" }, children: [
                 { type: "element", key: "edit-state-dot", tag: "span", attributes: { class: "state-dot", "aria-hidden": true }, children: [] },
-                label,
-                state.editing.saveState === "error" ? { type: "element", key: "retry-edit", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-edit" }, children: ["Retry"] } : ""
+                textNode2("edit-save-indicator-text-1", label),
+                state.editing.saveState === "error" ? { type: "element", key: "retry-edit", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-edit" }, children: [textNode2("retry-edit-text", "Retry")] } : textNode2("edit-save-indicator-text-2", "")
             ] };
     }
     function memoMenu(memo) {
@@ -3995,25 +4008,25 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     function menuButton(id, action, label, icon, autofocus = false, danger = false) {
         return { type: "element", key: `memo-${id}-menu-${action}`, tag: "button", attributes: { class: danger ? "danger" : "", type: "button", role: "menuitem", value: id, autofocus: autofocus && state.ui.focusTarget === "menu-item", "data-redevplugin-action": action }, children: [
                 { type: "element", key: `memo-${id}-menu-${action}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
-                label
+                textNode2(`memo-${id}-menu-${action}-text-1`, label)
             ] };
     }
     function deleteDialog() {
         if (!state.ui.deleteId)
-            return "";
+            return textNode2("delete-layer-text-empty", "");
         const deleting = state.ui.busy;
         return { type: "element", key: "delete-layer", tag: "div", attributes: { class: "dialog-layer" }, children: [
                 { type: "element", key: "delete-scrim", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
                 { type: "element", key: "delete-dialog", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
-                        { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: ["!"] },
+                        { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: [textNode2("delete-mark-text", "!")] },
                         { type: "element", key: "delete-copy", tag: "div", children: [
-                                { type: "element", key: "delete-title", tag: "h2", children: ["Delete this memo?"] },
-                                { type: "element", key: "delete-message", tag: "p", children: ["This action cannot be undone."] },
-                                state.ui.deleteError ? { type: "element", key: "delete-error", tag: "p", attributes: { class: "delete-error", role: "status" }, children: [state.ui.deleteError] } : ""
+                                { type: "element", key: "delete-title", tag: "h2", children: [textNode2("delete-title-text", "Delete this memo?")] },
+                                { type: "element", key: "delete-message", tag: "p", children: [textNode2("delete-message-text", "This action cannot be undone.")] },
+                                state.ui.deleteError ? { type: "element", key: "delete-error", tag: "p", attributes: { class: "delete-error", role: "status" }, children: [textNode2("delete-error-text", state.ui.deleteError)] } : textNode2("delete-copy-text-2", "")
                             ] },
                         { type: "element", key: "delete-actions", tag: "div", attributes: { class: "delete-actions" }, children: [
-                                { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: !deleting, disabled: deleting, "data-redevplugin-action": "cancel-delete" }, children: ["Keep memo"] },
-                                { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", disabled: deleting, "data-redevplugin-action": "confirm-delete" }, children: [deleting ? "Deleting..." : "Delete memo"] }
+                                { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: !deleting, disabled: deleting, "data-redevplugin-action": "cancel-delete" }, children: [textNode2("delete-cancel-text", "Keep memo")] },
+                                { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", disabled: deleting, "data-redevplugin-action": "confirm-delete" }, children: [deleting ? textNode2("delete-confirm-text", "Deleting...") : textNode2("delete-confirm-text", "Delete memo")] }
                             ] }
                     ] }
             ] };
@@ -4031,15 +4044,15 @@ Please report this to https://github.com/markedjs/marked.`, e) {
     }
     function feedMessage(key, title, message, variant) {
         return { type: "element", key, tag: "section", attributes: { class: `feed-message ${variant}`, role: variant === "error" ? "status" : "region" }, children: [
-                { type: "element", key: `${key}-mark`, tag: "span", attributes: { class: "message-mark", "aria-hidden": true }, children: [variant === "error" ? "!" : "+"] },
+                { type: "element", key: `${key}-mark`, tag: "span", attributes: { class: "message-mark", "aria-hidden": true }, children: [variant === "error" ? textNode2(`${key}-mark-text`, "!") : textNode2(`${key}-mark-text`, "+")] },
                 { type: "element", key: `${key}-copy`, tag: "div", children: [
-                        { type: "element", key: `${key}-title`, tag: "h2", children: [title] },
-                        { type: "element", key: `${key}-message`, tag: "p", children: [message] }
+                        { type: "element", key: `${key}-title`, tag: "h2", children: [textNode2(`${key}-title-text`, title)] },
+                        { type: "element", key: `${key}-message`, tag: "p", children: [textNode2(`${key}-message-text`, message)] }
                     ] }
             ] };
     }
     function toast() {
-        return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [state.ui.toast] } : "";
+        return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [textNode2("memos-toast-text", state.ui.toast)] } : textNode2("memos-toast-text-empty", "");
     }
     function applyList(result) {
         state.feed.memos = result.memos.slice(0, MAX_VISIBLE_MEMOS);
@@ -4088,6 +4101,7 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         state.feed.memos = memos.slice(0, MAX_VISIBLE_MEMOS);
         state.feed.nextCursor = null;
         state.feed.hasMore = false;
+        pruneMarkdownIdentities(new Set(state.feed.memos.map((memo) => memo.id)));
     }
     function memoMatchesCurrentFeed(memo) {
         if (state.feed.view === "archived" ? !memo.archived : memo.archived)
@@ -4186,6 +4200,21 @@ Please report this to https://github.com/markedjs/marked.`, e) {
         state.ui.expandedIds = new Set([...state.ui.expandedIds].filter((id) => visible.has(id)));
         if (!visible.has(state.ui.menuId))
             state.ui.menuId = "";
+        pruneMarkdownIdentities(visible);
+    }
+    function markdownIdentityFor(memoId) {
+        const existing = markdownIdentities.get(memoId);
+        if (existing !== void 0)
+            return existing;
+        const identity = createMarkdownIdentity(`md-${memoId}`);
+        markdownIdentities.set(memoId, identity);
+        return identity;
+    }
+    function pruneMarkdownIdentities(visibleMemoIds) {
+        for (const memoId of markdownIdentities.keys()) {
+            if (!visibleMemoIds.has(memoId))
+                markdownIdentities.delete(memoId);
+        }
     }
     async function renderWithFocus(target) {
         state.ui.focusTarget = target;

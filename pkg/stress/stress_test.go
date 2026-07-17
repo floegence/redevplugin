@@ -395,11 +395,14 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	defer cancel()
 
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
 		RuntimePath:           os.Args[0],
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), "REDEVPLUGIN_STRESS_RUNTIME_HELPER=1"),
 		HeartbeatInterval:     250 * time.Millisecond,
 		MaxHeartbeatStaleness: time.Second,
+		StreamSink:            stressRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -458,6 +461,20 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 			"closed_storage":  4,
 		},
 	})
+}
+
+type stressRuntimeStreamSink struct{}
+
+func (stressRuntimeStreamSink) AppendRuntimeStream(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (stressRuntimeStreamSink) CloseRuntimeStream(context.Context, string) error {
+	return nil
+}
+
+func (stressRuntimeStreamSink) FailRuntimeStream(context.Context, string, capability.ExecutionFailureCode, error) error {
+	return nil
 }
 
 func TestStressGateStorageQuotaExportImportUnderLoad(t *testing.T) {
@@ -923,6 +940,13 @@ func (stressPlatformAdapter) InvokeCoreAction(context.Context, capability.Invoca
 
 func (stressPlatformAdapter) Start(context.Context, runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	return runtimeclient.ManagerHealth{}, runtimeclient.ErrRuntimeNotReady
+}
+
+func (stressPlatformAdapter) BindHostServices(services runtimeclient.RuntimeHostServices) error {
+	if services.StreamSink == nil {
+		return runtimeclient.ErrRuntimeHostServicesInvalid
+	}
+	return nil
 }
 
 func (stressPlatformAdapter) Stop(context.Context) error {

@@ -5108,6 +5108,7 @@ type httpRecordingRuntimeManager struct {
 	startErr      error
 	stopErr       error
 	err           error
+	hostServices  runtimeclient.RuntimeHostServices
 }
 
 type httpRecordingDiagnostics struct {
@@ -5358,6 +5359,14 @@ func (s *httpRecordingRuntimeManager) Start(_ context.Context, target runtimecli
 		s.health = runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true}
 	}
 	return s.managerHealth(), nil
+}
+
+func (s *httpRecordingRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
+	if services.StreamSink == nil {
+		return runtimeclient.ErrRuntimeHostServicesInvalid
+	}
+	s.hostServices = services
+	return nil
 }
 
 func (s *httpRecordingRuntimeManager) Stop(context.Context) error {

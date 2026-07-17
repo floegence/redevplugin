@@ -46,7 +46,7 @@ ReDevPlugin rejects:
   configuration, and Cargo dependency sections;
 - package sizes and paths that exceed configured limits.
 
-Every manifest v4 method must provide request and response JSON Schemas whose
+Every manifest v5 method must provide request and response JSON Schemas whose
 root is a closed object. Every nested schema that declares `type: object` must
 also set `additionalProperties: false`. ReDevPlugin rejects remote `$ref`
 resources, schema documents over 256 KiB, excessive schema depth/node counts,
@@ -398,7 +398,7 @@ Host stream-store bridge stream IDs.
 
 Host/Rust IPC, WASM ABI, worker invocation, error-code, network grant,
 performance evidence, and compatibility manifests are versioned contracts.
-IPC v2 and UI v4 are accepted only as negative fixtures; runtime drift must fail
+Legacy IPC and UI version identifiers are rejected; runtime drift must fail
 closed through tests, compatibility checks, or diagnostics.
 
 ## Surface Diagnostics

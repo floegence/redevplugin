@@ -367,9 +367,9 @@ func TestHandshakeTranscriptSHA256StableVector(t *testing.T) {
 		AssetSessionNonce:  "asset_nonce_1",
 		ManagementRevision: 7,
 		RevokeEpoch:        3,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}, "bridge_channel_1")
-	const want = "sha256:3a7dd7c0c2ec278633a061b8808c149ebe402ecaf8904d0e6f64aa94963777fa"
+	const want = "sha256:bfcb9a19af09474a87cef18c83bf1f5d2963b263d44cc92f0e6c66c1bebc0425"
 	if got != want {
 		t.Fatalf("HandshakeTranscriptSHA256() = %q, want %q", got, want)
 	}
@@ -1365,7 +1365,7 @@ func handshakeFromBootstrap(bootstrap SurfaceBootstrap) Handshake {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 }
 

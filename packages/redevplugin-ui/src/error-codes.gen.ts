@@ -1,4 +1,4 @@
-// Generated from spec/plugin/error-codes-v2.schema.json. Do not edit.
+// Generated from spec/plugin/error-codes-v3.schema.json. Do not edit.
 
 export const pluginPlatformErrorCodes = [
   "PLUGIN_INVALID_REQUEST",

@@ -20,9 +20,12 @@ import type { ReDevPluginSurfaceTransport } from "../src/plugin.js";
 import type { PluginTrustedMethodResult } from "../src/plugin.js";
 
 const pluginParams: PluginJSONObject = { ready: true };
-const pluginTree: PluginUIVNode = "ready";
+const pluginTree: PluginUIVNode = { type: "text", key: "ready-text", text: "ready" };
+// @ts-expect-error raw string text nodes are not part of the v5 UI protocol
+const invalidPluginTree: PluginUIVNode = "ready";
 void pluginParams;
 void pluginTree;
+void invalidPluginTree;
 void (null as unknown as ReDevPluginSurfaceTransport);
 void (null as unknown as PluginTrustedMethodResult);
 

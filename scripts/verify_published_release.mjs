@@ -48,6 +48,10 @@ try {
   if (compatibilityHashes.size !== 1) {
     throw new Error("runtime archives do not contain identical compatibility metadata");
   }
+  const performanceEvidenceIdentities = new Set(bundles.map((bundle) => JSON.stringify(bundle.performanceEvidence)));
+  if (performanceEvidenceIdentities.size !== 1) {
+    throw new Error("runtime archives do not contain identical performance evidence bytes and hash");
+  }
   const actualTargets = new Set(bundles.map((bundle) => bundle.runtimeTarget));
   if (actualTargets.size !== expectedTargets.size || [...expectedTargets].some((target) => !actualTargets.has(target))) {
     throw new Error(`runtime target matrix mismatch: ${JSON.stringify([...actualTargets].sort())}`);
@@ -83,7 +87,7 @@ function inspectArchive(archivePath) {
     }
     const verification = spawnSync(
       "node",
-      [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--structural-only", bundleRoot, expectedVersion],
+      [join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), "--skip-execution", bundleRoot, expectedVersion],
       { encoding: "utf8" },
     );
     if (verification.status !== 0) {
@@ -137,5 +141,11 @@ function inspectArchive(archivePath) {
   if (!statSync(join(bundleRoot, "bin", "redevplugin-runtime")).isFile()) {
     throw new Error(`${basename(archivePath)} is missing redevplugin-runtime`);
   }
-  return { runtimeTarget: manifest.runtime_target, compatibilitySHA256, npm, workerSDK };
+  const performanceEvidenceBytes = readFileSync(join(bundleRoot, "performance-evidence.json"));
+  const performanceEvidence = {
+    sha256: createHash("sha256").update(performanceEvidenceBytes).digest("hex"),
+    size: performanceEvidenceBytes.length,
+    bytes_base64: performanceEvidenceBytes.toString("base64"),
+  };
+  return { runtimeTarget: manifest.runtime_target, compatibilitySHA256, npm, workerSDK, performanceEvidence };
 }

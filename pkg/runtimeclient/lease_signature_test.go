@@ -225,14 +225,19 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 	now := time.Date(2026, 7, 4, 11, 0, 0, 0, time.UTC)
 	diagnostics := &runtimeDiagnosticSink{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
 		Env: append(os.Environ(),
 			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
 			"REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE=1",
 		),
 		Diagnostics: diagnostics,
 		Now:         func() time.Time { return now },
+		StreamSink:  &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,13 +267,18 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 
 func TestProcessSupervisorSendsRuntimeLeasePublicKeysInHello(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
 		Env: append(os.Environ(),
 			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
 			"REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_LEASE_PUBLIC_KEY=1",
 			"REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_SIGNED_LEASE=1",
 		),
+		StreamSink: &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -182,7 +182,7 @@ type examplesServerOptions struct {
 }
 
 func examplesServer(ctx context.Context, stateRoot string, runtimePath string) error {
-	return examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{})
+	return examplesServerWithOptions(ctx, stateRoot, runtimePath, examplesServerOptions{RuntimeShardCount: 1})
 }
 
 func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePath string, options examplesServerOptions) error {

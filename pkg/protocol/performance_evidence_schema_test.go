@@ -40,6 +40,12 @@ func TestPerformanceEvidenceSchemaValidatesReleaseEvidence(t *testing.T) {
 				document["fallback"] = true
 			},
 		},
+		{
+			name: "missing chromium version",
+			mutate: func(document map[string]any) {
+				delete(document["environment"].(map[string]any), "chromium_version")
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -281,11 +281,12 @@
     "reset"
   ];
   var opaqueSurfaceRenderLimits = {
-    "max_message_bytes": 262144,
+    "max_message_bytes": 524288,
     "max_in_flight_requests": 256,
     "max_renders_per_second": 60,
     "max_render_depth": 32,
     "max_render_nodes": 4096,
+    "max_patch_operations": 1024,
     "max_attributes_per_element": 64,
     "max_text_length": 65536,
     "max_attribute_value_length": 4096,
@@ -358,19 +359,21 @@
       if (nodes > opaqueSurfaceRenderLimits.max_render_nodes || depth > opaqueSurfaceRenderLimits.max_render_depth) {
         throw new PluginUIReconcileError("Plugin UI tree exceeds structural limits");
       }
-      if (typeof node === "string") {
-        if (node.length > opaqueSurfaceRenderLimits.max_text_length) throw new PluginUIReconcileError("Plugin UI text exceeds limits");
-        return;
+      if (!isText(node) && !isElement(node) || ancestors.has(node)) {
+        throw new PluginUIReconcileError("Plugin UI tree must contain plain keyed acyclic VNodes");
       }
-      if (!isElement(node) || ancestors.has(node)) {
-        throw new PluginUIReconcileError("Plugin UI tree must contain plain acyclic VNodes");
+      if (!keyPattern.test(node.key) || keys.has(node.key)) {
+        throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
+      }
+      keys.add(node.key);
+      if (node.type === "text") {
+        if (node.text.length > opaqueSurfaceRenderLimits.max_text_length) {
+          throw new PluginUIReconcileError("Plugin UI text exceeds limits");
+        }
+        return;
       }
       ancestors.add(node);
       try {
-        if (!keyPattern.test(node.key) || keys.has(node.key)) {
-          throw new PluginUIReconcileError(`Plugin UI key is invalid or duplicated: ${String(node.key)}`);
-        }
-        keys.add(node.key);
         if (!allowedTags.has(node.tag)) {
           throw new PluginUIReconcileError(`Plugin UI tag is not allowed for ${node.key}`);
         }
@@ -395,9 +398,16 @@
     visit(tree, 1);
     return tree;
   }
+  function isText(value) {
+    return isPlainRecord(value) && hasExactKeys2(value, ["type", "key", "text"]) && value.type === "text" && typeof value.key === "string" && typeof value.text === "string";
+  }
   function isElement(value) {
     if (!isPlainRecord(value)) return false;
     return Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) && value.type === "element" && typeof value.key === "string" && typeof value.tag === "string";
+  }
+  function hasExactKeys2(value, keys) {
+    const actual = Object.keys(value);
+    return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
   }
   function isPlainRecord(value) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -430,277 +440,255 @@
 
   // packages/redevplugin-ui/src/ui-reconciler.ts
   var editableValueTags = /* @__PURE__ */ new Set(["input", "textarea", "select", "option"]);
-  var maxPluginUIPatchOperations = 1024;
+  var emptyAttributes = {};
+  var maxPluginUIPatchOperations = opaqueSurfaceRenderLimits.max_patch_operations;
   function reconcilePluginUITrees(current, next, options = {}) {
     validatePluginUITree(current);
     validatePluginUITree(next);
     if (current.key !== next.key || current.tag !== next.tag) {
       throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
     }
-    const operations = [];
+    const currentIndex = indexTree(current);
+    const nextIndex = indexTree(next);
     const transferredCanvasKeys = options.transferredCanvasKeys ?? /* @__PURE__ */ new Set();
+    for (const key of transferredCanvasKeys) {
+      const left = currentIndex.byKey.get(key);
+      const right = nextIndex.byKey.get(key);
+      if (!left || !right) {
+        throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be removed`);
+      }
+      if (!sameNodeIdentity(left.node, right.node)) {
+        throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be replaced`);
+      }
+      if (left.parentKey !== right.parentKey || left.childIndex !== right.childIndex) {
+        throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be moved`);
+      }
+      if (left.node.type !== "element" || right.node.type !== "element" || !sameAttributes(left.node.attributes, right.node.attributes)) {
+        throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be patched`);
+      }
+    }
     const maxOperations = options.maxOperations ?? maxPluginUIPatchOperations;
     if (!Number.isSafeInteger(maxOperations) || maxOperations < 1 || maxOperations > maxPluginUIPatchOperations) {
       throw new PluginUIReconcileError(`Plugin UI maxOperations must be an integer between 1 and ${maxPluginUIPatchOperations}`);
     }
+    const operations = [];
     const append = (operation) => {
       if (operations.length >= maxOperations) {
         throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
       }
       operations.push(operation);
     };
-    const ensureCanvasStable = (node, action) => {
-      if (typeof node === "string") return;
-      if (transferredCanvasKeys.has(node.key)) {
-        throw new PluginUIReconcileError(`Transferred canvas ${node.key} cannot be ${action}`);
-      }
-      for (const child of node.children ?? []) ensureCanvasStable(child, action);
-    };
-    const reconcileElement = (left, right) => {
-      if (left.key !== right.key || left.tag !== right.tag) {
-        throw new PluginUIReconcileError(`Plugin UI element identity changed for ${left.key}`);
-      }
-      reconcileAttributes(left, right, options.controlEditRevisions, append);
-      const working = [...left.children ?? []];
-      const desired = right.children ?? [];
-      if (operations.length + estimateKeyedStructuralOperations(working, desired) > maxOperations) {
-        throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
-      }
-      const desiredIndexByKey = keyedChildIndexes(desired);
-      for (let index = working.length - 1; index >= 0; index -= 1) {
-        const child = working[index];
-        if (typeof child === "string") continue;
-        const desiredIndex = desiredIndexByKey.get(child.key);
-        const desiredChild = desiredIndex === void 0 ? void 0 : desired[desiredIndex];
-        if (typeof desiredChild !== "string" && desiredChild?.tag === child.tag) continue;
-        ensureCanvasStable(child, desiredIndex === void 0 ? "removed" : "replaced");
-        append({ type: "remove_child", parent_key: left.key, child_index: index, child_key: child.key });
-        working.splice(index, 1);
-      }
-      const workingIndexByKey = keyedChildIndexes(working);
-      const refreshWorkingIndexes = (start, end = working.length - 1) => {
-        for (let index = Math.max(0, start); index <= Math.min(end, working.length - 1); index += 1) {
-          const child = working[index];
-          if (typeof child !== "string") workingIndexByKey.set(child.key, index);
-        }
-      };
-      for (let index = 0; index < working.length; index += 1) {
-        const child = working[index];
-        if (typeof child !== "string" && transferredCanvasKeys.has(child.key)) {
-          const nextIndex = desiredIndexByKey.get(child.key) ?? -1;
-          if (nextIndex === -1) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be removed`);
-          if (nextIndex !== index) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be moved`);
-        }
-      }
-      if (fullyKeyed(working) && fullyKeyed(desired)) {
-        reconcileKeyedChildren(left.key, working, desired, ensureCanvasStable, append);
-        for (let index = 0; index < desired.length; index += 1) {
-          const present = working[index];
-          const wanted = desired[index];
-          if (present === void 0 || present.key !== wanted.key || present.tag !== wanted.tag) {
-            throw new PluginUIReconcileError("Plugin UI keyed reconciliation became inconsistent");
-          }
-          reconcileElement(present, wanted);
-          working[index] = wanted;
-        }
-        return;
-      }
-      for (let index = 0; index < desired.length; index += 1) {
-        const wanted = desired[index];
-        const present = working[index];
-        if (typeof wanted === "string") {
-          if (typeof present === "string") {
-            if (present !== wanted) append({ type: "set_text", parent_key: left.key, child_index: index, text: wanted });
-            working[index] = wanted;
-          } else {
-            append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-            working.splice(index, 0, wanted);
-            refreshWorkingIndexes(index);
-          }
-          continue;
-        }
-        const foundIndex = typeof present !== "string" && present?.key === wanted.key ? index : workingIndexByKey.get(wanted.key) ?? -1;
-        if (foundIndex === -1) {
-          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-          working.splice(index, 0, wanted);
-          refreshWorkingIndexes(index);
-          continue;
-        }
-        const found = working[foundIndex];
-        if (typeof found === "string") throw new PluginUIReconcileError("Plugin UI keyed lookup became inconsistent");
-        if (found.tag !== wanted.tag) {
-          ensureCanvasStable(found, "replaced");
-          append({ type: "remove_child", parent_key: left.key, child_index: foundIndex, child_key: found.key });
-          working.splice(foundIndex, 1);
-          workingIndexByKey.delete(found.key);
-          refreshWorkingIndexes(foundIndex);
-          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-          working.splice(index, 0, wanted);
-          refreshWorkingIndexes(index);
-          continue;
-        }
-        if (foundIndex !== index) {
-          ensureCanvasStable(found, "moved");
-          append({ type: "move_child", parent_key: left.key, child_key: found.key, from_index: foundIndex, to_index: index });
-          working.splice(foundIndex, 1);
-          working.splice(index, 0, found);
-          refreshWorkingIndexes(Math.min(foundIndex, index), Math.max(foundIndex, index));
-        }
-        reconcileElement(found, wanted);
-        working[index] = wanted;
-      }
-      for (let index = working.length - 1; index >= desired.length; index -= 1) {
-        const removed = working[index];
-        ensureCanvasStable(removed, "removed");
-        append({
-          type: "remove_child",
-          parent_key: left.key,
-          child_index: index,
-          ...typeof removed === "string" ? {} : { child_key: removed.key }
-        });
-        working.splice(index, 1);
-        if (typeof removed !== "string") workingIndexByKey.delete(removed.key);
-      }
-    };
-    reconcileElement(current, next);
-    return operations;
-  }
-  function keyedChildIndexes(children) {
-    const indexes = /* @__PURE__ */ new Map();
-    for (let index = 0; index < children.length; index += 1) {
-      const child = children[index];
-      if (typeof child !== "string") indexes.set(child.key, index);
-    }
-    return indexes;
-  }
-  function fullyKeyed(children) {
-    return children.every((child) => typeof child !== "string");
-  }
-  function reconcileKeyedChildren(parentKey, working, desired, ensureCanvasStable, append) {
-    const workingIndexByKey = keyedChildIndexes(working);
-    const retainedDesiredIndexes = [];
-    const retainedWorkingIndexes = [];
-    for (let desiredIndex = 0; desiredIndex < desired.length; desiredIndex += 1) {
-      const currentIndex = workingIndexByKey.get(desired[desiredIndex].key);
-      if (currentIndex !== void 0) {
-        retainedDesiredIndexes.push(desiredIndex);
-        retainedWorkingIndexes.push(currentIndex);
-      }
-    }
-    const stableDesiredIndexes = new Set(
-      longestIncreasingSubsequenceIndexes(retainedWorkingIndexes).map((retainedIndex) => retainedDesiredIndexes[retainedIndex])
-    );
-    const refreshWorkingIndexes = (start) => {
-      for (let index = Math.max(0, start); index < working.length; index += 1) {
-        workingIndexByKey.set(working[index].key, index);
-      }
-    };
-    for (let desiredIndex = desired.length - 1; desiredIndex >= 0; desiredIndex -= 1) {
-      const wanted = desired[desiredIndex];
-      const foundIndex = workingIndexByKey.get(wanted.key);
-      const anchor = desired[desiredIndex + 1];
-      const anchorIndex = anchor === void 0 ? working.length : workingIndexByKey.get(anchor.key);
-      if (anchorIndex === void 0) {
-        throw new PluginUIReconcileError("Plugin UI keyed anchor became inconsistent");
-      }
-      if (foundIndex === void 0) {
-        append({ type: "insert_child", parent_key: parentKey, child_index: anchorIndex, node: wanted });
-        working.splice(anchorIndex, 0, wanted);
-        refreshWorkingIndexes(anchorIndex);
+    let structurallyChanged = currentIndex.byKey.size !== nextIndex.byKey.size;
+    const contentOperations = [];
+    const replacementKeys = /* @__PURE__ */ new Set();
+    for (const key of nextIndex.order) {
+      const leftInfo = currentIndex.byKey.get(key);
+      const rightInfo = nextIndex.byKey.get(key);
+      const left = leftInfo?.node;
+      const right = rightInfo?.node;
+      if (!left || !right) {
+        structurallyChanged = true;
         continue;
       }
-      if (stableDesiredIndexes.has(desiredIndex)) continue;
-      const toIndex = foundIndex < anchorIndex ? anchorIndex - 1 : anchorIndex;
-      if (foundIndex === toIndex) continue;
-      const found = working[foundIndex];
-      ensureCanvasStable(found, "moved");
-      append({
-        type: "move_child",
-        parent_key: parentKey,
-        child_key: found.key,
-        from_index: foundIndex,
-        to_index: toIndex
-      });
-      working.splice(foundIndex, 1);
-      working.splice(toIndex, 0, found);
-      refreshWorkingIndexes(Math.min(foundIndex, toIndex));
-    }
-  }
-  function estimateKeyedStructuralOperations(current, next) {
-    const currentIndexes = keyedChildIndexes(current);
-    const currentByKey = keyedChildren(current);
-    const nextByKey = keyedChildren(next);
-    const retainedIndexes = [];
-    let inserted = 0;
-    for (const child of next) {
-      if (typeof child === "string") continue;
-      const currentIndex = currentIndexes.get(child.key);
-      const currentChild = currentByKey.get(child.key);
-      if (currentIndex === void 0 || currentChild?.tag !== child.tag) inserted += 1;
-      else retainedIndexes.push(currentIndex);
-    }
-    let removed = 0;
-    for (const [key, child] of currentByKey) {
-      const nextChild = nextByKey.get(key);
-      if (!nextChild || nextChild.tag !== child.tag) removed += 1;
-    }
-    return inserted + removed + retainedIndexes.length - longestIncreasingSubsequenceIndexes(retainedIndexes).length;
-  }
-  function keyedChildren(children) {
-    const keyed = /* @__PURE__ */ new Map();
-    for (const child of children) {
-      if (typeof child !== "string") keyed.set(child.key, child);
-    }
-    return keyed;
-  }
-  function longestIncreasingSubsequenceIndexes(values) {
-    const predecessors = new Array(values.length).fill(-1);
-    const tailIndexes = [];
-    for (let index = 0; index < values.length; index += 1) {
-      const value = values[index];
-      let low = 0;
-      let high = tailIndexes.length;
-      while (low < high) {
-        const middle = low + high >>> 1;
-        if ((values[tailIndexes[middle]] ?? Infinity) < value) low = middle + 1;
-        else high = middle;
+      if (!sameNodeIdentity(left, right)) {
+        replacementKeys.add(key);
+        structurallyChanged = true;
+        continue;
       }
-      if (low > 0) predecessors[index] = tailIndexes[low - 1] ?? -1;
-      tailIndexes[low] = index;
+      if (leftInfo.parentKey !== rightInfo.parentKey || leftInfo.childIndex !== rightInfo.childIndex) {
+        structurallyChanged = true;
+      }
+      if (left.type === "text" && right.type === "text") {
+        if (left.text !== right.text) contentOperations.push({ type: "set_text", target_key: key, text: right.text });
+      } else if (left.type === "element" && right.type === "element") {
+        reconcileAttributes(left, right, options.controlEditRevisions, (operation) => contentOperations.push(operation));
+      }
     }
-    const indexes = new Array(tailIndexes.length);
-    let cursor = tailIndexes[tailIndexes.length - 1] ?? -1;
-    for (let index = indexes.length - 1; index >= 0; index -= 1) {
-      indexes[index] = cursor;
-      cursor = predecessors[cursor] ?? -1;
+    if (replacementKeys.has(current.key)) {
+      throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
     }
-    return indexes;
+    if (!structurallyChanged) {
+      if (contentOperations.length > maxOperations) {
+        throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
+      }
+      return contentOperations;
+    }
+    const removedRoots = [];
+    for (const key of currentIndex.order) {
+      if (key === current.key) continue;
+      if (nextIndex.byKey.has(key) && !replacementKeys.has(key)) continue;
+      let ancestorKey = currentIndex.byKey.get(key)?.parentKey;
+      let coveredByRemovedAncestor = false;
+      while (ancestorKey) {
+        if (!nextIndex.byKey.has(ancestorKey) || replacementKeys.has(ancestorKey)) {
+          coveredByRemovedAncestor = true;
+          break;
+        }
+        ancestorKey = currentIndex.byKey.get(ancestorKey)?.parentKey;
+      }
+      if (!coveredByRemovedAncestor) removedRoots.push(key);
+    }
+    const removedCoverage = /* @__PURE__ */ new Set();
+    for (const key of removedRoots) {
+      collectSubtreeKeys(currentIndex, key, removedCoverage);
+      ensureCanvasStable(currentIndex, key, transferredCanvasKeys, "removed or replaced");
+      append({ type: "remove_child", target_key: key });
+    }
+    for (const operation of contentOperations) {
+      const targetKey = "target_key" in operation ? operation.target_key : void 0;
+      if (!targetKey || !removedCoverage.has(targetKey)) append(operation);
+    }
+    const coveredByFullInsertion = /* @__PURE__ */ new Set();
+    for (const parentKey of nextIndex.order) {
+      if (coveredByFullInsertion.has(parentKey)) continue;
+      const parent = nextIndex.byKey.get(parentKey)?.node;
+      if (!parent || parent.type !== "element") continue;
+      const desiredKeys = nextIndex.byKey.get(parentKey)?.childKeys ?? [];
+      const currentSequence = desiredKeys.map((key) => {
+        const currentInfo = currentIndex.byKey.get(key);
+        if (!currentInfo || removedCoverage.has(key) || currentInfo.parentKey !== parentKey) return -1;
+        return currentInfo.childIndex;
+      });
+      const stablePositions = longestIncreasingSubsequencePositions(currentSequence);
+      for (let index = desiredKeys.length - 1; index >= 0; index -= 1) {
+        const key = desiredKeys[index];
+        const beforeKey = desiredKeys[index + 1] ?? null;
+        const currentInfo = currentIndex.byKey.get(key);
+        const isAvailable = Boolean(currentInfo && !removedCoverage.has(key));
+        if (!isAvailable) {
+          const node = nextIndex.byKey.get(key)?.node;
+          if (!node) throw new PluginUIReconcileError("Plugin UI insertion index is inconsistent");
+          const canInsertFullSubtree = !subtreeContainsAvailableKey(nextIndex, key, currentIndex, removedCoverage);
+          const insertion = canInsertFullSubtree ? node : shallowNode(node);
+          append({ type: "insert_child", parent_key: parentKey, before_key: beforeKey, node: insertion });
+          if (canInsertFullSubtree) collectSubtreeKeys(nextIndex, key, coveredByFullInsertion);
+          continue;
+        }
+        if (currentInfo?.parentKey !== parentKey || !stablePositions.has(index)) {
+          ensureCanvasStable(currentIndex, key, transferredCanvasKeys, "moved");
+          append({ type: "move_child", target_key: key, parent_key: parentKey, before_key: beforeKey });
+        }
+      }
+    }
+    return operations;
+  }
+  function indexTree(root) {
+    const byKey = /* @__PURE__ */ new Map();
+    const order = [];
+    const visit = (node, parentKey, childIndex, depth) => {
+      const children = node.type === "element" ? node.children ?? [] : [];
+      const childKeys = children.length > 0 ? children.map((child) => child.key) : void 0;
+      byKey.set(node.key, { node, parentKey, childIndex, ...childKeys ? { childKeys } : {}, depth });
+      order.push(node.key);
+      for (let index = 0; index < children.length; index += 1) {
+        visit(children[index], node.key, index, depth + 1);
+      }
+    };
+    visit(root, void 0, 0, 1);
+    return { byKey, order };
   }
   function reconcileAttributes(current, next, controlEditRevisions, append) {
-    const left = current.attributes ?? {};
-    const right = next.attributes ?? {};
-    const set = {};
-    const remove = [];
-    for (const [name, value] of Object.entries(right)) {
-      if (!isEditableControlAttribute(current.tag, name) && left[name] !== value) set[name] = value;
+    const left = current.attributes;
+    const right = next.attributes;
+    let set;
+    let remove;
+    for (const name in right) {
+      const value = right[name];
+      if (!isEditableControlAttribute(current.tag, name) && left?.[name] !== value) {
+        (set ??= {})[name] = value;
+      }
     }
-    for (const name of Object.keys(left)) {
-      if (!isEditableControlAttribute(current.tag, name) && !(name in right)) remove.push(name);
+    for (const name in left) {
+      if (!isEditableControlAttribute(current.tag, name) && !(name in (right ?? emptyAttributes))) {
+        (remove ??= []).push(name);
+      }
     }
-    if (Object.keys(set).length > 0 || remove.length > 0) {
-      append({ type: "patch_attributes", target_key: current.key, set, remove });
+    if (set || remove) {
+      append({ type: "patch_attributes", target_key: current.key, set: set ?? {}, remove: remove ?? [] });
     }
-    const valueChanged = editableValueTags.has(current.tag) && left.value !== right.value;
-    const checkedChanged = current.tag === "input" && left.checked !== right.checked;
+    const valueChanged = editableValueTags.has(current.tag) && left?.value !== right?.value;
+    const checkedChanged = current.tag === "input" && left?.checked !== right?.checked;
     if (valueChanged || checkedChanged) {
       append({
         type: "patch_control",
         target_key: current.key,
         edit_revision: controlEditRevisions?.get(current.key) ?? 0,
-        ...valueChanged ? { value: right.value === void 0 ? null : String(right.value) } : {},
-        ...checkedChanged ? { checked: right.checked === void 0 ? null : Boolean(right.checked) } : {}
+        ...valueChanged ? { value: right?.value === void 0 ? null : String(right.value) } : {},
+        ...checkedChanged ? { checked: right?.checked === void 0 ? null : Boolean(right.checked) } : {}
       });
     }
+  }
+  function longestIncreasingSubsequencePositions(values) {
+    const tails = [];
+    const predecessors = new Array(values.length).fill(-1);
+    for (let index = 0; index < values.length; index += 1) {
+      const value = values[index];
+      if (value < 0) continue;
+      let low = 0;
+      let high = tails.length;
+      while (low < high) {
+        const middle = low + high >>> 1;
+        if ((values[tails[middle]] ?? Infinity) < value) low = middle + 1;
+        else high = middle;
+      }
+      if (low > 0) predecessors[index] = tails[low - 1] ?? -1;
+      tails[low] = index;
+    }
+    const positions = /* @__PURE__ */ new Set();
+    let cursor = tails[tails.length - 1] ?? -1;
+    while (cursor >= 0) {
+      positions.add(cursor);
+      cursor = predecessors[cursor] ?? -1;
+    }
+    return positions;
+  }
+  function collectSubtreeKeys(index, rootKey, output) {
+    const stack = [rootKey];
+    while (stack.length > 0) {
+      const key = stack.pop();
+      if (!key || output.has(key)) continue;
+      output.add(key);
+      stack.push(...index.byKey.get(key)?.childKeys ?? []);
+    }
+  }
+  function subtreeContainsAvailableKey(nextIndex, rootKey, currentIndex, removedCoverage) {
+    const stack = [...nextIndex.byKey.get(rootKey)?.childKeys ?? []];
+    while (stack.length > 0) {
+      const key = stack.pop();
+      if (!key) continue;
+      if (currentIndex.byKey.has(key) && !removedCoverage.has(key)) return true;
+      stack.push(...nextIndex.byKey.get(key)?.childKeys ?? []);
+    }
+    return false;
+  }
+  function shallowNode(node) {
+    if (node.type === "text") return node;
+    return {
+      type: "element",
+      key: node.key,
+      tag: node.tag,
+      ...node.attributes ? { attributes: node.attributes } : {},
+      children: []
+    };
+  }
+  function ensureCanvasStable(index, rootKey, transferredCanvasKeys, action) {
+    const stack = [rootKey];
+    while (stack.length > 0) {
+      const key = stack.pop();
+      if (!key) continue;
+      if (transferredCanvasKeys.has(key)) {
+        throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be ${action}`);
+      }
+      stack.push(...index.byKey.get(key)?.childKeys ?? []);
+    }
+  }
+  function sameNodeIdentity(left, right) {
+    return left.type === right.type && (left.type === "text" || right.type === "element" && left.tag === right.tag);
+  }
+  function sameAttributes(left, right) {
+    const leftEntries = Object.entries(left ?? emptyAttributes);
+    const rightEntries = Object.entries(right ?? emptyAttributes);
+    return leftEntries.length === rightEntries.length && leftEntries.every(([name, value]) => right?.[name] === value);
   }
   function isEditableControlAttribute(tag, name) {
     const normalized = name.toLowerCase();
@@ -710,7 +698,8 @@
   // packages/redevplugin-ui/src/surface.ts
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
   var maxPendingPluginBridgeRequests = 256;
-  var maxPluginBridgeMessageBytes = 256 * 1024;
+  var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
+  var maxPluginJSONStructuralNodes = 32 * 1024;
   var maxOpaqueSurfaceLazyBytes = 32 * 1024 * 1024;
   var pluginBridgeErrorCodeSet = new Set(pluginBridgeErrorCodes);
   var hostCapabilityIDPattern = new RegExp("^[A-Za-z0-9][A-Za-z0-9._-]*$");
@@ -1352,7 +1341,7 @@
   }
   function normalizePluginJSONValue(value, depth = 0, state2 = { nodes: 0, seen: /* @__PURE__ */ new Set() }) {
     state2.nodes += 1;
-    if (state2.nodes > 4096 || depth > 64) throw new TypeError("JSON value exceeds structural limits");
+    if (state2.nodes > maxPluginJSONStructuralNodes || depth > 64) throw new TypeError("JSON value exceeds structural limits");
     if (value === null || typeof value === "string" || typeof value === "boolean") return value;
     if (typeof value === "number") {
       if (!Number.isFinite(value)) throw new TypeError("JSON numbers must be finite");
@@ -1391,6 +1380,9 @@
   }
 
   // examples/plugin-ui/weather.ts
+  function textNode(key, value) {
+    return { type: "text", key, text: value };
+  }
   var DEFAULT_LOCATION = {
     id: "location_2950159",
     name: "Berlin",
@@ -1576,8 +1568,8 @@
       { type: "element", key: "weather-brand", tag: "div", attributes: { class: "weather-brand" }, children: [
         { type: "element", key: "weather-brand-mark", tag: "span", attributes: { class: "weather-brand-mark", "aria-hidden": true }, children: [] },
         { type: "element", key: "weather-brand-copy", tag: "div", children: [
-          { type: "element", key: "weather-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Live local outlook"] },
-          { type: "element", key: "weather-title", tag: "h1", children: ["Weather"] }
+          { type: "element", key: "weather-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [textNode("weather-eyebrow-text", "Live local outlook")] },
+          { type: "element", key: "weather-title", tag: "h1", children: [textNode("weather-title-text", "Weather")] }
         ] }
       ] },
       { type: "element", key: "location-search", tag: "form", attributes: { class: "location-search", "data-redevplugin-action": "search-weather" }, children: [
@@ -1586,7 +1578,7 @@
           { type: "element", key: "location-search-submit-icon", tag: "span", attributes: { class: "search-button-icon", "aria-hidden": true }, children: [] }
         ] }
       ] },
-      state.results.length > 0 ? searchResults() : state.searchMessage ? searchNotice() : ""
+      state.results.length > 0 ? searchResults() : state.searchMessage ? searchNotice() : textNode("weather-topbar-text-2", "")
     ] };
   }
   function layout() {
@@ -1599,14 +1591,14 @@
     return { type: "element", key: "forecast-toolbar", tag: "div", attributes: { class: "forecast-toolbar" }, children: [
       { type: "element", key: "weather-status", tag: "div", attributes: { class: state.error ? "weather-status error" : "weather-status", role: "status" }, children: [
         { type: "element", key: "weather-status-dot", tag: "span", attributes: { class: "status-dot", "aria-hidden": true }, children: [] },
-        { type: "element", key: "weather-status-label", tag: "span", children: [state.busy ? "Contacting weather services..." : state.status] }
+        { type: "element", key: "weather-status-label", tag: "span", children: [state.busy ? textNode("weather-status-label-text", "Contacting weather services...") : textNode("weather-status-label-text", state.status)] }
       ] },
-      state.saved.length > 0 ? savedStrip() : ""
+      state.saved.length > 0 ? savedStrip() : textNode("forecast-toolbar-text-1", "")
     ] };
   }
   function savedStrip() {
     return { type: "element", key: "saved-strip", tag: "nav", attributes: { class: "saved-strip", "aria-label": "Saved places" }, children: [
-      { type: "element", key: "saved-strip-label", tag: "span", attributes: { class: "saved-strip-label" }, children: [state.saved.length === 0 ? "Discover" : "My places"] },
+      { type: "element", key: "saved-strip-label", tag: "span", attributes: { class: "saved-strip-label" }, children: [state.saved.length === 0 ? textNode("saved-strip-label-text", "Discover") : textNode("saved-strip-label-text", "My places")] },
       { type: "element", key: "saved-list", tag: "ul", attributes: { class: "saved-list" }, children: [
         ...state.saved.length === 0 ? [savedLocation(DEFAULT_LOCATION, true)] : state.saved.map((location) => savedLocation(location, false))
       ] }
@@ -1615,7 +1607,7 @@
   function savedLocation(location, exploring) {
     return { type: "element", key: `saved-${location.id}`, tag: "li", children: [
       { type: "element", key: `saved-${location.id}-open`, tag: "button", attributes: { class: "saved-location", type: "button", value: location.id, disabled: state.busy, "aria-pressed": state.selected.id === location.id, "data-redevplugin-action": "open-location" }, children: [
-        { type: "element", key: `saved-${location.id}-label`, tag: "strong", children: [exploring ? "Explore Berlin" : location.name] }
+        { type: "element", key: `saved-${location.id}-label`, tag: "strong", children: [exploring ? textNode(`saved-${location.id}-label-text`, "Explore Berlin") : textNode(`saved-${location.id}-label-text`, location.name)] }
       ] }
     ] };
   }
@@ -1623,8 +1615,8 @@
     return { type: "element", key: "search-results-popover", tag: "div", attributes: { class: "search-popover" }, children: [
       { type: "element", key: "search-results-heading", tag: "div", attributes: { class: "search-popover-heading" }, children: [
         { type: "element", key: "search-results-copy", tag: "div", children: [
-          { type: "element", key: "search-results-title", tag: "strong", children: ["Places"] },
-          { type: "element", key: "search-results-query", tag: "span", children: [`Results for ${state.query}`] }
+          { type: "element", key: "search-results-title", tag: "strong", children: [textNode("search-results-title-text", "Places")] },
+          { type: "element", key: "search-results-query", tag: "span", children: [textNode("search-results-query-text", `Results for ${state.query}`)] }
         ] },
         { type: "element", key: "search-results-close", tag: "button", attributes: { class: "close-results", type: "button", title: "Close search results", "aria-label": "Close search results", "data-redevplugin-action": "dismiss-results" }, children: [
           { type: "element", key: "search-results-close-icon", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] }
@@ -1636,7 +1628,7 @@
   function searchNotice() {
     return { type: "element", key: "search-notice", tag: "div", attributes: { class: "search-popover search-notice", role: "status" }, children: [
       { type: "element", key: "search-notice-pin", tag: "span", attributes: { class: "result-pin", "aria-hidden": true }, children: [] },
-      { type: "element", key: "search-notice-message", tag: "p", children: [state.searchMessage] },
+      { type: "element", key: "search-notice-message", tag: "p", children: [textNode("search-notice-message-text", state.searchMessage)] },
       { type: "element", key: "search-notice-close", tag: "button", attributes: { class: "close-results", type: "button", title: "Close search message", "aria-label": "Close search message", "data-redevplugin-action": "dismiss-results" }, children: [
         { type: "element", key: "search-notice-close-icon", tag: "span", attributes: { class: "icon-close", "aria-hidden": true }, children: [] }
       ] }
@@ -1646,12 +1638,12 @@
     return { type: "element", key: `result-${location.id}`, tag: "li", attributes: { class: "search-result" }, children: [
       { type: "element", key: `result-${location.id}-pin`, tag: "span", attributes: { class: "result-pin", "aria-hidden": true }, children: [] },
       { type: "element", key: `result-${location.id}-copy`, tag: "div", attributes: { class: "result-copy" }, children: [
-        { type: "element", key: `result-${location.id}-name`, tag: "strong", children: [location.name] },
-        { type: "element", key: `result-${location.id}-place`, tag: "p", children: [placeSubtitle(location)] }
+        { type: "element", key: `result-${location.id}-name`, tag: "strong", children: [textNode(`result-${location.id}-name-text`, location.name)] },
+        { type: "element", key: `result-${location.id}-place`, tag: "p", children: [textNode(`result-${location.id}-place-text`, placeSubtitle(location))] }
       ] },
       { type: "element", key: `result-${location.id}-actions`, tag: "div", attributes: { class: "result-actions" }, children: [
-        { type: "element", key: `result-${location.id}-view`, tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy, "aria-label": `View weather for ${location.name}`, "data-redevplugin-action": "preview-location" }, children: ["View"] },
-        { type: "element", key: `result-${location.id}-save`, tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy || isSaved(location.id), "aria-label": isSaved(location.id) ? `${location.name} is saved` : `Save ${location.name}`, "data-redevplugin-action": "save-location" }, children: [isSaved(location.id) ? "Saved" : "Save"] }
+        { type: "element", key: `result-${location.id}-view`, tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy, "aria-label": `View weather for ${location.name}`, "data-redevplugin-action": "preview-location" }, children: [textNode(`result-${location.id}-view-text`, "View")] },
+        { type: "element", key: `result-${location.id}-save`, tag: "button", attributes: { class: "button secondary", type: "button", value: location.id, disabled: state.busy || isSaved(location.id), "aria-label": isSaved(location.id) ? `${location.name} is saved` : `Save ${location.name}`, "data-redevplugin-action": "save-location" }, children: [isSaved(location.id) ? textNode(`result-${location.id}-save-text`, "Saved") : textNode(`result-${location.id}-save-text`, "Save")] }
       ] }
     ] };
   }
@@ -1668,21 +1660,21 @@
         ] },
         { type: "element", key: "current-summary", tag: "div", attributes: { class: "current-summary" }, children: [
           { type: "element", key: "hero-copy", tag: "div", attributes: { class: "hero-copy" }, children: [
-            { type: "element", key: "hero-condition", tag: "p", attributes: { class: "eyebrow" }, children: [condition(current.weather_code)] },
-            { type: "element", key: "hero-location", tag: "h2", children: [location.name] },
-            { type: "element", key: "hero-meta", tag: "p", attributes: { class: "hero-meta" }, children: [`${placeSubtitle(location)} / ${forecast.timezone_abbreviation || forecast.timezone} / Local ${formatTime(current.time)}`] },
-            { type: "element", key: "weather-story", tag: "p", attributes: { class: "weather-story" }, children: [weatherStory(current, today)] }
+            { type: "element", key: "hero-condition", tag: "p", attributes: { class: "eyebrow" }, children: [textNode("hero-condition-text", condition(current.weather_code))] },
+            { type: "element", key: "hero-location", tag: "h2", children: [textNode("hero-location-text", location.name)] },
+            { type: "element", key: "hero-meta", tag: "p", attributes: { class: "hero-meta" }, children: [textNode("hero-meta-text", `${placeSubtitle(location)} / ${forecast.timezone_abbreviation || forecast.timezone} / Local ${formatTime(current.time)}`)] },
+            { type: "element", key: "weather-story", tag: "p", attributes: { class: "weather-story" }, children: [textNode("weather-story-text", weatherStory(current, today))] }
           ] },
           { type: "element", key: "temperature", tag: "div", attributes: { class: "temperature" }, children: [
-            { type: "element", key: "temperature-value", tag: "strong", attributes: { class: "temperature-value" }, children: [`${round(current.temperature)}\xB0`] },
-            { type: "element", key: "temperature-feels", tag: "span", attributes: { class: "temperature-feels" }, children: [`Feels like ${round(current.apparent_temperature)}\xB0`] }
+            { type: "element", key: "temperature-value", tag: "strong", attributes: { class: "temperature-value" }, children: [textNode("temperature-value-text", `${round(current.temperature)}\xB0`)] },
+            { type: "element", key: "temperature-feels", tag: "span", attributes: { class: "temperature-feels" }, children: [textNode("temperature-feels-text", `Feels like ${round(current.apparent_temperature)}\xB0`)] }
           ] },
           { type: "element", key: "hero-weather-icon", tag: "span", attributes: { class: `weather-icon hero-icon weather-icon--${conditionKind(current.weather_code)}`, role: "img", "aria-label": condition(current.weather_code) }, children: [] }
         ] },
         { type: "element", key: "hero-footer", tag: "div", attributes: { class: "hero-footer" }, children: [
           { type: "element", key: "hero-actions", tag: "div", attributes: { class: "hero-actions" }, children: [
-            isSaved(location.id) ? { type: "element", key: "hero-save", tag: "span", attributes: { class: "saved-badge" }, children: ["Saved place"] } : { type: "element", key: "hero-save", tag: "button", attributes: { class: "button hero-save", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "save-location" }, children: ["Save place"] },
-            isSaved(location.id) ? { type: "element", key: "hero-remove", tag: "button", attributes: { class: "remove-location", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "remove-location" }, children: ["Remove"] } : ""
+            isSaved(location.id) ? { type: "element", key: "hero-save", tag: "span", attributes: { class: "saved-badge" }, children: [textNode("hero-save-text", "Saved place")] } : { type: "element", key: "hero-save", tag: "button", attributes: { class: "button hero-save", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "save-location" }, children: [textNode("hero-save-text", "Save place")] },
+            isSaved(location.id) ? { type: "element", key: "hero-remove", tag: "button", attributes: { class: "remove-location", type: "button", value: location.id, disabled: state.busy, "data-redevplugin-action": "remove-location" }, children: [textNode("hero-remove-text", "Remove")] } : textNode("hero-actions-text-1", "")
           ] },
           { type: "element", key: "weather-glance", tag: "div", attributes: { class: "weather-glance", "aria-label": "Today at a glance" }, children: [
             glanceItem("High", today ? `${round(today.temperature_max)}\xB0` : "-"),
@@ -1700,10 +1692,10 @@
       { type: "element", key: "forecast-section", tag: "section", attributes: { class: "forecast-section" }, children: [
         { type: "element", key: "forecast-heading", tag: "div", attributes: { class: "forecast-heading" }, children: [
           { type: "element", key: "forecast-heading-copy", tag: "div", children: [
-            { type: "element", key: "forecast-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["The week ahead"] },
-            { type: "element", key: "forecast-title", tag: "h3", children: ["Seven day forecast"] }
+            { type: "element", key: "forecast-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [textNode("forecast-eyebrow-text", "The week ahead")] },
+            { type: "element", key: "forecast-title", tag: "h3", children: [textNode("forecast-title-text", "Seven day forecast")] }
           ] },
-          { type: "element", key: "forecast-date", tag: "span", children: [formatFullDate(forecast.days[0]?.date)] }
+          { type: "element", key: "forecast-date", tag: "span", children: [textNode("forecast-date-text", formatFullDate(forecast.days[0]?.date))] }
         ] },
         { type: "element", key: "forecast-scroll", tag: "div", attributes: { class: "forecast-scroll" }, children: [
           { type: "element", key: "forecast-grid", tag: "ol", attributes: { class: "forecast-grid", "aria-label": "Seven day forecast" }, children: forecast.days.map(forecastDay) }
@@ -1714,8 +1706,8 @@
   function glanceItem(label, value) {
     const key = `glance-${label.toLowerCase()}`;
     return { type: "element", key, tag: "span", attributes: { class: "glance-item" }, children: [
-      { type: "element", key: `${key}-label`, tag: "small", children: [label] },
-      { type: "element", key: `${key}-value`, tag: "strong", children: [value] }
+      { type: "element", key: `${key}-label`, tag: "small", children: [textNode(`${key}-label-text`, label)] },
+      { type: "element", key: `${key}-value`, tag: "strong", children: [textNode(`${key}-value-text`, value)] }
     ] };
   }
   function weatherStory(current, today) {
@@ -1729,31 +1721,31 @@
         { type: "element", key: "weather-loading-temperature", tag: "span", attributes: { class: "loading-temperature" }, children: [] },
         { type: "element", key: "weather-loading-condition", tag: "span", attributes: { class: "loading-condition" }, children: [] }
       ] },
-      { type: "element", key: "weather-loading-message", tag: "p", children: ["Bringing in live conditions for your place..."] }
+      { type: "element", key: "weather-loading-message", tag: "p", children: [textNode("weather-loading-message-text", "Bringing in live conditions for your place...")] }
     ] };
   }
   function weatherMetric(label, value, detail) {
     const key = `metric-${label.toLowerCase()}`;
     return { type: "element", key, tag: "div", attributes: { class: "weather-metric" }, children: [
-      { type: "element", key: `${key}-label`, tag: "span", children: [label] },
-      { type: "element", key: `${key}-value`, tag: "strong", children: [value] },
-      { type: "element", key: `${key}-detail`, tag: "small", children: [detail] }
+      { type: "element", key: `${key}-label`, tag: "span", children: [textNode(`${key}-label-text`, label)] },
+      { type: "element", key: `${key}-value`, tag: "strong", children: [textNode(`${key}-value-text`, value)] },
+      { type: "element", key: `${key}-detail`, tag: "small", children: [textNode(`${key}-detail-text`, detail)] }
     ] };
   }
   function forecastDay(day, index) {
     const key = `forecast-${day.date}`;
     return { type: "element", key, tag: "li", attributes: { class: `forecast-day forecast-day--${conditionKind(day.weather_code)}` }, children: [
       { type: "element", key: `${key}-heading`, tag: "div", attributes: { class: "forecast-day-heading" }, children: [
-        { type: "element", key: `${key}-day`, tag: "strong", children: [index === 0 ? "Today" : formatDay(day.date)] },
-        { type: "element", key: `${key}-date`, tag: "span", children: [formatDateNumber(day.date)] }
+        { type: "element", key: `${key}-day`, tag: "strong", children: [index === 0 ? textNode(`${key}-day-text`, "Today") : textNode(`${key}-day-text`, formatDay(day.date))] },
+        { type: "element", key: `${key}-date`, tag: "span", children: [textNode(`${key}-date-text`, formatDateNumber(day.date))] }
       ] },
       { type: "element", key: `${key}-icon`, tag: "span", attributes: { class: `weather-icon forecast-icon weather-icon--${conditionKind(day.weather_code)}`, role: "img", "aria-label": condition(day.weather_code) }, children: [] },
-      { type: "element", key: `${key}-condition`, tag: "span", attributes: { class: "condition-label" }, children: [condition(day.weather_code)] },
+      { type: "element", key: `${key}-condition`, tag: "span", attributes: { class: "condition-label" }, children: [textNode(`${key}-condition-text`, condition(day.weather_code))] },
       { type: "element", key: `${key}-range`, tag: "div", attributes: { class: "temperature-range" }, children: [
-        { type: "element", key: `${key}-high`, tag: "strong", children: [`${round(day.temperature_max)}\xB0`] },
-        { type: "element", key: `${key}-low`, tag: "span", children: [`${round(day.temperature_min)}\xB0`] }
+        { type: "element", key: `${key}-high`, tag: "strong", children: [textNode(`${key}-high-text`, `${round(day.temperature_max)}\xB0`)] },
+        { type: "element", key: `${key}-low`, tag: "span", children: [textNode(`${key}-low-text`, `${round(day.temperature_min)}\xB0`)] }
       ] },
-      { type: "element", key: `${key}-rain`, tag: "span", attributes: { class: "rain-chance" }, children: [`${round(day.precipitation_probability)}% rain`] }
+      { type: "element", key: `${key}-rain`, tag: "span", attributes: { class: "rain-chance" }, children: [textNode(`${key}-rain-text`, `${round(day.precipitation_probability)}% rain`)] }
     ] };
   }
   function weatherError() {
@@ -1762,10 +1754,10 @@
         { type: "element", key: "weather-error-icon", tag: "span", attributes: { class: "weather-icon weather-icon--partly" }, children: [] },
         { type: "element", key: "weather-error-offline", tag: "span", attributes: { class: "offline-mark" }, children: [] }
       ] },
-      { type: "element", key: "weather-error-location", tag: "p", attributes: { class: "eyebrow" }, children: [state.selected.name] },
-      { type: "element", key: "weather-error-title", tag: "h2", children: ["Live weather is unavailable"] },
-      { type: "element", key: "weather-error-message", tag: "p", children: [state.errorMessage || "Fresh conditions could not be reached just now."] },
-      { type: "element", key: "weather-error-retry", tag: "button", attributes: { class: "button", type: "button", disabled: state.busy, "data-redevplugin-action": "retry-weather" }, children: [state.busy ? "Refreshing" : "Try again"] }
+      { type: "element", key: "weather-error-location", tag: "p", attributes: { class: "eyebrow" }, children: [textNode("weather-error-location-text", state.selected.name)] },
+      { type: "element", key: "weather-error-title", tag: "h2", children: [textNode("weather-error-title-text", "Live weather is unavailable")] },
+      { type: "element", key: "weather-error-message", tag: "p", children: [textNode("weather-error-message-text", state.errorMessage || "Fresh conditions could not be reached just now.")] },
+      { type: "element", key: "weather-error-retry", tag: "button", attributes: { class: "button", type: "button", disabled: state.busy, "data-redevplugin-action": "retry-weather" }, children: [state.busy ? textNode("weather-error-retry-text", "Refreshing") : textNode("weather-error-retry-text", "Try again")] }
     ] };
   }
   function isSaved(id) {

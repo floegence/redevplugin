@@ -289,13 +289,13 @@ func TestBridgeSchemaDefinesClosedRenderPolicy(t *testing.T) {
 	}
 }
 
-func TestBridgeV5RejectsPluginUIV4Fixture(t *testing.T) {
+func TestBridgeV5RejectsUnkeyedTextFixture(t *testing.T) {
 	root := repoRoot(t)
 	schemaRaw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", "bridge-v5.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixtureRaw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v4-mount.json"))
+	fixtureRaw, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v5-invalid-unkeyed-text.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,86 @@ func TestBridgeV5RejectsPluginUIV4Fixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := compiled.Validate(fixture); err == nil {
-		t.Fatal("plugin-ui-v4 mount fixture unexpectedly passed bridge-v5 validation")
+		t.Fatal("plugin UI v5 unkeyed-text fixture unexpectedly passed bridge-v5 validation")
+	}
+}
+
+func TestBridgeV5ClosesMessageAndPatchBudgets(t *testing.T) {
+	schema := readBridgeSchema(t)
+	policy, ok := schema["x-redevplugin-render-policy"].(map[string]any)
+	if !ok {
+		t.Fatal("bridge v5 render policy must be an object")
+	}
+	if got := policy["max_message_bytes"]; got != float64(512*1024) {
+		t.Fatalf("max_message_bytes = %v, want %d", got, 512*1024)
+	}
+	if got := policy["max_patch_operations"]; got != float64(1024) {
+		t.Fatalf("max_patch_operations = %v, want 1024", got)
+	}
+	defs, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatal("bridge v5 $defs must be an object")
+	}
+	patch := requireDef(t, defs, "patch")
+	properties, ok := patch["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("bridge v5 patch properties must be an object")
+	}
+	operations, ok := properties["operations"].(map[string]any)
+	if !ok {
+		t.Fatal("bridge v5 patch operations must be an object")
+	}
+	if got := operations["maxItems"]; got != float64(1024) {
+		t.Fatalf("patch operations maxItems = %v, want 1024", got)
+	}
+}
+
+func TestPluginUIV5RepositoryUsesCallerOwnedStableTextKeys(t *testing.T) {
+	root := repoRoot(t)
+	legacyFixture := filepath.Join(root, "testdata", "contracts", "ui", "plugin-ui-v4-mount.json")
+	if _, err := os.Stat(legacyFixture); !os.IsNotExist(err) {
+		t.Fatalf("legacy UI v4 fixture must be absent, stat error = %v", err)
+	}
+
+	for _, relativePath := range []string{
+		"docs/ui/plugin-surface-sdk.md",
+		"docs/architecture/plugin-platform-runtime.md",
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{
+			"keeps the authoring convenience of string text VNodes",
+			"normalizes every string VNode",
+			"deterministic keys in a reserved namespace",
+			"normalized text nodes",
+		} {
+			if bytes.Contains(raw, []byte(forbidden)) {
+				t.Fatalf("%s retains synthetic text-key contract %q", relativePath, forbidden)
+			}
+		}
+	}
+
+	for _, relativePath := range []string{
+		"examples/plugin-ui/memos.ts",
+		"examples/plugin-ui/memos-markdown.ts",
+		"examples/plugin-ui/weather.ts",
+		"examples/plugin-ui/sky-strike.ts",
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{
+			"function textNode(parentKey: string, slot:",
+			"key: `${parentKey}-text-${slot}`",
+			"keyFor(context, `${path}-${index}`)",
+		} {
+			if bytes.Contains(raw, []byte(forbidden)) {
+				t.Fatalf("%s synthesizes UI identity with %q", relativePath, forbidden)
+			}
+		}
 	}
 }
 

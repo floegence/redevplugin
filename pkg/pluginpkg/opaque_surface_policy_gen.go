@@ -3,11 +3,12 @@
 package pluginpkg
 
 const (
-	opaqueSurfaceMaxMessageBytes                 = 262144
+	opaqueSurfaceMaxMessageBytes                 = 524288
 	opaqueSurfaceMaxInFlightRequests             = 256
 	opaqueSurfaceMaxRendersPerSecond             = 60
 	opaqueSurfaceMaxRenderDepth                  = 32
 	opaqueSurfaceMaxRenderNodes                  = 4096
+	opaqueSurfaceMaxPatchOperations              = 1024
 	opaqueSurfaceMaxAttributesPerElement         = 64
 	opaqueSurfaceMaxTextLength                   = 65536
 	opaqueSurfaceMaxAttributeValueLength         = 4096

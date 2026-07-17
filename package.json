@@ -18,6 +18,7 @@
     "scaffold:check": "node scripts/build_scaffold_assets.mjs --check",
     "scaffold:check:canonical": "node scripts/build_scaffold_assets.mjs --check --canonical",
     "canonical-wasm:test": "node --test scripts/canonical_wasm_builder.test.mjs",
+    "memos-markdown:test": "node --test scripts/memos_markdown_identity.test.mjs",
     "scaffold:typecheck": "tsc -p internal/scaffoldtemplate/tsconfig.json --noEmit",
     "lint": "eslint packages/redevplugin-ui/src packages/redevplugin-ui/test examples/plugin-ui examples/showcase/app.ts internal/scaffoldtemplate testdata/browser-harness/opaque-surface/*.ts",
     "typecheck": "tsc -p packages/redevplugin-ui/tsconfig.json --noEmit",
@@ -30,10 +31,11 @@
     "test:browser-harness": "npm run browser-harness:check && node --test internal/browserharness/*.test.mjs",
     "test:browser-harness:smoke": "npm run build && node internal/browserharness/opaque-surface-smoke.mjs && REDEVPLUGIN_RUN_BROWSER_SMOKE=1 GOWORK=off go test ./cmd/redevplugin -run '^TestExamplesServerBrowserSmoke$' -count=1",
     "performance:fast": "./scripts/check_redevplugin_performance.sh --fast",
+    "performance-contract:test": "node --test scripts/performance_contract.test.mjs",
     "performance:full": "./scripts/check_redevplugin_performance.sh --full",
     "performance:release": "./scripts/check_redevplugin_performance.sh --release",
     "examples": "npm run examples:check && npm run build && cargo build -p redevplugin-runtime && GOWORK=off go run ./cmd/redevplugin examples-server dist/examples-state target/debug/redevplugin-runtime",
-    "check": "npm run error-codes:check && npm run openapi:check && npm run contracts:check && npm run release-metadata:check && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
+    "check": "npm run error-codes:check && npm run openapi:check && npm run contracts:check && npm run release-metadata:check && npm run performance-contract:test && npm run lint && npm run typecheck && npm run browser-harness:typecheck && npm run scaffold:typecheck && npm run examples:typecheck && npm run canonical-wasm:test && npm run memos-markdown:test && npm run examples:check && npm run browser-harness:check && npm run scaffold:check && npm run build && npm run test:ui && npm run test:browser-harness && npm run test:browser-harness:smoke"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",

@@ -17,9 +17,10 @@ type runtimeAdmissionController struct {
 }
 
 func newRuntimeAdmissionController(limits RuntimeLimits) *runtimeAdmissionController {
+	pluginQueueCapacity := min(limits.QueueCapacity, limits.PerPluginConcurrency)
 	return &runtimeAdmissionController{
 		totalCapacity:  limits.WorkerCount + limits.QueueCapacity,
-		pluginCapacity: limits.PerPluginConcurrency + limits.QueueCapacity,
+		pluginCapacity: limits.PerPluginConcurrency + pluginQueueCapacity,
 		byPlugin:       map[string]int{},
 		notify:         make(chan struct{}),
 	}

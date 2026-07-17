@@ -35,6 +35,7 @@ try {
   mkdirSync(verifierScripts, { recursive: true });
   cpSync(join(root, "scripts", "verify_published_release.mjs"), publishedVerifier);
   cpSync(join(root, "scripts", "verify_redevplugin_release_bundle.mjs"), bundleVerifier);
+  cpSync(join(root, "scripts", "performance_contract.mjs"), join(verifierScripts, "performance_contract.mjs"));
   const bundles = [];
   for (const target of targets) {
     const bundleRoot = join(tempRoot, `redevplugin-v${version}-${target.id}`);
@@ -48,7 +49,7 @@ try {
   run(
     "node",
     [publishedVerifier, artifactDir, version, sourceCommit],
-    "verify structural runtime matrix",
+    "verify published runtime matrix",
     {
       cwd: verifierRoot,
       env: verifierEnvironment,
@@ -57,6 +58,22 @@ try {
   if (existsSync(join(verifierRoot, "node_modules"))) {
     throw new Error("published verifier installed or reused dependencies outside its standalone consumer");
   }
+
+  const performanceNegative = bundles[0];
+  const performancePath = join(performanceNegative.bundleRoot, "performance-evidence.json");
+  const originalPerformanceBytes = readFileSync(performancePath);
+  const driftedPerformance = JSON.parse(originalPerformanceBytes.toString("utf8"));
+  driftedPerformance.environment.node_version += "-cross-bundle-drift";
+  writeFileSync(performancePath, JSON.stringify(driftedPerformance, null, 2) + "\n");
+  refreshReleaseManifest(performanceNegative.bundleRoot, performanceNegative.target.id);
+  archiveBundle(performanceNegative);
+  assertPublishedVerifierRejects(
+    "runtime archives do not contain identical performance evidence bytes and hash",
+    "cross-bundle performance evidence drift",
+  );
+  writeFileSync(performancePath, originalPerformanceBytes);
+  refreshReleaseManifest(performanceNegative.bundleRoot, performanceNegative.target.id);
+  archiveBundle(performanceNegative);
 
   const sdkNegative = bundles[3];
   const sdkManifest = JSON.parse(readFileSync(join(sdkNegative.bundleRoot, "release-manifest.json"), "utf8"));
@@ -156,7 +173,7 @@ try {
     "host capability sample source_commit",
     "host capability sample from another source commit",
   );
-  console.log("published release structural verifier matrix passed");
+  console.log("published release verifier matrix passed");
 } finally {
   rmSync(tempRoot, { recursive: true, force: true });
 }
@@ -165,7 +182,26 @@ function prepareStructuralFixture(bundleRoot, target) {
   for (const path of ["bin/redevplugin", "bin/redevplugin-runtime"]) {
     patchExecutable(join(bundleRoot, path), target);
   }
+  prepareReleasePerformanceFixture(bundleRoot);
   refreshReleaseManifest(bundleRoot, target.id);
+}
+
+function prepareReleasePerformanceFixture(bundleRoot) {
+  const path = join(bundleRoot, "performance-evidence.json");
+  const evidence = JSON.parse(readFileSync(path, "utf8"));
+  for (const scenario of evidence.scenarios) {
+    scenario.gate = "release";
+    for (const metric of scenario.metrics) {
+      metric.observed = metric.comparator === "eq" ? metric.limit : Math.min(metric.observed, metric.limit);
+    }
+  }
+  writeFileSync(path, JSON.stringify(evidence, null, 2) + "\n");
+}
+
+function archiveBundle(bundle) {
+  const archive = join(artifactDir, `${basename(bundle.bundleRoot)}.tar.gz`);
+  rmSync(archive, { force: true });
+  run("tar", ["-C", tempRoot, "-czf", archive, basename(bundle.bundleRoot)], `archive ${bundle.target.id}`);
 }
 
 function patchExecutable(path, target) {
@@ -222,7 +258,7 @@ function assertPublishedVerifierRejects(expectedMessage, label) {
 function assertBundleVerifierRejects(bundleRoot, expectedMessage, label) {
   const result = spawnSync(
     "node",
-    [bundleVerifier, "--structural-only", bundleRoot, version],
+    [bundleVerifier, "--skip-execution", bundleRoot, version],
     {
       cwd: verifierRoot,
       encoding: "utf8",
@@ -232,7 +268,7 @@ function assertBundleVerifierRejects(bundleRoot, expectedMessage, label) {
   );
   const output = `${result.stderr ?? ""}${result.stdout ?? ""}`;
   if (result.status === 0 || !output.includes(expectedMessage)) {
-    throw new Error(`structural verifier accepted ${label} or returned the wrong diagnostic: ${output || result.error}`);
+    throw new Error(`bundle verifier accepted ${label} or returned the wrong diagnostic: ${output || result.error}`);
   }
 }
 

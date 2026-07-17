@@ -28,7 +28,7 @@ const leafDurations = measure(40, () => {
   }
 });
 const leafP95 = percentile(leafDurations, 95);
-if (leafP95 > 16) {
+if (options.gate !== "smoke" && leafP95 > 16) {
   throw new Error(`4096-node single-leaf reconciliation p95 ${leafP95.toFixed(3)}ms exceeds 16ms`);
 }
 record({
@@ -52,7 +52,7 @@ const reverseDurations = measure(30, () => {
   }
 });
 const reverseP95 = percentile(reverseDurations, 95);
-if (reverseP95 > 50) {
+if (options.gate !== "smoke" && reverseP95 > 50) {
   throw new Error(`1000-child keyed reversal p95 ${reverseP95.toFixed(3)}ms exceeds 50ms`);
 }
 record({
@@ -99,6 +99,6 @@ function parseArgs(args) {
     else throw new Error(`unknown argument: ${args[index]}`);
   }
   if (!output) throw new Error("--output is required");
-  if (!["fast", "weekly", "full", "release"].includes(gate)) throw new Error(`invalid gate: ${gate}`);
+  if (!["fast", "smoke", "weekly", "full", "release"].includes(gate)) throw new Error(`invalid gate: ${gate}`);
   return { output, gate };
 }

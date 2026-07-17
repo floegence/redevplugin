@@ -21,7 +21,10 @@ import {
 import { PluginBridgeClient } from "../src/plugin.js";
 import { createOpaquePluginBootstrapHTML, decodePluginStreamText } from "../src/surface.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
-import { validatePluginUITree, type PluginUIElementVNode } from "../src/ui-reconciler.js";
+import { opaqueSurfaceRenderLimits } from "../src/opaque-surface-policy.gen.js";
+import { validatePluginUITree, type PluginUIElementVNode, type PluginUITextVNode } from "../src/ui-reconciler.js";
+
+const uiText = (key: string, text: string): PluginUITextVNode => ({ type: "text", key, text });
 
 test("trusted-parent handshake transcript has one stable current vector", async () => {
   const got = await trustedParentBridgeHandshakeTranscriptSHA256({
@@ -34,9 +37,9 @@ test("trusted-parent handshake transcript has one stable current vector", async 
     asset_session_nonce: "asset_nonce_1",
     management_revision: 7,
     revoke_epoch: 3,
-    ui_protocol_version: "plugin-ui-v4",
+    ui_protocol_version: "plugin-ui-v5",
   }, "bridge_channel_1");
-  assert.equal(got, "sha256:3a7dd7c0c2ec278633a061b8808c149ebe402ecaf8904d0e6f64aa94963777fa");
+  assert.equal(got, "sha256:bfcb9a19af09474a87cef18c83bf1f5d2963b263d44cc92f0e6c66c1bebc0425");
 });
 
 class FakePort implements MessagePortLike {
@@ -347,6 +350,9 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes("__rpControlPost"), true);
   assert.equal(html.includes("__rpSealMessagePortMethod"), true);
   assert.equal(html.includes("maxConcurrentAssetReads = 4"), true);
+  assert.equal(html.includes("maxMessageBytes = 524288"), true);
+  assert.equal(html.includes("maxPatchOperations = 1024"), true);
+  assert.equal(html.includes("state.nodes > 32768 || depth > 64"), true);
   assert.equal(html.includes("plugin asset response did not match the prepared document"), true);
   assert.equal(html.includes("plugin asset response failed renderer validation"), true);
   assert.equal(html.includes("message.content_type !== asset.content_type"), true);
@@ -377,6 +383,14 @@ test("opaque bootstrap runs only the trusted renderer and creates a hardened wor
   assert.equal(html.includes('sendWorker(actionPayload(event, element, "submit"))'), true);
   assert.equal(html.includes("captureRenderState"), true);
   assert.equal(html.includes("restoreRenderState"), true);
+  assert.equal(html.includes("buildWorkerSubtree"), true);
+  assert.equal(html.includes("uiGraph"), true);
+  assert.equal(html.includes('["type", "key", "text"]'), true);
+  assert.equal(html.includes('["type", "target_key", "parent_key", "before_key"]'), true);
+  assert.equal(html.includes("graphParentChainContains"), true);
+  assert.equal(html.includes("child_index"), false);
+  assert.equal(html.includes("from_index"), false);
+  assert.equal(html.includes("to_index"), false);
   assert.equal(html.split("const renderState = captureRenderState();").length - 1, 2);
   assert.equal(html.split("restoreRenderState(renderState);").length - 1, 2);
   assert.equal(html.includes("setSelectionRange"), true);
@@ -485,7 +499,7 @@ test("plugin bridge client exposes only a public handle and its private port", a
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "rpc_1", ok: true, data: { pong: true } });
   assert.deepEqual(await callPromise, { pong: true });
 
-  const readyTree: PluginUIElementVNode = { type: "element", key: "root", tag: "main", children: ["Ready"] };
+  const readyTree: PluginUIElementVNode = { type: "element", key: "root", tag: "main", children: [uiText("ready-text", "Ready")] };
   const renderPromise = client.render(readyTree);
   assert.deepEqual(pluginPort.sent[1], {
     type: "redevplugin.ui.mount",
@@ -609,15 +623,15 @@ test("plugin bridge completes lifecycle render and persistence work before quies
   const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
   rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
   await client.ready();
-  const initialRender = client.render({ type: "element", key: "root", tag: "main", children: ["Unsaved"] });
+  const initialRender = client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "Unsaved")] });
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
   await initialRender;
 
   client.onLifecycle(async (event) => {
     if (event.type !== "dispose") return;
-    await client.render({ type: "element", key: "root", tag: "main", children: ["Saving"] });
+    await client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "Saving")] });
     await client.call("memos.save", { title: "Quiesced memo" });
-    await client.render({ type: "element", key: "root", tag: "main", children: ["Saved"] });
+    await client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "Saved")] });
   });
   rendererPort.postMessage({
     type: "redevplugin.bridge.lifecycle",
@@ -638,7 +652,7 @@ test("plugin bridge completes lifecycle render and persistence work before quies
     quiesce_id: "quiesce_12345678",
   });
   assert.throws(
-    () => client.render({ type: "element", key: "root", tag: "main", children: ["Too late"] }),
+    () => client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "Too late")] }),
     (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
   );
   client.dispose();
@@ -862,20 +876,54 @@ test("plugin bridge sends UI trees up to the renderer node limit without RPC JSO
   client.dispose();
 });
 
+test("plugin bridge commits a 1000-child reversal with maximum-length public keys as one patch", async () => {
+  const { port1: rendererPort, port2: pluginPort } = fakeChannel();
+  const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
+  rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
+  await client.ready();
+
+  const children = Array.from({ length: 1000 }, (_, index) => ({
+    type: "element" as const,
+    key: `item-${String(index).padStart(4, "0")}${"x".repeat(119)}`,
+    tag: "div" as const,
+  }));
+  const mounted = client.render({ type: "element", key: "root", tag: "main", children });
+  assert.equal(
+    new TextEncoder().encode(JSON.stringify(pluginPort.sent[0])).byteLength <= opaqueSurfaceRenderLimits.max_message_bytes,
+    true,
+  );
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
+  await mounted;
+
+  const reversed = client.render({ type: "element", key: "root", tag: "main", children: [...children].reverse() });
+  void reversed.catch(() => undefined);
+  await waitFor(() => pluginPort.sent.length === 2);
+  const patch = pluginPort.sent[1] as { operations?: Array<{ type?: string }> };
+  assert.equal(patch.operations?.length, 999);
+  assert.equal(patch.operations?.every((operation) => operation.type === "move_child"), true);
+  assert.equal(
+    new TextEncoder().encode(JSON.stringify(patch)).byteLength <= opaqueSurfaceRenderLimits.max_message_bytes,
+    true,
+  );
+  rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_2", ok: true });
+  await reversed;
+  client.dispose();
+});
+
 test("plugin bridge keeps one UI commit in flight and coalesces to the latest tree", async () => {
   const { port1: rendererPort, port2: pluginPort } = fakeChannel();
   const client = new PluginBridgeClient({ port: pluginPort, surfaceHandle: "surface_12345678", timeoutMs: 1000 });
   rendererPort.postMessage({ type: "redevplugin.bridge.lifecycle", event: { type: "ready" } });
   await client.ready();
 
-  const first = client.render({ type: "element", key: "root", tag: "main", children: ["A"] });
-  const second = client.render({ type: "element", key: "root", tag: "main", children: ["B"] });
-  const latest = client.render({ type: "element", key: "root", tag: "main", children: ["C"] });
+  const first = client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "A")] });
+  const second = client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "B")] });
+  const latest = client.render({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "C")] });
   assert.equal(pluginPort.sent.length, 1);
   rendererPort.postMessage({ type: "redevplugin.bridge.response", id: "render_1", ok: true });
   await first;
   await waitFor(() => pluginPort.sent.length === 2);
-  const latestTree = validatePluginUITree({ type: "element", key: "root", tag: "main", children: ["C"] });
+  const latestTree = validatePluginUITree({ type: "element", key: "root", tag: "main", children: [uiText("root-text", "C")] });
   const latestTextKey = latestTree.children?.[0]?.key;
   assert.deepEqual(pluginPort.sent[1], {
     type: "redevplugin.ui.patch",
@@ -1849,7 +1897,7 @@ test("trusted parent converts oversized RPC responses into a bounded bridge erro
   channel.port2.postMessage({ type: "redevplugin.surface.worker_ready" });
   await opening;
 
-  fetch.push({ data: { payload: "x".repeat(240 * 1024) } });
+  fetch.push({ data: { payload: "x".repeat(opaqueSurfaceRenderLimits.max_message_bytes - 32 * 1024) } });
   channel.port2.postMessage({
     type: "redevplugin.bridge.call",
     request: { id: "rpc_101", method: "payload.read", params: {} },
@@ -1864,7 +1912,7 @@ test("trusted parent converts oversized RPC responses into a bounded bridge erro
   const accepted = channel.port1.sent.find((value) => (value as { id?: string }).id === "rpc_101") as { ok?: boolean };
   assert.equal(accepted.ok, true);
 
-  fetch.push({ data: { payload: "x".repeat(300 * 1024) } });
+  fetch.push({ data: { payload: "x".repeat(opaqueSurfaceRenderLimits.max_message_bytes + 32 * 1024) } });
   channel.port2.postMessage({
     type: "redevplugin.bridge.call",
     request: { id: "rpc_102", method: "payload.read", params: {} },

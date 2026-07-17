@@ -143,6 +143,40 @@ jobs:
             dist/redevplugin-a2-unsupported.png
           if-no-files-found: error
 
+  performance-release:
+    name: Immutable Release Performance Evidence
+    needs:
+      - preflight
+      - quality-release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: rustup show
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Generate immutable release performance evidence
+        run: |
+          ./scripts/check_redevplugin_performance.sh \
+            --release \
+            --output dist/performance-evidence-release.json \
+            --version "${{ needs.preflight.outputs.version }}" \
+            --source-commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: redevplugin-performance-release
+          path: dist/performance-evidence-release.json
+          if-no-files-found: error
+
   package-ui:
     name: Build SDK Packages Once
     needs:
@@ -186,6 +220,7 @@ jobs:
       - preflight
       - quality-release
       - package-ui
+      - performance-release
     strategy:
       fail-fast: false
       matrix:
@@ -219,18 +254,26 @@ jobs:
         with:
           name: redevplugin-worker-sdk-package
           path: dist/worker-sdk-package
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: redevplugin-performance-release
+          path: dist/performance-release
       - name: Build release bundle from immutable SDK artifacts
         run: |
           set -euo pipefail
           npm_package=$(find dist/npm-package -maxdepth 1 -type f -name '*.tgz' -print -quit)
           worker_sdk_package=$(find dist/worker-sdk-package -maxdepth 1 -type f -name '*.crate' -print -quit)
+          performance_evidence=$(find dist/performance-release -maxdepth 1 -type f -name 'performance-evidence-release.json' -print -quit)
           test -n "$npm_package"
           test -n "$worker_sdk_package"
+          test -n "$performance_evidence"
           ./scripts/build_redevplugin_release.sh \
             --version "${{ needs.preflight.outputs.version }}" \
             --runtime-target "${{ matrix.target }}" \
             --npm-package "$npm_package" \
             --worker-sdk-package "$worker_sdk_package" \
+            --performance-gate release \
+            --performance-evidence "$performance_evidence" \
             --source-commit "$GITHUB_SHA" \
             --out-dir "dist/redevplugin-${{ needs.preflight.outputs.label }}-${{ matrix.target }}"
       - name: Archive release bundle

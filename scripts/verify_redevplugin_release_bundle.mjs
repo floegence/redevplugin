@@ -5,14 +5,18 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
+import { readPerformanceContract, validatePerformanceEvidence } from "./performance_contract.mjs";
+
 const args = process.argv.slice(2);
-const structuralOnly = args.includes("--structural-only");
-const positional = args.filter((arg) => arg !== "--structural-only");
+const skipExecution = args.includes("--skip-execution");
+const allowSmoke = args.includes("--allow-smoke");
+const flags = new Set(["--skip-execution", "--allow-smoke"]);
+const positional = args.filter((arg) => !flags.has(arg));
 const [rawBundleDir, rawExpectedVersion] = positional;
 const exactStableSemanticVersionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 if (!rawBundleDir || positional.length > 2) {
-  console.error("usage: verify_redevplugin_release_bundle.mjs [--structural-only] <bundle-dir> [expected-version]");
+  console.error("usage: verify_redevplugin_release_bundle.mjs [--skip-execution] [--allow-smoke] <bundle-dir> [expected-version]");
   process.exit(2);
 }
 
@@ -27,14 +31,14 @@ verifyReleaseManifestShape(manifest, expectedVersion);
 verifyManifestFiles(bundleDir, manifest);
 verifyRequiredArtifacts(bundleDir);
 verifyExecutableTargets(bundleDir, manifest.runtime_target);
-verifyCompatibility(bundleDir, expectedVersion, manifest, structuralOnly);
-verifyPerformanceEvidence(bundleDir, expectedVersion, manifest);
-verifyRuntimeHello(bundleDir, expectedVersion, structuralOnly);
+verifyCompatibility(bundleDir, expectedVersion, manifest, skipExecution);
+verifyPerformanceEvidence(bundleDir, expectedVersion, manifest, allowSmoke);
+verifyRuntimeHello(bundleDir, expectedVersion, skipExecution);
 await verifyNpmTarball(bundleDir, expectedVersion, manifest);
 verifyWorkerSDKCrate(bundleDir, expectedVersion, manifest);
 verifyNoticeEvidence(bundleDir);
-verifyHostCapabilitySample(bundleDir, manifest, structuralOnly);
-await verifyExamplesServer(bundleDir, structuralOnly);
+verifyHostCapabilitySample(bundleDir, manifest, skipExecution);
+await verifyExamplesServer(bundleDir, skipExecution);
 
 console.log(`release bundle verified: ${bundleDir}`);
 
@@ -122,6 +126,7 @@ function verifyRequiredArtifacts(bundleDir) {
     "contracts/spec/plugin/manifest-v5.schema.json",
     "contracts/spec/plugin/opaque-surface-document-v3.schema.json",
     "contracts/spec/plugin/opaque-surface-transport-v4.schema.json",
+    "contracts/spec/plugin/performance-contract-v1.json",
     "contracts/spec/plugin/performance-evidence-v1.schema.json",
     "contracts/spec/plugin/release-metadata-v5.schema.json",
     "contracts/spec/plugin/release-manifest-v3.schema.json",
@@ -297,87 +302,22 @@ function verifyRuntimeHello(bundleDir, expectedVersion, skipExecution) {
   assertDeepEqual(ack.payload?.limits, limits, "runtime hello limits");
 }
 
-function verifyPerformanceEvidence(bundleDir, expectedVersion, manifest) {
+function verifyPerformanceEvidence(bundleDir, expectedVersion, manifest, allowSmoke) {
   const path = join(bundleDir, "performance-evidence.json");
   const evidence = readJSON(path);
-  assertObject(evidence, "performance-evidence.json");
-  assertExactKeys(evidence, [
-    "schema_version",
-    "release_version",
-    "source_commit",
-    "generated_at",
-    "environment",
-    "scenarios",
-    "contract_hashes",
-  ], "performance evidence");
-  assertEqual(evidence.schema_version, "redevplugin.performance_evidence.v1", "performance evidence schema_version");
-  assertEqual(evidence.release_version, expectedVersion, "performance evidence release_version");
-  assertEqual(evidence.source_commit, manifest.source_commit, "performance evidence source_commit");
-  assertEqual(evidence.generated_at, manifest.generated_at, "performance evidence generated_at");
-  assertObject(evidence.environment, "performance evidence environment");
-  assertExactKeys(evidence.environment, [
-    "os",
-    "arch",
-    "logical_cpus",
-    "go_version",
-    "node_version",
-    "rustc_version",
-    "chromium_version",
-  ], "performance evidence environment");
-  for (const key of ["os", "arch", "go_version", "node_version", "rustc_version", "chromium_version"]) {
-    if (typeof evidence.environment[key] !== "string" || evidence.environment[key].length === 0) {
-      fail(`performance evidence environment ${key} must be a non-empty string`);
-    }
-  }
-  if (!Number.isSafeInteger(evidence.environment.logical_cpus) || evidence.environment.logical_cpus < 1) {
-    fail("performance evidence environment logical_cpus must be a positive integer");
-  }
-  const requiredScenarios = [
-    "runtime.blocked-hostcall-isolation",
-    "runtime.cache-single-flight",
-    "runtime.cancel-queued",
-    "runtime.cancel-running",
-    "runtime.warm-invocations",
-    "stream.event-backpressure",
-    "stream.idle-waiters",
-    "stream.sqlite-batch-read",
-    "ui.chromium-renderer",
-    "ui.keyed-reversal",
-    "ui.single-leaf-reconciliation",
-  ];
-  if (!Array.isArray(evidence.scenarios)) fail("performance evidence scenarios must be an array");
-  const scenarioIDs = evidence.scenarios.map((scenario) => scenario.id).sort();
-  assertDeepEqual(scenarioIDs, requiredScenarios, "performance evidence scenario IDs");
-  for (const [index, scenario] of evidence.scenarios.entries()) {
-    assertObject(scenario, `performance evidence scenarios[${index}]`);
-    assertExactKeys(scenario, ["id", "gate", "status", "sample_count", "metrics"], `performance evidence scenarios[${index}]`);
-    if (scenario.gate !== "release" || scenario.status !== "pass" || !Number.isSafeInteger(scenario.sample_count) || scenario.sample_count < 1) {
-      fail(`performance evidence scenario ${scenario.id} has invalid gate, status, or sample_count`);
-    }
-    if (!Array.isArray(scenario.metrics) || scenario.metrics.length === 0) fail(`performance evidence scenario ${scenario.id} has no metrics`);
-    const metricNames = new Set();
-    for (const [metricIndex, metric] of scenario.metrics.entries()) {
-      assertObject(metric, `performance evidence scenario ${scenario.id} metrics[${metricIndex}]`);
-      assertExactKeys(metric, ["name", "unit", "observed", "limit", "comparator"], `performance evidence scenario ${scenario.id} metrics[${metricIndex}]`);
-      if (typeof metric.name !== "string" || metricNames.has(metric.name)) fail(`performance evidence scenario ${scenario.id} has invalid or duplicate metric name`);
-      metricNames.add(metric.name);
-      if (!Number.isFinite(metric.observed) || metric.observed < 0 || !Number.isFinite(metric.limit) || metric.limit < 0) {
-        fail(`performance evidence scenario ${scenario.id} metric ${metric.name} is not finite and non-negative`);
-      }
-      if (metric.comparator === "eq" ? metric.observed !== metric.limit : metric.comparator === "lte" ? metric.observed > metric.limit : true) {
-        fail(`performance evidence scenario ${scenario.id} metric ${metric.name} failed its threshold`);
-      }
-    }
-  }
-  if (!Array.isArray(evidence.contract_hashes)) fail("performance evidence contract_hashes must be an array");
   const compatibility = readJSON(join(bundleDir, "compatibility.json"));
-  const expectedHashes = compatibility.contracts
-    .map((contract) => ({ id: contract.id, sha256: contract.sha256 }))
-    .sort((left, right) => left.id.localeCompare(right.id));
-  const actualHashes = evidence.contract_hashes
-    .map((contract) => ({ id: contract.id, sha256: contract.sha256 }))
-    .sort((left, right) => left.id.localeCompare(right.id));
-  assertDeepEqual(actualHashes, expectedHashes, "performance evidence contract hashes");
+  const contractPath = join(bundleDir, "contracts/spec/plugin/performance-contract-v1.json");
+  try {
+    validatePerformanceEvidence(evidence, readPerformanceContract(contractPath), {
+      allowSmoke,
+      releaseVersion: expectedVersion,
+      sourceCommit: manifest.source_commit,
+      generatedAt: manifest.generated_at,
+      contractHashes: compatibility.contracts,
+    });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function verifyExecutableTargets(bundleDir, runtimeTarget) {

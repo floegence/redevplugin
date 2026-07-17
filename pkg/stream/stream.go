@@ -39,6 +39,8 @@ var (
 	ErrInvalidStream   = errors.New("plugin stream is invalid")
 	ErrAlreadyExists   = errors.New("plugin stream already exists")
 	ErrStreamClosed    = errors.New("plugin stream is closed")
+	ErrStoreClosed     = errors.New("plugin stream store is closed")
+	ErrStreamInvariant = errors.New("plugin stream storage invariant violated")
 	ErrBackpressure    = errors.New("plugin stream backpressure limit exceeded")
 	ErrDeliveryInvalid = errors.New("plugin stream delivery is invalid")
 )
@@ -126,6 +128,10 @@ type PluginTransitionRequest struct {
 	Now              time.Time                       `json:"now,omitempty"`
 }
 
+type PluginTransitionResult struct {
+	Changed int `json:"changed"`
+}
+
 type PruneRequest struct {
 	Before                      time.Time `json:"before"`
 	Limit                       int       `json:"limit,omitempty"`
@@ -149,7 +155,7 @@ type Store interface {
 	Deliver(ctx context.Context, req DeliverRequest) (Record, Delivery, error)
 	Acknowledge(ctx context.Context, req AcknowledgeRequest) (Record, error)
 	Close(ctx context.Context, req CloseRequest) (Record, error)
-	MarkPluginTransition(ctx context.Context, req PluginTransitionRequest) ([]Record, error)
+	MarkPluginTransition(ctx context.Context, req PluginTransitionRequest) (PluginTransitionResult, error)
 	Prune(ctx context.Context, req PruneRequest) (PruneResult, error)
 }
 
@@ -166,8 +172,9 @@ type MemoryStore struct {
 }
 
 type streamNotification struct {
-	ready   chan struct{}
-	waiters int
+	ready    chan struct{}
+	waiters  int
+	revision uint64
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -494,16 +501,20 @@ func (s *MemoryStore) Close(_ context.Context, req CloseRequest) (Record, error)
 	return cloneRecord(record), nil
 }
 
-func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransitionRequest) ([]Record, error) {
+func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransitionRequest) (PluginTransitionResult, error) {
 	if s == nil {
-		return nil, errors.New("stream store is nil")
+		return PluginTransitionResult{}, errors.New("stream store is nil")
 	}
 	if !terminalStatus(req.Status) {
-		return nil, ErrInvalidStream
+		return PluginTransitionResult{}, ErrInvalidStream
 	}
 	failureCode, reason, err := normalizeTerminalOutcome(req.Status, req.FailureCode, req.Reason)
 	if err != nil {
-		return nil, err
+		return PluginTransitionResult{}, err
+	}
+	pluginInstanceID := strings.TrimSpace(req.PluginInstanceID)
+	if pluginInstanceID == "" {
+		return PluginTransitionResult{}, ErrInvalidStream
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -511,9 +522,9 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var changed []Record
+	changed := 0
 	for id, record := range s.records {
-		if record.PluginInstanceID != req.PluginInstanceID || record.Status != StatusOpen {
+		if record.PluginInstanceID != pluginInstanceID || record.Status != StatusOpen {
 			continue
 		}
 		record.Status = req.Status
@@ -523,12 +534,9 @@ func (s *MemoryStore) MarkPluginTransition(_ context.Context, req PluginTransiti
 		record.ClosedAt = &now
 		s.records[id] = record
 		s.notifyLocked(id)
-		changed = append(changed, cloneRecord(record))
+		changed++
 	}
-	sort.Slice(changed, func(i, j int) bool {
-		return changed[i].StreamID < changed[j].StreamID
-	})
-	return changed, nil
+	return PluginTransitionResult{Changed: changed}, nil
 }
 
 func normalizeTerminalOutcome(status Status, failureCode capability.ExecutionFailureCode, reason string) (capability.ExecutionFailureCode, string, error) {

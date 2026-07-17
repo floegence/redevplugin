@@ -1,4 +1,4 @@
-import { PluginBridgeClient, type PluginCanvasInputEvent, type PluginMethodResult, type PluginUIElementVNode } from "../../packages/redevplugin-ui/src/plugin.js";
+import { PluginBridgeClient, type PluginCanvasInputEvent, type PluginMethodResult, type PluginUIElementVNode, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
 
 type Vec = { x: number; y: number };
 type Bullet = Vec & { vy: number; enemy: boolean };
@@ -6,6 +6,10 @@ type Enemy = Vec & { vx: number; vy: number; hp: number; kind: "ship" | "meteor"
 type Particle = Vec & { vx: number; vy: number; life: number; color: string };
 type GamePhase = "ready" | "running" | "paused" | "game-over";
 type InputMode = "keyboard" | "pointer";
+
+function textNode(key: string, value: string): PluginUIVNode {
+  return { type: "text", key, text: value };
+}
 
 const LANDSCAPE_WIDTH = 960;
 const LANDSCAPE_HEIGHT = 540;
@@ -152,15 +156,15 @@ function gameSurface(fatal: boolean): PluginUIElementVNode {
           ] },
         ] },
         { type: "element" as const, key: "control-hint", tag: "div" as const, attributes: { id: "control-hint", class: "control-hint" }, children: [
-          { type: "element" as const, key: "keyboard-hint", tag: "span" as const, attributes: { class: "keyboard-copy" }, children: ["WASD or arrows to fly / Space to fire"] },
-          { type: "element" as const, key: "touch-hint", tag: "span" as const, attributes: { class: "touch-copy" }, children: ["Drag to fly / Hold to fire"] },
+          { type: "element" as const, key: "keyboard-hint", tag: "span" as const, attributes: { class: "keyboard-copy" }, children: [textNode("keyboard-hint-text", "WASD or arrows to fly / Space to fire")] },
+          { type: "element" as const, key: "touch-hint", tag: "span" as const, attributes: { class: "touch-copy" }, children: [textNode("touch-hint-text", "Drag to fly / Hold to fire")] },
         ] },
       ] },
       { type: "element" as const, key: "game-error", tag: "section" as const, attributes: { class: "game-error", hidden: !fatal, role: "alert" }, children: [
-        { type: "element" as const, key: "game-error-mark", tag: "span" as const, attributes: { class: "game-error-mark", "aria-hidden": true }, children: ["07"] },
-        { type: "element" as const, key: "game-error-eyebrow", tag: "p" as const, attributes: { class: "game-error-eyebrow" }, children: ["Mission unavailable"] },
-        { type: "element" as const, key: "game-error-title", tag: "h1" as const, children: ["Sky Strike could not start"] },
-        { type: "element" as const, key: "game-error-message", tag: "p" as const, children: ["The flight system did not finish loading. Reopen the app to try again."] },
+        { type: "element" as const, key: "game-error-mark", tag: "span" as const, attributes: { class: "game-error-mark", "aria-hidden": true }, children: [textNode("game-error-mark-text", "07")] },
+        { type: "element" as const, key: "game-error-eyebrow", tag: "p" as const, attributes: { class: "game-error-eyebrow" }, children: [textNode("game-error-eyebrow-text", "Mission unavailable")] },
+        { type: "element" as const, key: "game-error-title", tag: "h1" as const, children: [textNode("game-error-title-text", "Sky Strike could not start")] },
+        { type: "element" as const, key: "game-error-message", tag: "p" as const, children: [textNode("game-error-message-text", "The flight system did not finish loading. Reopen the app to try again.")] },
       ] },
     ],
   };

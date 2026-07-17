@@ -1,4 +1,4 @@
-import type { OpaqueSurfaceAllowedTag } from "./opaque-surface-policy.gen.js";
+import { opaqueSurfaceRenderLimits, type OpaqueSurfaceAllowedTag } from "./opaque-surface-policy.gen.js";
 import {
   PluginUIReconcileError,
   validatePluginUITree,
@@ -31,8 +31,22 @@ export type PluginUIReconcileOptions = {
   maxOperations?: number;
 };
 
+type IndexedNode = {
+  node: PluginUIVNode;
+  parentKey?: string;
+  childIndex: number;
+  childKeys?: string[];
+  depth: number;
+};
+
+type TreeIndex = {
+  byKey: Map<string, IndexedNode>;
+  order: string[];
+};
+
 const editableValueTags = new Set<OpaqueSurfaceAllowedTag>(["input", "textarea", "select", "option"]);
-const maxPluginUIPatchOperations = 1024;
+const emptyAttributes: Readonly<Record<string, PluginUIAttributeValue>> = {};
+const maxPluginUIPatchOperations = opaqueSurfaceRenderLimits.max_patch_operations;
 
 export function reconcilePluginUITrees(
   current: PluginUIElementVNode,
@@ -45,12 +59,31 @@ export function reconcilePluginUITrees(
     throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
   }
 
-  const operations: PluginUIPatchOperation[] = [];
+  const currentIndex = indexTree(current);
+  const nextIndex = indexTree(next);
   const transferredCanvasKeys = options.transferredCanvasKeys ?? new Set<string>();
+  for (const key of transferredCanvasKeys) {
+    const left = currentIndex.byKey.get(key);
+    const right = nextIndex.byKey.get(key);
+    if (!left || !right) {
+      throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be removed`);
+    }
+    if (!sameNodeIdentity(left.node, right.node)) {
+      throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be replaced`);
+    }
+    if (left.parentKey !== right.parentKey || left.childIndex !== right.childIndex) {
+      throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be moved`);
+    }
+    if (left.node.type !== "element" || right.node.type !== "element" || !sameAttributes(left.node.attributes, right.node.attributes)) {
+      throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be patched`);
+    }
+  }
+
   const maxOperations = options.maxOperations ?? maxPluginUIPatchOperations;
   if (!Number.isSafeInteger(maxOperations) || maxOperations < 1 || maxOperations > maxPluginUIPatchOperations) {
     throw new PluginUIReconcileError(`Plugin UI maxOperations must be an integer between 1 and ${maxPluginUIPatchOperations}`);
   }
+  const operations: PluginUIPatchOperation[] = [];
   const append = (operation: PluginUIPatchOperation): void => {
     if (operations.length >= maxOperations) {
       throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
@@ -58,259 +91,120 @@ export function reconcilePluginUITrees(
     operations.push(operation);
   };
 
-  const ensureCanvasStable = (node: PluginUIVNode, action: string): void => {
-    if (typeof node === "string") return;
-    if (transferredCanvasKeys.has(node.key)) {
-      throw new PluginUIReconcileError(`Transferred canvas ${node.key} cannot be ${action}`);
+  let structurallyChanged = currentIndex.byKey.size !== nextIndex.byKey.size;
+  const contentOperations: PluginUIPatchOperation[] = [];
+  const replacementKeys = new Set<string>();
+  for (const key of nextIndex.order) {
+    const leftInfo = currentIndex.byKey.get(key);
+    const rightInfo = nextIndex.byKey.get(key);
+    const left = leftInfo?.node;
+    const right = rightInfo?.node;
+    if (!left || !right) {
+      structurallyChanged = true;
+      continue;
     }
-    for (const child of node.children ?? []) ensureCanvasStable(child, action);
-  };
-
-  const reconcileElement = (left: PluginUIElementVNode, right: PluginUIElementVNode): void => {
-    if (left.key !== right.key || left.tag !== right.tag) {
-      throw new PluginUIReconcileError(`Plugin UI element identity changed for ${left.key}`);
+    if (!sameNodeIdentity(left, right)) {
+      replacementKeys.add(key);
+      structurallyChanged = true;
+      continue;
     }
-    reconcileAttributes(left, right, options.controlEditRevisions, append);
-
-    const working = [...(left.children ?? [])];
-    const desired = right.children ?? [];
-    if (operations.length + estimateKeyedStructuralOperations(working, desired) > maxOperations) {
+    if (leftInfo.parentKey !== rightInfo.parentKey || leftInfo.childIndex !== rightInfo.childIndex) {
+      structurallyChanged = true;
+    }
+    if (left.type === "text" && right.type === "text") {
+      if (left.text !== right.text) contentOperations.push({ type: "set_text", target_key: key, text: right.text });
+    } else if (left.type === "element" && right.type === "element") {
+      reconcileAttributes(left, right, options.controlEditRevisions, (operation) => contentOperations.push(operation));
+    }
+  }
+  if (replacementKeys.has(current.key)) {
+    throw new PluginUIReconcileError("Plugin UI root key and tag are immutable");
+  }
+  if (!structurallyChanged) {
+    if (contentOperations.length > maxOperations) {
       throw new PluginUIReconcileError("Plugin UI patch exceeds the operation limit");
     }
-    const desiredIndexByKey = keyedChildIndexes(desired);
-    for (let index = working.length - 1; index >= 0; index -= 1) {
-      const child = working[index];
-      if (typeof child === "string") continue;
-      const desiredIndex = desiredIndexByKey.get(child.key);
-      const desiredChild = desiredIndex === undefined ? undefined : desired[desiredIndex];
-      if (typeof desiredChild !== "string" && desiredChild?.tag === child.tag) continue;
-      ensureCanvasStable(child, desiredIndex === undefined ? "removed" : "replaced");
-      append({ type: "remove_child", parent_key: left.key, child_index: index, child_key: child.key });
-      working.splice(index, 1);
-    }
-    const workingIndexByKey = keyedChildIndexes(working);
-    const refreshWorkingIndexes = (start: number, end = working.length - 1): void => {
-      for (let index = Math.max(0, start); index <= Math.min(end, working.length - 1); index += 1) {
-        const child = working[index];
-        if (typeof child !== "string") workingIndexByKey.set(child.key, index);
+    return contentOperations;
+  }
+
+  const removedRoots: string[] = [];
+  for (const key of currentIndex.order) {
+    if (key === current.key) continue;
+    if (nextIndex.byKey.has(key) && !replacementKeys.has(key)) continue;
+    let ancestorKey = currentIndex.byKey.get(key)?.parentKey;
+    let coveredByRemovedAncestor = false;
+    while (ancestorKey) {
+      if (!nextIndex.byKey.has(ancestorKey) || replacementKeys.has(ancestorKey)) {
+        coveredByRemovedAncestor = true;
+        break;
       }
-    };
-    for (let index = 0; index < working.length; index += 1) {
-      const child = working[index];
-      if (typeof child !== "string" && transferredCanvasKeys.has(child.key)) {
-        const nextIndex = desiredIndexByKey.get(child.key) ?? -1;
-        if (nextIndex === -1) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be removed`);
-        if (nextIndex !== index) throw new PluginUIReconcileError(`Transferred canvas ${child.key} cannot be moved`);
-      }
+      ancestorKey = currentIndex.byKey.get(ancestorKey)?.parentKey;
     }
-    if (fullyKeyed(working) && fullyKeyed(desired)) {
-      reconcileKeyedChildren(left.key, working, desired, ensureCanvasStable, append);
-      for (let index = 0; index < desired.length; index += 1) {
-        const present = working[index];
-        const wanted = desired[index];
-        if (present === undefined || present.key !== wanted.key || present.tag !== wanted.tag) {
-          throw new PluginUIReconcileError("Plugin UI keyed reconciliation became inconsistent");
-        }
-        reconcileElement(present, wanted);
-        working[index] = wanted;
-      }
-      return;
-    }
-    for (let index = 0; index < desired.length; index += 1) {
-      const wanted = desired[index];
-      const present = working[index];
-      if (typeof wanted === "string") {
-        if (typeof present === "string") {
-          if (present !== wanted) append({ type: "set_text", parent_key: left.key, child_index: index, text: wanted });
-          working[index] = wanted;
-        } else {
-          append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-          working.splice(index, 0, wanted);
-          refreshWorkingIndexes(index);
-        }
+    if (!coveredByRemovedAncestor) removedRoots.push(key);
+  }
+
+  const removedCoverage = new Set<string>();
+  for (const key of removedRoots) {
+    collectSubtreeKeys(currentIndex, key, removedCoverage);
+    ensureCanvasStable(currentIndex, key, transferredCanvasKeys, "removed or replaced");
+    append({ type: "remove_child", target_key: key });
+  }
+
+  for (const operation of contentOperations) {
+    const targetKey = "target_key" in operation ? operation.target_key : undefined;
+    if (!targetKey || !removedCoverage.has(targetKey)) append(operation);
+  }
+
+  const coveredByFullInsertion = new Set<string>();
+  for (const parentKey of nextIndex.order) {
+    if (coveredByFullInsertion.has(parentKey)) continue;
+    const parent = nextIndex.byKey.get(parentKey)?.node;
+    if (!parent || parent.type !== "element") continue;
+    const desiredKeys = nextIndex.byKey.get(parentKey)?.childKeys ?? [];
+    const currentSequence = desiredKeys.map((key) => {
+      const currentInfo = currentIndex.byKey.get(key);
+      if (!currentInfo || removedCoverage.has(key) || currentInfo.parentKey !== parentKey) return -1;
+      return currentInfo.childIndex;
+    });
+    const stablePositions = longestIncreasingSubsequencePositions(currentSequence);
+    for (let index = desiredKeys.length - 1; index >= 0; index -= 1) {
+      const key = desiredKeys[index];
+      const beforeKey = desiredKeys[index + 1] ?? null;
+      const currentInfo = currentIndex.byKey.get(key);
+      const isAvailable = Boolean(currentInfo && !removedCoverage.has(key));
+      if (!isAvailable) {
+        const node = nextIndex.byKey.get(key)?.node;
+        if (!node) throw new PluginUIReconcileError("Plugin UI insertion index is inconsistent");
+        const canInsertFullSubtree = !subtreeContainsAvailableKey(nextIndex, key, currentIndex, removedCoverage);
+        const insertion = canInsertFullSubtree ? node : shallowNode(node);
+        append({ type: "insert_child", parent_key: parentKey, before_key: beforeKey, node: insertion });
+        if (canInsertFullSubtree) collectSubtreeKeys(nextIndex, key, coveredByFullInsertion);
         continue;
       }
-
-      const foundIndex = typeof present !== "string" && present?.key === wanted.key
-        ? index
-        : workingIndexByKey.get(wanted.key) ?? -1;
-      if (foundIndex === -1) {
-        append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-        working.splice(index, 0, wanted);
-        refreshWorkingIndexes(index);
-        continue;
+      if (currentInfo?.parentKey !== parentKey || !stablePositions.has(index)) {
+        ensureCanvasStable(currentIndex, key, transferredCanvasKeys, "moved");
+        append({ type: "move_child", target_key: key, parent_key: parentKey, before_key: beforeKey });
       }
-      const found = working[foundIndex];
-      if (typeof found === "string") throw new PluginUIReconcileError("Plugin UI keyed lookup became inconsistent");
-      if (found.tag !== wanted.tag) {
-        ensureCanvasStable(found, "replaced");
-        append({ type: "remove_child", parent_key: left.key, child_index: foundIndex, child_key: found.key });
-        working.splice(foundIndex, 1);
-        workingIndexByKey.delete(found.key);
-        refreshWorkingIndexes(foundIndex);
-        append({ type: "insert_child", parent_key: left.key, child_index: index, node: wanted });
-        working.splice(index, 0, wanted);
-        refreshWorkingIndexes(index);
-        continue;
-      }
-      if (foundIndex !== index) {
-        ensureCanvasStable(found, "moved");
-        append({ type: "move_child", parent_key: left.key, child_key: found.key, from_index: foundIndex, to_index: index });
-        working.splice(foundIndex, 1);
-        working.splice(index, 0, found);
-        refreshWorkingIndexes(Math.min(foundIndex, index), Math.max(foundIndex, index));
-      }
-      reconcileElement(found, wanted);
-      working[index] = wanted;
     }
+  }
 
-    for (let index = working.length - 1; index >= desired.length; index -= 1) {
-      const removed = working[index];
-      ensureCanvasStable(removed, "removed");
-      append({
-        type: "remove_child",
-        parent_key: left.key,
-        child_index: index,
-        ...(typeof removed === "string" ? {} : { child_key: removed.key }),
-      });
-      working.splice(index, 1);
-      if (typeof removed !== "string") workingIndexByKey.delete(removed.key);
-    }
-  };
-
-  reconcileElement(current, next);
   return operations;
 }
 
-function keyedChildIndexes(children: readonly PluginUIVNode[]): Map<string, number> {
-  const indexes = new Map<string, number>();
-  for (let index = 0; index < children.length; index += 1) {
-    const child = children[index];
-    if (typeof child !== "string") indexes.set(child.key, index);
-  }
-  return indexes;
-}
-
-function fullyKeyed(children: PluginUIVNode[]): children is PluginUIElementVNode[];
-function fullyKeyed(children: readonly PluginUIVNode[]): children is readonly PluginUIElementVNode[];
-function fullyKeyed(children: readonly PluginUIVNode[]): children is readonly PluginUIElementVNode[] {
-  return children.every((child) => typeof child !== "string");
-}
-
-function reconcileKeyedChildren(
-  parentKey: string,
-  working: PluginUIElementVNode[],
-  desired: readonly PluginUIElementVNode[],
-  ensureCanvasStable: (node: PluginUIVNode, action: string) => void,
-  append: (operation: PluginUIPatchOperation) => void,
-): void {
-  const workingIndexByKey = keyedChildIndexes(working);
-  const retainedDesiredIndexes: number[] = [];
-  const retainedWorkingIndexes: number[] = [];
-  for (let desiredIndex = 0; desiredIndex < desired.length; desiredIndex += 1) {
-    const currentIndex = workingIndexByKey.get(desired[desiredIndex].key);
-    if (currentIndex !== undefined) {
-      retainedDesiredIndexes.push(desiredIndex);
-      retainedWorkingIndexes.push(currentIndex);
-    }
-  }
-  const stableDesiredIndexes = new Set(
-    longestIncreasingSubsequenceIndexes(retainedWorkingIndexes).map((retainedIndex) => retainedDesiredIndexes[retainedIndex]),
-  );
-  const refreshWorkingIndexes = (start: number): void => {
-    for (let index = Math.max(0, start); index < working.length; index += 1) {
-      workingIndexByKey.set(working[index].key, index);
+function indexTree(root: PluginUIElementVNode): TreeIndex {
+  const byKey = new Map<string, IndexedNode>();
+  const order: string[] = [];
+  const visit = (node: PluginUIVNode, parentKey: string | undefined, childIndex: number, depth: number): void => {
+    const children = node.type === "element" ? node.children ?? [] : [];
+    const childKeys = children.length > 0 ? children.map((child) => child.key) : undefined;
+    byKey.set(node.key, { node, parentKey, childIndex, ...(childKeys ? { childKeys } : {}), depth });
+    order.push(node.key);
+    for (let index = 0; index < children.length; index += 1) {
+      visit(children[index], node.key, index, depth + 1);
     }
   };
-
-  for (let desiredIndex = desired.length - 1; desiredIndex >= 0; desiredIndex -= 1) {
-    const wanted = desired[desiredIndex];
-    const foundIndex = workingIndexByKey.get(wanted.key);
-    const anchor = desired[desiredIndex + 1];
-    const anchorIndex = anchor === undefined ? working.length : workingIndexByKey.get(anchor.key);
-    if (anchorIndex === undefined) {
-      throw new PluginUIReconcileError("Plugin UI keyed anchor became inconsistent");
-    }
-    if (foundIndex === undefined) {
-      append({ type: "insert_child", parent_key: parentKey, child_index: anchorIndex, node: wanted });
-      working.splice(anchorIndex, 0, wanted);
-      refreshWorkingIndexes(anchorIndex);
-      continue;
-    }
-    if (stableDesiredIndexes.has(desiredIndex)) continue;
-
-    const toIndex = foundIndex < anchorIndex ? anchorIndex - 1 : anchorIndex;
-    if (foundIndex === toIndex) continue;
-    const found = working[foundIndex];
-    ensureCanvasStable(found, "moved");
-    append({
-      type: "move_child",
-      parent_key: parentKey,
-      child_key: found.key,
-      from_index: foundIndex,
-      to_index: toIndex,
-    });
-    working.splice(foundIndex, 1);
-    working.splice(toIndex, 0, found);
-    refreshWorkingIndexes(Math.min(foundIndex, toIndex));
-  }
-}
-
-function estimateKeyedStructuralOperations(
-  current: readonly PluginUIVNode[],
-  next: readonly PluginUIVNode[],
-): number {
-  const currentIndexes = keyedChildIndexes(current);
-  const currentByKey = keyedChildren(current);
-  const nextByKey = keyedChildren(next);
-  const retainedIndexes: number[] = [];
-  let inserted = 0;
-  for (const child of next) {
-    if (typeof child === "string") continue;
-    const currentIndex = currentIndexes.get(child.key);
-    const currentChild = currentByKey.get(child.key);
-    if (currentIndex === undefined || currentChild?.tag !== child.tag) inserted += 1;
-    else retainedIndexes.push(currentIndex);
-  }
-  let removed = 0;
-  for (const [key, child] of currentByKey) {
-    const nextChild = nextByKey.get(key);
-    if (!nextChild || nextChild.tag !== child.tag) removed += 1;
-  }
-  return inserted + removed + retainedIndexes.length - longestIncreasingSubsequenceIndexes(retainedIndexes).length;
-}
-
-function keyedChildren(children: readonly PluginUIVNode[]): Map<string, PluginUIElementVNode> {
-  const keyed = new Map<string, PluginUIElementVNode>();
-  for (const child of children) {
-    if (typeof child !== "string") keyed.set(child.key, child);
-  }
-  return keyed;
-}
-
-function longestIncreasingSubsequenceIndexes(values: readonly number[]): number[] {
-  const predecessors = new Array<number>(values.length).fill(-1);
-  const tailIndexes: number[] = [];
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    let low = 0;
-    let high = tailIndexes.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if ((values[tailIndexes[middle]] ?? Infinity) < value) low = middle + 1;
-      else high = middle;
-    }
-    if (low > 0) predecessors[index] = tailIndexes[low - 1] ?? -1;
-    tailIndexes[low] = index;
-  }
-
-  const indexes = new Array<number>(tailIndexes.length);
-  let cursor = tailIndexes[tailIndexes.length - 1] ?? -1;
-  for (let index = indexes.length - 1; index >= 0; index -= 1) {
-    indexes[index] = cursor;
-    cursor = predecessors[cursor] ?? -1;
-  }
-  return indexes;
+  visit(root, undefined, 0, 1);
+  return { byKey, order };
 }
 
 function reconcileAttributes(
@@ -319,32 +213,129 @@ function reconcileAttributes(
   controlEditRevisions: ReadonlyMap<string, number> | undefined,
   append: (operation: PluginUIPatchOperation) => void,
 ): void {
-  const left = current.attributes ?? {};
-  const right = next.attributes ?? {};
-  const set: Record<string, PluginUIAttributeValue> = {};
-  const remove: string[] = [];
+  const left = current.attributes;
+  const right = next.attributes;
+  let set: Record<string, PluginUIAttributeValue> | undefined;
+  let remove: string[] | undefined;
 
-  for (const [name, value] of Object.entries(right)) {
-    if (!isEditableControlAttribute(current.tag, name) && left[name] !== value) set[name] = value;
+  for (const name in right) {
+    const value = right[name];
+    if (!isEditableControlAttribute(current.tag, name) && left?.[name] !== value) {
+      (set ??= {})[name] = value;
+    }
   }
-  for (const name of Object.keys(left)) {
-    if (!isEditableControlAttribute(current.tag, name) && !(name in right)) remove.push(name);
+  for (const name in left) {
+    if (!isEditableControlAttribute(current.tag, name) && !(name in (right ?? emptyAttributes))) {
+      (remove ??= []).push(name);
+    }
   }
-  if (Object.keys(set).length > 0 || remove.length > 0) {
-    append({ type: "patch_attributes", target_key: current.key, set, remove });
+  if (set || remove) {
+    append({ type: "patch_attributes", target_key: current.key, set: set ?? {}, remove: remove ?? [] });
   }
 
-  const valueChanged = editableValueTags.has(current.tag) && left.value !== right.value;
-  const checkedChanged = current.tag === "input" && left.checked !== right.checked;
+  const valueChanged = editableValueTags.has(current.tag) && left?.value !== right?.value;
+  const checkedChanged = current.tag === "input" && left?.checked !== right?.checked;
   if (valueChanged || checkedChanged) {
     append({
       type: "patch_control",
       target_key: current.key,
       edit_revision: controlEditRevisions?.get(current.key) ?? 0,
-      ...(valueChanged ? { value: right.value === undefined ? null : String(right.value) } : {}),
-      ...(checkedChanged ? { checked: right.checked === undefined ? null : Boolean(right.checked) } : {}),
+      ...(valueChanged ? { value: right?.value === undefined ? null : String(right.value) } : {}),
+      ...(checkedChanged ? { checked: right?.checked === undefined ? null : Boolean(right.checked) } : {}),
     });
   }
+}
+
+function longestIncreasingSubsequencePositions(values: readonly number[]): Set<number> {
+  const tails: number[] = [];
+  const predecessors = new Array<number>(values.length).fill(-1);
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value < 0) continue;
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if ((values[tails[middle]] ?? Infinity) < value) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) predecessors[index] = tails[low - 1] ?? -1;
+    tails[low] = index;
+  }
+  const positions = new Set<number>();
+  let cursor = tails[tails.length - 1] ?? -1;
+  while (cursor >= 0) {
+    positions.add(cursor);
+    cursor = predecessors[cursor] ?? -1;
+  }
+  return positions;
+}
+
+function collectSubtreeKeys(index: TreeIndex, rootKey: string, output: Set<string>): void {
+  const stack = [rootKey];
+  while (stack.length > 0) {
+    const key = stack.pop();
+    if (!key || output.has(key)) continue;
+    output.add(key);
+    stack.push(...(index.byKey.get(key)?.childKeys ?? []));
+  }
+}
+
+function subtreeContainsAvailableKey(
+  nextIndex: TreeIndex,
+  rootKey: string,
+  currentIndex: TreeIndex,
+  removedCoverage: ReadonlySet<string>,
+): boolean {
+  const stack = [...(nextIndex.byKey.get(rootKey)?.childKeys ?? [])];
+  while (stack.length > 0) {
+    const key = stack.pop();
+    if (!key) continue;
+    if (currentIndex.byKey.has(key) && !removedCoverage.has(key)) return true;
+    stack.push(...(nextIndex.byKey.get(key)?.childKeys ?? []));
+  }
+  return false;
+}
+
+function shallowNode(node: PluginUIVNode): PluginUIVNode {
+  if (node.type === "text") return node;
+  return {
+    type: "element",
+    key: node.key,
+    tag: node.tag,
+    ...(node.attributes ? { attributes: node.attributes } : {}),
+    children: [],
+  };
+}
+
+function ensureCanvasStable(
+  index: TreeIndex,
+  rootKey: string,
+  transferredCanvasKeys: ReadonlySet<string>,
+  action: string,
+): void {
+  const stack = [rootKey];
+  while (stack.length > 0) {
+    const key = stack.pop();
+    if (!key) continue;
+    if (transferredCanvasKeys.has(key)) {
+      throw new PluginUIReconcileError(`Transferred canvas ${key} cannot be ${action}`);
+    }
+    stack.push(...(index.byKey.get(key)?.childKeys ?? []));
+  }
+}
+
+function sameNodeIdentity(left: PluginUIVNode, right: PluginUIVNode): boolean {
+  return left.type === right.type && (left.type === "text" || (right.type === "element" && left.tag === right.tag));
+}
+
+function sameAttributes(
+  left: Readonly<Record<string, PluginUIAttributeValue>> | undefined,
+  right: Readonly<Record<string, PluginUIAttributeValue>> | undefined,
+): boolean {
+  const leftEntries = Object.entries(left ?? emptyAttributes);
+  const rightEntries = Object.entries(right ?? emptyAttributes);
+  return leftEntries.length === rightEntries.length && leftEntries.every(([name, value]) => right?.[name] === value);
 }
 
 function isEditableControlAttribute(tag: OpaqueSurfaceAllowedTag, name: string): boolean {

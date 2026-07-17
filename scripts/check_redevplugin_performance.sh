@@ -10,7 +10,7 @@ GENERATED_AT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --fast|--full|--release)
+    --fast|--smoke|--full|--release)
       MODE="${1#--}"
       shift
       ;;
@@ -39,7 +39,8 @@ done
 
 cd "$ROOT_DIR"
 if [[ "$MODE" == "fast" ]]; then
-  GOWORK=off go test ./pkg/runtimeclient ./pkg/stream -run 'Test(RuntimeAdmission|MemoryStoreWait|MemoryStoreBackpressure|SQLiteStoreMigrates)' -count=1
+  GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./pkg/runtimeclient -run '^(TestRuntimeLimitsMustBeExplicitAndValid|TestRuntimeAdmissionCancellationDoesNotConsumeCapacity|TestRuntimeAdmissionPreservesQueueCapacityForOtherPlugins|TestProcessSupervisorMultiplexesSameShardInvocations|TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFull|TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime)$' -count=1
+  GOWORK=off REDEVPLUGIN_PERFORMANCE_GATE=fast go test ./pkg/stream -run '^(TestPerformanceStreamWaitersAndBackpressure|TestSQLiteEmptyObservationDoesNotAcquireWriteGate|TestPerformanceSQLiteStreamBatchDelivery)$' -count=1
   npm run typecheck
   npm run test:ui
   exit 0
@@ -60,12 +61,16 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/redevplugin-performance.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT
 MEASUREMENTS="$TMP_DIR/measurements.ndjson"
 COMPATIBILITY="$TMP_DIR/compatibility.json"
-RUNTIME_PATH="${REDEVPLUGIN_PERFORMANCE_RUNTIME:-$ROOT_DIR/target/release/redevplugin-runtime}"
+RUNTIME_PATH="${REDEVPLUGIN_PERFORMANCE_RUNTIME:-}"
 
 npm run contracts:check
 npm --prefix packages/redevplugin-ui run build
-if [[ ! -x "$RUNTIME_PATH" ]]; then
+if [[ -z "$RUNTIME_PATH" ]]; then
   cargo build --release -p redevplugin-runtime
+  RUNTIME_PATH="$ROOT_DIR/target/release/redevplugin-runtime"
+elif [[ ! -x "$RUNTIME_PATH" ]]; then
+  echo "configured performance runtime is not executable: $RUNTIME_PATH" >&2
+  exit 1
 fi
 GOWORK=off REDEVPLUGIN_PERFORMANCE_RUNTIME="$RUNTIME_PATH" REDEVPLUGIN_PERFORMANCE_MEASUREMENTS="$MEASUREMENTS" REDEVPLUGIN_PERFORMANCE_GATE="$MODE" \
   go test ./pkg/host -run '^TestPerformanceRuntime' -count=1

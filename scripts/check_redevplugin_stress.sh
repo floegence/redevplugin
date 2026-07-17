@@ -214,7 +214,7 @@ if [[ "$MODE" != "fast" ]]; then
     write_summary
     exit "$STATUS"
   }
-  run_step release_bundle ./scripts/build_redevplugin_release.sh --version "$RELEASE_TEST_VERSION" --out-dir "$TMP_DIR/release" || {
+  run_step release_bundle ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "$RELEASE_TEST_VERSION" --out-dir "$TMP_DIR/release" || {
     write_summary
     exit "$STATUS"
   }

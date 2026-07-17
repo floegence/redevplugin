@@ -59,7 +59,7 @@ func TestOpenAPIRouteSetMatchesFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	got, err := readOpenAPIRoutes(filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 
 func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	root := repoRoot(t)
-	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml")
+	path := filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml")
 	requestBodies, err := readOpenAPIRequestBodyRoutes(path)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 
 func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,13 +201,13 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"plugin_gateway_token: { type: string, minLength: 1 }",
 		"delete_data: { type: boolean }",
 		"asset_ticket: { type: string, minLength: 1 }",
-		"ui_protocol_version: { const: plugin-ui-v4 }",
+		"ui_protocol_version: { const: plugin-ui-v5 }",
 		"management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }",
 		"revoke_epoch: { type: integer, minimum: 1, maximum: 9007199254740991 }",
 		"DisposeSurfaceRequest:",
 		"required: [bridge_nonce]",
 		"SurfacePreparation:",
-		"../plugin/opaque-surface-document-v2.schema.json",
+		"../plugin/opaque-surface-document-v3.schema.json",
 		"ReadSurfaceAssetRequest:",
 		"ReadSurfaceStreamRequest:",
 		"DisposeSurfaceRequest:",
@@ -245,7 +245,7 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 
 func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 	for _, snippet := range []string{
 		"additionalProperties: false",
 		"capability_contracts:",
-		`$ref: "../plugin/manifest-v4.schema.json"`,
+		`$ref: "../plugin/manifest-v5.schema.json"`,
 		`items: { $ref: "#/components/schemas/PackageEntry" }`,
 	} {
 		if !strings.Contains(pluginRecord, snippet) {
@@ -299,7 +299,7 @@ func TestOpenAPIRoutesSeparateClosedSuccessAndErrorResponses(t *testing.T) {
 
 func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestOpenAPIListQueryContractsAreStrictAndComplete(t *testing.T) {
 
 func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestOpenAPIRuntimeAndSecretMutationContractsAreClosed(t *testing.T) {
 
 func TestOpenAPITrustedScopeAndRetainedDataMatchClosedGoDTOs(t *testing.T) {
 	root := repoRoot(t)
-	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v4.yaml"))
+	raw, err := os.ReadFile(filepath.Join(root, "spec", "openapi", "plugin-platform-v5.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,10 +445,10 @@ func TestReleaseRefMetadataSchemasDefineClosedContracts(t *testing.T) {
 		snippets []string
 	}{
 		{
-			path: "release-metadata-v4.schema.json",
+			path: "release-metadata-v5.schema.json",
 			snippets: []string{
 				`"additionalProperties": false`,
-				`"schema_version": { "const": "redevplugin.release_metadata.v4" }`,
+				`"schema_version": { "const": "redevplugin.release_metadata.v5" }`,
 				`"release_metadata_signature": { "$ref": "#/$defs/release_metadata_signature" }`,
 				`"package_signature": { "$ref": "#/$defs/package_release_signature" }`,
 				`"$ref": "host-capability-pin-v1.schema.json"`,

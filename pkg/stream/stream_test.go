@@ -419,8 +419,17 @@ func TestMemoryStoreMarksPluginTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarkPluginTransition() error = %v", err)
 	}
-	if len(changed) != 2 || changed[0].Status != StatusOrphanedDisabled || changed[1].Status != StatusOrphanedDisabled || changed[0].Reason != "policy" {
-		t.Fatalf("changed streams mismatch: %#v", changed)
+	if changed.Changed != 2 {
+		t.Fatalf("changed streams = %d, want 2", changed.Changed)
+	}
+	for _, streamID := range []string{"stream_a", "stream_b"} {
+		record, err := store.Get(context.Background(), streamID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status != StatusOrphanedDisabled || record.Reason != "policy" {
+			t.Fatalf("changed stream %s mismatch: %#v", streamID, record)
+		}
 	}
 	other, err := store.Get(context.Background(), "stream_other")
 	if err != nil {
@@ -603,8 +612,17 @@ func TestSQLiteStoreMarksPluginTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarkPluginTransition() error = %v", err)
 	}
-	if len(changed) != 2 || changed[0].StreamID != "stream_a" || changed[1].StreamID != "stream_b" || changed[0].Reason != "uninstalled" {
-		t.Fatalf("changed streams mismatch: %#v", changed)
+	if changed.Changed != 2 {
+		t.Fatalf("changed streams = %d, want 2", changed.Changed)
+	}
+	for _, streamID := range []string{"stream_a", "stream_b"} {
+		record, err := store.Get(ctx, streamID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status != StatusOrphanedRemoved || record.Reason != "uninstalled" {
+			t.Fatalf("changed stream %s mismatch: %#v", streamID, record)
+		}
 	}
 	for _, streamID := range []string{"stream_a", "stream_b"} {
 		if _, err := store.Append(ctx, AppendRequest{StreamID: streamID, Data: []byte("late")}); !errors.Is(err, ErrStreamClosed) {
@@ -1087,10 +1105,14 @@ func TestSQLiteStorePluginTransitionWakesAllRegisteredLongPolls(t *testing.T) {
 		}()
 	}
 	waitForNotificationState(t, store, streamID, 1, waiterCount)
-	if _, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
+	transition, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
 		PluginInstanceID: "plugini_transition_waiters", Status: StatusOrphanedRemoved, Reason: "plugin removed",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if transition.Changed != 1 {
+		t.Fatalf("MarkPluginTransition() changed = %d, want 1", transition.Changed)
 	}
 	for index := 0; index < waiterCount; index++ {
 		if err := <-results; err != nil {
@@ -1098,6 +1120,185 @@ func TestSQLiteStorePluginTransitionWakesAllRegisteredLongPolls(t *testing.T) {
 		}
 	}
 	waitForNotificationState(t, store, streamID, 0, 0)
+}
+
+func TestSQLiteStoreWaitDoesNotLoseConcurrentPluginTransition(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "streams.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseDatabase() })
+
+	const streamID = "stream_transition_during_observation"
+	const pluginInstanceID = "plugini_transition_during_observation"
+	if _, err := store.Register(ctx, RegisterRequest{
+		StreamID:         streamID,
+		ExecutionBinding: streamTestBinding(pluginInstanceID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	thirdObservation := make(chan struct{})
+	resumeObservation := make(chan struct{})
+	observationCount := 0
+	store.queryObserver = func(kind sqliteQueryKind) {
+		if kind != sqliteQueryWaitObservation {
+			return
+		}
+		observationCount++
+		if observationCount == 3 {
+			close(thirdObservation)
+			<-resumeObservation
+		}
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	waitResult := make(chan error, 1)
+	go func() { waitResult <- store.Wait(waitCtx, streamID) }()
+	<-thirdObservation
+
+	if _, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
+		PluginInstanceID: pluginInstanceID,
+		Status:           StatusOrphanedRemoved,
+		Reason:           "plugin removed",
+	}); err != nil {
+		close(resumeObservation)
+		t.Fatal(err)
+	}
+	close(resumeObservation)
+
+	if err := <-waitResult; err != nil {
+		t.Fatalf("Wait() lost the concurrent plugin transition: %v", err)
+	}
+}
+
+func TestSQLiteStorePluginTransitionDoesNotWakeUnrelatedWaiter(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "streams.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseDatabase() })
+	for streamID, pluginInstanceID := range map[string]string{
+		"stream_waiting_plugin": "plugini_waiting",
+		"stream_other_plugin":   "plugini_other",
+	} {
+		if _, err := store.Register(ctx, RegisterRequest{
+			StreamID:         streamID,
+			ExecutionBinding: streamTestBinding(pluginInstanceID),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	observed := make(chan struct{})
+	observationCount := 0
+	store.queryObserver = func(kind sqliteQueryKind) {
+		if kind == sqliteQueryWaitObservation {
+			observationCount++
+			if observationCount == 3 {
+				close(observed)
+			}
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- store.Wait(waitCtx, "stream_waiting_plugin") }()
+	<-observed
+
+	if _, err := store.MarkPluginTransition(ctx, PluginTransitionRequest{
+		PluginInstanceID: "plugini_other",
+		Status:           StatusOrphanedDisabled,
+		Reason:           "plugin disabled",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("unrelated plugin transition woke waiter: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if _, err := store.Append(ctx, AppendRequest{StreamID: "stream_waiting_plugin", Data: []byte("ready")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("Wait() after matching stream event: %v", err)
+	}
+}
+
+func TestSQLiteStoreCloseWakesWaitersAndRejectsNewWaits(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "streams.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Register(ctx, RegisterRequest{
+		StreamID:         "stream_store_close",
+		ExecutionBinding: streamTestBinding("plugini_store_close"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	observed := make(chan struct{})
+	observationCount := 0
+	store.queryObserver = func(kind sqliteQueryKind) {
+		if kind == sqliteQueryWaitObservation {
+			observationCount++
+			if observationCount == 3 {
+				close(observed)
+			}
+		}
+	}
+	result := make(chan error, 1)
+	go func() { result <- store.Wait(context.Background(), "stream_store_close") }()
+	<-observed
+	if err := store.CloseDatabase(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("parked Wait() after store close: %v", err)
+	}
+	if err := store.Wait(context.Background(), "stream_store_close"); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("new Wait() after store close = %v, want %v", err, ErrStoreClosed)
+	}
+}
+
+func TestSQLiteStoreAcknowledgeRejectsBufferedByteUnderflow(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "streams.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.CloseDatabase() })
+	const streamID = "stream_buffered_byte_invariant"
+	if _, err := store.Register(ctx, RegisterRequest{
+		StreamID:         streamID,
+		ExecutionBinding: streamTestBinding("plugini_buffered_byte_invariant"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(ctx, AppendRequest{StreamID: streamID, Data: []byte("payload")}); err != nil {
+		t.Fatal(err)
+	}
+	_, delivery, err := store.Deliver(ctx, DeliverRequest{StreamID: streamID, ReadID: "read_invariant_0001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE plugin_streams SET buffered_bytes = 0 WHERE stream_id = ?`, streamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Acknowledge(ctx, AcknowledgeRequest{StreamID: streamID, DeliveryID: delivery.DeliveryID}); !errors.Is(err, ErrStreamInvariant) {
+		t.Fatalf("Acknowledge() error = %v, want %v", err, ErrStreamInvariant)
+	}
+	var eventCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plugin_stream_events WHERE stream_id = ?`, streamID).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("event count after rejected acknowledgement = %d, want 1", eventCount)
+	}
 }
 
 func TestStoresChargeEmptyAndErrorEventsAgainstBackpressure(t *testing.T) {

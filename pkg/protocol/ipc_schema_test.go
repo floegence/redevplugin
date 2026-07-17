@@ -1,12 +1,14 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/floegence/redevplugin/pkg/manifest"
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestIPCSchemaReferencesWorkerInvocationContract(t *testing.T) {
@@ -150,11 +152,351 @@ func TestIPCSchemaDefinesHeartbeatPayloads(t *testing.T) {
 	assertClosedFailureBranch(t, failure, "heartbeat response")
 	result := requireNestedObject(t, defs, "heartbeat_ack_result")
 	resultRequired := requireStringSlice(t, result["required"], "heartbeat result required")
-	for _, name := range []string{"runtime_generation_id", "runtime_unix_nano", "max_staleness_ms", "host_sent_unix_nano"} {
+	for _, name := range []string{
+		"runtime_generation_id",
+		"runtime_unix_nano",
+		"max_staleness_ms",
+		"host_sent_unix_nano",
+		"active_invocations",
+		"queued_invocations",
+		"limits",
+		"module_cache",
+	} {
 		if !containsRequiredString(resultRequired, name) {
 			t.Fatalf("heartbeat result required missing %s: %#v", name, resultRequired)
 		}
 	}
+	resultProps := requireNestedObject(t, result, "properties")
+	for _, name := range []string{"active_invocations", "queued_invocations"} {
+		field := requireNestedObject(t, resultProps, name)
+		if field["type"] != "integer" || field["minimum"] != float64(0) {
+			t.Fatalf("heartbeat result %s schema = %#v", name, field)
+		}
+	}
+	if got := requireNestedObject(t, resultProps, "limits")["$ref"]; got != "#/$defs/runtime_limits" {
+		t.Fatalf("heartbeat limits ref = %#v", got)
+	}
+	if got := requireNestedObject(t, resultProps, "module_cache")["$ref"]; got != "#/$defs/module_cache_metrics" {
+		t.Fatalf("heartbeat module_cache ref = %#v", got)
+	}
+}
+
+func TestIPCSchemaNegotiatesClosedRuntimeLimits(t *testing.T) {
+	schema := readPluginSchema(t, "ipc-v3.schema.json")
+	defs := requireNestedObject(t, schema, "$defs")
+	limits := requireNestedObject(t, defs, "runtime_limits")
+	const routeCapacityContract = "Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count."
+	if limits["description"] != routeCapacityContract {
+		t.Fatalf("runtime limits route capacity contract = %#v", limits["description"])
+	}
+	if limits["additionalProperties"] != false {
+		t.Fatalf("runtime limits additionalProperties = %#v, want false", limits["additionalProperties"])
+	}
+	assertStringSet(t, requireStringSlice(t, limits["required"], "runtime limits required"), []string{
+		"worker_count",
+		"queue_capacity",
+		"per_plugin_concurrency",
+		"module_cache_entries",
+		"module_cache_source_bytes",
+	}, "runtime limits required")
+	limitProps := requireNestedObject(t, limits, "properties")
+	for _, name := range []string{
+		"worker_count",
+		"queue_capacity",
+		"per_plugin_concurrency",
+		"module_cache_entries",
+		"module_cache_source_bytes",
+	} {
+		field := requireNestedObject(t, limitProps, name)
+		if field["type"] != "integer" || field["minimum"] != float64(1) {
+			t.Fatalf("runtime limit %s schema = %#v", name, field)
+		}
+	}
+	for name, maximum := range map[string]float64{
+		"worker_count":           64,
+		"queue_capacity":         64,
+		"per_plugin_concurrency": 64,
+		"module_cache_entries":   1024,
+	} {
+		if got := requireNestedObject(t, limitProps, name)["maximum"]; got != maximum {
+			t.Fatalf("runtime limit %s maximum = %#v, want %v", name, got, maximum)
+		}
+	}
+
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	for _, frameType := range []string{"hello", "hello_ack"} {
+		block := findIPCFrameBlock(t, allOf, frameType)
+		payload := requireNestedObject(t, block, "then", "properties", "payload")
+		required := requireStringSlice(t, payload["required"], frameType+" payload required")
+		if !containsRequiredString(required, "limits") {
+			t.Fatalf("%s payload must require limits: %#v", frameType, required)
+		}
+		if got := requireNestedObject(t, payload, "properties", "limits")["$ref"]; got != "#/$defs/runtime_limits" {
+			t.Fatalf("%s limits ref = %#v", frameType, got)
+		}
+	}
+}
+
+func TestIPCSchemaDefinesClosedModuleCacheMetrics(t *testing.T) {
+	schema := readPluginSchema(t, "ipc-v3.schema.json")
+	metrics := requireNestedObject(t, schema, "$defs", "module_cache_metrics")
+	if metrics["additionalProperties"] != false {
+		t.Fatalf("module cache metrics additionalProperties = %#v, want false", metrics["additionalProperties"])
+	}
+	assertStringSet(t, requireStringSlice(t, metrics["required"], "module cache metrics required"), []string{
+		"hits", "misses", "compiles", "entries", "source_bytes",
+	}, "module cache metrics required")
+	properties := requireNestedObject(t, metrics, "properties")
+	for _, name := range []string{"hits", "misses", "compiles", "entries", "source_bytes"} {
+		field := requireNestedObject(t, properties, name)
+		if field["type"] != "integer" || field["minimum"] != float64(0) {
+			t.Fatalf("module cache metric %s schema = %#v", name, field)
+		}
+	}
+}
+
+func TestIPCSchemaDefinesCancellationFrames(t *testing.T) {
+	schema := readPluginSchema(t, "ipc-v3.schema.json")
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	cancel := findIPCFrameBlock(t, allOf, "cancel_invoke")
+	payload := requireNestedObject(t, cancel, "then", "properties", "payload")
+	if payload["additionalProperties"] != false {
+		t.Fatalf("cancel payload additionalProperties = %#v, want false", payload["additionalProperties"])
+	}
+	assertStringSet(t, requireStringSlice(t, payload["required"], "cancel payload required"), []string{"invocation_request_id"}, "cancel payload required")
+	invocationID := requireNestedObject(t, payload, "properties", "invocation_request_id")
+	if invocationID["type"] != "string" || invocationID["minLength"] != float64(1) {
+		t.Fatalf("cancel invocation_request_id schema = %#v", invocationID)
+	}
+
+	ack := findIPCFrameBlock(t, allOf, "cancel_invoke_ack")
+	if got := requireNestedObject(t, ack, "then", "properties", "payload")["$ref"]; got != "#/$defs/cancel_invoke_ack_response_payload" {
+		t.Fatalf("cancel ack payload ref = %#v", got)
+	}
+	response := requireNestedObject(t, schema, "$defs", "cancel_invoke_ack_response_payload")
+	success, failure := requireClosedResponseBranches(t, requireNestedObject(t, schema, "$defs"), response, "cancel ack response")
+	result := requireNestedObject(t, success, "properties", "result")
+	assertStringSet(t, requireStringSlice(t, result["required"], "cancel ack result required"), []string{
+		"invocation_request_id", "disposition",
+	}, "cancel ack result required")
+	assertStringEnum(t, requireNestedObject(t, result, "properties", "disposition")["enum"], "cancel disposition", []string{
+		"queued", "running", "complete",
+	})
+	assertClosedFailureBranch(t, failure, "cancel ack response")
+}
+
+func TestIPCSchemaBindsRuntimeHostcallsToParentInvocation(t *testing.T) {
+	schema := readPluginSchema(t, "ipc-v3.schema.json")
+	parent := requireNestedObject(t, schema, "properties", "parent_request_id")
+	if parent["type"] != "string" || parent["minLength"] != float64(1) {
+		t.Fatalf("parent_request_id schema = %#v", parent)
+	}
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	wantFrames := []string{
+		"compile_flight_register",
+		"compile_flight_complete",
+		"open_handle",
+		"validate_handle_grant",
+		"storage_file",
+		"storage_kv",
+		"storage_sqlite",
+		"network_grant",
+		"network_execute",
+	}
+	for _, item := range allOf {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ifBlock, ok := block["if"].(map[string]any)
+		if !ok {
+			continue
+		}
+		frameType, ok := requireNestedObject(t, ifBlock, "properties", "frame_type")["enum"].([]any)
+		if !ok || len(frameType) != len(wantFrames) {
+			continue
+		}
+		for _, want := range wantFrames {
+			if !containsString(frameType, want) {
+				t.Fatalf("runtime hostcall parent binding missing %s: %#v", want, frameType)
+			}
+		}
+		required := requireStringSlice(t, requireNestedObject(t, block, "then")["required"], "runtime hostcall frame required")
+		if !containsRequiredString(required, "parent_request_id") {
+			t.Fatalf("runtime hostcall frame must require parent_request_id: %#v", required)
+		}
+		return
+	}
+	t.Fatal("ipc schema missing runtime hostcall parent binding")
+}
+
+func TestIPCSchemaValidatesV3Frames(t *testing.T) {
+	root := repoRoot(t)
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	for resource, path := range map[string]string{
+		"urn:redevplugin:ipc-v3": "ipc-v3.schema.json",
+		"https://schemas.redevplugin.dev/plugin/worker-invocation-v2.schema.json": "worker-invocation-v2.schema.json",
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compiled, err := compiler.Compile("urn:redevplugin:ipc-v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validHelloAck, err := os.ReadFile(filepath.Join(root, "testdata", "contracts", "ipc", "valid_hello_ack.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var helloAckFixture map[string]any
+	if err := json.Unmarshal(validHelloAck, &helloAckFixture); err != nil {
+		t.Fatal(err)
+	}
+	frames := map[string]map[string]any{
+		"hello ack": requireNestedObject(t, helloAckFixture, "frame"),
+		"heartbeat ack": {
+			"ipc_version":           "rust-ipc-v3",
+			"frame_type":            "heartbeat",
+			"request_id":            "heartbeat_1",
+			"runtime_generation_id": "generation_1",
+			"payload": map[string]any{
+				"ok": true,
+				"result": map[string]any{
+					"runtime_generation_id": "generation_1",
+					"runtime_unix_nano":     1,
+					"max_staleness_ms":      5000,
+					"host_sent_unix_nano":   1,
+					"active_invocations":    1,
+					"queued_invocations":    2,
+					"limits": map[string]any{
+						"worker_count":              8,
+						"queue_capacity":            32,
+						"per_plugin_concurrency":    4,
+						"module_cache_entries":      64,
+						"module_cache_source_bytes": 134217728,
+					},
+					"module_cache": map[string]any{
+						"hits": 10, "misses": 2, "compiles": 2, "entries": 2, "source_bytes": 4096,
+					},
+				},
+			},
+		},
+		"cancel request": {
+			"ipc_version":           "rust-ipc-v3",
+			"frame_type":            "cancel_invoke",
+			"request_id":            "cancel_1",
+			"runtime_generation_id": "generation_1",
+			"payload":               map[string]any{"invocation_request_id": "invoke_1"},
+		},
+		"cancel ack": {
+			"ipc_version":           "rust-ipc-v3",
+			"frame_type":            "cancel_invoke_ack",
+			"request_id":            "cancel_1",
+			"runtime_generation_id": "generation_1",
+			"payload": map[string]any{
+				"ok":     true,
+				"result": map[string]any{"invocation_request_id": "invoke_1", "disposition": "running"},
+			},
+		},
+		"hostcall request": {
+			"ipc_version":           "rust-ipc-v3",
+			"frame_type":            "open_handle",
+			"request_id":            "invoke_1:artifact",
+			"parent_request_id":     "invoke_1",
+			"runtime_generation_id": "generation_1",
+			"payload": map[string]any{
+				"package_hash":    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"artifact":        "workers/backend.wasm",
+				"artifact_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			},
+		},
+		"hostcall response": {
+			"ipc_version":           "rust-ipc-v3",
+			"frame_type":            "open_handle",
+			"request_id":            "invoke_1:artifact",
+			"parent_request_id":     "invoke_1",
+			"runtime_generation_id": "generation_1",
+			"payload": map[string]any{
+				"ok":             true,
+				"package_hash":   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"artifact":       "workers/backend.wasm",
+				"sha256":         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				"content_base64": "AGFzbQ==",
+			},
+		},
+	}
+	for name, frame := range frames {
+		if err := compiled.Validate(frame); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	missingParent := mapsClone(frames["hostcall request"])
+	delete(missingParent, "parent_request_id")
+	if err := compiled.Validate(missingParent); err == nil {
+		t.Fatal("runtime hostcall without parent_request_id must be rejected")
+	}
+	for _, path := range []string{
+		"workers/../backend.wasm",
+		"workers/.hidden/backend.wasm",
+		"workers//backend.wasm",
+		`workers\backend.wasm`,
+	} {
+		invalid := mapsClone(frames["hostcall request"])
+		payload := mapsClone(invalid["payload"].(map[string]any))
+		payload["artifact"] = path
+		invalid["payload"] = payload
+		if err := compiled.Validate(invalid); err == nil {
+			t.Errorf("runtime hostcall artifact path %q must be rejected", path)
+		}
+	}
+}
+
+func mapsClone(source map[string]any) map[string]any {
+	clone := make(map[string]any, len(source))
+	for key, value := range source {
+		clone[key] = value
+	}
+	return clone
+}
+
+func findIPCFrameBlock(t *testing.T, allOf []any, frameType string) map[string]any {
+	t.Helper()
+	for _, item := range allOf {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		ifBlock, ok := block["if"].(map[string]any)
+		if !ok {
+			continue
+		}
+		properties, ok := ifBlock["properties"].(map[string]any)
+		if !ok {
+			continue
+		}
+		frame, ok := properties["frame_type"].(map[string]any)
+		if ok && frame["const"] == frameType {
+			return block
+		}
+	}
+	t.Fatalf("ipc schema missing %s block", frameType)
+	return nil
 }
 
 func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
@@ -176,6 +518,8 @@ func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
 		"invoke_worker_result",
 		"cancel_invoke",
 		"cancel_invoke_ack",
+		"compile_flight_register",
+		"compile_flight_complete",
 		"open_handle",
 		"validate_handle_grant",
 		"storage_file",
@@ -208,6 +552,39 @@ func TestIPCSchemaPublishesOnlyImplementedFrameTypes(t *testing.T) {
 		return
 	}
 	t.Fatal("ipc schema missing diagnostic response block")
+}
+
+func TestIPCSchemaDefinesClosedCompileFlightLifecycleFrames(t *testing.T) {
+	schema := readPluginSchema(t, "ipc-v3.schema.json")
+	allOf, ok := schema["allOf"].([]any)
+	if !ok {
+		t.Fatal("ipc schema missing allOf")
+	}
+	for _, frameType := range []string{"compile_flight_register", "compile_flight_complete"} {
+		block := findIPCFrameBlock(t, allOf, frameType)
+		required := requireStringSlice(t, requireNestedObject(t, block, "then")["required"], frameType+" required")
+		assertStringSet(t, required, []string{"parent_request_id", "runtime_generation_id", "payload"}, frameType+" required")
+		payload := requireNestedObject(t, block, "then", "properties", "payload")
+		if payload["$ref"] != "#/$defs/compile_flight_lifecycle_payload" {
+			t.Fatalf("%s payload ref = %#v", frameType, payload["$ref"])
+		}
+	}
+
+	definition := requireNestedObject(t, schema, "$defs", "compile_flight_lifecycle_payload")
+	if definition["type"] != "object" || definition["additionalProperties"] != false {
+		t.Fatalf("compile flight lifecycle payload must be closed: %#v", definition)
+	}
+	fields := []string{"artifact_request_id", "package_hash", "artifact", "artifact_sha256", "wasm_abi_version"}
+	assertStringSet(t, requireStringSlice(t, definition["required"], "compile flight lifecycle required"), fields, "compile flight lifecycle required")
+	properties := requireNestedObject(t, definition, "properties")
+	for _, field := range fields {
+		if _, ok := properties[field].(map[string]any); !ok {
+			t.Fatalf("compile flight lifecycle payload missing %s", field)
+		}
+	}
+	if got := requireNestedObject(t, properties, "wasm_abi_version")["const"]; got != "redevplugin-wasm-worker-v2" {
+		t.Fatalf("compile flight wasm ABI = %#v", got)
+	}
 }
 
 func TestIPCSchemaAttestsClosedErrorOrigins(t *testing.T) {
@@ -405,8 +782,26 @@ func TestIPCSchemaDefinesOpenHandlePayloads(t *testing.T) {
 	}
 	assertClosedHostcallFailureBranch(t, response, failure, "open_handle response")
 	artifact := requireNestedObject(t, defs, "worker_artifact_path")
-	if artifact["pattern"] != "^workers/(?!.*(?:^|/)\\.)(?!.*//)(?!.*\\\\).+\\.wasm$" {
+	if artifact["pattern"] != "^workers/.+\\.wasm$" {
 		t.Fatalf("worker artifact pattern = %#v", artifact["pattern"])
+	}
+	forbidden := requireNestedObject(t, artifact, "not")
+	branches := requireObjectArray(t, forbidden["anyOf"], "worker artifact forbidden patterns")
+	wantPatterns := map[string]bool{"(^|/)\\.": false, "//": false, "\\\\": false}
+	for _, branch := range branches {
+		pattern, ok := branch["pattern"].(string)
+		if !ok {
+			t.Fatalf("worker artifact forbidden branch = %#v", branch)
+		}
+		if _, ok := wantPatterns[pattern]; !ok {
+			t.Fatalf("unexpected worker artifact forbidden pattern %q", pattern)
+		}
+		wantPatterns[pattern] = true
+	}
+	for pattern, found := range wantPatterns {
+		if !found {
+			t.Fatalf("worker artifact forbidden pattern %q is missing", pattern)
+		}
 	}
 }
 

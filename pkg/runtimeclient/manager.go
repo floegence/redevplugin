@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +18,33 @@ const (
 )
 
 var (
-	ErrRuntimeShardCount              = errors.New("runtime shard count must be between 1 and 16")
-	ErrRuntimeBindingInvalid          = errors.New("runtime binding is invalid")
+	// ErrRuntimeShardCount reports a ProcessManager shard count outside the
+	// closed supported range.
+	ErrRuntimeShardCount = errors.New("runtime shard count must be between 1 and 16")
+	// ErrRuntimeBindingInvalid reports a plugin, lease, or generation binding
+	// that does not identify the manager's current runtime shard.
+	ErrRuntimeBindingInvalid = errors.New("runtime binding is invalid")
+	// ErrManagerLifecycleOutcomeUnknown reports a failed manager transition
+	// whose rollback also failed, so the caller must reconcile shard health.
 	ErrManagerLifecycleOutcomeUnknown = errors.New("runtime manager lifecycle outcome is unknown")
+	// ErrRuntimeHostServicesInvalid reports an incomplete or typed-nil set of
+	// callbacks supplied at the Host/runtime ownership boundary.
+	ErrRuntimeHostServicesInvalid = errors.New("runtime host services are invalid")
+	// ErrRuntimeHostServicesRequired reports an operation attempted before the
+	// manager completed its one-time Host-services binding.
+	ErrRuntimeHostServicesRequired = errors.New("runtime host services are not bound")
+	// ErrRuntimeHostServicesBound reports an attempt to replace Host services
+	// after a successful binding. A successfully bound manager is never reusable
+	// by another Host.
+	ErrRuntimeHostServicesBound = errors.New("runtime host services are already bound")
 )
+
+// RuntimeHostServices is the complete callback set a Host transfers to a
+// Manager before any runtime shard can be created or started. BindHostServices
+// captures these interface values for the lifetime of the manager.
+type RuntimeHostServices struct {
+	StreamSink RuntimeStreamSink
+}
 
 type RuntimeBinding struct {
 	RuntimeShardID      string `json:"runtime_shard_id"`
@@ -42,7 +64,16 @@ type ManagerHealth struct {
 	Shards []ShardHealth `json:"shards"`
 }
 
+// Manager owns the runtime shard lifecycle for exactly one Host. A new Manager
+// starts unbound. BindHostServices must succeed before every other operation;
+// failed binding may be retried, while successful binding is permanent. The
+// concrete ProcessManager serializes binding and lifecycle transitions.
 type Manager interface {
+	// BindHostServices validates and atomically installs the Host callbacks used
+	// by every shard. Concurrent calls are serialized. A failed call leaves the
+	// manager unbound and retryable; a successful call makes every later call
+	// return ErrRuntimeHostServicesBound.
+	BindHostServices(services RuntimeHostServices) error
 	Start(ctx context.Context, target Target) (ManagerHealth, error)
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (ManagerHealth, error)
@@ -51,6 +82,9 @@ type Manager interface {
 	Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error)
 }
 
+// ProcessManagerOptions configures a ProcessManager. ShardCount and all
+// supervisor runtime limits are explicit; Supervisor.StreamSink must remain
+// unset because the owning Host supplies it through BindHostServices.
 type ProcessManagerOptions struct {
 	ShardCount int
 	Supervisor ProcessSupervisorOptions
@@ -71,11 +105,19 @@ type processManagerShard struct {
 	process processShard
 }
 
+// ProcessManager implements Manager with a fixed set of runtime process shards.
+// Its lifecycle mutex makes Host binding, start, stop, and health transitions a
+// single ordered state machine.
 type ProcessManager struct {
 	lifecycleMu sync.Mutex
+	shardCount  int
+	supervisor  ProcessSupervisorOptions
+	factory     processShardFactory
+	bound       bool
 	shards      []processManagerShard
 }
 
+// NewProcessManager creates an unbound manager without creating runtime shards.
 func NewProcessManager(options ProcessManagerOptions) (*ProcessManager, error) {
 	return newProcessManager(options, func(options ProcessSupervisorOptions) (processShard, error) {
 		return NewProcessSupervisor(options)
@@ -84,30 +126,59 @@ func NewProcessManager(options ProcessManagerOptions) (*ProcessManager, error) {
 
 func newProcessManager(options ProcessManagerOptions, factory processShardFactory) (*ProcessManager, error) {
 	shardCount := options.ShardCount
-	if shardCount == 0 {
-		shardCount = runtime.NumCPU()
-		if shardCount > 4 {
-			shardCount = 4
-		}
-	}
 	if shardCount < minProcessManagerShards || shardCount > maxProcessManagerShards {
 		return nil, ErrRuntimeShardCount
 	}
 	if factory == nil {
 		return nil, errors.New("runtime shard factory is required")
 	}
-	manager := &ProcessManager{shards: make([]processManagerShard, 0, shardCount)}
-	for index := 0; index < shardCount; index++ {
-		process, err := factory(options.Supervisor)
+	if options.Supervisor.StreamSink != nil {
+		return nil, fmt.Errorf("%w: stream sink must be supplied by BindHostServices", ErrRuntimeHostServicesInvalid)
+	}
+	if err := validateProcessSupervisorOptions(options.Supervisor, false); err != nil {
+		return nil, err
+	}
+	options.Supervisor.Args = append([]string(nil), options.Supervisor.Args...)
+	options.Supervisor.Env = append([]string(nil), options.Supervisor.Env...)
+	return &ProcessManager{
+		shardCount: shardCount,
+		supervisor: options.Supervisor,
+		factory:    factory,
+	}, nil
+}
+
+// BindHostServices installs one Host's services and creates the fixed shard
+// set. Validation or shard construction failure leaves the manager unbound so
+// the caller can retry. Once this method succeeds, services are immutable and
+// every later binding attempt returns ErrRuntimeHostServicesBound.
+func (m *ProcessManager) BindHostServices(services RuntimeHostServices) error {
+	if m == nil {
+		return ErrRuntimeHostServicesRequired
+	}
+	if isNilInterfaceValue(services.StreamSink) {
+		return fmt.Errorf("%w: stream sink is required", ErrRuntimeHostServicesInvalid)
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.bound {
+		return ErrRuntimeHostServicesBound
+	}
+	options := m.supervisor
+	options.StreamSink = services.StreamSink
+	shards := make([]processManagerShard, 0, m.shardCount)
+	for index := 0; index < m.shardCount; index++ {
+		process, err := m.factory(options)
 		if err != nil {
-			return nil, fmt.Errorf("create runtime shard %d: %w", index, err)
+			return fmt.Errorf("create runtime shard %d: %w", index, err)
 		}
-		manager.shards = append(manager.shards, processManagerShard{
+		shards = append(shards, processManagerShard{
 			id:      fmt.Sprintf("runtime_shard_%02d", index),
 			process: process,
 		})
 	}
-	return manager, nil
+	m.shards = shards
+	m.bound = true
+	return nil
 }
 
 func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealth, error) {
@@ -119,6 +190,9 @@ func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealt
 	}
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
+	if !m.bound {
+		return ManagerHealth{}, ErrRuntimeHostServicesRequired
+	}
 
 	started := make([]processManagerShard, 0, len(m.shards))
 	for _, shard := range m.shards {
@@ -160,12 +234,20 @@ func (m *ProcessManager) Stop(ctx context.Context) error {
 	}
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
+	if !m.bound {
+		return ErrRuntimeHostServicesRequired
+	}
 	return stopProcessShards(ctx, m.shards)
 }
 
 func (m *ProcessManager) Health(ctx context.Context) (ManagerHealth, error) {
 	if m == nil {
 		return ManagerHealth{}, nil
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if !m.bound {
+		return ManagerHealth{}, ErrRuntimeHostServicesRequired
 	}
 	return m.health(ctx)
 }
@@ -191,10 +273,14 @@ func (m *ProcessManager) health(ctx context.Context) (ManagerHealth, error) {
 
 func (m *ProcessManager) BindPlugin(ctx context.Context, pluginInstanceID string) (RuntimeBinding, error) {
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if m == nil || len(m.shards) == 0 || pluginInstanceID == "" {
+	shards, err := m.boundShards()
+	if err != nil {
+		return RuntimeBinding{}, err
+	}
+	if pluginInstanceID == "" {
 		return RuntimeBinding{}, fmt.Errorf("%w: plugin_instance_id is required", ErrRuntimeBindingInvalid)
 	}
-	shard := m.shards[processShardIndex(pluginInstanceID, len(m.shards))]
+	shard := shards[processShardIndex(pluginInstanceID, len(shards))]
 	health, err := shard.process.Health(ctx)
 	if err != nil {
 		return RuntimeBinding{}, fmt.Errorf("inspect runtime shard %s: %w", shard.id, err)
@@ -207,10 +293,14 @@ func (m *ProcessManager) BindPlugin(ctx context.Context, pluginInstanceID string
 
 func (m *ProcessManager) InvokeWorker(ctx context.Context, binding RuntimeBinding, lease Lease, method string, payload []byte) ([]byte, error) {
 	pluginInstanceID := strings.TrimSpace(lease.PluginInstanceID)
-	if m == nil || len(m.shards) == 0 || pluginInstanceID == "" {
+	shards, err := m.boundShards()
+	if err != nil {
+		return nil, err
+	}
+	if pluginInstanceID == "" {
 		return nil, fmt.Errorf("%w: lease plugin_instance_id is required", ErrRuntimeBindingInvalid)
 	}
-	shard := m.shards[processShardIndex(pluginInstanceID, len(m.shards))]
+	shard := shards[processShardIndex(pluginInstanceID, len(shards))]
 	if strings.TrimSpace(binding.RuntimeShardID) != shard.id {
 		return nil, fmt.Errorf("%w: plugin is bound to runtime shard %s", ErrRuntimeBindingInvalid, shard.id)
 	}
@@ -236,10 +326,14 @@ func (m *ProcessManager) InvokeWorker(ctx context.Context, binding RuntimeBindin
 
 func (m *ProcessManager) Revoke(ctx context.Context, pluginInstanceID string, revokeEpoch uint64) (RevokeResult, error) {
 	pluginInstanceID = strings.TrimSpace(pluginInstanceID)
-	if m == nil || len(m.shards) == 0 || pluginInstanceID == "" {
+	shards, boundErr := m.boundShards()
+	if boundErr != nil {
+		return RevokeResult{}, boundErr
+	}
+	if pluginInstanceID == "" {
 		return RevokeResult{}, fmt.Errorf("%w: plugin_instance_id is required", ErrRuntimeBindingInvalid)
 	}
-	shard := m.shards[processShardIndex(pluginInstanceID, len(m.shards))]
+	shard := shards[processShardIndex(pluginInstanceID, len(shards))]
 	health, err := shard.process.Health(ctx)
 	if err == nil {
 		err = validateReadyHealth(health)
@@ -261,6 +355,18 @@ func (m *ProcessManager) Revoke(ctx context.Context, pluginInstanceID string, re
 		)
 	}
 	return RevokeResult{PluginInstanceID: pluginInstanceID, RevokeEpoch: revokeEpoch, RuntimeStopped: true}, nil
+}
+
+func (m *ProcessManager) boundShards() ([]processManagerShard, error) {
+	if m == nil {
+		return nil, ErrRuntimeHostServicesRequired
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if !m.bound || len(m.shards) == 0 {
+		return nil, ErrRuntimeHostServicesRequired
+	}
+	return m.shards, nil
 }
 
 func managerStartError(cause error, rollbackErr error) error {

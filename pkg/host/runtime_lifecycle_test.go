@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,11 +48,138 @@ func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 	}
 }
 
+func TestHostCloseStopsRuntimeWithBoundedDeadlineAndWaitsForCompletion(t *testing.T) {
+	manager := &blockingCloseRuntimeManager{
+		stopStarted: make(chan struct{}),
+		stopRelease: make(chan struct{}),
+		deadline:    make(chan time.Time, 1),
+	}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
+	pluginData := &recordingClosePluginData{PluginData: h.adapters.PluginData}
+	h.adapters.PluginData = pluginData
+	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}}); err != nil {
+		t.Fatalf("StartRuntime() error = %v", err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- h.Close() }()
+	select {
+	case <-manager.stopStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Host.Close() did not stop the bound runtime manager")
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("Host.Close() returned before runtime shutdown completed: %v", err)
+	default:
+	}
+	select {
+	case deadline := <-manager.deadline:
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > hostRuntimeShutdownTimeout {
+			t.Fatalf("runtime shutdown deadline remaining = %v, want (0, %v]", remaining, hostRuntimeShutdownTimeout)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime Stop context did not carry a deadline")
+	}
+	close(manager.stopRelease)
+	if err := <-closed; err != nil {
+		t.Fatalf("Host.Close() error = %v", err)
+	}
+	if got := manager.stopCallCount(); got != 1 {
+		t.Fatalf("runtime Stop() calls = %d, want 1", got)
+	}
+	if pluginData.closeCalls != 1 {
+		t.Fatalf("PluginData.Close() calls = %d, want 1", pluginData.closeCalls)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("second Host.Close() error = %v", err)
+	}
+	if got := manager.stopCallCount(); got != 1 || pluginData.closeCalls != 1 {
+		t.Fatalf("repeated Host.Close() repeated cleanup: runtime=%d plugin_data=%d", got, pluginData.closeCalls)
+	}
+}
+
+func TestHostCloseJoinsRuntimeAndPluginDataFailures(t *testing.T) {
+	runtimeFailure := errors.New("runtime shutdown failed")
+	pluginDataFailure := errors.New("plugin data close failed")
+	manager := &blockingCloseRuntimeManager{stopErr: runtimeFailure}
+	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager, expectCloseErr: true})
+	pluginData := &recordingClosePluginData{PluginData: h.adapters.PluginData, err: pluginDataFailure}
+	h.adapters.PluginData = pluginData
+
+	closeErr := h.Close()
+	if !errors.Is(closeErr, runtimeFailure) || !errors.Is(closeErr, pluginDataFailure) {
+		t.Fatalf("Host.Close() error = %v, want joined runtime and plugin data failures", closeErr)
+	}
+	secondErr := h.Close()
+	if !errors.Is(secondErr, runtimeFailure) || !errors.Is(secondErr, pluginDataFailure) {
+		t.Fatalf("second Host.Close() error = %v, want same joined failures", secondErr)
+	}
+	if got := manager.stopCallCount(); got != 1 || pluginData.closeCalls != 1 {
+		t.Fatalf("repeated Host.Close() repeated cleanup: runtime=%d plugin_data=%d", got, pluginData.closeCalls)
+	}
+}
+
+func TestHostRuntimeLifecycleRejectsCallsAfterClose(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Host) error
+	}{
+		{
+			name: "start",
+			run: func(h *Host) error {
+				_, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}})
+				return err
+			},
+		},
+		{
+			name: "stop",
+			run: func(h *Host) error {
+				return h.StopRuntime(hostTestContext())
+			},
+		},
+		{
+			name: "health",
+			run: func(h *Host) error {
+				_, err := h.RuntimeHealth(hostTestContext())
+				return err
+			},
+		},
+		{
+			name: "refresh enabled plugins",
+			run: func(h *Host) error {
+				_, err := h.RefreshEnabledPlugins(hostTestContext())
+				return err
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := &recordingRuntimeManager{}
+			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
+			if err := h.Close(); err != nil {
+				t.Fatalf("Host.Close() error = %v", err)
+			}
+			if err := tc.run(h); !errors.Is(err, ErrHostClosed) {
+				t.Fatalf("runtime lifecycle call after Host.Close() error = %v, want %v", err, ErrHostClosed)
+			}
+			if manager.startCalls != 0 {
+				t.Fatalf("RuntimeManager.Start() calls after Host.Close() = %d, want 0", manager.startCalls)
+			}
+			if manager.stopCalls != 1 {
+				t.Fatalf("RuntimeManager.Stop() calls including Host.Close() = %d, want 1", manager.stopCalls)
+			}
+		})
+	}
+}
+
 func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 	stopFailure := errors.New("runtime stop failed at /Users/secret/runtime with vault-token-super-secret")
 	manager := &recordingRuntimeManager{
-		health:  runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		stopErr: stopFailure,
+		health:      runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
+		stopErr:     stopFailure,
+		stopErrOnce: true,
 	}
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
@@ -90,42 +218,56 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 	}
 }
 
-func TestProcessSupervisorOptionsInjectsConnectivityRuntimeHostcalls(t *testing.T) {
-	broker := connectivity.NewMemoryBroker()
-	executor := &recordingHostNetworkExecutor{}
-	limits := runtimeclient.RuntimeLimits{
-		WorkerCount:            8,
-		QueueCapacity:          32,
-		PerPluginConcurrency:   4,
-		ModuleCacheEntries:     64,
-		ModuleCacheSourceBytes: 128 << 20,
-	}
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{
-		developerMode:      true,
-		localGenerated:     true,
-		connectivityBroker: broker,
-		networkExecutor:    executor,
-		runtimeLimits:      limits,
-	})
-
-	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
-	if options.RuntimePath != "/tmp/redevplugin-runtime" ||
-		options.Artifacts == nil ||
-		options.HandleGrants == nil ||
-		options.Connectivity != broker ||
-		options.NetworkExecutor != executor ||
-		options.StreamSink == nil ||
-		options.Limits != limits {
-		t.Fatalf("process supervisor options mismatch: %#v", options)
-	}
+type blockingCloseRuntimeManager struct {
+	recordingRuntimeManager
+	mu          sync.Mutex
+	stopStarted chan struct{}
+	stopRelease chan struct{}
+	deadline    chan time.Time
+	stopOnce    sync.Once
+	stopCalls   int
+	stopErr     error
 }
 
-func TestNewHostProvidesDefaultNetworkExecutor(t *testing.T) {
-	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true})
-	options := h.processSupervisorOptions("/tmp/redevplugin-runtime")
-	if options.Connectivity == nil || options.NetworkExecutor == nil || options.StreamSink == nil {
-		t.Fatalf("default runtime network hostcalls missing: %#v", options)
+func (m *blockingCloseRuntimeManager) Stop(ctx context.Context) error {
+	m.mu.Lock()
+	m.stopCalls++
+	m.mu.Unlock()
+	if m.deadline != nil {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return errors.New("runtime shutdown context is missing a deadline")
+		}
+		m.deadline <- deadline
 	}
+	if m.stopStarted != nil {
+		m.stopOnce.Do(func() { close(m.stopStarted) })
+	}
+	if m.stopRelease != nil {
+		select {
+		case <-m.stopRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return m.stopErr
+}
+
+func (m *blockingCloseRuntimeManager) stopCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stopCalls
+}
+
+type recordingClosePluginData struct {
+	PluginData
+	closeCalls int
+	err        error
+}
+
+func (d *recordingClosePluginData) Close() error {
+	d.closeCalls++
+	return errors.Join(d.PluginData.Close(), d.err)
 }
 
 func TestRuntimeArtifactProviderReadsBoundPackageAsset(t *testing.T) {

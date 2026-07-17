@@ -96,6 +96,32 @@ func TestMemosUsesTimelineExplorerAndControlledMarkdown(t *testing.T) {
 	}
 }
 
+func TestMemosMarkdownUsesCallerOwnedStableIdentity(t *testing.T) {
+	root := repositoryRoot(t)
+	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
+	markdown := readMemosProductFile(t, root, "examples/plugin-ui/memos-markdown.ts")
+
+	for _, required := range []string{
+		`createMarkdownIdentity`,
+		`markdownIdentityFor(memo.id)`,
+		`pruneMarkdownIdentities`,
+	} {
+		if !strings.Contains(source+markdown, required) {
+			t.Fatalf("Memos markdown identity contract is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`token.raw`,
+		`stableKeyFragment`,
+		`tokenIdentity`,
+		`occurrences`,
+	} {
+		if strings.Contains(markdown, forbidden) {
+			t.Fatalf("Memos markdown derives VNode identity from mutable token content via %q", forbidden)
+		}
+	}
+}
+
 func TestMemosDeleteDialogKeepsRecoverableFailureState(t *testing.T) {
 	root := repositoryRoot(t)
 	source := readMemosProductFile(t, root, "examples/plugin-ui/memos.ts")
@@ -106,7 +132,7 @@ func TestMemosDeleteDialogKeepsRecoverableFailureState(t *testing.T) {
 		`if (state.ui.busy) return`,
 		`autofocus: !deleting`,
 		`disabled: deleting`,
-		`deleting ? "Deleting..." : "Delete memo"`,
+		`deleting ? textNode("delete-confirm-text", "Deleting...") : textNode("delete-confirm-text", "Delete memo")`,
 		`class: "delete-error", role: "status"`,
 		`response.data.deleted_id !== id`,
 		`state.ui.deleteError = readableError(error, "Memos could not delete this memo")`,

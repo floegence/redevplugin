@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/floegence/redevplugin/pkg/capability"
 )
 
 func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {
@@ -251,15 +253,110 @@ func TestProcessManagerReturnsRevokeAndTerminationFailures(t *testing.T) {
 	}
 }
 
+func TestProcessManagerRequiresExplicitShardCount(t *testing.T) {
+	_, err := newProcessManager(ProcessManagerOptions{}, func(ProcessSupervisorOptions) (processShard, error) {
+		return &fakeProcessShard{}, nil
+	})
+	if !errors.Is(err, ErrRuntimeShardCount) {
+		t.Fatalf("newProcessManager() error = %v, want %v", err, ErrRuntimeShardCount)
+	}
+}
+
+func TestProcessManagerBindsRequiredHostServicesBeforeCreatingShards(t *testing.T) {
+	streamSink := &recordingRuntimeStreamSink{}
+	var captured []ProcessSupervisorOptions
+	manager, err := newProcessManager(ProcessManagerOptions{
+		ShardCount: 2,
+		Supervisor: ProcessSupervisorOptions{
+			RuntimePath:           "redevplugin-runtime",
+			Limits:                DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+		},
+	}, func(options ProcessSupervisorOptions) (processShard, error) {
+		captured = append(captured, options)
+		return &fakeProcessShard{health: testShardHealth(string(rune('a' + len(captured) - 1)))}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) != 0 {
+		t.Fatalf("runtime shards were created before host services binding: %d", len(captured))
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+		t.Fatalf("BindHostServices(empty) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink}); err != nil {
+		t.Fatalf("BindHostServices() error = %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("created shards = %d, want 2", len(captured))
+	}
+	for index, options := range captured {
+		if options.StreamSink != streamSink {
+			t.Fatalf("shard %d stream sink = %#v, want exact host sink %#v", index, options.StreamSink, streamSink)
+		}
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: streamSink}); !errors.Is(err, ErrRuntimeHostServicesBound) {
+		t.Fatalf("BindHostServices(second) error = %v, want %v", err, ErrRuntimeHostServicesBound)
+	}
+}
+
+func TestProcessManagerRejectsTypedNilHostStreamSinkAndAllowsRetry(t *testing.T) {
+	created := 0
+	manager, err := newProcessManager(ProcessManagerOptions{
+		ShardCount: 1,
+		Supervisor: ProcessSupervisorOptions{
+			RuntimePath:           "redevplugin-runtime",
+			Limits:                DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+		},
+	}, func(ProcessSupervisorOptions) (processShard, error) {
+		created++
+		return &fakeProcessShard{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typedNil *recordingRuntimeStreamSink
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: typedNil}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+		t.Fatalf("BindHostServices(typed nil) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
+	}
+	if created != 0 {
+		t.Fatalf("typed-nil binding created %d shards, want 0", created)
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}}); err != nil {
+		t.Fatalf("BindHostServices() after rejected typed nil: %v", err)
+	}
+	if created != 1 {
+		t.Fatalf("successful binding created %d shards, want 1", created)
+	}
+}
+
 func testProcessManager(t *testing.T, shards []*fakeProcessShard) *ProcessManager {
 	t.Helper()
 	next := 0
-	manager, err := newProcessManager(ProcessManagerOptions{ShardCount: len(shards)}, func(ProcessSupervisorOptions) (processShard, error) {
+	manager, err := newProcessManager(ProcessManagerOptions{
+		ShardCount: len(shards),
+		Supervisor: ProcessSupervisorOptions{
+			RuntimePath:           "redevplugin-runtime",
+			Limits:                DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+		},
+	}, func(ProcessSupervisorOptions) (processShard, error) {
 		shard := shards[next]
 		next++
 		return shard, nil
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.BindHostServices(RuntimeHostServices{StreamSink: &recordingRuntimeStreamSink{}}); err != nil {
 		t.Fatal(err)
 	}
 	return manager
@@ -309,6 +406,20 @@ type fakeProcessShard struct {
 	stopCalls   atomic.Int64
 	invokeCalls atomic.Int64
 	revokeCalls atomic.Int64
+}
+
+type recordingRuntimeStreamSink struct{}
+
+func (*recordingRuntimeStreamSink) AppendRuntimeStream(context.Context, string, string, []byte) error {
+	return nil
+}
+
+func (*recordingRuntimeStreamSink) CloseRuntimeStream(context.Context, string) error {
+	return nil
+}
+
+func (*recordingRuntimeStreamSink) FailRuntimeStream(context.Context, string, capability.ExecutionFailureCode, error) error {
+	return nil
 }
 
 func (s *fakeProcessShard) Start(context.Context, Target) error {

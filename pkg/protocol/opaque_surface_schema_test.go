@@ -1,11 +1,14 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 func TestOpaqueSurfaceDocumentSchemaIsClosedAndDigestBound(t *testing.T) {
@@ -153,6 +156,69 @@ func TestOpaqueSurfaceTransportExposesOnlyOpaqueHandles(t *testing.T) {
 			t.Fatalf("opaque transport must not expose %q", forbidden)
 		}
 	}
+}
+
+func TestOpaqueSurfaceSchemasCompileAndRejectUnsafePackagePaths(t *testing.T) {
+	root := repoRoot(t)
+	compiler := jsonschema.NewCompiler()
+	compiler.Draft = jsonschema.Draft2020
+	for resource, path := range map[string]string{
+		"https://schemas.redevplugin.dev/plugin/opaque-surface-document-v3.schema.json": "opaque-surface-document-v3.schema.json",
+		"urn:redevplugin:opaque-surface-transport-v4":                                   "opaque-surface-transport-v4.schema.json",
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, "spec", "plugin", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiler.AddResource(resource, bytes.NewReader(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compiled, err := compiler.Compile("urn:redevplugin:opaque-surface-transport-v4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{
+		"schema_version": "redevplugin.opaque_surface_document.v3",
+		"entry_path":     "ui/index.html",
+		"entry_sha256":   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"body_html":      "<main></main>",
+		"styles":         []any{},
+		"worker": map[string]any{
+			"path":    "ui/worker.js",
+			"sha256":  "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"type":    "classic",
+			"content": "self.onmessage = () => {};",
+		},
+		"assets":         []any{},
+		"critical_bytes": 128,
+	}
+	initialize := map[string]any{
+		"type":                "redevplugin.surface.initialize",
+		"frame_generation_id": "frame_12345678",
+		"surface_handle":      "surface_12345678",
+		"document":            document,
+	}
+	if err := compiled.Validate(initialize); err != nil {
+		t.Fatalf("valid initialize frame: %v", err)
+	}
+	for _, path := range []string{"/ui/index.html", `ui\index.html`, "../index.html", "ui/../index.html", "ui/./index.html"} {
+		invalidDocument := cloneOpaqueObject(document)
+		invalidDocument["entry_path"] = path
+		invalid := cloneOpaqueObject(initialize)
+		invalid["document"] = invalidDocument
+		if err := compiled.Validate(invalid); err == nil {
+			t.Errorf("unsafe package path %q must be rejected", path)
+		}
+	}
+}
+
+func cloneOpaqueObject(source map[string]any) map[string]any {
+	clone := make(map[string]any, len(source))
+	for key, value := range source {
+		clone[key] = value
+	}
+	return clone
 }
 
 func readPluginSchema(t *testing.T, name string) map[string]any {

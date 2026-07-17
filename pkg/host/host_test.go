@@ -445,7 +445,7 @@ func TestUpdateAndDowngradeRefreshEnabledPluginAndRevokeOldTokens(t *testing.T) 
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2325,7 +2325,7 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 
 	if _, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
@@ -2590,7 +2590,7 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	gateway, err := host.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -2689,7 +2689,7 @@ func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	_, err = h.MintBridgeToken(hostTestContext(), MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -4159,6 +4159,20 @@ func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
 	}
 }
 
+func TestMarshalWorkerCanonicalJSONMatchesRuntimeContract(t *testing.T) {
+	raw, err := marshalWorkerCanonicalJSON(map[string]any{
+		"title": "Launch notes",
+		"body":  "<script>&\u2028",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"body":"<script>&\u2028","title":"Launch notes"}`
+	if string(raw) != want {
+		t.Fatalf("canonical worker JSON = %s, want %s", raw, want)
+	}
+}
+
 func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T) {
 	runtime := &recordingRuntimeManager{
 		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
@@ -4731,7 +4745,12 @@ func TestTerminalMaintenanceCoalescesConcurrentCompletionsAndRunsAfterInterval(t
 	operations.reset()
 	streams.reset()
 
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	h.executions.mu.Lock()
+	now := h.executions.terminalMaintenanceNext
+	h.executions.mu.Unlock()
+	if now.IsZero() {
+		t.Fatal("startup terminal maintenance did not publish its next deadline")
+	}
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	operations.configure(nil, entered, release)
@@ -4788,7 +4807,12 @@ func TestTerminalMaintenanceFailureStillRespectsInterval(t *testing.T) {
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{operations: operations, streams: streams})
 	operations.reset()
 	streams.reset()
-	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	h.executions.mu.Lock()
+	now := h.executions.terminalMaintenanceNext
+	h.executions.mu.Unlock()
+	if now.IsZero() {
+		t.Fatal("startup terminal maintenance did not publish its next deadline")
+	}
 	operations.configure(errors.New("operation prune unavailable"), nil, nil)
 
 	h.maintainTerminalExecutionRecords(hostTestContext(), now)
@@ -8139,6 +8163,7 @@ type testHostOptions struct {
 	operations              operation.Store
 	streams                 stream.Store
 	runtimeManager          runtimeclient.Manager
+	runtimeManagerFactory   func(testRuntimeManagerDependencies) (runtimeclient.Manager, error)
 	secrets                 SecretStoreAdapter
 	audit                   AuditSink
 	diagnostics             DiagnosticsSink
@@ -8150,8 +8175,18 @@ type testHostOptions struct {
 		capability.Adapter
 		capability.TargetProjector
 	}
-	coreActions   CoreActionAdapter
-	surfaceTokens *bridge.SurfaceTokenService
+	coreActions    CoreActionAdapter
+	surfaceTokens  *bridge.SurfaceTokenService
+	expectCloseErr bool
+}
+
+type testRuntimeManagerDependencies struct {
+	Diagnostics     DiagnosticsSink
+	Assets          pluginpkg.AssetStore
+	SurfaceTokens   *bridge.SurfaceTokenService
+	PluginData      PluginData
+	Connectivity    connectivity.Broker
+	NetworkExecutor connectivity.NetworkExecutor
 }
 
 type fixedHostRequirementPolicy struct {
@@ -8267,10 +8302,6 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			t.Fatal(err)
 		}
 	}
-	runtimeManager := opts.runtimeManager
-	if runtimeManager == nil {
-		runtimeManager = &recordingRuntimeManager{}
-	}
 	secretStore := opts.secrets
 	if secretStore == nil {
 		secretStore = secrets.NewMemoryStore()
@@ -8282,6 +8313,28 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 	surfaceTokens := opts.surfaceTokens
 	if surfaceTokens == nil {
 		surfaceTokens = bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{})
+	}
+	assetStore := pluginpkg.NewMemoryAssetStore()
+	runtimeManager := opts.runtimeManager
+	if opts.runtimeManagerFactory != nil {
+		if runtimeManager != nil {
+			t.Fatal("runtime manager and runtime manager factory are mutually exclusive")
+		}
+		var err error
+		runtimeManager, err = opts.runtimeManagerFactory(testRuntimeManagerDependencies{
+			Diagnostics:     diagnostics,
+			Assets:          assetStore,
+			SurfaceTokens:   surfaceTokens,
+			PluginData:      pluginData,
+			Connectivity:    connectivityBroker,
+			NetworkExecutor: networkExecutor,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtimeManager == nil {
+		runtimeManager = &recordingRuntimeManager{}
 	}
 	host, err := Open(hostTestContext(), Adapters{
 		Policy: policyAdapter{
@@ -8301,7 +8354,7 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		SurfaceCatalog:              surfaces,
 		Audit:                       audit,
 		Diagnostics:                 diagnostics,
-		Assets:                      pluginpkg.NewMemoryAssetStore(),
+		Assets:                      assetStore,
 		PluginData:                  pluginData,
 		Connectivity:                connectivityBroker,
 		NetworkExecutor:             networkExecutor,
@@ -8319,8 +8372,10 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := host.Close(); err != nil {
+		if err := host.Close(); err != nil && !opts.expectCloseErr {
 			t.Errorf("Host.Close() error = %v", err)
+		} else if err == nil && opts.expectCloseErr {
+			t.Error("Host.Close() error = nil, want expected test cleanup failure")
 		}
 	})
 	return host, surfaces, audits
@@ -9340,7 +9395,7 @@ func lifecycleManifestJSON(version string, title string) string {
 		title = "Lifecycle"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.lifecycle",
@@ -9348,7 +9403,7 @@ func lifecycleManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "lifecycle.view", "kind": "view", "label": "Lifecycle", "entry": "ui/index.html"}
@@ -9358,7 +9413,7 @@ func lifecycleManifestJSON(version string, title string) string {
 
 func storageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.storage",
@@ -9366,7 +9421,7 @@ func storageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "storage.view", "kind": "view", "label": "Storage", "entry": "ui/index.html"}
@@ -9396,7 +9451,7 @@ func storageFixtureManifestJSON() string {
 
 func settingsFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.settings",
@@ -9404,7 +9459,7 @@ func settingsFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "settings.view", "kind": "view", "label": "Settings", "entry": "ui/index.html"}
@@ -9426,7 +9481,7 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 		version = "1.0.0"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.data-shape",
@@ -9434,7 +9489,7 @@ func dataShapeFixtureManifestJSON(opts dataShapeFixtureOptions) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "data-shape.view", "kind": "view", "label": "Data Shape", "entry": "ui/index.html"}
@@ -9464,7 +9519,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 		title = "RPC"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.rpc",
@@ -9472,7 +9527,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 			"version": ` + strconv.Quote(version) + `,
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "rpc.view", "kind": "view", "label": "RPC", "entry": "ui/index.html"}
@@ -9491,7 +9546,7 @@ func rpcFixtureManifestJSON(version string, title string) string {
 
 func dangerousRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.danger",
@@ -9499,7 +9554,7 @@ func dangerousRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "danger.view", "kind": "view", "label": "Danger", "entry": "ui/index.html"}
@@ -9518,7 +9573,7 @@ func dangerousRPCFixtureManifestJSON() string {
 
 func operationRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.operation",
@@ -9526,7 +9581,7 @@ func operationRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "operation.view", "kind": "view", "label": "Operation", "entry": "ui/index.html"}
@@ -9545,7 +9600,7 @@ func operationRPCFixtureManifestJSON() string {
 
 func subscriptionRPCFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.subscription",
@@ -9553,7 +9608,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "subscription.view", "kind": "view", "label": "Subscription", "entry": "ui/index.html"}
@@ -9572,7 +9627,7 @@ func subscriptionRPCFixtureManifestJSON() string {
 
 func coreActionFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.core",
@@ -9580,7 +9635,7 @@ func coreActionFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "core.view", "kind": "view", "label": "Core", "entry": "ui/index.html"}
@@ -9687,7 +9742,7 @@ func workerMethodSchemasJSON() string {
 
 func workerFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker",
@@ -9695,7 +9750,7 @@ func workerFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9725,7 +9780,7 @@ func workerFixtureManifestJSON() string {
 
 func workerNetworkFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network",
@@ -9733,7 +9788,7 @@ func workerNetworkFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9791,7 +9846,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 		connector = `{"connector_id": "api", "transport": "http", "scope": "user", "destinations": ["https://api.example.com"]}`
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.network.transport",
@@ -9799,7 +9854,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9833,7 +9888,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 
 func workerStorageFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage",
@@ -9841,7 +9896,7 @@ func workerStorageFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9883,7 +9938,7 @@ func workerStorageFixtureManifestJSON() string {
 
 func workerStorageKVFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.kv",
@@ -9891,7 +9946,7 @@ func workerStorageKVFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9933,7 +9988,7 @@ func workerStorageKVFixtureManifestJSON() string {
 
 func workerStorageSQLiteFixtureManifestJSON() string {
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.worker.storage.sqlite",
@@ -9941,7 +9996,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "worker.view", "kind": "view", "label": "Worker", "entry": "ui/index.html"}
@@ -9987,7 +10042,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 		httpDestination = "http://localhost"
 	}
 	return `{
-		"schema_version": "redevplugin.manifest.v4",
+		"schema_version": "redevplugin.manifest.v5",
 		"publisher": {"publisher_id": "example", "display_name": "Example"},
 		"plugin": {
 			"plugin_id": "com.example.network",
@@ -9995,7 +10050,7 @@ func networkFixtureManifestJSON(blocked bool) string {
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
 			"min_runtime_version": "0.1.0",
-			"ui_protocol_version": "plugin-ui-v4"
+			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
 			{"surface_id": "network.view", "kind": "view", "label": "Network", "entry": "ui/index.html"}
@@ -10095,7 +10150,7 @@ func openSurfaceAndMintGatewayForAudience(t *testing.T, h *Host, pluginInstanceI
 		AssetSessionNonce:  bootstrap.AssetSessionNonce,
 		ManagementRevision: bootstrap.ManagementRevision,
 		RevokeEpoch:        bootstrap.RevokeEpoch,
-		UIProtocolVersion:  "plugin-ui-v4",
+		UIProtocolVersion:  "plugin-ui-v5",
 	}
 	gateway, err := h.MintBridgeToken(ctx, MintBridgeTokenRequest{
 		Handshake:                 handshake,
@@ -10468,7 +10523,7 @@ func releaseMetadataBytesForPackage(t *testing.T, ref PluginReleaseRef, pkg plug
 func releaseMetadataBytesForRelease(t *testing.T, ref PluginReleaseRef, release PluginPackageRelease) []byte {
 	t.Helper()
 	raw, err := json.Marshal(signedReleaseMetadata{
-		SchemaVersion:            "redevplugin.release_metadata.v4",
+		SchemaVersion:            "redevplugin.release_metadata.v5",
 		SourceID:                 release.SourceID,
 		ReleaseMetadataRef:       ref.ReleaseMetadataRef,
 		PublisherID:              release.PublisherID,
@@ -10560,7 +10615,7 @@ func releaseForPackage(ref PluginReleaseRef, pkg pluginpkg.Package) PluginPackag
 		Compatibility: &ReleaseCompatibility{
 			MinReDevPluginVersion: "0.1.0",
 			MinRuntimeVersion:     "0.1.0",
-			UIProtocolVersion:     "plugin-ui-v4",
+			UIProtocolVersion:     "plugin-ui-v5",
 		},
 	}
 }
@@ -11083,6 +11138,7 @@ type recordingRuntimeManager struct {
 	err               error
 	startErr          error
 	stopErr           error
+	stopErrOnce       bool
 	revokeErr         error
 	revokeResult      runtimeclient.RevokeResult
 	lastLease         runtimeclient.Lease
@@ -11091,6 +11147,7 @@ type recordingRuntimeManager struct {
 	lastRevokedPlugin string
 	lastRevokeEpoch   uint64
 	invokeContext     context.Context
+	hostServices      runtimeclient.RuntimeHostServices
 }
 
 func surfaceIDForMethod(method string) string {
@@ -11308,10 +11365,22 @@ func (r *recordingRuntimeManager) Start(_ context.Context, target runtimeclient.
 	return r.managerHealth(), r.startErr
 }
 
+func (r *recordingRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
+	if services.StreamSink == nil {
+		return runtimeclient.ErrRuntimeHostServicesInvalid
+	}
+	r.hostServices = services
+	return nil
+}
+
 func (r *recordingRuntimeManager) Stop(context.Context) error {
 	r.stopCalls++
 	r.health.Ready = false
-	return r.stopErr
+	err := r.stopErr
+	if r.stopErrOnce {
+		r.stopErr = nil
+	}
+	return err
 }
 
 func (r *recordingRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {

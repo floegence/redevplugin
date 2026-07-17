@@ -179,11 +179,11 @@ capabilities.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   generated render policy, TypeScript SDK route coverage, and package validator
   aligned.
-- Manifest v4 requires every method to declare closed request and response
+- Manifest v5 requires every method to declare closed request and response
   object schemas. Package validation compiles those schemas without remote
   references; Host dispatch validates requests before adapters/runtime and
   validates canonical redacted responses before returning them to plugin code.
-- Manifest v4 surface declarations use only host-neutral `view`, `command`, or
+- Manifest v5 surface declarations use only host-neutral `view`, `command`, or
   `background` kinds with optional `primary`, `secondary`, or `utility` intent.
   Activity bars, workbench panes, settings pages, and modal placement remain
   host-product decisions.

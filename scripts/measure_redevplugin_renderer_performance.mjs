@@ -9,8 +9,14 @@ import { chromium } from "playwright";
 
 const options = parseArgs(process.argv.slice(2));
 const reconciler = await import(pathToFileURL(resolve("packages/redevplugin-ui/dist/ui-reconciler.js")));
-const element = (key, children = []) => ({ type: "element", key, tag: "div", children });
-const children = Array.from({ length: 1000 }, (_, index) => element(`item-${index}`));
+const element = (key, children) => ({
+  type: "element",
+  key,
+  tag: "div",
+  ...(children?.length ? { children } : {}),
+});
+const children = Array.from({ length: 1000 }, (_, index) =>
+  element(`item-${String(index).padStart(4, "0")}${"x".repeat(119)}`));
 const current = reconciler.validatePluginUITree(element("root", children));
 const next = reconciler.validatePluginUITree(element("root", [...children].reverse()));
 const operations = reconciler.reconcilePluginUITrees(current, next);
@@ -51,8 +57,8 @@ try {
 }
 const p95 = percentile(durations, 95);
 const maxLongTask = longTasks.length === 0 ? 0 : Math.max(...longTasks);
-if (p95 > 50) throw new Error(`Chromium keyed reversal p95 ${p95.toFixed(3)}ms exceeds 50ms`);
-if (longTasks.length > 0 || maxLongTask > 50) throw new Error(`Chromium renderer produced ${longTasks.length} long tasks; max ${maxLongTask.toFixed(3)}ms`);
+if (options.gate !== "smoke" && p95 > 50) throw new Error(`Chromium keyed reversal p95 ${p95.toFixed(3)}ms exceeds 50ms`);
+if (options.gate !== "smoke" && (longTasks.length > 0 || maxLongTask > 50)) throw new Error(`Chromium renderer produced ${longTasks.length} long tasks; max ${maxLongTask.toFixed(3)}ms`);
 appendFileSync(options.output, `${JSON.stringify({
   id: "ui.chromium-renderer",
   gate: options.gate,
@@ -67,17 +73,53 @@ appendFileSync(options.output, `${JSON.stringify({
 
 async function runScenario(browser, harnessURL) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  const consoleErrors = [];
+  const consoleMessages = [];
   page.on("console", (message) => {
-    if (message.type() === "error" || message.type() === "warning") consoleErrors.push(message.text());
+    consoleMessages.push({ type: message.type(), text: message.text() });
   });
-  page.on("pageerror", (error) => consoleErrors.push(error.message));
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   try {
+    await page.addInitScript(() => {
+      globalThis.__redevpluginInitDiagnostics = { errors: [], unhandledRejections: [] };
+      addEventListener("error", (event) => {
+        globalThis.__redevpluginInitDiagnostics.errors.push({
+          message: event.message,
+          filename: event.filename,
+          line: event.lineno,
+          column: event.colno,
+        });
+      });
+      addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason;
+        globalThis.__redevpluginInitDiagnostics.unhandledRejections.push(
+          reason instanceof Error ? { message: reason.message, stack: reason.stack } : { reason: String(reason) },
+        );
+      });
+    });
     await page.goto(harnessURL, { waitUntil: "load" });
-    await page.waitForFunction(() =>
-      (globalThis.__redevpluginMounted === true && globalThis.__redevpluginWorkerReady === true) ||
-      typeof globalThis.__redevpluginError === "string",
-    );
+    try {
+      await page.waitForFunction(() =>
+        (globalThis.__redevpluginMounted === true && globalThis.__redevpluginWorkerReady === true) ||
+        typeof globalThis.__redevpluginError === "string" ||
+        globalThis.__redevpluginInitDiagnostics.errors.length > 0 ||
+        globalThis.__redevpluginInitDiagnostics.unhandledRejections.length > 0,
+      );
+    } catch (error) {
+      const diagnostics = await page.evaluate(() => ({
+        mounted: globalThis.__redevpluginMounted,
+        workerReady: globalThis.__redevpluginWorkerReady,
+        error: globalThis.__redevpluginError,
+        calls: globalThis.__redevpluginCalls,
+        init: globalThis.__redevpluginInitDiagnostics,
+        frames: document.querySelectorAll("iframe").length,
+      })).catch((evaluateError) => ({ evaluateError: evaluateError.message }));
+      throw new Error(
+        `renderer initialization timed out: ${JSON.stringify(diagnostics)}; ` +
+        `console=${JSON.stringify(consoleMessages)}; pageErrors=${JSON.stringify(pageErrors)}`,
+        { cause: error },
+      );
+    }
     const openingState = await page.evaluate(() => ({
       mounted: globalThis.__redevpluginMounted === true,
       workerReady: globalThis.__redevpluginWorkerReady === true,
@@ -85,7 +127,10 @@ async function runScenario(browser, harnessURL) {
       calls: globalThis.__redevpluginCalls,
     }));
     if (openingState.error || !openingState.mounted || !openingState.workerReady) {
-      throw new Error(`renderer opening failed: ${JSON.stringify(openingState)}; console=${consoleErrors.join(" | ")}`);
+      throw new Error(
+        `renderer opening failed: ${JSON.stringify(openingState)}; ` +
+        `console=${JSON.stringify(consoleMessages)}; pageErrors=${JSON.stringify(pageErrors)}`,
+      );
     }
     const frame = await waitForSurfaceFrame(page);
     await frame.waitForLoadState("load");
@@ -109,7 +154,12 @@ async function runScenario(browser, harnessURL) {
     const observedLongTasks = await frame.evaluate(() => [...globalThis.__redevpluginLongTasks]);
     const firstKey = await frame.locator("[data-redevplugin-key]").first().getAttribute("data-redevplugin-key");
     if (firstKey !== "root") throw new Error(`renderer root key mismatch: ${firstKey}`);
-    if (consoleErrors.length > 0) throw new Error(`renderer console errors: ${consoleErrors.join(" | ")}`);
+    const unexpectedConsole = consoleMessages.filter((message) => message.type === "error" || message.type === "warning");
+    if (unexpectedConsole.length > 0 || pageErrors.length > 0) {
+      throw new Error(
+        `renderer console errors: console=${JSON.stringify(unexpectedConsole)}; pageErrors=${JSON.stringify(pageErrors)}`,
+      );
+    }
     return { duration_ms: Number(report.duration_ms), long_tasks: observedLongTasks };
   } finally {
     await page.close();
@@ -130,7 +180,7 @@ const preparation = {
   asset_session_nonce: "asset_session_nonce_performance_1",
   entry_path: "ui/index.html",
   entry_sha256: digest("1"),
-  plugin_state_version: 1,
+  management_revision: 1,
   revoke_epoch: 1,
   issued_at: new Date(now).toISOString(),
   expires_at: new Date(now + 600000).toISOString(),
@@ -183,7 +233,7 @@ const host = PluginSurfaceHost.create({
     entrySHA256: digest("1"),
     assetTicket: "asset_ticket_performance_secret",
     assetSessionNonce: "asset_session_nonce_performance_1",
-    pluginStateVersion: 1,
+    managementRevision: 1,
     revokeEpoch: 1,
     runtimeGenerationId: "runtime_generation_performance_1",
   },
@@ -274,6 +324,6 @@ function parseArgs(args) {
     else throw new Error(`unknown argument: ${args[index]}`);
   }
   if (!output) throw new Error("--output is required");
-  if (!["weekly", "full", "release"].includes(gate)) throw new Error(`invalid renderer gate: ${gate}`);
+  if (!["smoke", "weekly", "full", "release"].includes(gate)) throw new Error(`invalid renderer gate: ${gate}`);
   return { output, gate };
 }

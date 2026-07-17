@@ -1,0 +1,98 @@
+{
+  "schema_version": "redevplugin.performance_contract.v1",
+  "scenarios": [
+    {
+      "id": "runtime.blocked-hostcall-isolation",
+      "sample_count": 16,
+      "metrics": [
+        { "name": "completed", "unit": "count", "comparator": "eq", "limit": 16 },
+        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 250 }
+      ]
+    },
+    {
+      "id": "runtime.cache-single-flight",
+      "sample_count": 32,
+      "metrics": [
+        { "name": "artifact_reads", "unit": "count", "comparator": "eq", "limit": 1 },
+        { "name": "module_compiles", "unit": "count", "comparator": "eq", "limit": 1 },
+        { "name": "cache_entries", "unit": "count", "comparator": "eq", "limit": 1 }
+      ]
+    },
+    {
+      "id": "runtime.cancel-queued",
+      "sample_count": 20,
+      "metrics": [
+        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+      ]
+    },
+    {
+      "id": "runtime.cancel-running",
+      "sample_count": 20,
+      "metrics": [
+        { "name": "ack_p95", "unit": "milliseconds", "comparator": "lte", "limit": 100 },
+        { "name": "runtime_ready", "unit": "count", "comparator": "eq", "limit": 1 }
+      ]
+    },
+    {
+      "id": "runtime.warm-invocations",
+      "sample_count": 32,
+      "metrics": [
+        { "name": "completed", "unit": "count", "comparator": "eq", "limit": 32 },
+        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 100 },
+        { "name": "max", "unit": "milliseconds", "comparator": "lte", "limit": 500 }
+      ]
+    },
+    {
+      "id": "stream.event-backpressure",
+      "sample_count": 257,
+      "metrics": [
+        { "name": "accepted_events", "unit": "count", "comparator": "eq", "limit": 256 },
+        { "name": "first_rejected_event", "unit": "count", "comparator": "eq", "limit": 257 }
+      ]
+    },
+    {
+      "id": "stream.idle-waiters",
+      "sample_count": 500,
+      "metrics": [
+        { "name": "waiters", "unit": "count", "comparator": "eq", "limit": 500 },
+        { "name": "periodic_store_queries", "unit": "queries", "comparator": "eq", "limit": 0 },
+        { "name": "wake_p95", "unit": "milliseconds", "comparator": "lte", "limit": 100 }
+      ]
+    },
+    {
+      "id": "stream.sqlite-batch-delivery",
+      "sample_count": 256,
+      "metrics": [
+        { "name": "events_selected", "unit": "count", "comparator": "eq", "limit": 256 },
+        { "name": "bounded_selects", "unit": "queries", "comparator": "eq", "limit": 1 },
+        { "name": "range_deletes", "unit": "queries", "comparator": "eq", "limit": 1 },
+        { "name": "remaining_events", "unit": "count", "comparator": "eq", "limit": 256 }
+      ]
+    },
+    {
+      "id": "ui.chromium-renderer",
+      "sample_count": 10,
+      "metrics": [
+        { "name": "reverse_patch_p95", "unit": "milliseconds", "comparator": "lte", "limit": 50 },
+        { "name": "long_tasks", "unit": "long_tasks", "comparator": "eq", "limit": 0 },
+        { "name": "max_long_task", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+      ]
+    },
+    {
+      "id": "ui.keyed-reversal",
+      "sample_count": 30,
+      "metrics": [
+        { "name": "moves", "unit": "count", "comparator": "eq", "limit": 999 },
+        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+      ]
+    },
+    {
+      "id": "ui.single-leaf-reconciliation",
+      "sample_count": 40,
+      "metrics": [
+        { "name": "p95", "unit": "milliseconds", "comparator": "lte", "limit": 16 },
+        { "name": "max", "unit": "milliseconds", "comparator": "lte", "limit": 50 }
+      ]
+    }
+  ]
+}

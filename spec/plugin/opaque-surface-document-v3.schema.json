@@ -29,7 +29,7 @@
     "worker": { "$ref": "#/$defs/worker" },
     "assets": {
       "type": "array",
-	  "maxItems": 128,
+      "maxItems": 128,
       "items": { "$ref": "#/$defs/asset" }
     },
     "critical_bytes": {
@@ -47,7 +47,14 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 512,
-      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$)).+$"
+      "pattern": "^.+$",
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "\\\\" },
+          { "pattern": "(^|/)\\.\\.?(/|$)" }
+        ]
+      }
     },
     "style": {
       "type": "object",
@@ -93,7 +100,7 @@
         },
         "path": { "$ref": "#/$defs/package_path" },
         "sha256": { "$ref": "#/$defs/sha256" },
-		"size": { "type": "integer", "minimum": 0, "maximum": 33554432 },
+        "size": { "type": "integer", "minimum": 0, "maximum": 33554432 },
         "content_type": { "type": "string", "minLength": 1, "maxLength": 256 }
       }
     }

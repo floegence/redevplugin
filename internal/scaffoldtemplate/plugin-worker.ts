@@ -2,6 +2,7 @@ import {
   PluginBridgeClient,
   type PluginMethodResult,
   type PluginUIActionEvent,
+  type PluginUIVNode,
 } from "@floegence/redevplugin-ui/plugin";
 
 type EchoResult = {
@@ -60,6 +61,10 @@ async function echoMessage(event: PluginUIActionEvent): Promise<void> {
   }
 }
 
+function text(key: string, value: string): PluginUIVNode {
+  return { type: "text", key, text: value };
+}
+
 function render(): Promise<void> {
   return bridge.render({
     type: "element",
@@ -67,24 +72,24 @@ function render(): Promise<void> {
     tag: "main",
     attributes: { class: "plugin-surface" },
     children: [
-      { type: "element", key: "plugin-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Sandboxed plugin"] },
-      { type: "element", key: "plugin-title", tag: "h1", children: ["__REDEVPLUGIN_DISPLAY_NAME__"] },
-      { type: "element", key: "plugin-intro", tag: "p", attributes: { class: "intro" }, children: ["A minimal editable plugin with a TypeScript surface and Rust WASM worker."] },
+      { type: "element", key: "plugin-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [text("plugin-eyebrow-copy", "Sandboxed plugin")] },
+      { type: "element", key: "plugin-title", tag: "h1", children: [text("plugin-title-copy", "__REDEVPLUGIN_DISPLAY_NAME__")] },
+      { type: "element", key: "plugin-intro", tag: "p", attributes: { class: "intro" }, children: [text("plugin-intro-copy", "A minimal editable plugin with a TypeScript surface and Rust WASM worker.")] },
       {
         type: "element",
         key: "echo-form",
         tag: "form",
         attributes: { class: "echo-form", "data-redevplugin-action": "echo-message" },
         children: [
-          { type: "element", key: "message-label", tag: "label", attributes: { for: "message" }, children: ["Message"] },
+          { type: "element", key: "message-label", tag: "label", attributes: { for: "message" }, children: [text("message-label-copy", "Message")] },
           { type: "element", key: "message-input", tag: "input", attributes: { id: "message", name: "message", value: state.message, maxlength: 4096, disabled: state.busy, autocomplete: "off" } },
-          { type: "element", key: "message-submit", tag: "button", attributes: { type: "submit", disabled: state.busy }, children: [state.busy ? "Sending..." : "Send to worker"] },
+          { type: "element", key: "message-submit", tag: "button", attributes: { type: "submit", disabled: state.busy }, children: [text("message-submit-copy", state.busy ? "Sending..." : "Send to worker")] },
         ],
       },
-      { type: "element", key: "plugin-status", tag: "p", attributes: { class: state.error ? "status error" : "status", role: "status" }, children: [state.status] },
+      { type: "element", key: "plugin-status", tag: "p", attributes: { class: state.error ? "status error" : "status", role: "status" }, children: [text("plugin-status-copy", state.status)] },
       { type: "element", key: "worker-response", tag: "section", attributes: { class: "response", "aria-label": "Worker response" }, children: [
-        { type: "element", key: "worker-response-label", tag: "span", children: ["Response"] },
-        { type: "element", key: "worker-response-value", tag: "strong", children: [state.response] },
+        { type: "element", key: "worker-response-label", tag: "span", children: [text("worker-response-label-copy", "Response")] },
+        { type: "element", key: "worker-response-value", tag: "strong", children: [text("worker-response-value-copy", state.response)] },
       ] },
     ],
   });

@@ -124,6 +124,7 @@ function renderGo(matrix, contracts) {
     ["HostCapabilitySignatureSchemaVersion", "host_capability_signature_schema_version"],
     ["HostCapabilityNoticesSchemaVersion", "host_capability_notices_schema_version"],
     ["ErrorCodesSchemaVersion", "error_codes_schema_version"],
+    ["PerformanceContractVersion", "performance_contract_version"],
     ["PerformanceEvidenceSchemaVersion", "performance_evidence_schema_version"],
     ["ContractRegistryVersion", "contract_registry_version"],
   ];
@@ -175,6 +176,7 @@ async function readRenderPolicy(registry) {
     "max_renders_per_second",
     "max_render_depth",
     "max_render_nodes",
+    "max_patch_operations",
     "max_attributes_per_element",
     "max_text_length",
     "max_attribute_value_length",
@@ -233,6 +235,7 @@ function renderGoRenderPolicy(policy) {
     max_renders_per_second: "opaqueSurfaceMaxRendersPerSecond",
     max_render_depth: "opaqueSurfaceMaxRenderDepth",
     max_render_nodes: "opaqueSurfaceMaxRenderNodes",
+    max_patch_operations: "opaqueSurfaceMaxPatchOperations",
     max_attributes_per_element: "opaqueSurfaceMaxAttributesPerElement",
     max_text_length: "opaqueSurfaceMaxTextLength",
     max_attribute_value_length: "opaqueSurfaceMaxAttributeValueLength",

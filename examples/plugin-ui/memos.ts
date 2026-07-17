@@ -1,5 +1,9 @@
 import { PluginBridgeClient, PluginBridgeError, type PluginMethodResult, type PluginUIActionEvent, type PluginUIVNode } from "../../packages/redevplugin-ui/src/plugin.js";
-import { renderMarkdown, toggleTaskMarker } from "./memos-markdown.js";
+import { createMarkdownIdentity, renderMarkdown, toggleTaskMarker, type MarkdownIdentity } from "./memos-markdown.js";
+
+function textNode(key: string, value: string): PluginUIVNode {
+  return { type: "text", key, text: value };
+}
 
 type Memo = {
   id: string;
@@ -105,6 +109,7 @@ const state: MemosState = {
   editing: { id: "", content: "", originalContent: "", dirty: false, revision: 0, saveState: "idle", errorMessage: "" },
   ui: { ready: false, busy: false, drawerOpen: false, menuId: "", deleteId: "", deleteError: "", syncState: "ready", syncError: "", focusTarget: "none", focusId: "", toast: "", expandedIds: new Set(), pendingIds: new Set() },
 };
+const markdownIdentities = new Map<string, MarkdownIdentity>();
 
 let draftTimer: ReturnType<typeof setTimeout> | undefined;
 let editTimer: ReturnType<typeof setTimeout> | undefined;
@@ -802,8 +807,8 @@ function interactionBlocked(): boolean {
   return state.ui.busy || state.ui.syncState !== "ready";
 }
 
-function explorerScrim(): PluginUIVNode | string {
-  return state.ui.drawerOpen ? { type: "element", key: "explorer-scrim", tag: "button", attributes: { class: "explorer-scrim", type: "button", tabindex: -1, "aria-label": "Dismiss explorer", "data-redevplugin-action": "close-explorer" }, children: [] } : "";
+function explorerScrim(): PluginUIVNode {
+  return state.ui.drawerOpen ? { type: "element", key: "explorer-scrim", tag: "button", attributes: { class: "explorer-scrim", type: "button", tabindex: -1, "aria-label": "Dismiss explorer", "data-redevplugin-action": "close-explorer" }, children: [] } : textNode("explorer-scrim-text-empty", "");
 }
 
 function explorer(): PluginUIVNode {
@@ -826,7 +831,7 @@ function explorer(): PluginUIVNode {
 function brand(prefix: string): PluginUIVNode {
   return { type: "element", key: `${prefix}-brand`, tag: "div", attributes: { class: "brand-lockup" }, children: [
     { type: "element", key: `${prefix}-brand-mark`, tag: "span", attributes: { class: "brand-mark", "aria-hidden": true }, children: [] },
-    { type: "element", key: `${prefix}-brand-name`, tag: "strong", children: ["Memos"] },
+    { type: "element", key: `${prefix}-brand-name`, tag: "strong", children: [textNode(`${prefix}-brand-name-text`, "Memos")] },
   ] };
 }
 
@@ -834,15 +839,15 @@ function searchForm(): PluginUIVNode {
   return { type: "element", key: "search-form", tag: "form", attributes: { class: "search-form", "data-redevplugin-action": "search-memos" }, children: [
     { type: "element", key: "search-symbol", tag: "span", attributes: { class: "icon icon-search", "aria-hidden": true }, children: [] },
     { type: "element", key: "search-input", tag: "input", attributes: { type: "search", name: "query", value: state.feed.query, placeholder: "Search memos", autocomplete: "off", "aria-label": "Search memos", disabled: interactionBlocked(), "data-redevplugin-action": "search-query" }, children: [] },
-    state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: interactionBlocked(), "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : "",
+    state.feed.query ? { type: "element", key: "search-clear", tag: "button", attributes: { class: "search-clear", type: "button", title: "Clear search", "aria-label": "Clear search", disabled: interactionBlocked(), "data-redevplugin-action": "clear-search" }, children: [{ type: "element", key: "search-clear-icon", tag: "span", attributes: { class: "icon icon-close", "aria-hidden": true }, children: [] }] } : textNode("search-form-text-2", ""),
   ] };
 }
 
 function viewButton(value: FeedView, label: string, icon: string, count?: number): PluginUIVNode {
   return { type: "element", key: `view-${value}`, tag: "button", attributes: { type: "button", value, "aria-pressed": state.feed.view === value, disabled: interactionBlocked(), "data-redevplugin-action": "filter-view" }, children: [
     { type: "element", key: `view-${value}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
-    { type: "element", key: `view-${value}-label`, tag: "span", children: [label] },
-    count !== undefined ? { type: "element", key: `view-${value}-count`, tag: "small", children: [String(count)] } : "",
+    { type: "element", key: `view-${value}-label`, tag: "span", children: [textNode(`view-${value}-label-text`, label)] },
+    count !== undefined ? { type: "element", key: `view-${value}-count`, tag: "small", children: [textNode(`view-${value}-count-text`, String(count))] } : textNode(`view-${value}-text-2`, ""),
   ] };
 }
 
@@ -850,20 +855,28 @@ function calendar(): PluginUIVNode {
   const dayCounts = new Map(state.facets.days.map((day) => [day.date, day.count]));
   return { type: "element", key: "calendar", tag: "section", attributes: { class: "calendar", "aria-label": "Memo calendar" }, children: [
     { type: "element", key: "calendar-heading", tag: "header", children: [
-      { type: "element", key: "calendar-title", tag: "h2", children: [formatMonth(state.facets.month)] },
+      { type: "element", key: "calendar-title", tag: "h2", children: [textNode("calendar-title-text", formatMonth(state.facets.month))] },
       { type: "element", key: "calendar-controls", tag: "div", children: [
         calendarMoveButton("previous-month", "Previous month", "icon-chevron-left"),
         calendarMoveButton("next-month", "Next month", "icon-chevron-right"),
       ] },
     ] },
-    { type: "element", key: "calendar-weekdays", tag: "div", attributes: { class: "calendar-weekdays", "aria-hidden": true }, children: ["M", "T", "W", "T", "F", "S", "S"].map((label, index) => ({ type: "element", key: `weekday-${index}`, tag: "span", children: [label] })) },
+    { type: "element", key: "calendar-weekdays", tag: "div", attributes: { class: "calendar-weekdays", "aria-hidden": true }, children: [
+      { id: "monday", label: "M" },
+      { id: "tuesday", label: "T" },
+      { id: "wednesday", label: "W" },
+      { id: "thursday", label: "T" },
+      { id: "friday", label: "F" },
+      { id: "saturday", label: "S" },
+      { id: "sunday", label: "S" },
+    ].map(({ id, label }) => ({ type: "element", key: `weekday-${id}`, tag: "span", children: [textNode(`weekday-${id}-text`, label)] })) },
     { type: "element", key: "calendar-grid", tag: "div", attributes: { class: "calendar-grid" }, children: calendarCells(state.facets.month).map<PluginUIVNode>((cell, index) => {
       if (!cell) return { type: "element", key: `calendar-blank-${index}`, tag: "span", attributes: { class: "calendar-blank", "aria-hidden": true }, children: [] } as PluginUIVNode;
       const count = dayCounts.get(cell.date) ?? 0;
-      return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [String(cell.day)] } as PluginUIVNode;
+      return { type: "element", key: `calendar-${cell.date}`, tag: "button", attributes: { class: `${count ? "has-memos " : ""}${cell.today ? "today" : ""}`.trim(), type: "button", value: cell.date, title: count ? `${count} ${count === 1 ? "memo" : "memos"}` : "No memos", "aria-label": `${formatCalendarDate(cell.date)}, ${count} ${count === 1 ? "memo" : "memos"}`, "aria-pressed": state.feed.date === cell.date, disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [textNode(`calendar-${cell.date}-text`, String(cell.day))] } as PluginUIVNode;
     }) },
-    state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: ["Clear date"] } : "",
-    state.facets.errorMessage ? { type: "element", key: "calendar-error", tag: "p", attributes: { class: "facet-error", role: "status" }, children: [state.facets.errorMessage] } : "",
+    state.feed.date ? { type: "element", key: "calendar-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-date" }, children: [textNode("calendar-clear-text", "Clear date")] } : textNode("calendar-text-3", ""),
+    state.facets.errorMessage ? { type: "element", key: "calendar-error", tag: "p", attributes: { class: "facet-error", role: "status" }, children: [textNode("calendar-error-text", state.facets.errorMessage)] } : textNode("calendar-text-4", ""),
   ] };
 }
 
@@ -874,16 +887,16 @@ function calendarMoveButton(action: string, label: string, icon: string): Plugin
 function tagsPanel(): PluginUIVNode {
   return { type: "element", key: "tags-panel", tag: "section", attributes: { class: "tags-panel", "aria-label": "Tags" }, children: [
     { type: "element", key: "tags-heading", tag: "header", children: [
-      { type: "element", key: "tags-title", tag: "h2", children: ["Tags"] },
-      state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: ["Clear"] } : "",
+      { type: "element", key: "tags-title", tag: "h2", children: [textNode("tags-title-text", "Tags")] },
+      state.feed.tag ? { type: "element", key: "tags-clear", tag: "button", attributes: { class: "facet-clear", type: "button", value: "", disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [textNode("tags-clear-text", "Clear")] } : textNode("tags-heading-text-1", ""),
     ] },
     state.facets.tags.length ? { type: "element", key: "tag-list", tag: "ul", attributes: { class: "tag-list" }, children: state.facets.tags.map((facet) => ({ type: "element", key: `tag-${facet.tag}`, tag: "li", children: [
       { type: "element", key: `tag-${facet.tag}-button`, tag: "button", attributes: { type: "button", value: facet.tag, "aria-pressed": state.feed.tag === facet.tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [
-        { type: "element", key: `tag-${facet.tag}-hash`, tag: "span", attributes: { class: "tag-hash", "aria-hidden": true }, children: ["#"] },
-        { type: "element", key: `tag-${facet.tag}-label`, tag: "span", children: [facet.tag] },
-        { type: "element", key: `tag-${facet.tag}-count`, tag: "small", children: [String(facet.count)] },
+        { type: "element", key: `tag-${facet.tag}-hash`, tag: "span", attributes: { class: "tag-hash", "aria-hidden": true }, children: [textNode(`tag-${facet.tag}-hash-text`, "#")] },
+        { type: "element", key: `tag-${facet.tag}-label`, tag: "span", children: [textNode(`tag-${facet.tag}-label-text`, facet.tag)] },
+        { type: "element", key: `tag-${facet.tag}-count`, tag: "small", children: [textNode(`tag-${facet.tag}-count-text`, String(facet.count))] },
       ] },
-    ] })) } : { type: "element", key: "tags-empty", tag: "p", attributes: { class: "tags-empty" }, children: ["Tags in your memos appear here."] },
+    ] })) } : { type: "element", key: "tags-empty", tag: "p", attributes: { class: "tags-empty" }, children: [textNode("tags-empty-text", "Tags in your memos appear here.")] },
   ] };
 }
 
@@ -899,15 +912,15 @@ function workspace(): PluginUIVNode {
   ] };
 }
 
-function syncNotice(): PluginUIVNode | string {
-  if (state.ui.syncState === "ready") return "";
+function syncNotice(): PluginUIVNode {
+  if (state.ui.syncState === "ready") return textNode("sync-notice-text-empty", "");
   const syncing = state.ui.syncState === "syncing";
   return { type: "element", key: "sync-notice", tag: "section", attributes: { class: `sync-notice ${state.ui.syncState}`, role: "status" }, children: [
     { type: "element", key: "sync-notice-copy", tag: "div", children: [
-      { type: "element", key: "sync-notice-title", tag: "strong", children: [syncing ? "Refreshing timeline" : "Timeline refresh required"] },
-      { type: "element", key: "sync-notice-message", tag: "p", children: [syncing ? "Confirming the latest saved state..." : state.ui.syncError] },
+      { type: "element", key: "sync-notice-title", tag: "strong", children: [syncing ? textNode("sync-notice-title-text", "Refreshing timeline") : textNode("sync-notice-title-text", "Timeline refresh required")] },
+      { type: "element", key: "sync-notice-message", tag: "p", children: [syncing ? textNode("sync-notice-message-text", "Confirming the latest saved state...") : textNode("sync-notice-message-text", state.ui.syncError)] },
     ] },
-    !syncing ? { type: "element", key: "sync-notice-retry", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "retry-sync" }, children: ["Retry"] } : "",
+    !syncing ? { type: "element", key: "sync-notice-retry", tag: "button", attributes: { class: "quiet-button", type: "button", "data-redevplugin-action": "retry-sync" }, children: [textNode("sync-notice-retry-text", "Retry")] } : textNode("sync-notice-text-1", ""),
   ] };
 }
 
@@ -915,30 +928,30 @@ function composer(): PluginUIVNode {
   const expanded = state.composer.expanded || Boolean(state.composer.content);
   return { type: "element", key: "memo-composer", tag: "section", attributes: { class: `memo-composer${expanded ? " expanded" : ""}`, "aria-label": "Create a memo" }, children: [
     { type: "element", key: "composer-main", tag: "div", attributes: { class: "composer-main" }, children: [
-      { type: "element", key: "composer-avatar", tag: "span", attributes: { class: "composer-avatar", "aria-hidden": true }, children: ["M"] },
+      { type: "element", key: "composer-avatar", tag: "span", attributes: { class: "composer-avatar", "aria-hidden": true }, children: [textNode("composer-avatar-text", "M")] },
       { type: "element", key: "composer-copy", tag: "div", attributes: { class: "composer-copy" }, children: [
         { type: "element", key: "composer-input", tag: "textarea", attributes: { name: "content", value: state.composer.content, maxlength: MAX_CONTENT_CHARS, rows: expanded ? 7 : 2, placeholder: "What's on your mind?", "aria-label": "Memo content", autofocus: state.ui.focusTarget === "composer", disabled: interactionBlocked(), "data-redevplugin-action": "composer-content" }, children: [] },
-        !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "expand-composer" }, children: ["Create a memo"] } : "",
+        !expanded ? { type: "element", key: "composer-expand", tag: "button", attributes: { class: "composer-expand", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "expand-composer" }, children: [textNode("composer-expand-text", "Create a memo")] } : textNode("composer-copy-text-1", ""),
       ] },
     ] },
     expanded ? { type: "element", key: "composer-footer", tag: "footer", attributes: { class: "composer-footer" }, children: [
       { type: "element", key: "composer-meta", tag: "div", attributes: { class: "composer-meta" }, children: [
-        { type: "element", key: "markdown-label", tag: "span", attributes: { class: "markdown-label" }, children: ["Markdown"] },
-        { type: "element", key: "composer-count", tag: "span", children: [`${characterCount(state.composer.content)} / ${MAX_CONTENT_CHARS}`] },
+        { type: "element", key: "markdown-label", tag: "span", attributes: { class: "markdown-label" }, children: [textNode("markdown-label-text", "Markdown")] },
+        { type: "element", key: "composer-count", tag: "span", children: [textNode("composer-count-text", `${characterCount(state.composer.content)} / ${MAX_CONTENT_CHARS}`)] },
         draftStatus(),
       ] },
-      { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: interactionBlocked() || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? "Saving..." : "Save"] },
-    ] } : "",
+      { type: "element", key: "publish", tag: "button", attributes: { class: "primary-button", type: "button", disabled: interactionBlocked() || !state.composer.content.trim() || state.composer.saveState === "saving", "data-redevplugin-action": "publish-memo" }, children: [state.ui.busy ? textNode("publish-text", "Saving...") : textNode("publish-text", "Save")] },
+    ] } : textNode("memo-composer-text-1", ""),
   ] };
 }
 
-function draftStatus(): PluginUIVNode | string {
-  if (state.composer.saveState === "idle") return "";
+function draftStatus(): PluginUIVNode {
+  if (state.composer.saveState === "idle") return textNode("draft-status-text-empty", "");
   const label = state.composer.saveState === "saving" ? "Protecting draft..." : state.composer.saveState === "unsaved" ? "Draft pending" : state.composer.saveState === "saved" ? "Draft protected" : state.composer.errorMessage;
   return { type: "element", key: "draft-status", tag: "span", attributes: { class: `save-state ${state.composer.saveState}`, role: "status" }, children: [
     { type: "element", key: "draft-state-mark", tag: "span", attributes: { class: "state-dot", "aria-hidden": true }, children: [] },
-    label,
-    state.composer.saveState === "error" ? { type: "element", key: "retry-draft", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-draft" }, children: ["Retry"] } : "",
+    textNode("draft-status-text-1", label),
+    state.composer.saveState === "error" ? { type: "element", key: "retry-draft", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-draft" }, children: [textNode("retry-draft-text", "Retry")] } : textNode("draft-status-text-2", ""),
   ] };
 }
 
@@ -947,27 +960,27 @@ function feedHeader(): PluginUIVNode {
   const filtered = state.feed.view !== "all" || Boolean(state.feed.query || state.feed.tag || state.feed.date);
   const actions: PluginUIVNode[] = [];
   if (state.feed.windowed) {
-    actions.push({ type: "element", key: "newest-memos", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "newest-memos" }, children: ["Back to newest"] });
+    actions.push({ type: "element", key: "newest-memos", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "newest-memos" }, children: [textNode("newest-memos-text", "Back to newest")] });
   }
   if (filtered) {
-    actions.push({ type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "clear-filters" }, children: ["Clear filters"] });
+    actions.push({ type: "element", key: "clear-filters", tag: "button", attributes: { class: "quiet-button", type: "button", disabled: interactionBlocked(), "data-redevplugin-action": "clear-filters" }, children: [textNode("clear-filters-text", "Clear filters")] });
   }
   return { type: "element", key: "feed-header", tag: "header", attributes: { class: "feed-header" }, children: [
     { type: "element", key: "feed-heading-copy", tag: "div", children: [
-      { type: "element", key: "feed-title", tag: "h1", children: [label] },
-      { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? "Updating timeline..." : state.feed.windowed ? `${state.feed.memos.length} older memos` : `${state.feed.memos.length} recent memos`] },
+      { type: "element", key: "feed-title", tag: "h1", children: [textNode("feed-title-text", label)] },
+      { type: "element", key: "feed-count", tag: "p", children: [state.feed.loading && !state.feed.memos.length ? textNode("feed-count-text", "Updating timeline...") : state.feed.windowed ? textNode("feed-count-text", `${state.feed.memos.length} older memos`) : textNode("feed-count-text", `${state.feed.memos.length} recent memos`)] },
     ] },
-    actions.length ? { type: "element", key: "feed-header-actions", tag: "div", attributes: { class: "feed-header-actions" }, children: actions } : "",
+    actions.length ? { type: "element", key: "feed-header-actions", tag: "div", attributes: { class: "feed-header-actions" }, children: actions } : textNode("feed-header-text-1", ""),
   ] };
 }
 
 function feedContent(): PluginUIVNode {
   return { type: "element", key: "feed-content", tag: "div", attributes: { class: "memo-feed", "aria-busy": state.feed.loading }, children: [
-    state.feed.errorMessage ? feedMessage("feed-error", "Timeline unavailable", state.feed.errorMessage, "error") : "",
-    !state.feed.errorMessage && !state.feed.memos.length && state.feed.loading ? feedLoading() : "",
-    !state.feed.errorMessage && !state.feed.memos.length && !state.feed.loading ? feedEmpty() : "",
+    state.feed.errorMessage ? feedMessage("feed-error", "Timeline unavailable", state.feed.errorMessage, "error") : textNode("feed-content-text", ""),
+    !state.feed.errorMessage && !state.feed.memos.length && state.feed.loading ? feedLoading() : textNode("feed-content-text-1", ""),
+    !state.feed.errorMessage && !state.feed.memos.length && !state.feed.loading ? feedEmpty() : textNode("feed-content-text-2", ""),
     ...state.feed.memos.map(memoCard),
-    state.feed.hasMore ? { type: "element", key: "load-older", tag: "button", attributes: { class: "feed-pagination", type: "button", disabled: state.feed.loading || interactionBlocked(), "data-redevplugin-action": "load-older-memos" }, children: [state.feed.loading ? "Loading older..." : "Show older memos"] } : "",
+    state.feed.hasMore ? { type: "element", key: "load-older", tag: "button", attributes: { class: "feed-pagination", type: "button", disabled: state.feed.loading || interactionBlocked(), "data-redevplugin-action": "load-older-memos" }, children: [state.feed.loading ? textNode("load-older-text", "Loading older...") : textNode("load-older-text", "Show older memos")] } : textNode("feed-content-text-4", ""),
   ] };
 }
 
@@ -975,25 +988,25 @@ function memoCard(memo: Memo): PluginUIVNode {
   const editing = state.editing.id === memo.id;
   const pending = state.ui.pendingIds.has(memo.id);
   const expanded = state.ui.expandedIds.has(memo.id);
-  const markdown = renderMarkdown(memo.content, `md-${memo.id}`, { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived && !interactionBlocked() });
+  const markdown = renderMarkdown(memo.content, markdownIdentityFor(memo.id), { expanded, taskMemoId: memo.id, interactiveTasks: !editing && !pending && !memo.archived && !interactionBlocked() });
   return { type: "element", key: `memo-${memo.id}`, tag: "article", attributes: { class: `memo-card${memo.pinned ? " pinned" : ""}${memo.archived ? " archived" : ""}${editing ? " editing" : ""}`, "aria-label": `Memo from ${formatDocumentDate(memo.created_at)}` }, children: [
     { type: "element", key: `memo-${memo.id}-header`, tag: "header", attributes: { class: "memo-card-header" }, children: [
       { type: "element", key: `memo-${memo.id}-identity`, tag: "div", attributes: { class: "memo-identity" }, children: [
-        { type: "element", key: `memo-${memo.id}-avatar`, tag: "span", attributes: { class: "memo-avatar", "aria-hidden": true }, children: ["M"] },
+        { type: "element", key: `memo-${memo.id}-avatar`, tag: "span", attributes: { class: "memo-avatar", "aria-hidden": true }, children: [textNode(`memo-${memo.id}-avatar-text`, "M")] },
         { type: "element", key: `memo-${memo.id}-byline`, tag: "div", children: [
-          { type: "element", key: `memo-${memo.id}-author`, tag: "strong", children: [memo.archived ? "Archived memo" : "Memos"] },
-          { type: "element", key: `memo-${memo.id}-date`, tag: "time", attributes: { title: formatDocumentDate(memo.created_at) }, children: [formatMemoDate(memo.created_at)] },
+          { type: "element", key: `memo-${memo.id}-author`, tag: "strong", children: [memo.archived ? textNode(`memo-${memo.id}-author-text`, "Archived memo") : textNode(`memo-${memo.id}-author-text`, "Memos")] },
+          { type: "element", key: `memo-${memo.id}-date`, tag: "time", attributes: { title: formatDocumentDate(memo.created_at) }, children: [textNode(`memo-${memo.id}-date-text`, formatMemoDate(memo.created_at))] },
         ] },
       ] },
       { type: "element", key: `memo-${memo.id}-actions`, tag: "div", attributes: { class: "memo-card-actions" }, children: [
         { type: "element", key: `memo-${memo.id}-pin`, tag: "button", attributes: { class: `icon-button pin-button${memo.pinned ? " active" : ""}`, type: "button", value: memo.id, title: memo.pinned ? "Unpin memo" : "Pin memo", "aria-label": memo.pinned ? "Unpin memo" : "Pin memo", "aria-pressed": memo.pinned, disabled: pending || interactionBlocked(), "data-redevplugin-action": "set-pinned" }, children: [{ type: "element", key: `memo-${memo.id}-pin-icon`, tag: "span", attributes: { class: "icon icon-pin", "aria-hidden": true }, children: [] }] },
         { type: "element", key: `memo-${memo.id}-more`, tag: "button", attributes: { class: "icon-button memo-more", type: "button", value: memo.id, title: "More memo actions", "aria-label": "More memo actions", "aria-expanded": state.ui.menuId === memo.id, autofocus: state.ui.focusTarget === "menu-button" && state.ui.focusId === memo.id && !state.ui.deleteId, disabled: pending || interactionBlocked(), "data-redevplugin-action": "toggle-memo-menu" }, children: [{ type: "element", key: `memo-${memo.id}-more-icon`, tag: "span", attributes: { class: "icon icon-more", "aria-hidden": true }, children: [] }] },
-        state.ui.menuId === memo.id ? memoMenu(memo) : "",
+        state.ui.menuId === memo.id ? memoMenu(memo) : textNode(`memo-${memo.id}-actions-text-2`, ""),
       ] },
     ] },
     editing ? editMemo(memo) : { type: "element", key: `memo-${memo.id}-body`, tag: "div", attributes: { class: "markdown-body" }, children: markdown.nodes },
-    !editing && markdown.truncated ? { type: "element", key: `memo-${memo.id}-expand`, tag: "button", attributes: { class: "expand-content", type: "button", value: memo.id, "data-redevplugin-action": "toggle-expanded" }, children: [expanded ? "Show less" : "Show more"] } : "",
-    memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [`#${tag}`] })) } : "",
+    !editing && markdown.truncated ? { type: "element", key: `memo-${memo.id}-expand`, tag: "button", attributes: { class: "expand-content", type: "button", value: memo.id, "data-redevplugin-action": "toggle-expanded" }, children: [expanded ? textNode(`memo-${memo.id}-expand-text`, "Show less") : textNode(`memo-${memo.id}-expand-text`, "Show more")] } : textNode(`memo-${memo.id}-text-2`, ""),
+    memo.tags.length ? { type: "element", key: `memo-${memo.id}-tags`, tag: "footer", attributes: { class: "memo-tags" }, children: memo.tags.map((tag) => ({ type: "element", key: `memo-${memo.id}-tag-${tag}`, tag: "button", attributes: { type: "button", value: tag, disabled: interactionBlocked(), "data-redevplugin-action": "filter-tag" }, children: [textNode(`memo-${memo.id}-tag-${tag}-text`, `#${tag}`)] })) } : textNode(`memo-${memo.id}-text-3`, ""),
   ] };
 }
 
@@ -1002,8 +1015,8 @@ function editMemo(memo: Memo): PluginUIVNode {
     { type: "element", key: `memo-${memo.id}-textarea`, tag: "textarea", attributes: { name: "content", value: state.editing.content, maxlength: MAX_CONTENT_CHARS, rows: 8, "aria-label": "Edit memo content", disabled: interactionBlocked(), "data-redevplugin-action": "edit-content" }, children: [] },
     { type: "element", key: `memo-${memo.id}-edit-footer`, tag: "footer", children: [
       editStatus(),
-      { type: "element", key: `memo-${memo.id}-edit-count`, tag: "span", children: [`${characterCount(state.editing.content)} / ${MAX_CONTENT_CHARS}`] },
-      { type: "element", key: `memo-${memo.id}-done`, tag: "button", attributes: { class: "primary-button compact", type: "button", disabled: state.editing.saveState === "saving", "data-redevplugin-action": "finish-edit" }, children: ["Done"] },
+      { type: "element", key: `memo-${memo.id}-edit-count`, tag: "span", children: [textNode(`memo-${memo.id}-edit-count-text`, `${characterCount(state.editing.content)} / ${MAX_CONTENT_CHARS}`)] },
+      { type: "element", key: `memo-${memo.id}-done`, tag: "button", attributes: { class: "primary-button compact", type: "button", disabled: state.editing.saveState === "saving", "data-redevplugin-action": "finish-edit" }, children: [textNode(`memo-${memo.id}-done-text`, "Done")] },
     ] },
   ] };
 }
@@ -1012,8 +1025,8 @@ function editStatus(): PluginUIVNode {
   const label = state.editing.saveState === "saving" ? "Saving..." : state.editing.saveState === "unsaved" ? "Unsaved" : state.editing.saveState === "saved" ? "Saved" : state.editing.errorMessage;
   return { type: "element", key: "edit-save-indicator", tag: "span", attributes: { class: `save-state ${state.editing.saveState} save-indicator`, role: "status" }, children: [
     { type: "element", key: "edit-state-dot", tag: "span", attributes: { class: "state-dot", "aria-hidden": true }, children: [] },
-    label,
-    state.editing.saveState === "error" ? { type: "element", key: "retry-edit", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-edit" }, children: ["Retry"] } : "",
+    textNode("edit-save-indicator-text-1", label),
+    state.editing.saveState === "error" ? { type: "element", key: "retry-edit", tag: "button", attributes: { type: "button", "data-redevplugin-action": "retry-edit" }, children: [textNode("retry-edit-text", "Retry")] } : textNode("edit-save-indicator-text-2", ""),
   ] };
 }
 
@@ -1028,25 +1041,25 @@ function memoMenu(memo: Memo): PluginUIVNode {
 function menuButton(id: string, action: string, label: string, icon: string, autofocus = false, danger = false): PluginUIVNode {
   return { type: "element", key: `memo-${id}-menu-${action}`, tag: "button", attributes: { class: danger ? "danger" : "", type: "button", role: "menuitem", value: id, autofocus: autofocus && state.ui.focusTarget === "menu-item", "data-redevplugin-action": action }, children: [
     { type: "element", key: `memo-${id}-menu-${action}-icon`, tag: "span", attributes: { class: `icon ${icon}`, "aria-hidden": true }, children: [] },
-    label,
+    textNode(`memo-${id}-menu-${action}-text-1`, label),
   ] };
 }
 
-function deleteDialog(): PluginUIVNode | string {
-  if (!state.ui.deleteId) return "";
+function deleteDialog(): PluginUIVNode {
+  if (!state.ui.deleteId) return textNode("delete-layer-text-empty", "");
   const deleting = state.ui.busy;
   return { type: "element", key: "delete-layer", tag: "div", attributes: { class: "dialog-layer" }, children: [
     { type: "element", key: "delete-scrim", tag: "button", attributes: { class: "dialog-scrim", type: "button", tabindex: -1, "aria-label": "Cancel delete", "data-redevplugin-action": "cancel-delete" }, children: [] },
     { type: "element", key: "delete-dialog", tag: "section", attributes: { class: "delete-dialog", role: "dialog", "aria-modal": true, "aria-label": "Delete memo", "data-redevplugin-escape-action": "cancel-delete" }, children: [
-      { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: ["!"] },
+      { type: "element", key: "delete-mark", tag: "span", attributes: { class: "delete-mark", "aria-hidden": true }, children: [textNode("delete-mark-text", "!")] },
       { type: "element", key: "delete-copy", tag: "div", children: [
-        { type: "element", key: "delete-title", tag: "h2", children: ["Delete this memo?"] },
-        { type: "element", key: "delete-message", tag: "p", children: ["This action cannot be undone."] },
-        state.ui.deleteError ? { type: "element", key: "delete-error", tag: "p", attributes: { class: "delete-error", role: "status" }, children: [state.ui.deleteError] } : "",
+        { type: "element", key: "delete-title", tag: "h2", children: [textNode("delete-title-text", "Delete this memo?")] },
+        { type: "element", key: "delete-message", tag: "p", children: [textNode("delete-message-text", "This action cannot be undone.")] },
+        state.ui.deleteError ? { type: "element", key: "delete-error", tag: "p", attributes: { class: "delete-error", role: "status" }, children: [textNode("delete-error-text", state.ui.deleteError)] } : textNode("delete-copy-text-2", ""),
       ] },
       { type: "element", key: "delete-actions", tag: "div", attributes: { class: "delete-actions" }, children: [
-        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: !deleting, disabled: deleting, "data-redevplugin-action": "cancel-delete" }, children: ["Keep memo"] },
-        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", disabled: deleting, "data-redevplugin-action": "confirm-delete" }, children: [deleting ? "Deleting..." : "Delete memo"] },
+        { type: "element", key: "delete-cancel", tag: "button", attributes: { class: "quiet-button", type: "button", autofocus: !deleting, disabled: deleting, "data-redevplugin-action": "cancel-delete" }, children: [textNode("delete-cancel-text", "Keep memo")] },
+        { type: "element", key: "delete-confirm", tag: "button", attributes: { class: "danger-button", type: "button", disabled: deleting, "data-redevplugin-action": "confirm-delete" }, children: [deleting ? textNode("delete-confirm-text", "Deleting...") : textNode("delete-confirm-text", "Delete memo")] },
       ] },
     ] },
   ] };
@@ -1067,16 +1080,16 @@ function feedEmpty(): PluginUIVNode {
 
 function feedMessage(key: string, title: string, message: string, variant: string): PluginUIVNode {
   return { type: "element", key, tag: "section", attributes: { class: `feed-message ${variant}`, role: variant === "error" ? "status" : "region" }, children: [
-    { type: "element", key: `${key}-mark`, tag: "span", attributes: { class: "message-mark", "aria-hidden": true }, children: [variant === "error" ? "!" : "+"] },
+    { type: "element", key: `${key}-mark`, tag: "span", attributes: { class: "message-mark", "aria-hidden": true }, children: [variant === "error" ? textNode(`${key}-mark-text`, "!") : textNode(`${key}-mark-text`, "+")] },
     { type: "element", key: `${key}-copy`, tag: "div", children: [
-      { type: "element", key: `${key}-title`, tag: "h2", children: [title] },
-      { type: "element", key: `${key}-message`, tag: "p", children: [message] },
+      { type: "element", key: `${key}-title`, tag: "h2", children: [textNode(`${key}-title-text`, title)] },
+      { type: "element", key: `${key}-message`, tag: "p", children: [textNode(`${key}-message-text`, message)] },
     ] },
   ] };
 }
 
-function toast(): PluginUIVNode | string {
-  return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [state.ui.toast] } : "";
+function toast(): PluginUIVNode {
+  return state.ui.toast ? { type: "element", key: "memos-toast", tag: "div", attributes: { class: "memos-toast", role: "status" }, children: [textNode("memos-toast-text", state.ui.toast)] } : textNode("memos-toast-text-empty", "");
 }
 
 function applyList(result: ListResult): void {
@@ -1129,6 +1142,7 @@ function applyFeedTransition(previous: Memo | undefined, next: Memo | undefined)
   state.feed.memos = memos.slice(0, MAX_VISIBLE_MEMOS);
   state.feed.nextCursor = null;
   state.feed.hasMore = false;
+  pruneMarkdownIdentities(new Set(state.feed.memos.map((memo) => memo.id)));
 }
 
 function memoMatchesCurrentFeed(memo: Memo): boolean {
@@ -1226,6 +1240,21 @@ function retainVisibleMemoState(): void {
   const visible = new Set(state.feed.memos.map((memo) => memo.id));
   state.ui.expandedIds = new Set([...state.ui.expandedIds].filter((id) => visible.has(id)));
   if (!visible.has(state.ui.menuId)) state.ui.menuId = "";
+  pruneMarkdownIdentities(visible);
+}
+
+function markdownIdentityFor(memoId: string): MarkdownIdentity {
+  const existing = markdownIdentities.get(memoId);
+  if (existing !== undefined) return existing;
+  const identity = createMarkdownIdentity(`md-${memoId}`);
+  markdownIdentities.set(memoId, identity);
+  return identity;
+}
+
+function pruneMarkdownIdentities(visibleMemoIds: ReadonlySet<string>): void {
+  for (const memoId of markdownIdentities.keys()) {
+    if (!visibleMemoIds.has(memoId)) markdownIdentities.delete(memoId);
+  }
 }
 
 async function renderWithFocus(target: FocusTarget): Promise<void> {

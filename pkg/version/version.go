@@ -58,7 +58,8 @@ type Matrix struct {
 	HostCapabilitySignatureVersion string `json:"host_capability_signature_schema_version"`
 	HostCapabilityNoticesVersion   string `json:"host_capability_notices_schema_version"`
 	ErrorCodesSchemaVersion        string `json:"error_codes_schema_version"`
-	PerformanceEvidenceVersion    string `json:"performance_evidence_schema_version"`
+	PerformanceContractVersion     string `json:"performance_contract_version"`
+	PerformanceEvidenceVersion     string `json:"performance_evidence_schema_version"`
 	ContractRegistryVersion        string `json:"contract_registry_version"`
 }
 
@@ -113,7 +114,8 @@ func CurrentMatrix() Matrix {
 		HostCapabilitySignatureVersion: HostCapabilitySignatureSchemaVersion,
 		HostCapabilityNoticesVersion:   HostCapabilityNoticesSchemaVersion,
 		ErrorCodesSchemaVersion:        ErrorCodesSchemaVersion,
-		PerformanceEvidenceVersion:    PerformanceEvidenceSchemaVersion,
+		PerformanceContractVersion:     PerformanceContractVersion,
+		PerformanceEvidenceVersion:     PerformanceEvidenceSchemaVersion,
 		ContractRegistryVersion:        ContractRegistryVersion,
 	}
 }

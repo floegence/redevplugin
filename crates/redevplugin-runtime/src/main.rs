@@ -1,9 +1,13 @@
+mod module_cache;
+mod scheduler;
+
 use serde::Deserialize;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,8 +24,6 @@ const MAX_CONTROL_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_BROKER_RESPONSE_FRAME_BYTES: usize = 1024 * 1024;
 const DEFAULT_CONTROL_MAX_STALENESS: Duration = Duration::from_millis(5_000);
 const DEFAULT_RUNTIME_LEASE_REPLAY_CAPACITY: usize = 16_384;
-const DEFAULT_MODULE_CACHE_MAX_ENTRIES: usize = 64;
-const DEFAULT_MODULE_CACHE_MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 const WASM_PAGE_BYTES: u64 = 64 * 1024;
 const RUNTIME_CONTROL_STALE_MESSAGE_PREFIX: &str = "runtime control channel is stale";
 
@@ -39,10 +41,12 @@ fn run() -> Result<(), String> {
     if line.is_empty() {
         return Err("hello frame is empty".to_string());
     }
-    let (request_id, runtime_generation_id, channel_nonce) =
-        redevplugin_ipc::validate_hello_frame(&line).map_err(|err| err.to_string())?;
-    let runtime_lease_public_keys =
-        redevplugin_ipc::parse_runtime_lease_public_keys(&line).map_err(|err| err.to_string())?;
+    let hello = redevplugin_ipc::parse_hello_frame(&line)?;
+    let request_id = hello.request_id;
+    let runtime_generation_id = hello.runtime_generation_id;
+    let channel_nonce = hello.channel_nonce;
+    let runtime_lease_public_keys = hello.runtime_lease_public_keys;
+    let limits = hello.limits;
     let runtime_version =
         option_env!("REDEVPLUGIN_RUNTIME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     let ack = redevplugin_ipc::hello_ack_frame(
@@ -51,61 +55,1239 @@ fn run() -> Result<(), String> {
         &channel_nonce,
         runtime_version,
         redevplugin_ipc::WASM_ABI_VERSION,
+        limits,
     );
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(ack.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write hello ack: {err}"))?;
-
+    let (writer, writer_thread) = start_ipc_writer()?;
+    send_frame(&writer, ack)?;
     let shared = Arc::new(RuntimeSharedState::default());
-    start_control_channel(Arc::clone(&shared), runtime_generation_id.clone())?;
-    let mut lease_replays = RuntimeLeaseReplayCache::default();
-    let mut worker_runtime = WorkerModuleRuntime::default();
-    let clock = current_unix_millis;
+    let scheduler = Arc::new(scheduler::InvocationScheduler::new(
+        limits.queue_capacity,
+        limits.per_plugin_concurrency,
+    ));
+    let module_cache = Arc::new(module_cache::ModuleCache::new(
+        worker_engine(),
+        limits.module_cache_entries,
+        limits.module_cache_source_bytes,
+    ));
+    let status = Arc::new(RuntimeStatus {
+        limits,
+        scheduler: Arc::clone(&scheduler),
+        module_cache: Arc::clone(&module_cache),
+    });
+    start_control_channel(
+        Arc::clone(&shared),
+        runtime_generation_id.clone(),
+        Arc::clone(&status),
+    )?;
+    let execution = Arc::new(ConcurrentExecutionState {
+        shared,
+        lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+        runtime_lease_public_keys,
+        module_cache,
+        clock: Arc::new(current_unix_millis),
+        writer: writer.clone(),
+        runtime_generation_id: runtime_generation_id.clone(),
+        pending_artifacts: PendingArtifactRoutes::new(limits.compile_flight_route_capacity()),
+        hostcall_routes: OutstandingHostcallRoutes::new(
+            limits.hostcall_active_route_capacity(),
+            limits.hostcall_canceled_route_capacity()?,
+        ),
+    });
+    let workers = start_invocation_workers(
+        limits.worker_count,
+        Arc::clone(&scheduler),
+        Arc::clone(&execution),
+    )?;
+
     loop {
         line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, "ipc frame")?;
         if line.is_empty() {
             break;
         }
-        let (frame_type, request_id, frame_generation_id) =
-            redevplugin_ipc::parse_frame_identity(&line).map_err(|err| err.to_string())?;
-        if frame_generation_id != runtime_generation_id {
-            return Err("runtime_generation_id mismatch".to_string());
+        let input = redevplugin_ipc::decode_runtime_input_frame(&line)?;
+        dispatch_runtime_input(
+            input,
+            &runtime_generation_id,
+            &scheduler,
+            &execution,
+            &writer,
+        )?;
+    }
+    for job in scheduler.shutdown() {
+        send_frame(
+            &writer,
+            canceled_invocation_frame(&job.request_id, &runtime_generation_id),
+        )?;
+    }
+    execution.pending_artifacts.shutdown();
+    execution.hostcall_routes.shutdown();
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| "runtime invocation worker panicked".to_string())?;
+    }
+    drop(execution);
+    drop(status);
+    drop(scheduler);
+    drop(writer);
+    writer_thread
+        .join()
+        .map_err(|_| "runtime IPC writer panicked".to_string())??;
+    Ok(())
+}
+
+fn dispatch_runtime_input(
+    input: redevplugin_ipc::RuntimeInputFrame,
+    runtime_generation_id: &str,
+    scheduler: &scheduler::InvocationScheduler,
+    execution: &ConcurrentExecutionState,
+    writer: &FrameSender,
+) -> Result<(), String> {
+    match input {
+        redevplugin_ipc::RuntimeInputFrame::InvokeWorker(worker) => {
+            if worker.identity.runtime_generation_id != runtime_generation_id {
+                return Err("runtime_generation_id mismatch".to_string());
+            }
+            let request_id = worker.identity.request_id;
+            let invocation = match worker.invocation {
+                Ok(invocation) => invocation,
+                Err(_) => {
+                    return send_frame(
+                        writer,
+                        invocation_error_frame(
+                            &request_id,
+                            runtime_generation_id,
+                            redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                            "invalid worker invocation",
+                        ),
+                    );
+                }
+            };
+            match scheduler::InvocationJob::new(invocation) {
+                Ok(job) => {
+                    if let Err(err) = scheduler.enqueue(job) {
+                        let (code, message) = match err {
+                            scheduler::EnqueueError::Capacity => (
+                                redevplugin_ipc::ERR_RUNTIME_CAPACITY_EXCEEDED,
+                                "runtime invocation queue capacity is exceeded",
+                            ),
+                            scheduler::EnqueueError::PluginCapacity => (
+                                redevplugin_ipc::ERR_RUNTIME_CAPACITY_EXCEEDED,
+                                "plugin invocation queue capacity is exceeded",
+                            ),
+                            scheduler::EnqueueError::Duplicate => (
+                                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                                "runtime invocation request_id is duplicated",
+                            ),
+                            scheduler::EnqueueError::Shutdown => (
+                                redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED,
+                                "runtime is shutting down",
+                            ),
+                        };
+                        send_frame(
+                            writer,
+                            invocation_error_frame(
+                                &request_id,
+                                runtime_generation_id,
+                                code,
+                                message,
+                            ),
+                        )?;
+                    }
+                }
+                Err(err) => send_frame(
+                    writer,
+                    invocation_error_frame(
+                        &request_id,
+                        runtime_generation_id,
+                        redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                        &err,
+                    ),
+                )?,
+            }
         }
-        let response = match frame_type.as_str() {
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER => handle_worker_invocation(
-                &mut reader,
-                &mut stdout,
-                &mut WorkerInvocationState {
-                    shared: &shared,
-                    lease_replays: &mut lease_replays,
-                    runtime_lease_public_keys: &runtime_lease_public_keys,
-                    worker_runtime: &mut worker_runtime,
-                    clock: &clock,
-                },
-                &request_id,
-                &runtime_generation_id,
-                &line,
-            )?,
-            _ => redevplugin_ipc::error_response_frame(
-                "diagnostic",
-                &request_id,
-                &runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
-                    "runtime frame type is not supported",
+        redevplugin_ipc::RuntimeInputFrame::CancelInvoke(cancel) => {
+            if cancel.identity.runtime_generation_id != runtime_generation_id {
+                return Err("runtime_generation_id mismatch".to_string());
+            }
+            let disposition = match scheduler.cancel(&cancel.invocation_request_id) {
+                scheduler::CancelDisposition::Queued(job) => {
+                    send_frame(
+                        writer,
+                        canceled_invocation_frame(&job.request_id, runtime_generation_id),
+                    )?;
+                    "queued"
+                }
+                scheduler::CancelDisposition::Running => {
+                    execution
+                        .hostcall_routes
+                        .cancel_parent(&cancel.invocation_request_id, runtime_generation_id)?;
+                    "running"
+                }
+                scheduler::CancelDisposition::Complete => "complete",
+                scheduler::CancelDisposition::Missing => "complete",
+            };
+            send_frame(
+                writer,
+                redevplugin_ipc::cancel_invoke_ack_frame(
+                    &cancel.identity.request_id,
+                    runtime_generation_id,
+                    &cancel.invocation_request_id,
+                    disposition,
                 ),
-            ),
-        };
-        stdout
-            .write_all(response.as_bytes())
-            .and_then(|_| stdout.write_all(b"\n"))
-            .and_then(|_| stdout.flush())
-            .map_err(|err| format!("write ipc response: {err}"))?;
+            )?;
+        }
+        redevplugin_ipc::RuntimeInputFrame::HostcallResponse(response) => {
+            if response.identity.runtime_generation_id != runtime_generation_id {
+                return Err("runtime_generation_id mismatch".to_string());
+            }
+            let parent_request_id = response
+                .identity
+                .parent_request_id
+                .as_deref()
+                .ok_or_else(|| "hostcall response is missing parent_request_id".to_string())?;
+            if response.identity.frame_type == redevplugin_ipc::FRAME_TYPE_OPEN_HANDLE {
+                execution.pending_artifacts.consume(
+                    &response.identity.request_id,
+                    parent_request_id,
+                    runtime_generation_id,
+                    response.raw_frame,
+                )?;
+                return Ok(());
+            }
+            match execution.hostcall_routes.consume(
+                &response.identity.request_id,
+                parent_request_id,
+                runtime_generation_id,
+            )? {
+                HostcallRouteDisposition::Deliver => {
+                    if !scheduler.signal(
+                        parent_request_id,
+                        scheduler::InvocationSignal::HostcallResponse(response.raw_frame),
+                    ) {
+                        return Err("hostcall response parent_request_id is not active".to_string());
+                    }
+                }
+                HostcallRouteDisposition::DiscardCanceled => {}
+            }
+        }
+        redevplugin_ipc::RuntimeInputFrame::Unsupported(identity) => {
+            if identity.runtime_generation_id != runtime_generation_id {
+                return Err("runtime_generation_id mismatch".to_string());
+            }
+            send_frame(
+                writer,
+                redevplugin_ipc::error_response_frame(
+                    "diagnostic",
+                    &identity.request_id,
+                    runtime_generation_id,
+                    redevplugin_ipc::ResponseError::runtime(
+                        redevplugin_ipc::ERR_UNSUPPORTED_FRAME,
+                        "runtime frame type is not supported",
+                    ),
+                ),
+            )?;
+        }
     }
     Ok(())
+}
+
+type FrameSender = Sender<String>;
+
+struct RuntimeStatus {
+    limits: redevplugin_ipc::RuntimeLimits,
+    scheduler: Arc<scheduler::InvocationScheduler>,
+    module_cache: Arc<module_cache::ModuleCache>,
+}
+
+struct ConcurrentExecutionState {
+    shared: Arc<RuntimeSharedState>,
+    lease_replays: Mutex<RuntimeLeaseReplayCache>,
+    runtime_lease_public_keys: Vec<redevplugin_ipc::RuntimeLeasePublicKey>,
+    module_cache: Arc<module_cache::ModuleCache>,
+    clock: Arc<dyn Fn() -> Result<i64, String> + Send + Sync>,
+    writer: FrameSender,
+    runtime_generation_id: String,
+    pending_artifacts: PendingArtifactRoutes,
+    hostcall_routes: OutstandingHostcallRoutes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostcallRouteDisposition {
+    Deliver,
+    DiscardCanceled,
+}
+
+struct OutstandingHostcallRoute {
+    parent_request_id: String,
+    runtime_generation_id: String,
+}
+
+struct OutstandingHostcallRouteState {
+    active: HashMap<String, OutstandingHostcallRoute>,
+    canceled: HashMap<String, OutstandingHostcallRoute>,
+    shutdown: bool,
+}
+
+struct OutstandingHostcallRoutes {
+    active_capacity: usize,
+    canceled_capacity: usize,
+    state: Mutex<OutstandingHostcallRouteState>,
+}
+
+impl OutstandingHostcallRoutes {
+    fn new(active_capacity: usize, canceled_capacity: usize) -> Self {
+        assert!(
+            active_capacity > 0,
+            "active hostcall route capacity must be positive"
+        );
+        assert!(
+            canceled_capacity > 0,
+            "canceled hostcall route capacity must be positive"
+        );
+        Self {
+            active_capacity,
+            canceled_capacity,
+            state: Mutex::new(OutstandingHostcallRouteState {
+                active: HashMap::new(),
+                canceled: HashMap::new(),
+                shutdown: false,
+            }),
+        }
+    }
+
+    fn register(
+        &self,
+        request_id: &str,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+    ) -> Result<(), String> {
+        if request_id.trim().is_empty()
+            || parent_request_id.trim().is_empty()
+            || runtime_generation_id.trim().is_empty()
+        {
+            return Err("hostcall route identity is incomplete".to_string());
+        }
+        let mut state = self.state.lock().expect("hostcall route mutex poisoned");
+        if state.shutdown {
+            return Err("runtime is shutting down".to_string());
+        }
+        if state.active.contains_key(request_id) || state.canceled.contains_key(request_id) {
+            return Err("hostcall request_id is already outstanding".to_string());
+        }
+        if state.active.len() >= self.active_capacity {
+            return Err("active hostcall route capacity is exhausted".to_string());
+        }
+        state.active.insert(
+            request_id.to_string(),
+            OutstandingHostcallRoute {
+                parent_request_id: parent_request_id.to_string(),
+                runtime_generation_id: runtime_generation_id.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    fn remove(&self, request_id: &str, parent_request_id: &str, runtime_generation_id: &str) {
+        let mut state = self.state.lock().expect("hostcall route mutex poisoned");
+        if hostcall_route_identity_matches(
+            state.active.get(request_id),
+            parent_request_id,
+            runtime_generation_id,
+        ) {
+            state.active.remove(request_id);
+        } else if hostcall_route_identity_matches(
+            state.canceled.get(request_id),
+            parent_request_id,
+            runtime_generation_id,
+        ) {
+            state.canceled.remove(request_id);
+        }
+    }
+
+    fn cancel_parent(
+        &self,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().expect("hostcall route mutex poisoned");
+        let request_ids = state
+            .active
+            .iter()
+            .filter(|(_, route)| {
+                route.parent_request_id == parent_request_id
+                    && route.runtime_generation_id == runtime_generation_id
+            })
+            .map(|(request_id, _)| request_id.clone())
+            .collect::<Vec<_>>();
+        let retained = state
+            .canceled
+            .len()
+            .checked_add(request_ids.len())
+            .ok_or_else(|| "canceled hostcall route count overflows usize".to_string())?;
+        if retained > self.canceled_capacity {
+            return Err("canceled hostcall route retention capacity is exhausted".to_string());
+        }
+        for request_id in request_ids {
+            let route = state
+                .active
+                .remove(&request_id)
+                .expect("selected active hostcall route exists");
+            state.canceled.insert(request_id, route);
+        }
+        Ok(())
+    }
+
+    fn consume(
+        &self,
+        request_id: &str,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+    ) -> Result<HostcallRouteDisposition, String> {
+        let mut state = self.state.lock().expect("hostcall route mutex poisoned");
+        if let Some(route) = state.active.get(request_id) {
+            if route.parent_request_id != parent_request_id
+                || route.runtime_generation_id != runtime_generation_id
+            {
+                return Err("hostcall response route identity mismatch".to_string());
+            }
+            state.active.remove(request_id);
+            return Ok(HostcallRouteDisposition::Deliver);
+        }
+        if let Some(route) = state.canceled.get(request_id) {
+            if route.parent_request_id != parent_request_id
+                || route.runtime_generation_id != runtime_generation_id
+            {
+                return Err("hostcall response route identity mismatch".to_string());
+            }
+            state.canceled.remove(request_id);
+            return Ok(HostcallRouteDisposition::DiscardCanceled);
+        }
+        Err("hostcall response request_id is not outstanding".to_string())
+    }
+
+    fn shutdown(&self) {
+        let mut state = self.state.lock().expect("hostcall route mutex poisoned");
+        state.shutdown = true;
+        state.active.clear();
+        state.canceled.clear();
+    }
+
+    #[cfg(test)]
+    fn active_len(&self) -> usize {
+        self.state
+            .lock()
+            .expect("hostcall route mutex poisoned")
+            .active
+            .len()
+    }
+
+    #[cfg(test)]
+    fn canceled_len(&self) -> usize {
+        self.state
+            .lock()
+            .expect("hostcall route mutex poisoned")
+            .canceled
+            .len()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        let state = self.state.lock().expect("hostcall route mutex poisoned");
+        state.active.len() + state.canceled.len()
+    }
+}
+
+fn hostcall_route_identity_matches(
+    route: Option<&OutstandingHostcallRoute>,
+    parent_request_id: &str,
+    runtime_generation_id: &str,
+) -> bool {
+    route.is_some_and(|route| {
+        route.parent_request_id == parent_request_id
+            && route.runtime_generation_id == runtime_generation_id
+    })
+}
+
+struct PendingArtifactRoute {
+    parent_request_id: String,
+    runtime_generation_id: String,
+    sender: Sender<String>,
+}
+
+struct PendingArtifactRouteState {
+    routes: HashMap<String, PendingArtifactRoute>,
+    shutdown: bool,
+}
+
+struct PendingArtifactRoutes {
+    capacity: usize,
+    state: Mutex<PendingArtifactRouteState>,
+}
+
+impl PendingArtifactRoutes {
+    fn new(capacity: usize) -> Self {
+        assert!(
+            capacity > 0,
+            "compile flight route capacity must be positive"
+        );
+        Self {
+            capacity,
+            state: Mutex::new(PendingArtifactRouteState {
+                routes: HashMap::new(),
+                shutdown: false,
+            }),
+        }
+    }
+
+    fn register(
+        &self,
+        request_id: &str,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+        sender: Sender<String>,
+    ) -> Result<(), module_cache::ModuleCacheError> {
+        if request_id.trim().is_empty()
+            || parent_request_id.trim().is_empty()
+            || runtime_generation_id.trim().is_empty()
+        {
+            return Err(module_cache::ModuleCacheError::Load(
+                "artifact route identity is incomplete".to_string(),
+            ));
+        }
+        let mut state = self.state.lock().expect("artifact route mutex poisoned");
+        if state.shutdown {
+            return Err(module_cache::ModuleCacheError::Load(
+                "runtime is shutting down".to_string(),
+            ));
+        }
+        if state.routes.contains_key(request_id) {
+            return Err(module_cache::ModuleCacheError::Load(
+                "artifact request_id is already pending".to_string(),
+            ));
+        }
+        if state.routes.len() >= self.capacity {
+            return Err(module_cache::ModuleCacheError::Load(
+                "compile flight route capacity is exhausted".to_string(),
+            ));
+        }
+        state.routes.insert(
+            request_id.to_string(),
+            PendingArtifactRoute {
+                parent_request_id: parent_request_id.to_string(),
+                runtime_generation_id: runtime_generation_id.to_string(),
+                sender,
+            },
+        );
+        Ok(())
+    }
+
+    fn remove(&self, request_id: &str, parent_request_id: &str, runtime_generation_id: &str) {
+        let mut state = self.state.lock().expect("artifact route mutex poisoned");
+        if state.routes.get(request_id).is_some_and(|route| {
+            route.parent_request_id == parent_request_id
+                && route.runtime_generation_id == runtime_generation_id
+        }) {
+            state.routes.remove(request_id);
+        }
+    }
+
+    fn consume(
+        &self,
+        request_id: &str,
+        parent_request_id: &str,
+        runtime_generation_id: &str,
+        response: String,
+    ) -> Result<(), String> {
+        let sender = {
+            let mut state = self.state.lock().expect("artifact route mutex poisoned");
+            let Some(route) = state.routes.get(request_id) else {
+                return Err("artifact response request_id is not outstanding".to_string());
+            };
+            if route.parent_request_id != parent_request_id
+                || route.runtime_generation_id != runtime_generation_id
+            {
+                return Err("artifact response route identity mismatch".to_string());
+            }
+            state
+                .routes
+                .remove(request_id)
+                .expect("validated artifact route exists")
+                .sender
+        };
+        sender
+            .send(response)
+            .map_err(|_| "artifact compile flight response channel closed".to_string())
+    }
+
+    fn shutdown(&self) {
+        let mut state = self.state.lock().expect("artifact route mutex poisoned");
+        state.shutdown = true;
+        state.routes.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.state
+            .lock()
+            .expect("artifact route mutex poisoned")
+            .routes
+            .len()
+    }
+}
+
+impl ConcurrentExecutionState {
+    fn now_unix_millis(&self) -> Result<i64, String> {
+        (self.clock)()
+    }
+}
+
+fn start_ipc_writer() -> Result<(FrameSender, thread::JoinHandle<Result<(), String>>), String> {
+    let (sender, receiver) = mpsc::channel::<String>();
+    let handle = thread::Builder::new()
+        .name("redevplugin-ipc-writer".to_string())
+        .spawn(move || {
+            let stdout = io::stdout();
+            let mut stdout = stdout.lock();
+            while let Ok(frame) = receiver.recv() {
+                stdout
+                    .write_all(frame.as_bytes())
+                    .and_then(|_| stdout.write_all(b"\n"))
+                    .and_then(|_| stdout.flush())
+                    .map_err(|err| format!("write IPC frame: {err}"))?;
+            }
+            Ok(())
+        })
+        .map_err(|err| format!("start runtime IPC writer: {err}"))?;
+    Ok((sender, handle))
+}
+
+fn send_frame(writer: &FrameSender, frame: String) -> Result<(), String> {
+    writer
+        .send(frame)
+        .map_err(|_| "runtime IPC writer is unavailable".to_string())
+}
+
+fn worker_engine() -> wasmi::Engine {
+    let mut config = Config::default();
+    config.consume_fuel(true);
+    wasmi::Engine::new(&config)
+}
+
+fn module_cache_metrics(
+    metrics: module_cache::ModuleCacheMetrics,
+) -> redevplugin_ipc::ModuleCacheMetrics {
+    redevplugin_ipc::ModuleCacheMetrics {
+        hits: metrics.hits,
+        misses: metrics.misses,
+        compiles: metrics.compiles,
+        entries: metrics.entries,
+        source_bytes: metrics.source_bytes,
+    }
+}
+
+fn invocation_error_frame(
+    request_id: &str,
+    runtime_generation_id: &str,
+    code: &str,
+    message: &str,
+) -> String {
+    redevplugin_ipc::error_response_frame(
+        redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+        request_id,
+        runtime_generation_id,
+        redevplugin_ipc::ResponseError::runtime(code, message),
+    )
+}
+
+fn canceled_invocation_frame(request_id: &str, runtime_generation_id: &str) -> String {
+    invocation_error_frame(
+        request_id,
+        runtime_generation_id,
+        redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED,
+        "runtime invocation was canceled",
+    )
+}
+
+fn start_invocation_workers(
+    worker_count: usize,
+    scheduler: Arc<scheduler::InvocationScheduler>,
+    execution: Arc<ConcurrentExecutionState>,
+) -> Result<Vec<thread::JoinHandle<()>>, String> {
+    (0..worker_count)
+        .map(|index| {
+            let scheduler = Arc::clone(&scheduler);
+            let execution = Arc::clone(&execution);
+            thread::Builder::new()
+                .name(format!("redevplugin-worker-{index}"))
+                .spawn(move || {
+                    while let Some(job) = scheduler.take() {
+                        let request_id = job.request_id.clone();
+                        let response = handle_scheduled_worker_invocation(&job, &execution);
+                        let _ = send_frame(&execution.writer, response);
+                        scheduler.finish(&request_id);
+                    }
+                })
+                .map_err(|err| format!("start runtime invocation worker: {err}"))
+        })
+        .collect()
+}
+
+fn wait_for_hostcall_response(
+    job: &scheduler::InvocationJob,
+    execution: &ConcurrentExecutionState,
+    request_id: &str,
+    frame: String,
+) -> Result<String, String> {
+    if job.cancellation.is_canceled() {
+        return Err(format!(
+            "{}: runtime invocation was canceled",
+            redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+        ));
+    }
+    let frame = redevplugin_ipc::bind_parent_request_id(&frame, &job.request_id)?;
+    execution.hostcall_routes.register(
+        request_id,
+        &job.request_id,
+        &execution.runtime_generation_id,
+    )?;
+    if job.cancellation.is_canceled() {
+        execution.hostcall_routes.remove(
+            request_id,
+            &job.request_id,
+            &execution.runtime_generation_id,
+        );
+        return Err(format!(
+            "{}: runtime invocation was canceled",
+            redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+        ));
+    }
+    if let Err(err) = send_frame(&execution.writer, frame) {
+        execution.hostcall_routes.remove(
+            request_id,
+            &job.request_id,
+            &execution.runtime_generation_id,
+        );
+        return Err(err);
+    }
+    match job.signals.recv() {
+        Ok(scheduler::InvocationSignal::HostcallResponse(response)) => {
+            if response.len() > MAX_BROKER_RESPONSE_FRAME_BYTES {
+                return Err("hostcall response exceeds the size limit".to_string());
+            }
+            Ok(response)
+        }
+        Ok(scheduler::InvocationSignal::Canceled) => {
+            execution
+                .hostcall_routes
+                .cancel_parent(&job.request_id, &execution.runtime_generation_id)?;
+            Err(format!(
+                "{}: runtime invocation was canceled",
+                redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+            ))
+        }
+        Err(_) => {
+            execution.hostcall_routes.remove(
+                request_id,
+                &job.request_id,
+                &execution.runtime_generation_id,
+            );
+            Err("runtime invocation signal channel closed".to_string())
+        }
+    }
+}
+
+fn load_worker_artifact(
+    execution: Arc<ConcurrentExecutionState>,
+    parent_request_id: String,
+    identity: redevplugin_ipc::WorkerInvocationIdentity,
+    response_receiver: mpsc::Receiver<String>,
+) -> Result<Vec<u8>, module_cache::ModuleCacheError> {
+    let artifact_request_id = format!("{parent_request_id}:artifact");
+    let frame = redevplugin_ipc::open_handle_frame(
+        &artifact_request_id,
+        &execution.runtime_generation_id,
+        &identity,
+    );
+    let frame = match redevplugin_ipc::bind_parent_request_id(&frame, &parent_request_id) {
+        Ok(frame) => frame,
+        Err(err) => {
+            execution.pending_artifacts.remove(
+                &artifact_request_id,
+                &parent_request_id,
+                &execution.runtime_generation_id,
+            );
+            return Err(module_cache::ModuleCacheError::Load(err));
+        }
+    };
+    if let Err(err) = send_frame(&execution.writer, frame) {
+        execution.pending_artifacts.remove(
+            &artifact_request_id,
+            &parent_request_id,
+            &execution.runtime_generation_id,
+        );
+        return Err(module_cache::ModuleCacheError::Load(err));
+    }
+    let response = response_receiver.recv().map_err(|_| {
+        module_cache::ModuleCacheError::Load(
+            "artifact response route closed before completion".to_string(),
+        )
+    })?;
+    let content_base64 = redevplugin_ipc::open_handle_content_base64(
+        &response,
+        &artifact_request_id,
+        &parent_request_id,
+        &execution.runtime_generation_id,
+        &identity,
+    )
+    .map_err(module_cache::ModuleCacheError::Load)?;
+    let content =
+        decode_base64(&content_base64).map_err(module_cache::ModuleCacheError::Invalid)?;
+    redevplugin_ipc::validate_worker_artifact_bytes(&identity, &content)
+        .map_err(module_cache::ModuleCacheError::Invalid)?;
+    Ok(content)
+}
+
+fn handle_scheduled_worker_invocation(
+    job: &scheduler::InvocationJob,
+    execution: &Arc<ConcurrentExecutionState>,
+) -> String {
+    let invocation = job.invocation.as_ref();
+    let request_id = job.request_id.as_str();
+    let runtime_generation_id = execution.runtime_generation_id.as_str();
+    if job.cancellation.is_canceled() {
+        return canceled_invocation_frame(request_id, runtime_generation_id);
+    }
+    if let Err(err) = execution.shared.control.validate_fresh() {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            err.code(),
+            &err.to_string(),
+        );
+    }
+    let identity = match invocation.identity() {
+        Ok(identity) => identity,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                err,
+            );
+        }
+    };
+    if let Err(err) = invocation.validate_worker_contract() {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+            &err,
+        );
+    }
+    if let Err(err) = execution.shared.validate_parsed_invocation(invocation) {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            err.code(),
+            &err.to_string(),
+        );
+    }
+    if let Err(err) =
+        invocation.verify_runtime_lease_signature(&execution.runtime_lease_public_keys)
+    {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID,
+            &err,
+        );
+    }
+    let invocation_now = match execution.now_unix_millis() {
+        Ok(now) => now,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                &err,
+            );
+        }
+    };
+    if let Err(err) = invocation.validate_runtime_lease(invocation_now) {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+            &err,
+        );
+    }
+    let replay_key = match invocation.replay_key() {
+        Ok(key) => key,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                err,
+            );
+        }
+    };
+    if let Err(err) = execution
+        .lease_replays
+        .lock()
+        .expect("runtime lease replay mutex poisoned")
+        .consume_key(replay_key, invocation_now)
+    {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            err.code(),
+            &err.to_string(),
+        );
+    }
+    let artifact_execution = Arc::clone(execution);
+    let artifact_parent_request_id = job.request_id.clone();
+    let artifact_identity = identity.clone();
+    let artifact_request_id = format!("{}:artifact", job.request_id);
+    let (artifact_response_sender, artifact_response_receiver) = mpsc::channel();
+    let register_execution = Arc::clone(execution);
+    let register_artifact_request_id = artifact_request_id.clone();
+    let register_writer = execution.writer.clone();
+    let register_parent_request_id = job.request_id.clone();
+    let register_runtime_generation_id = execution.runtime_generation_id.clone();
+    let register_identity = identity.clone();
+    let complete_execution = Arc::clone(execution);
+    let complete_artifact_request_id = artifact_request_id;
+    let complete_writer = execution.writer.clone();
+    let complete_parent_request_id = job.request_id.clone();
+    let complete_runtime_generation_id = execution.runtime_generation_id.clone();
+    let complete_identity = identity.clone();
+    let flight_hooks = module_cache::CompileFlightHooks::new(
+        move || {
+            register_execution.pending_artifacts.register(
+                &register_artifact_request_id,
+                &register_parent_request_id,
+                &register_runtime_generation_id,
+                artifact_response_sender,
+            )?;
+            if let Err(err) = send_frame(
+                &register_writer,
+                redevplugin_ipc::compile_flight_register_frame(
+                    &register_parent_request_id,
+                    &register_runtime_generation_id,
+                    &register_identity,
+                ),
+            ) {
+                register_execution.pending_artifacts.remove(
+                    &register_artifact_request_id,
+                    &register_parent_request_id,
+                    &register_runtime_generation_id,
+                );
+                return Err(module_cache::ModuleCacheError::Load(err));
+            }
+            Ok(())
+        },
+        move || {
+            complete_execution.pending_artifacts.remove(
+                &complete_artifact_request_id,
+                &complete_parent_request_id,
+                &complete_runtime_generation_id,
+            );
+            send_frame(
+                &complete_writer,
+                redevplugin_ipc::compile_flight_complete_frame(
+                    &complete_parent_request_id,
+                    &complete_runtime_generation_id,
+                    &complete_identity,
+                ),
+            )
+            .map_err(module_cache::ModuleCacheError::Load)
+        },
+    );
+    let compiled = match execution.module_cache.get_or_compile_with_hooks(
+        &identity.artifact_sha256,
+        redevplugin_ipc::WASM_ABI_VERSION,
+        &job.cancellation,
+        flight_hooks,
+        move || {
+            load_worker_artifact(
+                artifact_execution,
+                artifact_parent_request_id,
+                artifact_identity,
+                artifact_response_receiver,
+            )
+        },
+    ) {
+        Ok(compiled) => compiled,
+        Err(err) => {
+            if job.cancellation.is_canceled() {
+                return canceled_invocation_frame(request_id, runtime_generation_id);
+            }
+            let code = match err {
+                module_cache::ModuleCacheError::Load(_) => {
+                    redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED
+                }
+                module_cache::ModuleCacheError::Invalid(_) => {
+                    redevplugin_ipc::ERR_WASM_WORKER_INVALID
+                }
+                module_cache::ModuleCacheError::Canceled => {
+                    redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+                }
+            };
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                code,
+                &err.to_string(),
+            );
+        }
+    };
+    let post_artifact_now = match execution.now_unix_millis() {
+        Ok(now) => now,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                &err,
+            );
+        }
+    };
+    if let Err(err) = execution
+        .shared
+        .validate_parsed_hostcall(invocation, post_artifact_now)
+    {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            runtime_validation_code(&err),
+            &err,
+        );
+    }
+    let worker_request = match invocation.worker_request_json_v2() {
+        Ok(request) => request,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
+                &err,
+            );
+        }
+    };
+    let memory_limit_bytes = match invocation.memory_limit_bytes() {
+        Ok(limit) => limit,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                &err,
+            );
+        }
+    };
+    if job.cancellation.is_canceled() {
+        return canceled_invocation_frame(request_id, runtime_generation_id);
+    }
+    let result = execute_compiled_worker_module_v2(
+        execution.module_cache.engine(),
+        &compiled.module,
+        &compiled.contract,
+        worker_request.as_bytes(),
+        memory_limit_bytes,
+        |request| {
+            if job.cancellation.is_canceled() {
+                return Err(format!(
+                    "{}: runtime invocation was canceled",
+                    redevplugin_ipc::ERR_RUNTIME_INVOCATION_CANCELED
+                ));
+            }
+            execution
+                .shared
+                .validate_parsed_hostcall(invocation, execution.now_unix_millis()?)?;
+            perform_multiplexed_hostcall(job, execution, invocation, request)
+        },
+    );
+    if job.cancellation.is_canceled() {
+        return canceled_invocation_frame(request_id, runtime_generation_id);
+    }
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_WASM_WORKER_INVALID,
+                &err,
+            );
+        }
+    };
+    let completion_now = match execution.now_unix_millis() {
+        Ok(now) => now,
+        Err(err) => {
+            return invocation_error_frame(
+                request_id,
+                runtime_generation_id,
+                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
+                &err,
+            );
+        }
+    };
+    if let Err(err) = execution
+        .shared
+        .validate_parsed_hostcall(invocation, completion_now)
+    {
+        return invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            runtime_validation_code(&err),
+            &err,
+        );
+    }
+    match redevplugin_ipc::parse_worker_response_v2(&result.response_json) {
+        Ok(redevplugin_ipc::WorkerResponseV2::Success(data)) => {
+            redevplugin_ipc::success_response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                &format!("{{\"data\":{data}}}"),
+            )
+        }
+        Ok(redevplugin_ipc::WorkerResponseV2::Failure { code, message }) => {
+            let error = if worker_error_is_hostcall(&result, &code, &message) {
+                redevplugin_ipc::ResponseError::hostcall(&code, &message)
+            } else {
+                redevplugin_ipc::ResponseError::plugin(&code, &message)
+            };
+            redevplugin_ipc::error_response_frame(
+                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
+                request_id,
+                runtime_generation_id,
+                error,
+            )
+        }
+        Err(err) => invocation_error_frame(
+            request_id,
+            runtime_generation_id,
+            redevplugin_ipc::ERR_WASM_WORKER_INVALID,
+            &err,
+        ),
+    }
+}
+
+fn runtime_validation_code(error: &str) -> &'static str {
+    if error.starts_with(redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE) {
+        redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE
+    } else if error.starts_with(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED) {
+        redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED
+    } else {
+        redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID
+    }
+}
+
+fn perform_multiplexed_hostcall(
+    job: &scheduler::InvocationJob,
+    execution: &ConcurrentExecutionState,
+    invocation: &redevplugin_ipc::ParsedWorkerInvocation,
+    request: WorkerHostcallRequest,
+) -> Result<String, String> {
+    match request {
+        WorkerHostcallRequest::StorageFile(request_json) => {
+            let req = storage_file_request_parsed(
+                invocation,
+                &execution.runtime_generation_id,
+                &request_json,
+            )?;
+            invocation.validate_storage_broker_access(&req.store_id, &req.operation)?;
+            let request_id = format!("{}:storage_file", job.request_id);
+            let frame = redevplugin_ipc::storage_file_frame(
+                &request_id,
+                &execution.runtime_generation_id,
+                &req,
+            );
+            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            redevplugin_ipc::validate_storage_file_response(
+                &response,
+                &request_id,
+                &execution.runtime_generation_id,
+                &req.operation,
+            )?;
+            redevplugin_ipc::storage_file_payload_json(&response, &req.operation)
+        }
+        WorkerHostcallRequest::StorageKV(request_json) => {
+            let req = storage_kv_request_parsed(
+                invocation,
+                &execution.runtime_generation_id,
+                &request_json,
+            )?;
+            invocation.validate_storage_broker_access(&req.store_id, &req.operation)?;
+            let request_id = format!("{}:storage_kv", job.request_id);
+            let frame = redevplugin_ipc::storage_kv_frame(
+                &request_id,
+                &execution.runtime_generation_id,
+                &req,
+            );
+            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            redevplugin_ipc::validate_storage_kv_response(
+                &response,
+                &request_id,
+                &execution.runtime_generation_id,
+                &req.operation,
+            )?;
+            redevplugin_ipc::storage_kv_payload_json(&response, &req.operation)
+        }
+        WorkerHostcallRequest::StorageSQLite(request_json) => {
+            let req = storage_sqlite_request_parsed(
+                invocation,
+                &execution.runtime_generation_id,
+                &request_json,
+            )?;
+            invocation.validate_storage_broker_access(&req.store_id, &req.operation)?;
+            let request_id = format!("{}:storage_sqlite", job.request_id);
+            let frame = redevplugin_ipc::storage_sqlite_frame(
+                &request_id,
+                &execution.runtime_generation_id,
+                &req,
+            );
+            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            redevplugin_ipc::validate_storage_sqlite_response(
+                &response,
+                &request_id,
+                &execution.runtime_generation_id,
+                &req.operation,
+            )?;
+            redevplugin_ipc::storage_sqlite_payload_json(&response, &req.operation)
+        }
+        WorkerHostcallRequest::NetworkExecute(request_json) => {
+            let req = network_execute_request_parsed(
+                invocation,
+                &execution.runtime_generation_id,
+                &request_json,
+            )?;
+            invocation.validate_network_broker_access(
+                &req.connector_id,
+                &req.transport,
+                &req.operation,
+                &req.method,
+            )?;
+            let request_id = format!("{}:network_execute", job.request_id);
+            let frame = redevplugin_ipc::network_execute_frame(
+                &request_id,
+                &execution.runtime_generation_id,
+                &req,
+            );
+            let response = wait_for_hostcall_response(job, execution, &request_id, frame)?;
+            redevplugin_ipc::validate_network_execute_response(
+                &response,
+                &request_id,
+                &execution.runtime_generation_id,
+                &req.connector_id,
+                &req.transport,
+            )?;
+            redevplugin_ipc::network_execute_payload_json(&response)
+        }
+    }
 }
 
 fn read_bounded_line<R: BufRead>(
@@ -133,15 +1315,20 @@ fn read_bounded_line<R: BufRead>(
 fn start_control_channel(
     shared: Arc<RuntimeSharedState>,
     runtime_generation_id: String,
+    status: Arc<RuntimeStatus>,
 ) -> Result<(), String> {
     let read_file = inherited_control_file("REDEVPLUGIN_CONTROL_READ_FD")?;
     let write_file = inherited_control_file("REDEVPLUGIN_CONTROL_WRITE_FD")?;
     thread::Builder::new()
         .name("redevplugin-control".to_string())
         .spawn(move || {
-            if let Err(err) =
-                run_control_channel(read_file, write_file, &shared, &runtime_generation_id)
-            {
+            if let Err(err) = run_control_channel(
+                read_file,
+                write_file,
+                &shared,
+                &runtime_generation_id,
+                &status,
+            ) {
                 eprintln!("redevplugin-runtime control error: {err}");
                 std::process::exit(1);
             }
@@ -167,6 +1354,7 @@ fn run_control_channel(
     mut write_file: File,
     shared: &RuntimeSharedState,
     runtime_generation_id: &str,
+    status: &RuntimeStatus,
 ) -> Result<(), String> {
     let mut reader = io::BufReader::new(read_file);
     loop {
@@ -180,9 +1368,13 @@ fn run_control_channel(
             return Err("control runtime_generation_id mismatch".to_string());
         }
         let response = match frame_type.as_str() {
-            redevplugin_ipc::FRAME_TYPE_HEARTBEAT => {
-                handle_heartbeat(&shared.control, &request_id, runtime_generation_id, &line)
-            }
+            redevplugin_ipc::FRAME_TYPE_HEARTBEAT => handle_heartbeat(
+                &shared.control,
+                &request_id,
+                runtime_generation_id,
+                &line,
+                status,
+            ),
             redevplugin_ipc::FRAME_TYPE_REVOKE_EPOCH => {
                 handle_revoke_epoch(shared, &request_id, runtime_generation_id, &line)
             }
@@ -209,6 +1401,7 @@ fn handle_heartbeat(
     request_id: &str,
     runtime_generation_id: &str,
     line: &str,
+    status: &RuntimeStatus,
 ) -> String {
     let request = match redevplugin_ipc::parse_heartbeat_request(line) {
         Ok(value) => value,
@@ -243,11 +1436,18 @@ fn handle_heartbeat(
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(1);
+    let scheduler_metrics = status.scheduler.metrics();
     let result_json = redevplugin_ipc::heartbeat_ack_result_json(
         runtime_generation_id,
         runtime_unix_nano.max(1),
         max_staleness_ms,
         request.sent_unix_nano,
+        redevplugin_ipc::RuntimeHeartbeatStatus {
+            active_invocations: scheduler_metrics.active,
+            queued_invocations: scheduler_metrics.queued,
+            limits: status.limits,
+            module_cache: module_cache_metrics(status.module_cache.metrics()),
+        },
     );
     redevplugin_ipc::success_response_frame(
         redevplugin_ipc::FRAME_TYPE_HEARTBEAT,
@@ -371,6 +1571,7 @@ impl Default for RuntimeSharedState {
 }
 
 impl RuntimeSharedState {
+    #[cfg(test)]
     fn validate_invocation_frame(&self, frame: &str) -> Result<(), RuntimeRevocationError> {
         self.revocations
             .lock()
@@ -378,6 +1579,7 @@ impl RuntimeSharedState {
             .validate_invocation_frame(frame)
     }
 
+    #[cfg(test)]
     fn validate_hostcall(&self, frame: &str, now_unix_ms: i64) -> Result<(), String> {
         self.control
             .validate_fresh()
@@ -387,398 +1589,33 @@ impl RuntimeSharedState {
         redevplugin_ipc::validate_worker_runtime_lease(frame, now_unix_ms)
             .map_err(|err| format!("{}: {err}", redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID))
     }
-}
 
-struct WorkerInvocationState<'a> {
-    shared: &'a RuntimeSharedState,
-    lease_replays: &'a mut RuntimeLeaseReplayCache,
-    runtime_lease_public_keys: &'a [redevplugin_ipc::RuntimeLeasePublicKey],
-    worker_runtime: &'a mut WorkerModuleRuntime,
-    clock: &'a dyn Fn() -> Result<i64, String>,
-}
+    fn validate_parsed_invocation(
+        &self,
+        invocation: &redevplugin_ipc::ParsedWorkerInvocation,
+    ) -> Result<(), RuntimeRevocationError> {
+        let context = invocation
+            .context()
+            .map_err(|_| RuntimeRevocationError::InvalidInvocation)?;
+        self.revocations
+            .lock()
+            .expect("runtime revocation mutex poisoned")
+            .validate_context(&context)
+    }
 
-impl WorkerInvocationState<'_> {
-    fn now_unix_ms(&self) -> Result<i64, String> {
-        (self.clock)()
-    }
-}
-
-fn handle_worker_invocation<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    state: &mut WorkerInvocationState<'_>,
-    request_id: &str,
-    runtime_generation_id: &str,
-    line: &str,
-) -> Result<String, String> {
-    if let Err(err) = state.shared.control.validate_fresh() {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    let identity = match redevplugin_ipc::parse_worker_invocation_identity(line) {
-        Ok(identity) => identity,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                    err,
-                ),
-            ));
-        }
-    };
-    if let Err(err) = state.shared.validate_invocation_frame(line) {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    if let Err(err) = redevplugin_ipc::verify_worker_runtime_lease_signature(
-        line,
-        state.runtime_lease_public_keys,
-    ) {
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(
-                redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID,
-                err.as_str(),
-            ),
-        ));
-    }
-    let invocation_now_unix_ms = match state.now_unix_ms() {
-        Ok(value) => value,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                    err.as_str(),
-                ),
-            ));
-        }
-    };
-    if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, invocation_now_unix_ms) {
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(
-                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                err.as_str(),
-            ),
-        ));
-    }
-    if let Err(err) = state
-        .lease_replays
-        .consume_invocation_frame(line, invocation_now_unix_ms)
-    {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    if let Err(err) = state.shared.control.validate_fresh() {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    let wasm_bytes = if state.worker_runtime.contains(&identity.artifact_sha256) {
-        None
-    } else {
-        let artifact_request_id = format!("{request_id}:artifact");
-        let open_handle = redevplugin_ipc::open_handle_frame(
-            &artifact_request_id,
-            runtime_generation_id,
-            &identity,
-        );
-        stdout
-            .write_all(open_handle.as_bytes())
-            .and_then(|_| stdout.write_all(b"\n"))
-            .and_then(|_| stdout.flush())
-            .map_err(|err| format!("write open_handle request: {err}"))?;
-
-        let artifact_response =
-            read_bounded_line(reader, MAX_IPC_FRAME_BYTES, "open_handle response")?;
-        if artifact_response.is_empty() {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED,
-                    "runtime artifact handle response is empty",
-                ),
-            ));
-        }
-        let content_base64 = match redevplugin_ipc::open_handle_content_base64(
-            &artifact_response,
-            &artifact_request_id,
-            runtime_generation_id,
-            &identity,
-        ) {
-            Ok(content_base64) => content_base64,
-            Err(err) => {
-                return Ok(redevplugin_ipc::error_response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    redevplugin_ipc::ResponseError::runtime(
-                        redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED,
-                        err.as_str(),
-                    ),
-                ));
-            }
-        };
-        match decode_base64(&content_base64) {
-            Ok(wasm_bytes) => Some(wasm_bytes),
-            Err(err) => {
-                return Ok(redevplugin_ipc::error_response_frame(
-                    redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                    request_id,
-                    runtime_generation_id,
-                    redevplugin_ipc::ResponseError::runtime(
-                        redevplugin_ipc::ERR_WASM_WORKER_INVALID,
-                        err.as_str(),
-                    ),
-                ));
-            }
-        }
-    };
-    let post_artifact_now_unix_ms = match state.now_unix_ms() {
-        Ok(value) => value,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                    err.as_str(),
-                ),
-            ));
-        }
-    };
-    if let Err(err) =
-        redevplugin_ipc::validate_worker_runtime_lease(line, post_artifact_now_unix_ms)
-    {
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(
-                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                err.as_str(),
-            ),
-        ));
-    }
-    if let Err(err) = state.shared.control.validate_fresh() {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    let worker_request = match redevplugin_ipc::worker_request_json_v2(line) {
-        Ok(request) => request,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
-                    err.as_str(),
-                ),
-            ));
-        }
-    };
-    let memory_limit_bytes = match redevplugin_ipc::runtime_lease_memory_limit_bytes(line) {
-        Ok(value) => value,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                    err.as_str(),
-                ),
-            ));
-        }
-    };
-    let shared = state.shared;
-    let clock = state.clock;
-    let execution = match execute_worker_module_v2(
-        state.worker_runtime,
-        &identity.artifact_sha256,
-        wasm_bytes.as_deref(),
-        worker_request.as_bytes(),
-        memory_limit_bytes,
-        |request| match request {
-            WorkerHostcallRequest::StorageFile(request_json) => {
-                shared.validate_hostcall(line, clock()?)?;
-                perform_storage_file_request(
-                    reader,
-                    stdout,
-                    request_id,
-                    runtime_generation_id,
-                    line,
-                    &request_json,
-                )
-            }
-            WorkerHostcallRequest::StorageKV(request_json) => {
-                shared.validate_hostcall(line, clock()?)?;
-                perform_storage_kv_request(
-                    reader,
-                    stdout,
-                    request_id,
-                    runtime_generation_id,
-                    line,
-                    &request_json,
-                )
-            }
-            WorkerHostcallRequest::StorageSQLite(request_json) => {
-                shared.validate_hostcall(line, clock()?)?;
-                perform_storage_sqlite_request(
-                    reader,
-                    stdout,
-                    request_id,
-                    runtime_generation_id,
-                    line,
-                    &request_json,
-                )
-            }
-            WorkerHostcallRequest::NetworkExecute(request_json) => {
-                shared.validate_hostcall(line, clock()?)?;
-                perform_network_execute_request(
-                    reader,
-                    stdout,
-                    request_id,
-                    runtime_generation_id,
-                    line,
-                    &request_json,
-                )
-            }
-        },
-    ) {
-        Ok(execution) => execution,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_WASM_WORKER_INVALID,
-                    err.as_str(),
-                ),
-            ));
-        }
-    };
-    let completion_now_unix_ms = match state.now_unix_ms() {
-        Ok(value) => value,
-        Err(err) => {
-            return Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                redevplugin_ipc::ResponseError::runtime(
-                    redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                    err.as_str(),
-                ),
-            ));
-        }
-    };
-    if let Err(err) = redevplugin_ipc::validate_worker_runtime_lease(line, completion_now_unix_ms) {
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(
-                redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
-                err.as_str(),
-            ),
-        ));
-    }
-    if let Err(err) = state.shared.control.validate_fresh() {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    if let Err(err) = state.shared.validate_invocation_frame(line) {
-        let code = err.code();
-        let message = err.to_string();
-        return Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(code, message.as_str()),
-        ));
-    }
-    match redevplugin_ipc::parse_worker_response_v2(&execution.response_json) {
-        Ok(redevplugin_ipc::WorkerResponseV2::Success(data)) => {
-            let result = format!("{{\"data\":{data}}}");
-            Ok(redevplugin_ipc::success_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                result.as_str(),
-            ))
-        }
-        Ok(redevplugin_ipc::WorkerResponseV2::Failure { code, message }) => {
-            let error = if worker_error_is_hostcall(&execution, &code, &message) {
-                redevplugin_ipc::ResponseError::hostcall(code.as_str(), message.as_str())
-            } else {
-                redevplugin_ipc::ResponseError::plugin(code.as_str(), message.as_str())
-            };
-            Ok(redevplugin_ipc::error_response_frame(
-                redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-                request_id,
-                runtime_generation_id,
-                error,
-            ))
-        }
-        Err(err) => Ok(redevplugin_ipc::error_response_frame(
-            redevplugin_ipc::FRAME_TYPE_INVOKE_WORKER_RESULT,
-            request_id,
-            runtime_generation_id,
-            redevplugin_ipc::ResponseError::runtime(
-                redevplugin_ipc::ERR_WASM_WORKER_INVALID,
-                err.as_str(),
-            ),
-        )),
+    fn validate_parsed_hostcall(
+        &self,
+        invocation: &redevplugin_ipc::ParsedWorkerInvocation,
+        now_unix_ms: i64,
+    ) -> Result<(), String> {
+        self.control
+            .validate_fresh()
+            .map_err(|err| format!("{}: {err}", err.code()))?;
+        self.validate_parsed_invocation(invocation)
+            .map_err(|err| format!("{}: {err}", err.code()))?;
+        invocation
+            .validate_runtime_lease(now_unix_ms)
+            .map_err(|err| format!("{}: {err}", redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID))
     }
 }
 
@@ -795,10 +1632,18 @@ impl RuntimeRevocations {
             .or_insert(revoke_epoch);
     }
 
+    #[cfg(test)]
     fn validate_invocation_frame(&self, frame: &str) -> Result<(), RuntimeRevocationError> {
         let invocation = redevplugin_ipc::parse_worker_invocation_context(frame)
             .map_err(|_| RuntimeRevocationError::InvalidInvocation)?;
-        let plugin_instance_id = invocation.plugin_instance_id;
+        self.validate_context(&invocation)
+    }
+
+    fn validate_context(
+        &self,
+        invocation: &redevplugin_ipc::WorkerInvocationContext,
+    ) -> Result<(), RuntimeRevocationError> {
+        let plugin_instance_id = invocation.plugin_instance_id.clone();
         let invocation_epoch = invocation.revoke_epoch;
         match self.revoked_epoch_by_plugin.get(&plugin_instance_id) {
             Some(revoked_epoch) if invocation_epoch < *revoked_epoch => {
@@ -859,6 +1704,7 @@ impl RuntimeLeaseReplayCache {
         }
     }
 
+    #[cfg(test)]
     fn consume_invocation_frame(
         &mut self,
         frame: &str,
@@ -866,6 +1712,14 @@ impl RuntimeLeaseReplayCache {
     ) -> Result<(), RuntimeLeaseReplayError> {
         let key = redevplugin_ipc::parse_worker_lease_replay_key(frame)
             .map_err(|_| RuntimeLeaseReplayError::InvalidInvocation)?;
+        self.consume_key(key, now_unix_ms)
+    }
+
+    fn consume_key(
+        &mut self,
+        key: redevplugin_ipc::WorkerLeaseReplayKey,
+        now_unix_ms: i64,
+    ) -> Result<(), RuntimeLeaseReplayError> {
         self.prune_expired(now_unix_ms);
         let identity = RuntimeLeaseReplayIdentity {
             lease_id: key.lease_id.clone(),
@@ -889,14 +1743,18 @@ impl RuntimeLeaseReplayCache {
 
 #[derive(Debug, PartialEq, Eq)]
 enum RuntimeLeaseReplayError {
+    #[cfg(test)]
     InvalidInvocation,
-    Replayed { lease_id: String },
+    Replayed {
+        lease_id: String,
+    },
     CapacityExceeded,
 }
 
 impl RuntimeLeaseReplayError {
     fn code(&self) -> &'static str {
         match self {
+            #[cfg(test)]
             Self::InvalidInvocation => redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID,
             Self::Replayed { .. } => redevplugin_ipc::ERR_LEASE_REPLAYED,
             Self::CapacityExceeded => redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID,
@@ -907,6 +1765,7 @@ impl RuntimeLeaseReplayError {
 impl std::fmt::Display for RuntimeLeaseReplayError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(test)]
             Self::InvalidInvocation => {
                 write!(
                     formatter,
@@ -1014,131 +1873,6 @@ struct WorkerExecutionV2 {
     hostcall_failures: Vec<TrustedWorkerFailure>,
 }
 
-#[derive(Clone)]
-struct CachedModule {
-    module: wasmi::Module,
-    contract: redevplugin_wasm_abi::ValidatedWorkerModule,
-    source_bytes: usize,
-}
-
-struct ModuleCache {
-    entries: HashMap<String, CachedModule>,
-    lru: VecDeque<String>,
-    source_bytes: usize,
-    max_entries: usize,
-    max_source_bytes: usize,
-}
-
-impl ModuleCache {
-    fn new(max_entries: usize, max_source_bytes: usize) -> Self {
-        Self {
-            entries: HashMap::new(),
-            lru: VecDeque::new(),
-            source_bytes: 0,
-            max_entries,
-            max_source_bytes,
-        }
-    }
-
-    fn contains(&self, artifact_sha256: &str) -> bool {
-        self.entries.contains_key(artifact_sha256)
-    }
-
-    fn get(&mut self, artifact_sha256: &str) -> Option<CachedModule> {
-        let module = self.entries.get(artifact_sha256)?.clone();
-        self.touch(artifact_sha256);
-        Some(module)
-    }
-
-    fn insert(&mut self, artifact_sha256: String, module: CachedModule) {
-        if self.max_entries == 0 || module.source_bytes > self.max_source_bytes {
-            return;
-        }
-        if let Some(previous) = self.entries.remove(&artifact_sha256) {
-            self.source_bytes = self.source_bytes.saturating_sub(previous.source_bytes);
-            self.remove_lru(&artifact_sha256);
-        }
-        self.source_bytes = self.source_bytes.saturating_add(module.source_bytes);
-        self.lru.push_back(artifact_sha256.clone());
-        self.entries.insert(artifact_sha256, module);
-        while self.entries.len() > self.max_entries || self.source_bytes > self.max_source_bytes {
-            let Some(oldest) = self.lru.pop_front() else {
-                break;
-            };
-            if let Some(removed) = self.entries.remove(&oldest) {
-                self.source_bytes = self.source_bytes.saturating_sub(removed.source_bytes);
-            }
-        }
-    }
-
-    fn touch(&mut self, artifact_sha256: &str) {
-        self.remove_lru(artifact_sha256);
-        self.lru.push_back(artifact_sha256.to_string());
-    }
-
-    fn remove_lru(&mut self, artifact_sha256: &str) {
-        if let Some(index) = self.lru.iter().position(|key| key == artifact_sha256) {
-            self.lru.remove(index);
-        }
-    }
-}
-
-struct WorkerModuleRuntime {
-    engine: wasmi::Engine,
-    modules: ModuleCache,
-    compile_count: u64,
-}
-
-impl Default for WorkerModuleRuntime {
-    fn default() -> Self {
-        Self::new(
-            DEFAULT_MODULE_CACHE_MAX_ENTRIES,
-            DEFAULT_MODULE_CACHE_MAX_SOURCE_BYTES,
-        )
-    }
-}
-
-impl WorkerModuleRuntime {
-    fn new(max_entries: usize, max_source_bytes: usize) -> Self {
-        let mut config = Config::default();
-        config.consume_fuel(true);
-        Self {
-            engine: wasmi::Engine::new(&config),
-            modules: ModuleCache::new(max_entries, max_source_bytes),
-            compile_count: 0,
-        }
-    }
-
-    fn contains(&self, artifact_sha256: &str) -> bool {
-        self.modules.contains(artifact_sha256)
-    }
-
-    fn load(
-        &mut self,
-        artifact_sha256: &str,
-        wasm_bytes: Option<&[u8]>,
-    ) -> Result<CachedModule, String> {
-        if let Some(module) = self.modules.get(artifact_sha256) {
-            return Ok(module);
-        }
-        let wasm_bytes = wasm_bytes
-            .ok_or_else(|| format!("WASM module cache miss for artifact {artifact_sha256}"))?;
-        let contract = redevplugin_wasm_abi::validate_worker_module(wasm_bytes)
-            .map_err(|err| format!("validate wasm worker module: {err}"))?;
-        let module = wasmi::Module::new(&self.engine, wasm_bytes)
-            .map_err(|err| format!("compile wasm worker module: {err}"))?;
-        self.compile_count = self.compile_count.saturating_add(1);
-        let cached = CachedModule {
-            module,
-            contract,
-            source_bytes: wasm_bytes.len(),
-        };
-        self.modules
-            .insert(artifact_sha256.to_string(), cached.clone());
-        Ok(cached)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrustedWorkerFailure {
     code: String,
@@ -1189,10 +1923,10 @@ impl<'a> WorkerHostState<'a> {
     }
 }
 
-fn execute_worker_module_v2<'a>(
-    worker_runtime: &mut WorkerModuleRuntime,
-    artifact_sha256: &str,
-    wasm_bytes: Option<&[u8]>,
+fn execute_compiled_worker_module_v2<'a>(
+    engine: &wasmi::Engine,
+    module: &wasmi::Module,
+    contract: &redevplugin_wasm_abi::ValidatedWorkerModule,
     request_json: &[u8],
     memory_limit_bytes: usize,
     broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
@@ -1203,9 +1937,7 @@ fn execute_worker_module_v2<'a>(
     if memory_limit_bytes == 0 {
         return Err("worker memory limit must be positive".to_string());
     }
-    let cached = worker_runtime.load(artifact_sha256, wasm_bytes)?;
-    let initial_memory_bytes = cached
-        .contract
+    let initial_memory_bytes = contract
         .memory
         .initial_pages
         .checked_mul(WASM_PAGE_BYTES)
@@ -1215,10 +1947,10 @@ fn execute_worker_module_v2<'a>(
             "worker initial memory {initial_memory_bytes} exceeds lease limit {memory_limit_bytes}"
         ));
     }
-    let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(&worker_runtime.engine);
+    let mut linker = <wasmi::Linker<WorkerHostState<'a>>>::new(engine);
     define_v2_worker_hostcalls(&mut linker)?;
     let mut store = wasmi::Store::new(
-        &worker_runtime.engine,
+        engine,
         WorkerHostState::new(broker_hostcall, memory_limit_bytes),
     );
     store.limiter(|state| &mut state.limits);
@@ -1226,7 +1958,7 @@ fn execute_worker_module_v2<'a>(
         .set_fuel(DEFAULT_WASM_WORKER_FUEL)
         .map_err(|err| format!("configure wasm worker fuel: {err}"))?;
     let instance = linker
-        .instantiate_and_start(&mut store, &cached.module)
+        .instantiate_and_start(&mut store, module)
         .map_err(|err| format!("instantiate wasm worker module: {err}"))?;
     let memory = instance
         .get_memory(&store, "memory")
@@ -1770,152 +2502,6 @@ fn record_network_hostcall_error(
     record_hostcall_abi_error(caller, code)
 }
 
-fn perform_storage_file_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    request_json: &str,
-) -> Result<String, String> {
-    let req = storage_file_request(invocation_frame, runtime_generation_id, request_json)?;
-    redevplugin_ipc::validate_worker_storage_broker_access(
-        invocation_frame,
-        &req.store_id,
-        &req.operation,
-    )?;
-    dispatch_storage_file_request(reader, stdout, request_id, runtime_generation_id, &req)
-}
-
-fn perform_storage_kv_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    request_json: &str,
-) -> Result<String, String> {
-    let req = storage_kv_request(invocation_frame, runtime_generation_id, request_json)?;
-    redevplugin_ipc::validate_worker_storage_broker_access(
-        invocation_frame,
-        &req.store_id,
-        &req.operation,
-    )?;
-    dispatch_storage_kv_request(reader, stdout, request_id, runtime_generation_id, &req)
-}
-
-fn perform_storage_sqlite_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    request_json: &str,
-) -> Result<String, String> {
-    let req = storage_sqlite_request(invocation_frame, runtime_generation_id, request_json)?;
-    redevplugin_ipc::validate_worker_storage_broker_access(
-        invocation_frame,
-        &req.store_id,
-        &req.operation,
-    )?;
-    dispatch_storage_sqlite_request(reader, stdout, request_id, runtime_generation_id, &req)
-}
-
-fn dispatch_storage_file_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    req: &redevplugin_ipc::StorageFileRequest,
-) -> Result<String, String> {
-    let storage_request_id = format!("{request_id}:storage_file");
-    let frame =
-        redevplugin_ipc::storage_file_frame(&storage_request_id, runtime_generation_id, req);
-    stdout
-        .write_all(frame.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write storage_file request: {err}"))?;
-    let response = read_bounded_line(
-        reader,
-        MAX_BROKER_RESPONSE_FRAME_BYTES,
-        "storage_file response",
-    )?;
-    if response.is_empty() {
-        return Err("storage_file response is empty".to_string());
-    }
-    redevplugin_ipc::validate_storage_file_response(
-        &response,
-        &storage_request_id,
-        runtime_generation_id,
-        &req.operation,
-    )?;
-    redevplugin_ipc::storage_file_payload_json(&response, &req.operation)
-}
-
-fn dispatch_storage_kv_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    req: &redevplugin_ipc::StorageKVRequest,
-) -> Result<String, String> {
-    let storage_request_id = format!("{request_id}:storage_kv");
-    let frame = redevplugin_ipc::storage_kv_frame(&storage_request_id, runtime_generation_id, req);
-    stdout
-        .write_all(frame.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write storage_kv request: {err}"))?;
-    let response = read_bounded_line(
-        reader,
-        MAX_BROKER_RESPONSE_FRAME_BYTES,
-        "storage_kv response",
-    )?;
-    if response.is_empty() {
-        return Err("storage_kv response is empty".to_string());
-    }
-    redevplugin_ipc::validate_storage_kv_response(
-        &response,
-        &storage_request_id,
-        runtime_generation_id,
-        &req.operation,
-    )?;
-    redevplugin_ipc::storage_kv_payload_json(&response, &req.operation)
-}
-
-fn dispatch_storage_sqlite_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    req: &redevplugin_ipc::StorageSQLiteRequest,
-) -> Result<String, String> {
-    let storage_request_id = format!("{request_id}:storage_sqlite");
-    let frame =
-        redevplugin_ipc::storage_sqlite_frame(&storage_request_id, runtime_generation_id, req);
-    stdout
-        .write_all(frame.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write storage_sqlite request: {err}"))?;
-    let response = read_bounded_line(
-        reader,
-        MAX_BROKER_RESPONSE_FRAME_BYTES,
-        "storage_sqlite response",
-    )?;
-    if response.is_empty() {
-        return Err("storage_sqlite response is empty".to_string());
-    }
-    redevplugin_ipc::validate_storage_sqlite_response(
-        &response,
-        &storage_request_id,
-        runtime_generation_id,
-        &req.operation,
-    )?;
-    redevplugin_ipc::storage_sqlite_payload_json(&response, &req.operation)
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StorageFileHostcallRequest {
@@ -2016,8 +2602,8 @@ fn require_non_empty(value: &str, field: &str) -> Result<(), String> {
     }
 }
 
-fn storage_file_request(
-    invocation_frame: &str,
+fn storage_file_request_parsed(
+    invocation: &redevplugin_ipc::ParsedWorkerInvocation,
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::StorageFileRequest, String> {
@@ -2028,22 +2614,21 @@ fn storage_file_request(
     if request.operation != "list" {
         require_non_empty(&request.path, "path")?;
     }
-    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let context = invocation.context()?;
     let store_id = request.store_id;
-    let handle_grant_token =
-        redevplugin_ipc::worker_storage_handle_grant(invocation_frame, &store_id)?;
+    let handle_grant_token = invocation.storage_handle_grant(&store_id)?;
     Ok(redevplugin_ipc::StorageFileRequest {
         handle_grant_token,
-        plugin_instance_id: invocation.plugin_instance_id,
-        active_fingerprint: invocation.active_fingerprint,
-        runtime_instance_id: invocation.runtime_instance_id,
+        plugin_instance_id: context.plugin_instance_id,
+        active_fingerprint: context.active_fingerprint,
+        runtime_instance_id: context.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: invocation.runtime_shard_id,
+        runtime_shard_id: context.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.files".to_string(),
-        policy_revision: invocation.policy_revision,
-        management_revision: invocation.management_revision,
-        revoke_epoch: invocation.revoke_epoch,
+        policy_revision: context.policy_revision,
+        management_revision: context.management_revision,
+        revoke_epoch: context.revoke_epoch,
         operation: request.operation,
         store_id,
         path: request.path,
@@ -2054,8 +2639,8 @@ fn storage_file_request(
     })
 }
 
-fn storage_kv_request(
-    invocation_frame: &str,
+fn storage_kv_request_parsed(
+    invocation: &redevplugin_ipc::ParsedWorkerInvocation,
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::StorageKVRequest, String> {
@@ -2066,22 +2651,21 @@ fn storage_kv_request(
     if request.operation != "list" {
         require_non_empty(&request.key, "key")?;
     }
-    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let context = invocation.context()?;
     let store_id = request.store_id;
-    let handle_grant_token =
-        redevplugin_ipc::worker_storage_handle_grant(invocation_frame, &store_id)?;
+    let handle_grant_token = invocation.storage_handle_grant(&store_id)?;
     Ok(redevplugin_ipc::StorageKVRequest {
         handle_grant_token,
-        plugin_instance_id: invocation.plugin_instance_id,
-        active_fingerprint: invocation.active_fingerprint,
-        runtime_instance_id: invocation.runtime_instance_id,
+        plugin_instance_id: context.plugin_instance_id,
+        active_fingerprint: context.active_fingerprint,
+        runtime_instance_id: context.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: invocation.runtime_shard_id,
+        runtime_shard_id: context.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.kv".to_string(),
-        policy_revision: invocation.policy_revision,
-        management_revision: invocation.management_revision,
-        revoke_epoch: invocation.revoke_epoch,
+        policy_revision: context.policy_revision,
+        management_revision: context.management_revision,
+        revoke_epoch: context.revoke_epoch,
         operation: request.operation,
         store_id,
         key: request.key,
@@ -2092,8 +2676,8 @@ fn storage_kv_request(
     })
 }
 
-fn storage_sqlite_request(
-    invocation_frame: &str,
+fn storage_sqlite_request_parsed(
+    invocation: &redevplugin_ipc::ParsedWorkerInvocation,
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::StorageSQLiteRequest, String> {
@@ -2102,22 +2686,21 @@ fn storage_sqlite_request(
     require_non_empty(&request.operation, "operation")?;
     require_non_empty(&request.store_id, "store_id")?;
     require_non_empty(&request.sql, "sql")?;
-    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let context = invocation.context()?;
     let store_id = request.store_id;
-    let handle_grant_token =
-        redevplugin_ipc::worker_storage_handle_grant(invocation_frame, &store_id)?;
+    let handle_grant_token = invocation.storage_handle_grant(&store_id)?;
     Ok(redevplugin_ipc::StorageSQLiteRequest {
         handle_grant_token,
-        plugin_instance_id: invocation.plugin_instance_id,
-        active_fingerprint: invocation.active_fingerprint,
-        runtime_instance_id: invocation.runtime_instance_id,
+        plugin_instance_id: context.plugin_instance_id,
+        active_fingerprint: context.active_fingerprint,
+        runtime_instance_id: context.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: invocation.runtime_shard_id,
+        runtime_shard_id: context.runtime_shard_id,
         handle_id: format!("storage:{store_id}"),
         method: "storage.sqlite".to_string(),
-        policy_revision: invocation.policy_revision,
-        management_revision: invocation.management_revision,
-        revoke_epoch: invocation.revoke_epoch,
+        policy_revision: context.policy_revision,
+        management_revision: context.management_revision,
+        revoke_epoch: context.revoke_epoch,
         operation: request.operation,
         store_id,
         database: request.database,
@@ -2130,50 +2713,8 @@ fn storage_sqlite_request(
     })
 }
 
-fn perform_network_execute_request<R: BufRead, W: Write>(
-    reader: &mut R,
-    stdout: &mut W,
-    request_id: &str,
-    runtime_generation_id: &str,
-    invocation_frame: &str,
-    request_json: &str,
-) -> Result<String, String> {
-    let req = network_execute_request(invocation_frame, runtime_generation_id, request_json)?;
-    redevplugin_ipc::validate_worker_network_broker_access(
-        invocation_frame,
-        &req.connector_id,
-        &req.transport,
-        &req.operation,
-        &req.method,
-    )?;
-    let network_request_id = format!("{request_id}:network_execute");
-    let frame =
-        redevplugin_ipc::network_execute_frame(&network_request_id, runtime_generation_id, &req);
-    stdout
-        .write_all(frame.as_bytes())
-        .and_then(|_| stdout.write_all(b"\n"))
-        .and_then(|_| stdout.flush())
-        .map_err(|err| format!("write network_execute request: {err}"))?;
-    let response = read_bounded_line(
-        reader,
-        MAX_BROKER_RESPONSE_FRAME_BYTES,
-        "network_execute response",
-    )?;
-    if response.is_empty() {
-        return Err("network_execute response is empty".to_string());
-    }
-    redevplugin_ipc::validate_network_execute_response(
-        &response,
-        &network_request_id,
-        runtime_generation_id,
-        &req.connector_id,
-        &req.transport,
-    )?;
-    redevplugin_ipc::network_execute_payload_json(&response)
-}
-
-fn network_execute_request(
-    invocation_frame: &str,
+fn network_execute_request_parsed(
+    invocation: &redevplugin_ipc::ParsedWorkerInvocation,
     runtime_generation_id: &str,
     request_json: &str,
 ) -> Result<redevplugin_ipc::NetworkExecuteRequest, String> {
@@ -2206,12 +2747,12 @@ fn network_execute_request(
     if request.stream_id.is_some() {
         return Err("network request must not set the host-owned stream_id".to_string());
     }
-    let invocation = redevplugin_ipc::parse_worker_invocation_context(invocation_frame)?;
+    let context = invocation.context()?;
     let stream_id = if request.operation == "http_stream" {
-        if invocation.stream_id.is_empty() {
+        if context.stream_id.is_empty() {
             return Err("http_stream invocation is missing the host-owned stream_id".to_string());
         }
-        invocation.stream_id.clone()
+        context.stream_id.clone()
     } else {
         String::new()
     };
@@ -2220,15 +2761,15 @@ fn network_execute_request(
     let headers_json = serde_json::to_string(&request.headers)
         .map_err(|err| format!("encode network headers: {err}"))?;
     Ok(redevplugin_ipc::NetworkExecuteRequest {
-        plugin_id: invocation.plugin_id,
-        plugin_instance_id: invocation.plugin_instance_id,
-        active_fingerprint: invocation.active_fingerprint,
-        runtime_instance_id: invocation.runtime_instance_id,
+        plugin_id: context.plugin_id,
+        plugin_instance_id: context.plugin_instance_id,
+        active_fingerprint: context.active_fingerprint,
+        runtime_instance_id: context.runtime_instance_id,
         runtime_generation_id: runtime_generation_id.to_string(),
-        runtime_shard_id: invocation.runtime_shard_id,
-        policy_revision: invocation.policy_revision,
-        management_revision: invocation.management_revision,
-        revoke_epoch: invocation.revoke_epoch,
+        runtime_shard_id: context.runtime_shard_id,
+        policy_revision: context.policy_revision,
+        management_revision: context.management_revision,
+        revoke_epoch: context.revoke_epoch,
         connector_id: request.connector_id,
         transport: request.transport,
         destination: request.destination,
@@ -2255,15 +2796,15 @@ fn network_execute_request(
         max_buffered_bytes: request.max_buffered_bytes.unwrap_or(1024 * 1024),
         timeout_ms: request.timeout_ms.unwrap_or(5_000),
         stream_id,
-        stream_method: invocation.method,
-        stream_effect: invocation.effect,
-        stream_execution: invocation.execution,
-        surface_instance_id: invocation.surface_instance_id,
-        owner_session_hash: invocation.owner_session_hash,
-        owner_user_hash: invocation.owner_user_hash,
-        owner_env_hash: invocation.owner_env_hash,
-        session_channel_id_hash: invocation.session_channel_id_hash,
-        bridge_channel_id: invocation.bridge_channel_id,
+        stream_method: context.method,
+        stream_effect: context.effect,
+        stream_execution: context.execution,
+        surface_instance_id: context.surface_instance_id,
+        owner_session_hash: context.owner_session_hash,
+        owner_user_hash: context.owner_user_hash,
+        owner_env_hash: context.owner_env_hash,
+        session_channel_id_hash: context.session_channel_id_hash,
+        bridge_channel_id: context.bridge_channel_id,
         content_type: request.content_type,
     })
 }
@@ -2308,7 +2849,411 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn canceled_outstanding_hostcall_consumes_late_exact_response() {
+        let routes = OutstandingHostcallRoutes::new(2, 2);
+        routes.register("r1:storage_file", "r1", "g1").unwrap();
+        routes.cancel_parent("r1", "g1").unwrap();
+        assert_eq!(
+            routes.consume("r1:storage_file", "r1", "g1").unwrap(),
+            HostcallRouteDisposition::DiscardCanceled
+        );
+        assert_eq!(routes.len(), 0);
+    }
+
+    #[test]
+    fn outstanding_hostcall_rejects_unknown_or_wrong_bound_response() {
+        let routes = OutstandingHostcallRoutes::new(2, 2);
+        routes.register("r1:storage_file", "r1", "g1").unwrap();
+        assert!(routes.consume("unknown", "r1", "g1").is_err());
+        assert!(routes.consume("r1:storage_file", "other", "g1").is_err());
+        assert!(routes.consume("r1:storage_file", "r1", "g2").is_err());
+        assert_eq!(
+            routes.len(),
+            1,
+            "wrong identities must not consume the route"
+        );
+        assert_eq!(
+            routes.consume("r1:storage_file", "r1", "g1").unwrap(),
+            HostcallRouteDisposition::Deliver
+        );
+    }
+
+    #[test]
+    fn outstanding_hostcall_capacity_and_shutdown_are_explicit() {
+        let routes = OutstandingHostcallRoutes::new(1, 1);
+        routes.register("r1:storage_file", "r1", "g1").unwrap();
+        assert!(routes.register("r2:storage_file", "r2", "g1").is_err());
+        routes.shutdown();
+        assert_eq!(routes.len(), 0);
+        assert!(routes.register("r3:storage_file", "r3", "g1").is_err());
+    }
+
+    #[test]
+    fn canceled_hostcall_retention_does_not_consume_active_capacity() {
+        let routes = OutstandingHostcallRoutes::new(1, 2);
+        routes.register("r1:storage_file", "r1", "g1").unwrap();
+        routes.cancel_parent("r1", "g1").unwrap();
+        routes.register("r2:storage_file", "r2", "g1").unwrap();
+        assert_eq!(routes.active_len(), 1);
+        assert_eq!(routes.canceled_len(), 1);
+    }
+
+    #[test]
+    fn canceled_hostcall_retention_overflow_is_atomic_and_fail_closed() {
+        let routes = OutstandingHostcallRoutes::new(1, 1);
+        routes.register("r1:storage_file", "r1", "g1").unwrap();
+        routes.cancel_parent("r1", "g1").unwrap();
+        routes.register("r2:storage_file", "r2", "g1").unwrap();
+        assert!(routes.cancel_parent("r2", "g1").is_err());
+        assert_eq!(routes.active_len(), 1);
+        assert_eq!(routes.canceled_len(), 1);
+        assert!(routes.consume("r1:storage_file", "wrong", "g1").is_err());
+        assert_eq!(
+            routes.consume("r1:storage_file", "r1", "g1").unwrap(),
+            HostcallRouteDisposition::DiscardCanceled
+        );
+        routes.cancel_parent("r2", "g1").unwrap();
+    }
+
+    #[test]
+    fn artifact_route_is_exact_bounded_and_wrong_identity_does_not_consume() {
+        let routes = PendingArtifactRoutes::new(1);
+        let (first_sender, first_receiver) = mpsc::channel();
+        routes
+            .register("r1:artifact", "r1", "g1", first_sender)
+            .unwrap();
+        let (second_sender, _second_receiver) = mpsc::channel();
+        assert!(
+            routes
+                .register("r2:artifact", "r2", "g1", second_sender)
+                .is_err()
+        );
+        assert!(
+            routes
+                .consume("r1:artifact", "wrong", "g1", "wrong".to_string())
+                .is_err()
+        );
+        assert_eq!(routes.len(), 1);
+        routes
+            .consume("r1:artifact", "r1", "g1", "response".to_string())
+            .unwrap();
+        assert_eq!(first_receiver.recv().unwrap(), "response");
+        assert_eq!(routes.len(), 0);
+        routes.shutdown();
+        let (after_sender, _after_receiver) = mpsc::channel();
+        assert!(
+            routes
+                .register("r3:artifact", "r3", "g1", after_sender)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn leader_cancel_keeps_shared_compile_route_until_follower_succeeds() {
+        let cache = Arc::new(module_cache::ModuleCache::new(
+            worker_engine(),
+            1,
+            1024 * 1024,
+        ));
+        let routes = Arc::new(PendingArtifactRoutes::new(1));
+        let leader_cancellation = scheduler::Cancellation::new();
+        let follower_cancellation = scheduler::Cancellation::new();
+        let route_registered = Arc::new(std::sync::Barrier::new(2));
+        let load_started = Arc::new(std::sync::Barrier::new(2));
+        let source = response_worker_wasm(r#"{"ok":true,"data":{}}"#);
+        let (artifact_sender, artifact_receiver) = mpsc::channel();
+        let leader = {
+            let cache = Arc::clone(&cache);
+            let routes = Arc::clone(&routes);
+            let completion_routes = Arc::clone(&routes);
+            let cancellation = Arc::clone(&leader_cancellation);
+            let route_registered = Arc::clone(&route_registered);
+            let load_started = Arc::clone(&load_started);
+            std::thread::spawn(move || {
+                cache.get_or_compile_with_hooks(
+                    "sha256:shared-route",
+                    redevplugin_ipc::WASM_ABI_VERSION,
+                    &cancellation,
+                    module_cache::CompileFlightHooks::new(
+                        move || {
+                            routes.register("leader:artifact", "leader", "g1", artifact_sender)?;
+                            route_registered.wait();
+                            Ok(())
+                        },
+                        move || {
+                            completion_routes.remove("leader:artifact", "leader", "g1");
+                            Ok(())
+                        },
+                    ),
+                    move || {
+                        load_started.wait();
+                        artifact_receiver.recv().map_err(|_| {
+                            module_cache::ModuleCacheError::Load(
+                                "artifact response route closed".to_string(),
+                            )
+                        })?;
+                        Ok(source)
+                    },
+                )
+            })
+        };
+        route_registered.wait();
+        load_started.wait();
+        let follower = {
+            let cache = Arc::clone(&cache);
+            let cancellation = Arc::clone(&follower_cancellation);
+            std::thread::spawn(move || {
+                cache.get_or_compile_with_hooks(
+                    "sha256:shared-route",
+                    redevplugin_ipc::WASM_ABI_VERSION,
+                    &cancellation,
+                    module_cache::CompileFlightHooks::new(
+                        || panic!("follower must not register a second compile flight"),
+                        || panic!("follower must not complete a second compile flight"),
+                    ),
+                    || panic!("follower must not load the artifact again"),
+                )
+            })
+        };
+        let join_deadline = Instant::now() + Duration::from_secs(1);
+        while follower_cancellation.waiter_count() != 1 && Instant::now() < join_deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(follower_cancellation.waiter_count(), 1);
+        leader_cancellation.cancel();
+        assert!(matches!(
+            leader.join().unwrap(),
+            Err(module_cache::ModuleCacheError::Canceled)
+        ));
+        assert_eq!(routes.len(), 1);
+        routes
+            .consume("leader:artifact", "leader", "g1", "response".to_string())
+            .unwrap();
+        assert!(follower.join().unwrap().is_ok());
+        assert_eq!(routes.len(), 0);
+    }
+
+    #[test]
+    fn canceled_late_hostcall_response_does_not_require_completed_job_tombstone() {
+        let scheduler = scheduler::InvocationScheduler::new(2, 1);
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&worker_invocation_frame("plugini_1", 1))
+                .expect("worker invocation");
+        scheduler
+            .enqueue(scheduler::InvocationJob::new(invocation).unwrap())
+            .unwrap();
+        let running = scheduler.take().unwrap();
+        let (writer, outbound) = mpsc::channel();
+        let execution = ConcurrentExecutionState {
+            shared: Arc::new(RuntimeSharedState::default()),
+            lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+            runtime_lease_public_keys: Vec::new(),
+            module_cache: Arc::new(module_cache::ModuleCache::new(
+                worker_engine(),
+                1,
+                1024 * 1024,
+            )),
+            clock: Arc::new(current_unix_millis),
+            writer: writer.clone(),
+            runtime_generation_id: "g1".to_string(),
+            pending_artifacts: PendingArtifactRoutes::new(2),
+            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+        };
+        execution
+            .hostcall_routes
+            .register("r1:storage_file", "r1", "g1")
+            .unwrap();
+
+        let cancel = redevplugin_ipc::decode_runtime_input_frame(
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"cancel_invoke","request_id":"cancel-r1","runtime_generation_id":"g1","payload":{"invocation_request_id":"r1"}}"#,
+        )
+        .unwrap();
+        dispatch_runtime_input(cancel, "g1", &scheduler, &execution, &writer).unwrap();
+        let _cancel_ack = outbound.recv().unwrap();
+        scheduler.finish(&running.request_id);
+
+        let late_response = redevplugin_ipc::decode_runtime_input_frame(
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_file","request_id":"r1:storage_file","parent_request_id":"r1","runtime_generation_id":"g1","payload":{}}"#,
+        )
+        .unwrap();
+        dispatch_runtime_input(late_response, "g1", &scheduler, &execution, &writer)
+            .expect("exact canceled route discards a late response after job cleanup");
+        assert_eq!(execution.hostcall_routes.len(), 0);
+    }
+
+    fn runtime_status_for_test() -> RuntimeStatus {
+        let limits = redevplugin_ipc::RuntimeLimits {
+            worker_count: 2,
+            queue_capacity: 4,
+            per_plugin_concurrency: 1,
+            module_cache_entries: 8,
+            module_cache_source_bytes: 1024 * 1024,
+        };
+        RuntimeStatus {
+            limits,
+            scheduler: Arc::new(scheduler::InvocationScheduler::new(
+                limits.queue_capacity,
+                limits.per_plugin_concurrency,
+            )),
+            module_cache: Arc::new(module_cache::ModuleCache::new(
+                worker_engine(),
+                limits.module_cache_entries,
+                limits.module_cache_source_bytes,
+            )),
+        }
+    }
+
+    #[test]
+    fn multiplexed_hostcall_binds_parent_and_cancellation_stops_io() {
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&worker_invocation_frame("plugini_1", 1))
+                .expect("worker invocation");
+        let job = scheduler::InvocationJob::new(invocation).expect("invocation job");
+        let (writer, outbound) = mpsc::channel();
+        let execution = ConcurrentExecutionState {
+            shared: Arc::new(RuntimeSharedState::default()),
+            lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+            runtime_lease_public_keys: Vec::new(),
+            module_cache: Arc::new(module_cache::ModuleCache::new(
+                worker_engine(),
+                1,
+                1024 * 1024,
+            )),
+            clock: Arc::new(current_unix_millis),
+            writer: writer.clone(),
+            runtime_generation_id: "g1".to_string(),
+            pending_artifacts: PendingArtifactRoutes::new(2),
+            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+        };
+        job.signal_sender
+            .send(scheduler::InvocationSignal::HostcallResponse(
+                "response".to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            wait_for_hostcall_response(
+                &job,
+                &execution,
+                "r1:artifact",
+                r#"{"ipc_version":"rust-ipc-v3","frame_type":"open_handle","request_id":"r1:artifact","runtime_generation_id":"g1","payload":{}}"#.to_string(),
+            )
+            .unwrap(),
+            "response"
+        );
+        let outbound_frame = outbound.recv().unwrap();
+        assert_eq!(
+            redevplugin_ipc::parse_frame_identity_v3(&outbound_frame)
+                .unwrap()
+                .parent_request_id
+                .as_deref(),
+            Some("r1")
+        );
+
+        job.cancellation.cancel();
+        assert!(
+            wait_for_hostcall_response(
+                &job,
+                &execution,
+                "r1:artifact-after-cancel",
+                "{}".to_string()
+            )
+            .is_err()
+        );
+        assert!(outbound.try_recv().is_err());
+    }
+
+    #[test]
+    fn production_dispatch_rejects_invalid_worker_from_typed_input() {
+        let limits = redevplugin_ipc::RuntimeLimits {
+            worker_count: 1,
+            queue_capacity: 1,
+            per_plugin_concurrency: 1,
+            module_cache_entries: 1,
+            module_cache_source_bytes: 1024 * 1024,
+        };
+        let scheduler = Arc::new(scheduler::InvocationScheduler::new(1, 1));
+        let (writer, outbound) = mpsc::channel();
+        let execution = Arc::new(ConcurrentExecutionState {
+            shared: Arc::new(RuntimeSharedState::default()),
+            lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+            runtime_lease_public_keys: Vec::new(),
+            module_cache: Arc::new(module_cache::ModuleCache::new(
+                worker_engine(),
+                limits.module_cache_entries,
+                limits.module_cache_source_bytes,
+            )),
+            clock: Arc::new(current_unix_millis),
+            writer: writer.clone(),
+            runtime_generation_id: "g1".to_string(),
+            pending_artifacts: PendingArtifactRoutes::new(2),
+            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+        });
+        let input = redevplugin_ipc::decode_runtime_input_frame(
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"invoke-invalid","runtime_generation_id":"g1","payload":{"method":"worker.echo","invocation":{}}}"#,
+        )
+        .expect("outer IPC frame decodes");
+
+        dispatch_runtime_input(input, "g1", &scheduler, &execution, &writer)
+            .expect("invalid invocation returns a closed response");
+
+        let response = outbound.recv().expect("invalid invocation response");
+        assert!(response.contains(r#""request_id":"invoke-invalid""#));
+        assert!(response.contains(redevplugin_ipc::ERR_WORKER_INVOCATION_INVALID));
+        assert_eq!(scheduler.metrics().queued, 0);
+    }
+
+    #[test]
+    fn production_invocation_fails_closed_when_post_artifact_clock_fails() {
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(signed_worker_invocation_fixture())
+                .expect("signed worker invocation");
+        let identity = invocation.identity().expect("worker identity");
+        let job = scheduler::InvocationJob::new(invocation).expect("invocation job");
+        let module_cache = Arc::new(module_cache::ModuleCache::new(
+            worker_engine(),
+            1,
+            1024 * 1024,
+        ));
+        let source = response_worker_wasm(r#"{"ok":true,"data":{"value":"done"}}"#);
+        module_cache
+            .get_or_compile(
+                &identity.artifact_sha256,
+                redevplugin_ipc::WASM_ABI_VERSION,
+                &scheduler::Cancellation::new(),
+                move || Ok(source),
+            )
+            .expect("prewarm production module cache");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let clock_calls = Arc::clone(&calls);
+        let (writer, _outbound) = mpsc::channel();
+        let execution = Arc::new(ConcurrentExecutionState {
+            shared: Arc::new(RuntimeSharedState::default()),
+            lease_replays: Mutex::new(RuntimeLeaseReplayCache::default()),
+            runtime_lease_public_keys: runtime_lease_fixture_public_keys().to_vec(),
+            module_cache,
+            clock: Arc::new(move || {
+                if clock_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    fixed_runtime_lease_clock()
+                } else {
+                    Err("test clock unavailable".to_string())
+                }
+            }),
+            writer,
+            runtime_generation_id: "rtgen_fixture_v1".to_string(),
+            pending_artifacts: PendingArtifactRoutes::new(2),
+            hostcall_routes: OutstandingHostcallRoutes::new(2, 4),
+        });
+
+        let response = handle_scheduled_worker_invocation(&job, &execution);
+
+        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
+        assert!(response.contains("test clock unavailable"));
+        assert!(!response.contains(r#""ok":true"#));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
     use std::sync::OnceLock;
 
     const TEST_WORKER_MEMORY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
@@ -2332,31 +3277,27 @@ mod tests {
         include_str!("../../../testdata/contracts/runtime-lease-signature-v1-invocation.json")
     }
 
-    fn worker_invocation_state<'a>(
-        shared: &'a RuntimeSharedState,
-        lease_replays: &'a mut RuntimeLeaseReplayCache,
-        worker_runtime: &'a mut WorkerModuleRuntime,
-    ) -> WorkerInvocationState<'a> {
-        WorkerInvocationState {
-            shared,
-            lease_replays,
-            runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
-            worker_runtime,
-            clock: &fixed_runtime_lease_clock,
-        }
-    }
-
     fn execute_worker_module_for_test<'a>(
         wasm_bytes: &[u8],
         request_json: &[u8],
         memory_limit_bytes: usize,
         broker_hostcall: impl FnMut(WorkerHostcallRequest) -> Result<String, String> + 'a,
     ) -> Result<WorkerExecutionV2, String> {
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        execute_worker_module_v2(
-            &mut worker_runtime,
-            "sha256:test-artifact",
-            Some(wasm_bytes),
+        let cache =
+            module_cache::ModuleCache::new(worker_engine(), 1, wasm_bytes.len().saturating_add(1));
+        let source = wasm_bytes.to_vec();
+        let compiled = cache
+            .get_or_compile(
+                "sha256:test-artifact",
+                redevplugin_ipc::WASM_ABI_VERSION,
+                &scheduler::Cancellation::new(),
+                move || Ok(source),
+            )
+            .map_err(|err| err.to_string())?;
+        execute_compiled_worker_module_v2(
+            cache.engine(),
+            &compiled.module,
+            &compiled.contract,
             request_json,
             memory_limit_bytes,
             broker_hostcall,
@@ -2365,10 +3306,6 @@ mod tests {
 
     fn fixed_runtime_lease_clock() -> Result<i64, String> {
         Ok(1_783_161_901_000)
-    }
-
-    fn expired_runtime_lease_clock() -> Result<i64, String> {
-        Ok(1_783_161_930_000)
     }
 
     fn sqlite_usage_fixture() -> serde_json::Value {
@@ -2616,7 +3553,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v2","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1","revoke_epoch":7}}"#,
         );
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":true"#));
@@ -2640,112 +3577,111 @@ mod tests {
 
     #[test]
     fn successful_storage_request_round_trips_without_runtime_resource_tracking() {
-        let mut input = std::io::Cursor::new(
-            br#"{"ipc_version":"rust-ipc-v2","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#
-                .iter()
-                .copied()
-                .chain(std::iter::once(b'\n'))
-                .collect::<Vec<u8>>(),
-        );
-        let mut output = Vec::<u8>::new();
-
-        let result = perform_storage_file_request(
-            &mut input,
-            &mut output,
-            "r1",
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&broker_invocation_frame("plugini_1"))
+                .expect("typed invocation");
+        let request = storage_file_request_parsed(
+            &invocation,
             "g1",
-            &broker_invocation_frame("plugini_1"),
             r#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8="}"#,
         )
-        .expect("storage request should succeed");
-
+        .expect("typed storage request");
+        invocation
+            .validate_storage_broker_access(&request.store_id, &request.operation)
+            .expect("storage access is authorized");
+        let frame = redevplugin_ipc::storage_file_frame("r1:storage_file", "g1", &request);
+        assert!(frame.contains(r#""frame_type":"storage_file""#), "{frame}");
+        let response = r#"{"ipc_version":"rust-ipc-v3","frame_type":"storage_file","request_id":"r1:storage_file","runtime_generation_id":"g1","payload":{"ok":true,"path":"notes/from-memory.txt","size_bytes":34,"usage":{"plugin_instance_id":"plugini_1","store_id":"workspace","usage_bytes":34,"quota_bytes":4096,"usage_files":1,"quota_files":64}}}"#;
+        redevplugin_ipc::validate_storage_file_response(
+            response,
+            "r1:storage_file",
+            "g1",
+            &request.operation,
+        )
+        .expect("storage response matches request");
+        let result = redevplugin_ipc::storage_file_payload_json(response, &request.operation)
+            .expect("storage response payload");
         assert!(result.contains(r#""path":"notes/from-memory.txt""#));
-        let request = String::from_utf8(output).expect("storage request utf8");
-        assert!(
-            request.contains(r#""frame_type":"storage_file""#),
-            "{request}"
-        );
     }
 
     #[test]
     fn method_scoped_storage_denial_happens_before_host_io() {
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
         let invocation = broker_invocation_frame("plugini_1")
             .replace(r#"["read","write","delete","list"]"#, r#"["read"]"#);
-
-        let err = perform_storage_file_request(
-            &mut input,
-            &mut output,
-            "r1",
-            "g1",
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&invocation).expect("typed invocation");
+        let request = storage_file_request_parsed(
             &invocation,
+            "g1",
             r#"{"store_id":"workspace","operation":"write","path":"notes/from-memory.txt","data_base64":"aGVsbG8="}"#,
         )
-        .expect_err("write access must be denied");
-
+        .expect("typed storage request");
+        let err = invocation
+            .validate_storage_broker_access(&request.store_id, &request.operation)
+            .expect_err("write access must be denied");
         assert!(err.contains("not allowed"), "{err}");
-        assert!(output.is_empty(), "denied storage access reached Host I/O");
     }
 
     #[test]
     fn successful_network_stream_request_round_trips_without_runtime_resource_tracking() {
-        let mut input = std::io::Cursor::new(
-            br#"{"ipc_version":"rust-ipc-v2","frame_type":"network_execute","request_id":"r1:network_execute","runtime_generation_id":"g1","payload":{"ok":true,"transport":"http","destination":{"transport":"http","scheme":"https","host":"api.example.com","port":443},"status_code":200,"stream_id":"stream_1","grant_id":"netgrant_00112233445566778899aabbccddeeff","connector_id":"api","runtime_generation_id":"g1"}}"#
-                .iter()
-                .copied()
-                .chain(std::iter::once(b'\n'))
-                .collect::<Vec<u8>>(),
-        );
-        let mut output = Vec::<u8>::new();
-
-        let result = perform_network_execute_request(
-            &mut input,
-            &mut output,
-            "r1",
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&broker_invocation_frame("plugini_1"))
+                .expect("typed invocation");
+        let request = network_execute_request_parsed(
+            &invocation,
             "g1",
-            &broker_invocation_frame("plugini_1"),
             r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"GET","path":"/v1/stream","max_chunk_bytes":1024,"max_buffered_bytes":4096}"#,
         )
-        .expect("network stream request should succeed");
-
-        assert!(result.contains(r#""stream_id":"stream_1""#));
-        let request = String::from_utf8(output).expect("network request utf8");
+        .expect("typed network request");
+        invocation
+            .validate_network_broker_access(
+                &request.connector_id,
+                &request.transport,
+                &request.operation,
+                &request.method,
+            )
+            .expect("network access is authorized");
+        let frame = redevplugin_ipc::network_execute_frame("r1:network_execute", "g1", &request);
         assert!(
-            request.contains(r#""frame_type":"network_execute""#),
-            "{request}"
+            frame.contains(r#""frame_type":"network_execute""#),
+            "{frame}"
         );
-        assert!(request.contains(r#""stream_id":"stream_1""#), "{request}");
+        assert!(frame.contains(r#""stream_id":"stream_1""#), "{frame}");
     }
 
     #[test]
     fn method_scoped_http_denial_happens_before_host_io() {
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-
-        let err = perform_network_execute_request(
-            &mut input,
-            &mut output,
-            "r1",
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&broker_invocation_frame("plugini_1"))
+                .expect("typed invocation");
+        let request = network_execute_request_parsed(
+            &invocation,
             "g1",
-            &broker_invocation_frame("plugini_1"),
             r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"DELETE","path":"/v1/items/1"}"#,
         )
-        .expect_err("DELETE access must be denied");
-
+        .expect("typed network request");
+        let err = invocation
+            .validate_network_broker_access(
+                &request.connector_id,
+                &request.transport,
+                &request.operation,
+                &request.method,
+            )
+            .expect_err("DELETE access must be denied");
         assert!(err.contains("not allowed"), "{err}");
-        assert!(output.is_empty(), "denied network access reached Host I/O");
     }
 
     #[test]
     fn handle_heartbeat_returns_structured_ack() {
         let control = ControlChannelState::new();
+        let status = runtime_status_for_test();
         control.force_stale_for_test();
         let response = handle_heartbeat(
             &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v2","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100,"max_staleness_ms":5000}}"#,
+            &status,
         );
         assert!(response.contains(r#""frame_type":"heartbeat""#));
         assert!(response.contains(r#""ok":true"#));
@@ -2760,11 +3696,13 @@ mod tests {
     #[test]
     fn handle_heartbeat_fails_closed_for_invalid_frame() {
         let control = ControlChannelState::new();
+        let status = runtime_status_for_test();
         let response = handle_heartbeat(
             &control,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v2","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"heartbeat","request_id":"r1","runtime_generation_id":"g1","payload":{"sent_unix_nano":100}}"#,
+            &status,
         );
         assert!(response.contains(r#""frame_type":"heartbeat""#));
         assert!(response.contains(r#""ok":false"#));
@@ -2777,7 +3715,7 @@ mod tests {
             &shared,
             "r1",
             "g1",
-            r#"{"ipc_version":"rust-ipc-v2","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
+            r#"{"ipc_version":"rust-ipc-v3","frame_type":"revoke_epoch","request_id":"r1","runtime_generation_id":"g1","payload":{"plugin_instance_id":"plugini_1"}}"#,
         );
         assert!(response.contains(r#""frame_type":"revoke_epoch_ack""#));
         assert!(response.contains(r#""ok":false"#));
@@ -2788,381 +3726,6 @@ mod tests {
             .expect("runtime revocation mutex")
             .validate_invocation_frame(&worker_invocation_frame("plugini_1", 0))
             .expect("invalid revoke frame must not create a revocation record");
-    }
-
-    #[test]
-    fn worker_invocation_rejects_stale_epoch_before_opening_artifact() {
-        let shared = RuntimeSharedState::default();
-        shared
-            .revocations
-            .lock()
-            .expect("runtime revocation mutex")
-            .revoke_plugin("plugini_1", 5);
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
-            "r1",
-            "g1",
-            &worker_invocation_frame("plugini_1", 4),
-        )
-        .expect("worker invocation response");
-
-        assert!(
-            output.is_empty(),
-            "stale invocation must not request an artifact"
-        );
-        assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
-        assert!(response.contains(r#""ok":false"#));
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED));
-    }
-
-    #[test]
-    fn worker_invocation_rejects_stale_control_before_opening_artifact() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        shared.control.force_stale_for_test();
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
-            "r1",
-            "g1",
-            signed_worker_invocation_fixture(),
-        )
-        .expect("worker invocation response");
-
-        assert!(
-            output.is_empty(),
-            "stale control channel must not request an artifact"
-        );
-        assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
-        assert!(response.contains(r#""ok":false"#));
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE));
-    }
-
-    #[test]
-    fn worker_invocation_rejects_unsigned_lease_before_opening_artifact_when_keys_configured() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let runtime_lease_public_keys = vec![redevplugin_ipc::RuntimeLeasePublicKey {
-            key_id: "host_ephemeral_key_1".to_string(),
-            public_key: [7u8; 32],
-        }];
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut WorkerInvocationState {
-                shared: &shared,
-                lease_replays: &mut lease_replays,
-                runtime_lease_public_keys: &runtime_lease_public_keys,
-                worker_runtime: &mut worker_runtime,
-                clock: &fixed_runtime_lease_clock,
-            },
-            "r1",
-            "g1",
-            &worker_invocation_frame("plugini_1", 1),
-        )
-        .expect("worker invocation response");
-
-        assert!(
-            output.is_empty(),
-            "unsigned lease must not request an artifact when runtime keys are configured"
-        );
-        assert!(response.contains(r#""frame_type":"invoke_worker_result""#));
-        assert!(response.contains(r#""ok":false"#));
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_SIGNATURE_INVALID));
-    }
-
-    #[test]
-    fn worker_invocation_rejects_expired_lease_before_opening_artifact() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-        let mut state = WorkerInvocationState {
-            shared: &shared,
-            lease_replays: &mut lease_replays,
-            runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
-            worker_runtime: &mut worker_runtime,
-            clock: &expired_runtime_lease_clock,
-        };
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut state,
-            "r1",
-            "g1",
-            signed_worker_invocation_fixture(),
-        )
-        .expect("worker invocation response");
-
-        assert!(
-            output.is_empty(),
-            "expired lease must not request an artifact"
-        );
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
-    }
-
-    #[test]
-    fn worker_invocation_revalidates_lease_before_returning_success() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let clock_calls = Cell::new(0_u32);
-        let clock = || {
-            let call = clock_calls.get();
-            clock_calls.set(call + 1);
-            if call < 2 {
-                Ok(1_783_161_901_000)
-            } else {
-                Ok(1_783_161_930_000)
-            }
-        };
-        let response_json = r#"{"ok":true,"data":{"value":"done"}}"#;
-        let module = wat::parse_str(format!(
-            r#"(module
-                (memory (export "memory") 1)
-                (data (i32.const 2048) {response_json:?})
-                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
-                (func (export "redevplugin_worker_dealloc") (param i32 i32))
-                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
-                    i64.const {}))"#,
-            ((2048_u64) << 32) | response_json.len() as u64,
-        ))
-        .expect("compile lease expiry worker");
-        let artifact_response = format!(
-            "{{\"ipc_version\":\"rust-ipc-v2\",\"frame_type\":\"open_handle\",\"request_id\":\"r1:artifact\",\"runtime_generation_id\":\"g1\",\"payload\":{{\"ok\":true,\"package_hash\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"artifact\":\"workers/backend.wasm\",\"sha256\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"content_base64\":\"{}\"}}}}\n",
-            encode_base64_for_test(&module),
-        );
-        let mut input = std::io::Cursor::new(artifact_response.into_bytes());
-        let mut output = Vec::<u8>::new();
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut WorkerInvocationState {
-                shared: &shared,
-                lease_replays: &mut lease_replays,
-                runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
-                worker_runtime: &mut worker_runtime,
-                clock: &clock,
-            },
-            "r1",
-            "g1",
-            signed_worker_invocation_fixture(),
-        )
-        .expect("worker invocation response");
-
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
-        assert!(!response.contains(r#""ok":true"#));
-        assert!(clock_calls.get() >= 3);
-    }
-
-    #[test]
-    fn worker_invocation_revalidates_revocation_before_returning_success() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let clock_calls = Cell::new(0_u32);
-        let clock = || {
-            let call = clock_calls.get();
-            clock_calls.set(call + 1);
-            if call == 2 {
-                shared
-                    .revocations
-                    .lock()
-                    .expect("runtime revocation mutex")
-                    .revoke_plugin("plugini_fixture_v1", 14);
-            }
-            Ok(1_783_161_901_000)
-        };
-        let artifact_response = successful_worker_artifact_response();
-        let mut input = std::io::Cursor::new(artifact_response.into_bytes());
-        let mut output = Vec::<u8>::new();
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut WorkerInvocationState {
-                shared: &shared,
-                lease_replays: &mut lease_replays,
-                runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
-                worker_runtime: &mut worker_runtime,
-                clock: &clock,
-            },
-            "r1",
-            "g1",
-            signed_worker_invocation_fixture(),
-        )
-        .expect("worker invocation response");
-
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CAPABILITY_REVOKED));
-        assert!(!response.contains(r#""ok":true"#));
-        assert!(clock_calls.get() >= 3);
-    }
-
-    #[test]
-    fn worker_invocation_revalidates_control_freshness_before_returning_success() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let clock_calls = Cell::new(0_u32);
-        let clock = || {
-            let call = clock_calls.get();
-            clock_calls.set(call + 1);
-            if call == 2 {
-                shared.control.force_stale_for_test();
-            }
-            Ok(1_783_161_901_000)
-        };
-        let artifact_response = successful_worker_artifact_response();
-        let mut input = std::io::Cursor::new(artifact_response.into_bytes());
-        let mut output = Vec::<u8>::new();
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut WorkerInvocationState {
-                shared: &shared,
-                lease_replays: &mut lease_replays,
-                runtime_lease_public_keys: runtime_lease_fixture_public_keys(),
-                worker_runtime: &mut worker_runtime,
-                clock: &clock,
-            },
-            "r1",
-            "g1",
-            signed_worker_invocation_fixture(),
-        )
-        .expect("worker invocation response");
-
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_CONTROL_CHANNEL_STALE));
-        assert!(!response.contains(r#""ok":true"#));
-        assert!(clock_calls.get() >= 3);
-    }
-
-    #[test]
-    fn worker_invocation_rejects_execution_binding_mismatch_before_opening_artifact() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-        let (prefix, invocation) = signed_worker_invocation_fixture()
-            .split_once("\"invocation\": {")
-            .expect("signed invocation object");
-        let invocation = invocation.replacen(
-            "\"operation_id\": \"operation_fixture_v1\"",
-            "\"operation_id\": \"operation_other\"",
-            1,
-        );
-        let frame = format!("{prefix}\"invocation\":{{{invocation}");
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
-            "r1",
-            "g1",
-            &frame,
-        )
-        .expect("worker invocation response");
-
-        assert!(
-            output.is_empty(),
-            "mismatched execution binding must not request an artifact"
-        );
-        assert!(response.contains(redevplugin_ipc::ERR_RUNTIME_LEASE_INVALID));
-    }
-
-    #[test]
-    fn worker_invocation_allows_current_epoch_to_open_artifact() {
-        let shared = RuntimeSharedState::default();
-        shared
-            .revocations
-            .lock()
-            .expect("runtime revocation mutex")
-            .revoke_plugin("plugini_fixture_v1", 5);
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-
-        let response = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
-            "r1",
-            "g1",
-            signed_worker_invocation_fixture(),
-        )
-        .expect("worker invocation response");
-
-        let output = String::from_utf8(output).expect("artifact request utf8");
-        assert!(
-            output.contains(r#""frame_type":"open_handle""#),
-            "current invocation should request the bound worker artifact: output={output} response={response}"
-        );
-        assert!(response.contains(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED));
-    }
-
-    #[test]
-    fn worker_invocation_rejects_replayed_lease_before_opening_artifact() {
-        let shared = RuntimeSharedState::default();
-        let mut lease_replays = RuntimeLeaseReplayCache::default();
-        let mut worker_runtime = WorkerModuleRuntime::default();
-        let mut input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut output = Vec::<u8>::new();
-        let frame = signed_worker_invocation_fixture().to_string();
-
-        let first = handle_worker_invocation(
-            &mut input,
-            &mut output,
-            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
-            "r1",
-            "g1",
-            &frame,
-        )
-        .expect("first worker invocation response");
-        assert!(
-            !output.is_empty(),
-            "first invocation should request an artifact"
-        );
-        assert!(first.contains(redevplugin_ipc::ERR_ARTIFACT_HANDLE_FAILED));
-
-        let mut replay_input = std::io::Cursor::new(Vec::<u8>::new());
-        let mut replay_output = Vec::<u8>::new();
-        let replay = handle_worker_invocation(
-            &mut replay_input,
-            &mut replay_output,
-            &mut worker_invocation_state(&shared, &mut lease_replays, &mut worker_runtime),
-            "r2",
-            "g1",
-            &frame,
-        )
-        .expect("replayed worker invocation response");
-
-        assert!(
-            replay_output.is_empty(),
-            "replayed invocation must not request an artifact"
-        );
-        assert!(replay.contains(r#""frame_type":"invoke_worker_result""#));
-        assert!(replay.contains(r#""ok":false"#));
-        assert!(replay.contains(redevplugin_ipc::ERR_LEASE_REPLAYED));
     }
 
     #[test]
@@ -3199,73 +3762,6 @@ mod tests {
         .expect("v2 worker executes");
 
         assert_eq!(execution.response_json, response);
-    }
-
-    #[test]
-    fn worker_module_runtime_compiles_once_for_warm_invocations() {
-        let request = br#"{"schema_version":"redevplugin.worker_request.v2","method":"notes.list","params":{}}"#;
-        let response = r#"{"ok":true,"data":{"cached":true}}"#;
-        let module = response_worker_wasm(response);
-        let mut worker_runtime = WorkerModuleRuntime::default();
-
-        let cold = execute_worker_module_v2(
-            &mut worker_runtime,
-            "sha256:artifact-a",
-            Some(&module),
-            request,
-            TEST_WORKER_MEMORY_LIMIT_BYTES,
-            unexpected_hostcall,
-        )
-        .expect("cold invocation");
-        let warm = execute_worker_module_v2(
-            &mut worker_runtime,
-            "sha256:artifact-a",
-            None,
-            request,
-            TEST_WORKER_MEMORY_LIMIT_BYTES,
-            unexpected_hostcall,
-        )
-        .expect("warm invocation");
-
-        assert_eq!(cold.response_json, response);
-        assert_eq!(warm.response_json, response);
-        assert_eq!(worker_runtime.compile_count, 1);
-    }
-
-    #[test]
-    fn worker_module_cache_enforces_entry_and_source_byte_limits() {
-        let module = response_worker_wasm(r#"{"ok":true,"data":{}}"#);
-        let mut entry_limited = WorkerModuleRuntime::new(1, module.len() * 4);
-        entry_limited
-            .load("sha256:first", Some(&module))
-            .expect("compile first module");
-        entry_limited
-            .load("sha256:second", Some(&module))
-            .expect("compile second module");
-        assert!(!entry_limited.contains("sha256:first"));
-        assert!(entry_limited.contains("sha256:second"));
-
-        let mut byte_limited = WorkerModuleRuntime::new(4, module.len());
-        byte_limited
-            .load("sha256:first", Some(&module))
-            .expect("compile first byte-limited module");
-        byte_limited
-            .load("sha256:second", Some(&module))
-            .expect("compile second byte-limited module");
-        assert!(!byte_limited.contains("sha256:first"));
-        assert!(byte_limited.contains("sha256:second"));
-    }
-
-    #[test]
-    fn oversized_worker_module_executes_without_being_cached() {
-        let module = response_worker_wasm(r#"{"ok":true,"data":{}}"#);
-        let mut worker_runtime = WorkerModuleRuntime::new(4, module.len() - 1);
-        worker_runtime
-            .load("sha256:oversized", Some(&module))
-            .expect("compile oversized module for current invocation");
-        assert_eq!(worker_runtime.compile_count, 1);
-        assert!(!worker_runtime.contains("sha256:oversized"));
-        assert!(worker_runtime.load("sha256:oversized", None).is_err());
     }
 
     #[test]
@@ -3680,9 +4176,11 @@ mod tests {
 
     #[test]
     fn network_execute_request_inherits_stream_audience_from_invocation() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/stream","query":{"format":["json"],"timezone":["auto"]},"max_chunk_bytes":4,"max_buffered_bytes":65536,"content_type":"text/plain"}"#;
-        let got = network_execute_request(invocation, "g1", request)
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
+        let got = network_execute_request_parsed(&invocation, "g1", request)
             .expect("stream network execute request");
 
         assert_eq!(got.plugin_id, "com.example.worker");
@@ -3706,10 +4204,11 @@ mod tests {
 
     #[test]
     fn storage_request_uses_host_only_grant_map() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"notes.list","invocation":{"plugin_id":"com.example.notes","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"storage_handle_grants":{"notes":"handle_grant.host-only-secret"},"method":"notes.list","effect":"read","execution":"sync"}}}"#;
         let request = r#"{"store_id":"notes","operation":"query","database":"notes.sqlite","sql":"SELECT id FROM notes","args":[]}"#;
-
-        let got = storage_sqlite_request(invocation, "g1", request)
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
+        let got = storage_sqlite_request_parsed(&invocation, "g1", request)
             .expect("storage request with host-only grant map");
 
         assert_eq!(got.handle_grant_token, "handle_grant.host-only-secret");
@@ -3719,7 +4218,9 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_owned_audience_overrides() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
         for field in [
             "stream_method",
             "stream_effect",
@@ -3734,7 +4235,7 @@ mod tests {
             let request = format!(
                 r#"{{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","{field}":"plugin-selected"}}"#
             );
-            let err = network_execute_request(invocation, "g1", &request)
+            let err = network_execute_request_parsed(&invocation, "g1", &request)
                 .expect_err("plugin-owned audience override must fail closed");
             assert!(
                 err.contains("host-owned invocation field"),
@@ -3745,10 +4246,11 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_plugin_selected_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed","stream_id":"stream_host_1"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","stream_id":"stream_host_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","stream_id":"stream_plugin_selected"}"#;
-
-        let err = network_execute_request(invocation, "g1", request)
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
+        let err = network_execute_request_parsed(&invocation, "g1", request)
             .expect_err("plugin-selected stream id must fail closed");
 
         assert!(err.contains("host-owned stream_id"), "{err}");
@@ -3757,8 +4259,10 @@ mod tests {
     #[test]
     fn network_hostcall_request_rejects_unknown_duplicate_and_trailing_fields() {
         let invocation = broker_invocation_frame("plugini_1");
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(&invocation).expect("typed invocation");
         let valid = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http","method":"GET"}"#;
-        network_execute_request(&invocation, "g1", valid).expect("closed network request");
+        network_execute_request_parsed(&invocation, "g1", valid).expect("closed network request");
 
         for invalid in [
             format!("{valid}{{}}"),
@@ -3769,7 +4273,7 @@ mod tests {
             ),
         ] {
             assert!(
-                network_execute_request(&invocation, "g1", &invalid).is_err(),
+                network_execute_request_parsed(&invocation, "g1", &invalid).is_err(),
                 "{invalid}"
             );
         }
@@ -3777,10 +4281,11 @@ mod tests {
 
     #[test]
     fn network_execute_request_rejects_missing_host_owned_stream_id() {
-        let invocation = r#"{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
+        let invocation = r#"{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{"lease":{"plugin_instance_id":"plugini_1","runtime_shard_id":"runtime_shard_signed"},"method":"worker.echo","invocation":{"plugin_id":"com.example.worker","plugin_instance_id":"plugini_1","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":2,"revoke_epoch":3,"method":"worker.echo","effect":"read","execution":"subscription","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}"#;
         let request = r#"{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream"}"#;
-
-        let err = network_execute_request(invocation, "g1", request)
+        let invocation =
+            redevplugin_ipc::parse_worker_invocation(invocation).expect("typed invocation");
+        let err = network_execute_request_parsed(&invocation, "g1", request)
             .expect_err("missing Host stream id must fail closed");
 
         assert!(err.contains("host-owned stream_id"), "{err}");
@@ -3824,37 +4329,13 @@ mod tests {
         .expect("compile response worker")
     }
 
-    fn encode_base64_for_test(input: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut encoded = String::with_capacity(input.len().div_ceil(3) * 4);
-        for chunk in input.chunks(3) {
-            let first = chunk[0];
-            let second = chunk.get(1).copied().unwrap_or(0);
-            let third = chunk.get(2).copied().unwrap_or(0);
-            encoded.push(ALPHABET[(first >> 2) as usize] as char);
-            encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
-            if chunk.len() > 1 {
-                encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
-            } else {
-                encoded.push('=');
-            }
-            if chunk.len() > 2 {
-                encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
-            } else {
-                encoded.push('=');
-            }
-        }
-        encoded
-    }
-
     fn worker_invocation_frame(plugin_instance_id: &str, revoke_epoch: u64) -> String {
         worker_invocation_frame_with_lease(plugin_instance_id, revoke_epoch, "lease_1", "nonce_1")
     }
 
     fn broker_invocation_frame(plugin_instance_id: &str) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed"}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","operations":["read","write","delete","list"]}},{{"store_id":"notes","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"runtime_shard_id":"runtime_shard_signed"}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":1,"storage_handle_grants":{{"workspace":"handle_grant.secret"}},"broker_access":{{"storage":[{{"store_id":"workspace","operations":["read","write","delete","list"]}},{{"store_id":"notes","operations":["query","exec"]}}],"network":[{{"connector_id":"api","transport":"http","operations":["http","http_stream"],"http_methods":["GET","POST"]}}]}},"method":"worker.echo","effect":"write","execution":"subscription","stream_id":"stream_1","surface_instance_id":"surface_1","owner_session_hash":"session_hash","owner_user_hash":"user_hash","owner_env_hash":"env_hash","session_channel_id_hash":"channel_hash","bridge_channel_id":"bridge_1"}}}}}}"#
         )
     }
 
@@ -3873,25 +4354,6 @@ mod tests {
         )
     }
 
-    fn successful_worker_artifact_response() -> String {
-        let response_json = r#"{"ok":true,"data":{"value":"done"}}"#;
-        let module = wat::parse_str(format!(
-            r#"(module
-                (memory (export "memory") 1)
-                (data (i32.const 2048) {response_json:?})
-                (func (export "redevplugin_worker_alloc") (param i32) (result i32) i32.const 1024)
-                (func (export "redevplugin_worker_dealloc") (param i32 i32))
-                (func (export "redevplugin_worker_invoke") (param i32 i32) (result i64)
-                    i64.const {}))"#,
-            ((2048_u64) << 32) | response_json.len() as u64,
-        ))
-        .expect("compile successful worker");
-        format!(
-            "{{\"ipc_version\":\"rust-ipc-v2\",\"frame_type\":\"open_handle\",\"request_id\":\"r1:artifact\",\"runtime_generation_id\":\"g1\",\"payload\":{{\"ok\":true,\"package_hash\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"artifact\":\"workers/backend.wasm\",\"sha256\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"content_base64\":\"{}\"}}}}\n",
-            encode_base64_for_test(&module),
-        )
-    }
-
     fn worker_invocation_frame_with_lease_expiry(
         plugin_instance_id: &str,
         revoke_epoch: u64,
@@ -3900,7 +4362,7 @@ mod tests {
         expires_at_unix_ms: i64,
     ) -> String {
         format!(
-            r#"{{"ipc_version":"rust-ipc-v2","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"invoke_worker","request_id":"r1","runtime_generation_id":"g1","payload":{{"lease":{{"lease_id":"{lease_id}","lease_nonce":"{lease_nonce}","runtime_generation_id":"g1","runtime_shard_id":"runtime_shard_signed","plugin_instance_id":"{plugin_instance_id}","revoke_epoch":{revoke_epoch},"expires_at_unix_ms":{expires_at_unix_ms}}},"method":"worker.echo","invocation":{{"plugin_id":"com.example.worker","plugin_instance_id":"{plugin_instance_id}","active_fingerprint":"sha256:active","runtime_instance_id":"runtime_1","runtime_generation_id":"g1","policy_revision":1,"management_revision":1,"revoke_epoch":{revoke_epoch},"package_hash":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","worker_id":"backend","worker_mode":"job","worker_scope":"user","artifact":"workers/backend.wasm","artifact_sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","abi":"redevplugin-wasm-worker-v2","method":"worker.echo","effect":"read","execution":"sync","audit_correlation_id":"audit_1","params_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","params":{{}},"broker_access":{{}},"broker_access_sha256":"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"}}}}}}"#
         )
     }
 

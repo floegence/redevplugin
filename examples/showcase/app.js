@@ -2,7 +2,7 @@
 "use strict";
 (() => {
   // packages/redevplugin-ui/src/contracts.gen.ts
-  var pluginUIProtocolVersion = "plugin-ui-v4";
+  var pluginUIProtocolVersion = "plugin-ui-v5";
 
   // packages/redevplugin-ui/src/error-codes.gen.ts
   var pluginPlatformErrorCodes = [
@@ -568,11 +568,12 @@
     "reset"
   ];
   var opaqueSurfaceRenderLimits = {
-    "max_message_bytes": 262144,
+    "max_message_bytes": 524288,
     "max_in_flight_requests": 256,
     "max_renders_per_second": 60,
     "max_render_depth": 32,
     "max_render_nodes": 4096,
+    "max_patch_operations": 1024,
     "max_attributes_per_element": 64,
     "max_text_length": 65536,
     "max_attribute_value_length": 4096,
@@ -599,12 +600,16 @@
     Object.entries(opaqueSurfaceTagAttributes).map(([tag, attributes]) => [tag, new Set(attributes)])
   );
 
+  // packages/redevplugin-ui/src/ui-reconciler.ts
+  var maxPluginUIPatchOperations = opaqueSurfaceRenderLimits.max_patch_operations;
+
   // packages/redevplugin-ui/src/surface.ts
-  var opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v2";
+  var opaqueSurfaceDocumentSchemaVersion = "redevplugin.opaque_surface_document.v3";
   var opaquePluginBridgeGlobalKey = "__redevpluginWorkerBridge";
   var maxPendingPluginBridgeRequests = 256;
-  var maxPluginBridgeMessageBytes = 256 * 1024;
+  var maxPluginBridgeMessageBytes = opaqueSurfaceRenderLimits.max_message_bytes;
   var maxRetainedPluginStreamHandles = 128;
+  var maxPluginJSONStructuralNodes = 32 * 1024;
   var streamCredentialInvalidatingErrorCodes = /* @__PURE__ */ new Set([
     "PLUGIN_BRIDGE_DISPOSED",
     "PLUGIN_BRIDGE_HANDSHAKE_FAILED",
@@ -763,6 +768,7 @@
   const maxRendersPerSecond = ${opaqueSurfaceRenderLimits.max_renders_per_second};
   const maxRenderDepth = ${opaqueSurfaceRenderLimits.max_render_depth};
   const maxRenderNodes = ${opaqueSurfaceRenderLimits.max_render_nodes};
+  const maxPatchOperations = ${opaqueSurfaceRenderLimits.max_patch_operations};
   const maxAttributesPerElement = ${opaqueSurfaceRenderLimits.max_attributes_per_element};
   const maxTextLength = ${opaqueSurfaceRenderLimits.max_text_length};
   const maxAttributeValueLength = ${opaqueSurfaceRenderLimits.max_attribute_value_length};
@@ -796,7 +802,7 @@
   const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const canonicalJSON = (value, depth = 0, state = { nodes: 0 }, seen = new Set()) => {
     state.nodes += 1;
-    if (state.nodes > 4096 || depth > 64) return false;
+    if (state.nodes > ${maxPluginJSONStructuralNodes} || depth > 64) return false;
     if (value === null || typeof value === "string" || typeof value === "boolean") return true;
     if (typeof value === "number") return Number.isFinite(value);
     if (typeof value !== "object" || seen.has(value)) return false;
@@ -883,8 +889,8 @@
   let renderWindowStartedAt = 0;
   let renderCount = 0;
   let uiRevision = 0;
-  let uiTree;
-  let uiElements = new Map();
+  let uiGraph = new Map();
+  let uiNodes = new Map();
   const controlEdits = new Map();
   let lastAutofocusIdentity = "";
   const pendingAssets = new Map();
@@ -1036,32 +1042,78 @@
     }
     element.setAttribute(name, String(attributeValue));
   };
-  const buildWorkerNode = (value, state, depth, elements = new Map()) => {
+  const buildWorkerSubtree = (value, state, depth, parentKey, graph = new Map(), nodes = new Map()) => {
     state.nodes += 1;
-    if (state.nodes > maxRenderNodes || depth > maxRenderDepth) throw new Error("plugin render tree exceeds limits");
-    if (typeof value === "string") {
-      if (value.length > maxTextLength) throw new Error("plugin render text exceeds limits");
-      return document.createTextNode(value);
+    if (state.nodes > maxRenderNodes || depth > maxRenderDepth || !isRecord(value) || typeof value.key !== "string" ||
+        !validResourceIdentifier(value.key) || graph.has(value.key)) {
+      throw new Error("plugin render tree exceeds limits or contains an invalid key");
     }
-    if (!isRecord(value) || !Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
-        !Object.prototype.hasOwnProperty.call(value, "key") || value.type !== "element" || !validResourceIdentifier(value.key) ||
-        elements.has(value.key) || typeof value.tag !== "string") throw new Error("plugin render node is invalid");
+    if (value.type === "text") {
+      if (!exactKeys(value, ["type", "key", "text"]) || typeof value.text !== "string" || value.text.length > maxTextLength) {
+        throw new Error("plugin render text node is invalid");
+      }
+      const node = document.createTextNode(value.text);
+      graph.set(value.key, {
+        key: value.key,
+        type: "text",
+        text: value.text,
+        parentKey,
+        prevKey: null,
+        nextKey: null,
+        firstChildKey: null,
+        lastChildKey: null,
+        height: 1,
+        heightDirty: false,
+      });
+      nodes.set(value.key, node);
+      return { node, graph, nodes };
+    }
+    if (!Object.keys(value).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
+        value.type !== "element" || typeof value.tag !== "string") {
+      throw new Error("plugin render node is invalid");
+    }
     const tag = value.tag.toLowerCase();
     if (!allowedTags.has(tag)) throw new Error("plugin render tag is not allowed");
-    const element = document.createElement(tag);
-    element.setAttribute("data-redevplugin-key", value.key);
-    elements.set(value.key, element);
+    const attributes = {};
     if (value.attributes !== undefined) {
       if (!isRecord(value.attributes) || Object.keys(value.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
       for (const [name, attributeValue] of Object.entries(value.attributes)) {
-        applyWorkerAttribute(element, tag, name, attributeValue);
+        if (!validAttribute(tag, name, attributeValue)) throw new Error("plugin render attribute is not allowed");
+        attributes[name] = attributeValue;
       }
     }
-    if (value.children !== undefined) {
-      if (!Array.isArray(value.children)) throw new Error("plugin render children are invalid");
-      for (const child of value.children) element.append(buildWorkerNode(child, state, depth + 1, elements));
+    if (value.children !== undefined && !Array.isArray(value.children)) throw new Error("plugin render children are invalid");
+    const element = document.createElement(tag);
+    element.setAttribute("data-redevplugin-key", value.key);
+    for (const [name, attributeValue] of Object.entries(attributes)) applyWorkerAttribute(element, tag, name, attributeValue);
+    const record = {
+      key: value.key,
+      type: "element",
+      tag,
+      attributes,
+      parentKey,
+      prevKey: null,
+      nextKey: null,
+      firstChildKey: null,
+      lastChildKey: null,
+      height: 1,
+      heightDirty: false,
+    };
+    graph.set(value.key, record);
+    nodes.set(value.key, element);
+    let previousKey = null;
+    for (const child of value.children || []) {
+      const built = buildWorkerSubtree(child, state, depth + 1, value.key, graph, nodes);
+      const childRecord = graph.get(child.key);
+      childRecord.prevKey = previousKey;
+      if (previousKey) graph.get(previousKey).nextKey = child.key;
+      else record.firstChildKey = child.key;
+      record.lastChildKey = child.key;
+      record.height = Math.max(record.height, childRecord.height + 1);
+      previousKey = child.key;
+      element.append(built.node);
     }
-    return element;
+    return { node: element, graph, nodes };
   };
   const renderElementIdentity = (element) => ({
     tag: element.tagName,
@@ -1125,33 +1177,8 @@
     document.body.scrollTop = snapshot.bodyScrollTop;
     document.body.scrollLeft = snapshot.bodyScrollLeft;
   };
-  const cloneVNode = (value) => JSON.parse(JSON.stringify(value));
-  const indexModel = (root) => {
-    const elements = new Map();
-    const visit = (node, parent, depth, state) => {
-      state.nodes += 1;
-      if (state.nodes > maxRenderNodes || depth > maxRenderDepth) throw new Error("plugin render tree exceeds limits");
-      if (typeof node === "string") {
-        if (node.length > maxTextLength) throw new Error("plugin render text exceeds limits");
-        return;
-      }
-      if (!isRecord(node) || !Object.keys(node).every((key) => ["type", "key", "tag", "attributes", "children"].includes(key)) ||
-          node.type !== "element" || !validResourceIdentifier(node.key) || elements.has(node.key) ||
-          typeof node.tag !== "string" || !allowedTags.has(node.tag)) throw new Error("plugin render node is invalid");
-      if (node.attributes !== undefined) {
-        if (!isRecord(node.attributes) || Object.keys(node.attributes).length > maxAttributesPerElement) throw new Error("plugin render attributes are invalid");
-        for (const [name, value] of Object.entries(node.attributes)) if (!validAttribute(node.tag, name, value)) throw new Error("plugin render attribute is not allowed");
-      }
-      if (node.children !== undefined && !Array.isArray(node.children)) throw new Error("plugin render children are invalid");
-      elements.set(node.key, { node, parent, depth });
-      for (const child of node.children || []) visit(child, node, depth + 1, state);
-    };
-    const state = { nodes: 0 };
-    visit(root, undefined, 1, state);
-    return { elements, nodeCount: state.nodes };
-  };
   const transferredCanvasKey = (key) => {
-    const element = uiElements.get(key);
+    const element = uiNodes.get(key);
     if (!(element instanceof HTMLCanvasElement)) return false;
     for (const runtime of canvasRuntimes.values()) if (runtime.canvas === element) return true;
     return false;
@@ -1161,31 +1188,178 @@
     return (normalized === "value" && ["input", "textarea", "select", "option"].includes(tag)) ||
       (normalized === "checked" && tag === "input");
   };
-  const subtreeHasTransferredCanvas = (node) => {
-    if (typeof node === "string") return false;
-    if (transferredCanvasKey(node.key)) return true;
-    return (node.children || []).some(subtreeHasTransferredCanvas);
+  const createGraphOverlay = (base) => {
+    const changed = new Map();
+    const deleted = new Set();
+    let count = base.size;
+    const get = (key) => changed.has(key) ? changed.get(key) : deleted.has(key) ? undefined : base.get(key);
+    const edit = (key) => {
+      const current = get(key);
+      if (!current) throw new Error("plugin UI patch target does not exist");
+      if (changed.has(key)) return current;
+      const copy = { ...current, ...(current.attributes ? { attributes: { ...current.attributes } } : {}) };
+      changed.set(key, copy);
+      return copy;
+    };
+    const add = (record) => {
+      if (get(record.key)) throw new Error("plugin UI insertion duplicates a key");
+      changed.set(record.key, { ...record, ...(record.attributes ? { attributes: { ...record.attributes } } : {}) });
+      count += 1;
+    };
+    const remove = (key) => {
+      if (!get(key)) throw new Error("plugin UI removal target does not exist");
+      changed.delete(key);
+      if (base.has(key)) deleted.add(key);
+      count -= 1;
+    };
+    const commit = () => {
+      for (const key of deleted) base.delete(key);
+      for (const [key, record] of changed) base.set(key, record);
+    };
+    return { get, edit, add, remove, commit, count: () => count };
+  };
+  const graphDepth = (graph, key) => {
+    let depth = 0;
+    let cursor = graph.get(key);
+    const seen = new Set();
+    while (cursor) {
+      if (seen.has(cursor.key)) throw new Error("plugin UI graph contains a cycle");
+      seen.add(cursor.key);
+      depth += 1;
+      cursor = cursor.parentKey ? graph.get(cursor.parentKey) : undefined;
+    }
+    return depth;
+  };
+  const graphSubtreeKeys = (graph, rootKey) => {
+    const keys = [];
+    const stack = [rootKey];
+    while (stack.length > 0) {
+      const key = stack.pop();
+      const record = key && graph.get(key);
+      if (!record) throw new Error("plugin UI graph is inconsistent");
+      keys.push(key);
+      const children = [];
+      let childKey = record.firstChildKey;
+      while (childKey) {
+        const child = graph.get(childKey);
+        if (!child || child.parentKey !== key) throw new Error("plugin UI child graph is inconsistent");
+        children.push(childKey);
+        childKey = child.nextKey;
+      }
+      stack.push(...children.reverse());
+    }
+    return keys;
+  };
+  const graphSubtreeHeight = (graph, rootKey) => {
+    const record = graph.get(rootKey);
+    if (!record) throw new Error("plugin UI graph is inconsistent");
+    if (!record.heightDirty) return record.height;
+    let height = 1;
+    let childKey = record.firstChildKey;
+    while (childKey) {
+      const child = graph.get(childKey);
+      if (!child || child.parentKey !== rootKey) throw new Error("plugin UI child graph is inconsistent");
+      height = Math.max(height, graphSubtreeHeight(graph, childKey) + 1);
+      childKey = child.nextKey;
+    }
+    const edited = graph.edit(rootKey);
+    edited.height = height;
+    edited.heightDirty = false;
+    return height;
+  };
+  const graphParentChainContains = (graph, rootKey, targetKey) => {
+    let cursor = graph.get(rootKey);
+    const seen = new Set();
+    while (cursor) {
+      if (cursor.key === targetKey) return true;
+      if (seen.has(cursor.key)) throw new Error("plugin UI graph contains a cycle");
+      seen.add(cursor.key);
+      cursor = cursor.parentKey ? graph.get(cursor.parentKey) : undefined;
+    }
+    return false;
+  };
+  const graphSubtreeHasTransferredCanvas = (graph, rootKey) => {
+    for (const runtime of canvasRuntimes.values()) {
+      const key = runtime.canvas.getAttribute("data-redevplugin-key");
+      if (!key) continue;
+      let cursor = graph.get(key);
+      const seen = new Set();
+      while (cursor) {
+        if (cursor.key === rootKey) return true;
+        if (seen.has(cursor.key)) throw new Error("plugin UI graph contains a cycle");
+        seen.add(cursor.key);
+        cursor = cursor.parentKey ? graph.get(cursor.parentKey) : undefined;
+      }
+    }
+    return false;
+  };
+  const markGraphHeightDirty = (graph, key) => {
+    let cursorKey = key;
+    const seen = new Set();
+    while (cursorKey) {
+      if (seen.has(cursorKey)) throw new Error("plugin UI graph contains a cycle");
+      seen.add(cursorKey);
+      const record = graph.edit(cursorKey);
+      record.heightDirty = true;
+      cursorKey = record.parentKey;
+    }
+  };
+  const detachGraphNode = (graph, key) => {
+    const record = graph.edit(key);
+    if (!record.parentKey) throw new Error("plugin UI root cannot be detached");
+    const parentKey = record.parentKey;
+    const parent = graph.edit(parentKey);
+    if (record.prevKey) graph.edit(record.prevKey).nextKey = record.nextKey;
+    else parent.firstChildKey = record.nextKey;
+    if (record.nextKey) graph.edit(record.nextKey).prevKey = record.prevKey;
+    else parent.lastChildKey = record.prevKey;
+    record.parentKey = undefined;
+    record.prevKey = null;
+    record.nextKey = null;
+    markGraphHeightDirty(graph, parentKey);
+  };
+  const attachGraphNode = (graph, key, parentKey, beforeKey) => {
+    const record = graph.edit(key);
+    const parent = graph.edit(parentKey);
+    if (parent.type !== "element" || record.parentKey) throw new Error("plugin UI insertion parent is invalid");
+    let previousKey = parent.lastChildKey;
+    if (beforeKey !== null) {
+      if (beforeKey === key) throw new Error("plugin UI anchor cannot target the moved node");
+      const before = graph.get(beforeKey);
+      if (!before || before.parentKey !== parentKey) throw new Error("plugin UI anchor is invalid");
+      previousKey = before.prevKey;
+      graph.edit(beforeKey).prevKey = key;
+    } else {
+      parent.lastChildKey = key;
+    }
+    if (previousKey) graph.edit(previousKey).nextKey = key;
+    else parent.firstChildKey = key;
+    record.parentKey = parentKey;
+    record.prevKey = previousKey;
+    record.nextKey = beforeKey;
+    if (beforeKey === null) parent.lastChildKey = key;
+    markGraphHeightDirty(graph, parentKey);
   };
   const validatePatch = (operations) => {
-    if (!Array.isArray(operations) || operations.length > maxRenderNodes) throw new Error("plugin UI patch exceeds limits");
-    const nextTree = cloneVNode(uiTree);
-    const initialIndex = indexModel(nextTree);
-    const model = initialIndex.elements;
-    let nodeCount = initialIndex.nodeCount;
+    if (!Array.isArray(operations) || operations.length > maxPatchOperations) throw new Error("plugin UI patch exceeds limits");
+    const graph = createGraphOverlay(uiGraph);
+    const plan = [];
     for (const operation of operations) {
       if (!isRecord(operation) || typeof operation.type !== "string") throw new Error("plugin UI patch operation is invalid");
       if (operation.type === "set_text") {
-        if (!exactKeys(operation, ["type", "parent_key", "child_index", "text"]) || !validResourceIdentifier(operation.parent_key) ||
-            !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 || typeof operation.text !== "string" || operation.text.length > maxTextLength) throw new Error("plugin UI text patch is invalid");
-        const parent = model.get(operation.parent_key)?.node;
-        if (!parent || typeof (parent.children || [])[operation.child_index] !== "string") throw new Error("plugin UI text patch target is invalid");
-        parent.children[operation.child_index] = operation.text;
+        if (!exactKeys(operation, ["type", "target_key", "text"]) || !validResourceIdentifier(operation.target_key) ||
+            typeof operation.text !== "string" || operation.text.length > maxTextLength) throw new Error("plugin UI text patch is invalid");
+        const target = graph.edit(operation.target_key);
+        if (target.type !== "text") throw new Error("plugin UI text patch target is invalid");
+        target.text = operation.text;
+        plan.push(operation);
       } else if (operation.type === "patch_attributes") {
         if (!exactKeys(operation, ["type", "target_key", "set", "remove"]) || !validResourceIdentifier(operation.target_key) ||
-            !isRecord(operation.set) || !Array.isArray(operation.remove) || operation.remove.some((name) => typeof name !== "string") ||
-            Object.keys(operation.set).some((name) => typeof name !== "string")) throw new Error("plugin UI attribute patch is invalid");
-        const target = model.get(operation.target_key)?.node;
-        if (!target || transferredCanvasKey(target.key) || Object.keys(operation.set).some((name) => editableControlAttribute(target.tag, name)) ||
+            !isRecord(operation.set) || Object.keys(operation.set).length > maxAttributesPerElement || !Array.isArray(operation.remove) ||
+            operation.remove.length > maxAttributesPerElement || new Set(operation.remove).size !== operation.remove.length ||
+            operation.remove.some((name) => typeof name !== "string")) throw new Error("plugin UI attribute patch is invalid");
+        const target = graph.edit(operation.target_key);
+        if (target.type !== "element" || transferredCanvasKey(target.key) || Object.keys(operation.set).some((name) => editableControlAttribute(target.tag, name)) ||
             operation.remove.some((name) => editableControlAttribute(target.tag, name))) throw new Error("plugin UI attribute patch target is invalid");
         target.attributes ||= {};
         for (const [name, value] of Object.entries(operation.set)) {
@@ -1193,77 +1367,66 @@
           target.attributes[name] = value;
         }
         for (const name of operation.remove) delete target.attributes[name];
+        plan.push(operation);
       } else if (operation.type === "patch_control") {
         if (!Object.keys(operation).every((key) => ["type", "target_key", "edit_revision", "value", "checked"].includes(key)) ||
             !validResourceIdentifier(operation.target_key) || !Number.isSafeInteger(operation.edit_revision) || operation.edit_revision < 0 ||
             (operation.value === undefined && operation.checked === undefined) ||
             (operation.value !== undefined && operation.value !== null && typeof operation.value !== "string") ||
             (operation.checked !== undefined && operation.checked !== null && typeof operation.checked !== "boolean")) throw new Error("plugin UI control patch is invalid");
-        const target = model.get(operation.target_key)?.node;
-        if (!target || !["input", "textarea", "select", "option"].includes(target.tag)) throw new Error("plugin UI control patch target is invalid");
+        const target = graph.edit(operation.target_key);
+        if (target.type !== "element" || !["input", "textarea", "select", "option"].includes(target.tag)) throw new Error("plugin UI control patch target is invalid");
         target.attributes ||= {};
         if (operation.value !== undefined) operation.value === null ? delete target.attributes.value : target.attributes.value = operation.value;
         if (operation.checked !== undefined) operation.checked === null ? delete target.attributes.checked : target.attributes.checked = operation.checked;
+        plan.push(operation);
       } else if (operation.type === "insert_child") {
-        if (!exactKeys(operation, ["type", "parent_key", "child_index", "node"]) || !validResourceIdentifier(operation.parent_key) ||
-            !Number.isSafeInteger(operation.child_index) || operation.child_index < 0) throw new Error("plugin UI insertion is invalid");
-        const parentEntry = model.get(operation.parent_key);
-        const parent = parentEntry?.node;
-        if (!parent || operation.child_index > (parent.children || []).length) throw new Error("plugin UI insertion target is invalid");
-        const inserted = indexModel(operation.node);
-        if (nodeCount + inserted.nodeCount > maxRenderNodes) throw new Error("plugin UI insertion exceeds node limits");
-        for (const [key, entry] of inserted.elements) {
-          if (model.has(key) || entry.depth + parentEntry.depth > maxRenderDepth) throw new Error("plugin UI insertion subtree is invalid");
-        }
-        parent.children ||= [];
-        parent.children.splice(operation.child_index, 0, operation.node);
-        nodeCount += inserted.nodeCount;
-        for (const [key, entry] of inserted.elements) {
-          model.set(key, {
-            node: entry.node,
-            parent: entry.parent ?? parent,
-            depth: entry.depth + parentEntry.depth,
-          });
-        }
+        if (!exactKeys(operation, ["type", "parent_key", "before_key", "node"]) || !validResourceIdentifier(operation.parent_key) ||
+            (operation.before_key !== null && !validResourceIdentifier(operation.before_key))) throw new Error("plugin UI insertion is invalid");
+        const parent = graph.get(operation.parent_key);
+        if (!parent || parent.type !== "element") throw new Error("plugin UI insertion target is invalid");
+        const state = { nodes: 0 };
+        const built = buildWorkerSubtree(operation.node, state, graphDepth(graph, operation.parent_key) + 1, undefined);
+        if (graph.count() + state.nodes > maxRenderNodes) throw new Error("plugin UI insertion exceeds node limits");
+        for (const record of built.graph.values()) graph.add(record);
+        attachGraphNode(graph, operation.node.key, operation.parent_key, operation.before_key);
+        plan.push({ ...operation, built });
       } else if (operation.type === "remove_child") {
-        if (!Object.keys(operation).every((key) => ["type", "parent_key", "child_index", "child_key"].includes(key)) ||
-            !validResourceIdentifier(operation.parent_key) || !Number.isSafeInteger(operation.child_index) || operation.child_index < 0 ||
-            (operation.child_key !== undefined && !validResourceIdentifier(operation.child_key))) throw new Error("plugin UI removal is invalid");
-        const parent = model.get(operation.parent_key)?.node;
-        const child = parent && (parent.children || [])[operation.child_index];
-        if (!parent || child === undefined || (operation.child_key === undefined) !== (typeof child === "string") ||
-            (typeof child !== "string" && operation.child_key !== child.key) || subtreeHasTransferredCanvas(child)) throw new Error("plugin UI removal target is invalid");
-        const removed = indexModel(child);
-        parent.children.splice(operation.child_index, 1);
-        nodeCount -= removed.nodeCount;
-        for (const key of removed.elements.keys()) model.delete(key);
+        if (!exactKeys(operation, ["type", "target_key"]) || !validResourceIdentifier(operation.target_key)) throw new Error("plugin UI removal is invalid");
+        const target = graph.get(operation.target_key);
+        if (!target || !target.parentKey) throw new Error("plugin UI removal target is invalid");
+        if (graphSubtreeHasTransferredCanvas(graph, operation.target_key)) throw new Error("transferred canvas cannot be removed");
+        const removedKeys = graphSubtreeKeys(graph, operation.target_key);
+        detachGraphNode(graph, operation.target_key);
+        for (const key of removedKeys) graph.remove(key);
+        plan.push({ ...operation, removedKeys });
       } else if (operation.type === "move_child") {
-        if (!exactKeys(operation, ["type", "parent_key", "child_key", "from_index", "to_index"]) || !validResourceIdentifier(operation.parent_key) ||
-            !validResourceIdentifier(operation.child_key) || !Number.isSafeInteger(operation.from_index) || !Number.isSafeInteger(operation.to_index) ||
-            operation.from_index < 0 || operation.to_index < 0 || transferredCanvasKey(operation.child_key)) throw new Error("plugin UI move is invalid");
-        const parent = model.get(operation.parent_key)?.node;
-        const child = parent && (parent.children || [])[operation.from_index];
-        if (!parent || typeof child === "string" || child?.key !== operation.child_key || operation.to_index >= parent.children.length) throw new Error("plugin UI move target is invalid");
-        parent.children.splice(operation.from_index, 1);
-        parent.children.splice(operation.to_index, 0, child);
+        if (!exactKeys(operation, ["type", "target_key", "parent_key", "before_key"]) || !validResourceIdentifier(operation.target_key) ||
+            !validResourceIdentifier(operation.parent_key) || (operation.before_key !== null && !validResourceIdentifier(operation.before_key))) {
+          throw new Error("plugin UI move is invalid");
+        }
+        const target = graph.get(operation.target_key);
+        const parent = graph.get(operation.parent_key);
+        if (!target || !target.parentKey || !parent || parent.type !== "element" ||
+            graphParentChainContains(graph, operation.parent_key, operation.target_key) ||
+            graphSubtreeHasTransferredCanvas(graph, operation.target_key)) throw new Error("plugin UI move target is invalid");
+        if (graphDepth(graph, operation.parent_key) + graphSubtreeHeight(graph, operation.target_key) > maxRenderDepth) {
+          throw new Error("plugin UI move exceeds depth limits");
+        }
+        detachGraphNode(graph, operation.target_key);
+        attachGraphNode(graph, operation.target_key, operation.parent_key, operation.before_key);
+        plan.push(operation);
       } else {
         throw new Error("plugin UI patch operation type is unsupported");
       }
     }
-    return nextTree;
-  };
-  const removeDOMIndex = (node) => {
-    if (!(node instanceof Element)) return;
-    for (const element of [node, ...node.querySelectorAll("[data-redevplugin-key]")]) {
-      const key = element.getAttribute("data-redevplugin-key");
-      if (key) uiElements.delete(key);
-    }
+    return { graph, plan };
   };
   const applyPatchOperation = (operation) => {
-    const parent = operation.parent_key && uiElements.get(operation.parent_key);
-    const target = operation.target_key && uiElements.get(operation.target_key);
+    const parent = operation.parent_key && uiNodes.get(operation.parent_key);
+    const target = operation.target_key && uiNodes.get(operation.target_key);
     if (operation.type === "set_text") {
-      parent.childNodes[operation.child_index].nodeValue = operation.text;
+      target.nodeValue = operation.text;
     } else if (operation.type === "patch_attributes") {
       for (const name of operation.remove) {
         target.removeAttribute(name);
@@ -1276,18 +1439,15 @@
       if (operation.value !== undefined && "value" in target) target.value = operation.value === null ? "" : operation.value;
       if (operation.checked !== undefined && "checked" in target) target.checked = operation.checked === true;
     } else if (operation.type === "insert_child") {
-      const elements = new Map();
-      const node = buildWorkerNode(operation.node, { nodes: 0 }, 1, elements);
-      parent.insertBefore(node, parent.childNodes[operation.child_index] || null);
-      for (const [key, element] of elements) uiElements.set(key, element);
+      const before = operation.before_key === null ? null : uiNodes.get(operation.before_key);
+      parent.insertBefore(operation.built.node, before || null);
+      for (const [key, node] of operation.built.nodes) uiNodes.set(key, node);
     } else if (operation.type === "remove_child") {
-      const node = parent.childNodes[operation.child_index];
-      removeDOMIndex(node);
-      node.remove();
+      for (const key of operation.removedKeys) uiNodes.delete(key);
+      target.remove();
     } else if (operation.type === "move_child") {
-      const node = parent.childNodes[operation.from_index];
-      const reference = operation.to_index > operation.from_index ? parent.childNodes[operation.to_index + 1] : parent.childNodes[operation.to_index];
-      parent.insertBefore(node, reference || null);
+      const before = operation.before_key === null ? null : uiNodes.get(operation.before_key);
+      parent.insertBefore(target, before || null);
     }
   };
   const onAnimationFrame = (commit) => new Promise((resolve, reject) => requestAnimationFrame(() => {
@@ -1295,8 +1455,8 @@
   }));
   const mountWorkerTree = async (tree) => {
     if (uiRevision !== 0) throw new Error("plugin UI mount may only occur once");
-    const elements = new Map();
-    const root = buildWorkerNode(tree, { nodes: 0 }, 1, elements);
+    const built = buildWorkerSubtree(tree, { nodes: 0 }, 1, undefined);
+    const root = built.node;
     if (!(root instanceof Element)) throw new Error("plugin UI root must be an element");
     validateCanvasIdentifiers(root);
     const renderState = captureRenderState();
@@ -1304,20 +1464,20 @@
       document.body.replaceChildren(root);
       restoreRenderState(renderState);
     });
-    uiTree = cloneVNode(tree);
-    uiElements = elements;
+    uiGraph = built.graph;
+    uiNodes = built.nodes;
     uiRevision = 1;
     sendParent({ type: "redevplugin.surface.first_commit" });
   };
   const patchWorkerTree = async (baseRevision, revision, operations) => {
     if (uiRevision < 1 || baseRevision !== uiRevision || revision !== baseRevision + 1) throw new Error("plugin UI patch revision is invalid");
-    const nextTree = validatePatch(operations);
+    const validated = validatePatch(operations);
     const renderState = captureRenderState();
     await onAnimationFrame(() => {
-      for (const operation of operations) applyPatchOperation(operation);
+      for (const operation of validated.plan) applyPatchOperation(operation);
+      validated.graph.commit();
       restoreRenderState(renderState);
     });
-    uiTree = nextTree;
     uiRevision = revision;
   };
   const actionPayload = (event, element, eventType = event.type) => {
@@ -3464,7 +3624,7 @@
   }
   function normalizePluginJSONValue(value, depth = 0, state = { nodes: 0, seen: /* @__PURE__ */ new Set() }) {
     state.nodes += 1;
-    if (state.nodes > 4096 || depth > 64) throw new TypeError("JSON value exceeds structural limits");
+    if (state.nodes > maxPluginJSONStructuralNodes || depth > 64) throw new TypeError("JSON value exceeds structural limits");
     if (value === null || typeof value === "string" || typeof value === "boolean") return value;
     if (typeof value === "number") {
       if (!Number.isFinite(value)) throw new TypeError("JSON numbers must be finite");
@@ -3699,6 +3859,7 @@
       sendSurfaceVisibility();
       elements.placeholder.hidden = true;
       elements.stage.setAttribute("aria-busy", "false");
+      restoreNavigationFocus(navigationTrigger);
     } catch (error) {
       if (sequence === openSequence) showError(surfaceError ?? error);
     } finally {

@@ -44,7 +44,7 @@
     "environment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "arch", "logical_cpus", "go_version", "node_version", "rustc_version"],
+      "required": ["os", "arch", "logical_cpus", "go_version", "node_version", "rustc_version", "chromium_version"],
       "properties": {
         "os": { "type": "string", "minLength": 1 },
         "arch": { "type": "string", "minLength": 1 },
@@ -61,7 +61,7 @@
       "required": ["id", "gate", "status", "sample_count", "metrics"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]+$" },
-        "gate": { "enum": ["fast", "weekly", "full", "release"] },
+        "gate": { "enum": ["fast", "smoke", "weekly", "full", "release"] },
         "status": { "const": "pass" },
         "sample_count": { "type": "integer", "minimum": 1 },
         "metrics": {

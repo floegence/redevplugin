@@ -30,6 +30,13 @@ type testProcessManager struct {
 	*runtimeclient.ProcessSupervisor
 }
 
+func (m testProcessManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
+	if services.StreamSink == nil {
+		return runtimeclient.ErrRuntimeHostServicesInvalid
+	}
+	return nil
+}
+
 func (m testProcessManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	if err := m.ProcessSupervisor.Start(ctx, target); err != nil {
 		return runtimeclient.ManagerHealth{}, err
@@ -83,16 +90,21 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 		networkExecutor:    executor,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:     os.Args[0],
-		Args:            []string{"-test.run=TestMain"},
-		Env:             append(os.Environ(), hostRuntimeProcessHelperEnv+"=1"),
-		Diagnostics:     h.adapters.Diagnostics,
-		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:    h.adapters.PluginData,
-		StorageKV:       h.adapters.PluginData,
-		Connectivity:    broker,
-		NetworkExecutor: executor,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		HandshakeTimeout:      5 * time.Second,
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), hostRuntimeProcessHelperEnv+"=1"),
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		Connectivity:          broker,
+		NetworkExecutor:       executor,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,38 +175,48 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 		httpStatus:   http.StatusAccepted,
 		streamChunks: [][]byte{[]byte("line 1\n"), []byte("line 2\n")},
 	}
+	var manager *runtimeclient.ProcessManager
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
 		connectivityBroker: broker,
 		networkExecutor:    executor,
+		runtimeManagerFactory: func(deps testRuntimeManagerDependencies) (runtimeclient.Manager, error) {
+			var err error
+			manager, err = runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
+				ShardCount: 1,
+				Supervisor: runtimeclient.ProcessSupervisorOptions{
+					Limits:                runtimeclient.DefaultRuntimeLimits(),
+					HandshakeTimeout:      5 * time.Second,
+					HeartbeatInterval:     2 * time.Second,
+					MaxHeartbeatStaleness: 5 * time.Second,
+					RuntimePath:           os.Args[0],
+					Args:                  []string{"-test.run=TestMain"},
+					Env:                   append(os.Environ(), hostRuntimeProcessHelperEnv+"=1", "REDEVPLUGIN_HOST_RUNTIME_HTTP_STREAM=1"),
+					Diagnostics:           deps.Diagnostics,
+					Artifacts:             runtimeArtifactProvider{assets: deps.Assets},
+					HandleGrants:          runtimeHandleGrantValidator{tokens: deps.SurfaceTokens},
+					StorageFiles:          deps.PluginData,
+					StorageKV:             deps.PluginData,
+					Connectivity:          deps.Connectivity,
+					NetworkExecutor:       deps.NetworkExecutor,
+				},
+			})
+			return manager, err
+		},
 	})
-	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:     os.Args[0],
-		Args:            []string{"-test.run=TestMain"},
-		Env:             append(os.Environ(), hostRuntimeProcessHelperEnv+"=1", "REDEVPLUGIN_HOST_RUNTIME_HTTP_STREAM=1"),
-		Diagnostics:     h.adapters.Diagnostics,
-		Artifacts:       runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:    runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:    h.adapters.PluginData,
-		StorageKV:       h.adapters.PluginData,
-		Connectivity:    broker,
-		NetworkExecutor: executor,
-		StreamSink:      hostRuntimeStreamSink{executions: h.executions},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.adapters.RuntimeManager = testProcessManager{ProcessSupervisor: supervisor}
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(hostTestContext(), 3*time.Second)
 		defer cancel()
-		if err := supervisor.Stop(stopCtx); err != nil {
+		if err := h.StopRuntime(stopCtx); err != nil {
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "test-os", Arch: "test-arch"}); err != nil {
-		t.Fatalf("Start() error = %v", err)
+	if manager == nil {
+		t.Fatal("runtime manager factory did not return the process manager")
+	}
+	if _, err := h.StartRuntime(ctx, StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}}); err != nil {
+		t.Fatalf("StartRuntime() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.view")
 
@@ -283,16 +305,19 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 		networkExecutor:    executor,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:      runtimePath,
-		Diagnostics:      h.adapters.Diagnostics,
-		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     h.adapters.PluginData,
-		StorageKV:        h.adapters.PluginData,
-		Connectivity:     broker,
-		NetworkExecutor:  executor,
-		StreamSink:       hostRuntimeStreamSink{executions: h.executions},
-		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           runtimePath,
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		Connectivity:          broker,
+		NetworkExecutor:       executor,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -364,13 +389,18 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 		localGenerated: true,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:  runtimePath,
-		Diagnostics:  h.adapters.Diagnostics,
-		Artifacts:    runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants: runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles: h.adapters.PluginData,
-		StorageKV:    h.adapters.PluginData,
-		Connectivity: h.adapters.Connectivity,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           runtimePath,
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		Connectivity:          h.adapters.Connectivity,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -441,15 +471,19 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		networkExecutor:    executor,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:      runtimePath,
-		Diagnostics:      h.adapters.Diagnostics,
-		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     h.adapters.PluginData,
-		StorageKV:        h.adapters.PluginData,
-		Connectivity:     broker,
-		NetworkExecutor:  executor,
-		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           runtimePath,
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		Connectivity:          broker,
+		NetworkExecutor:       executor,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -637,15 +671,19 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 				networkExecutor:    executor,
 			})
 			supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-				RuntimePath:      runtimePath,
-				Diagnostics:      h.adapters.Diagnostics,
-				Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-				HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-				StorageFiles:     h.adapters.PluginData,
-				StorageKV:        h.adapters.PluginData,
-				Connectivity:     broker,
-				NetworkExecutor:  executor,
-				HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+				Limits:                runtimeclient.DefaultRuntimeLimits(),
+				HeartbeatInterval:     2 * time.Second,
+				MaxHeartbeatStaleness: 5 * time.Second,
+				RuntimePath:           runtimePath,
+				Diagnostics:           h.adapters.Diagnostics,
+				Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+				HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+				StorageFiles:          h.adapters.PluginData,
+				StorageKV:             h.adapters.PluginData,
+				Connectivity:          broker,
+				NetworkExecutor:       executor,
+				StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+				HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -711,14 +749,18 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 		localGenerated: true,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:      runtimePath,
-		Diagnostics:      h.adapters.Diagnostics,
-		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     h.adapters.PluginData,
-		StorageKV:        h.adapters.PluginData,
-		Connectivity:     h.adapters.Connectivity,
-		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           runtimePath,
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		Connectivity:          h.adapters.Connectivity,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -795,14 +837,18 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 		localGenerated: true,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:      runtimePath,
-		Diagnostics:      h.adapters.Diagnostics,
-		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     h.adapters.PluginData,
-		StorageKV:        h.adapters.PluginData,
-		Connectivity:     h.adapters.Connectivity,
-		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           runtimePath,
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		Connectivity:          h.adapters.Connectivity,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -879,15 +925,19 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 		localGenerated: true,
 	})
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
-		RuntimePath:      runtimePath,
-		Diagnostics:      h.adapters.Diagnostics,
-		Artifacts:        runtimeArtifactProvider{assets: h.adapters.Assets},
-		HandleGrants:     runtimeHandleGrantValidator{tokens: h.surfaceTokens},
-		StorageFiles:     h.adapters.PluginData,
-		StorageKV:        h.adapters.PluginData,
-		StorageSQLite:    h.adapters.PluginData,
-		Connectivity:     h.adapters.Connectivity,
-		HandshakeTimeout: hostRuntimeProcessHandshakeTimeout,
+		Limits:                runtimeclient.DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           runtimePath,
+		Diagnostics:           h.adapters.Diagnostics,
+		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
+		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
+		StorageFiles:          h.adapters.PluginData,
+		StorageKV:             h.adapters.PluginData,
+		StorageSQLite:         h.adapters.PluginData,
+		Connectivity:          h.adapters.Connectivity,
+		StreamSink:            hostRuntimeStreamSink{executions: h.executions},
+		HandshakeTimeout:      hostRuntimeProcessHandshakeTimeout,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -15,6 +15,11 @@ import (
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
 
+const (
+	commandRuntimeHeartbeatInterval     = 2 * time.Second
+	commandRuntimeMaxHeartbeatStaleness = 5 * time.Second
+)
+
 type commandRuntimeDependencies struct {
 	Path             string
 	Diagnostics      observability.DiagnosticsSink
@@ -52,16 +57,19 @@ func newCommandRuntimeManager(deps commandRuntimeDependencies) (runtimeclient.Ma
 	return runtimeclient.NewProcessManager(runtimeclient.ProcessManagerOptions{
 		ShardCount: deps.ShardCount,
 		Supervisor: runtimeclient.ProcessSupervisorOptions{
-			RuntimePath:      deps.Path,
-			Diagnostics:      deps.Diagnostics,
-			Artifacts:        commandRuntimeArtifactProvider{assets: deps.Assets},
-			HandleGrants:     commandRuntimeHandleGrantValidator{tokens: deps.SurfaceTokens},
-			StorageFiles:     deps.PluginData,
-			StorageKV:        deps.PluginData,
-			StorageSQLite:    deps.PluginData,
-			Connectivity:     deps.Connectivity,
-			NetworkExecutor:  deps.NetworkExecutor,
-			HandshakeTimeout: deps.HandshakeTimeout,
+			Limits:                runtimeclient.DefaultRuntimeLimits(),
+			RuntimePath:           deps.Path,
+			Diagnostics:           deps.Diagnostics,
+			Artifacts:             commandRuntimeArtifactProvider{assets: deps.Assets},
+			HandleGrants:          commandRuntimeHandleGrantValidator{tokens: deps.SurfaceTokens},
+			StorageFiles:          deps.PluginData,
+			StorageKV:             deps.PluginData,
+			StorageSQLite:         deps.PluginData,
+			Connectivity:          deps.Connectivity,
+			NetworkExecutor:       deps.NetworkExecutor,
+			HandshakeTimeout:      deps.HandshakeTimeout,
+			HeartbeatInterval:     commandRuntimeHeartbeatInterval,
+			MaxHeartbeatStaleness: commandRuntimeMaxHeartbeatStaleness,
 		},
 	})
 }

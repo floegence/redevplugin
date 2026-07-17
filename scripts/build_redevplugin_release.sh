@@ -8,6 +8,8 @@ RUNTIME_TARGET=""
 NPM_PACKAGE=""
 WORKER_SDK_PACKAGE=""
 SOURCE_COMMIT=""
+PERFORMANCE_GATE="release"
+PERFORMANCE_EVIDENCE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,12 +37,33 @@ while [[ $# -gt 0 ]]; do
       SOURCE_COMMIT="$2"
       shift 2
       ;;
+    --performance-gate)
+      PERFORMANCE_GATE="$2"
+      shift 2
+      ;;
+    --performance-evidence)
+      PERFORMANCE_EVIDENCE="$2"
+      shift 2
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
       ;;
   esac
 done
+
+if [[ "$PERFORMANCE_GATE" != "release" && "$PERFORMANCE_GATE" != "smoke" ]]; then
+  echo "performance gate must be release or smoke: $PERFORMANCE_GATE" >&2
+  exit 1
+fi
+if [[ -n "$PERFORMANCE_EVIDENCE" && "$PERFORMANCE_GATE" != "release" ]]; then
+  echo "precomputed performance evidence is only valid for the release gate" >&2
+  exit 1
+fi
+if [[ "$PERFORMANCE_GATE" == "release" && -z "$PERFORMANCE_EVIDENCE" ]]; then
+  echo "release builds require --performance-evidence from the immutable performance-release job" >&2
+  exit 1
+fi
 
 if [[ -z "$VERSION" ]]; then
   VERSION="$(git -C "$ROOT_DIR" describe --tags --always --dirty)"
@@ -65,6 +88,13 @@ fi
 if [[ -n "$WORKER_SDK_PACKAGE" && "$WORKER_SDK_PACKAGE" != /* ]]; then
   WORKER_SDK_PACKAGE="$ROOT_DIR/$WORKER_SDK_PACKAGE"
 fi
+if [[ -n "$PERFORMANCE_EVIDENCE" && "$PERFORMANCE_EVIDENCE" != /* ]]; then
+  PERFORMANCE_EVIDENCE="$ROOT_DIR/$PERFORMANCE_EVIDENCE"
+fi
+if [[ -n "$PERFORMANCE_EVIDENCE" && ! -f "$PERFORMANCE_EVIDENCE" ]]; then
+  echo "precomputed performance evidence not found: $PERFORMANCE_EVIDENCE" >&2
+  exit 1
+fi
 
 if [[ -n "${HOME:-}" && -x "$HOME/.cargo/bin/cargo" ]]; then
   PATH="$HOME/.cargo/bin:$PATH"
@@ -83,7 +113,24 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-GENERATED_AT=$(node --input-type=module -e 'process.stdout.write(new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z"))')
+if [[ -n "$PERFORMANCE_EVIDENCE" ]]; then
+  GENERATED_AT=$(node --input-type=module - "$PERFORMANCE_EVIDENCE" "$VERSION" "$SOURCE_COMMIT" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const [path, version, sourceCommit] = process.argv.slice(2);
+const evidence = JSON.parse(readFileSync(path, "utf8"));
+if (evidence.release_version !== version) throw new Error("precomputed performance evidence release_version mismatch");
+if (evidence.source_commit !== sourceCommit) throw new Error("precomputed performance evidence source_commit mismatch");
+if (!Number.isFinite(Date.parse(evidence.generated_at))) throw new Error("precomputed performance evidence generated_at is invalid");
+if (!Array.isArray(evidence.scenarios) || evidence.scenarios.some((scenario) => scenario.gate !== "release")) {
+  throw new Error("precomputed performance evidence must contain only release scenarios");
+}
+process.stdout.write(evidence.generated_at);
+NODE
+  )
+else
+  GENERATED_AT=$(node --input-type=module -e 'process.stdout.write(new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z"))')
+fi
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/bin" "$OUT_DIR/contracts" "$OUT_DIR/docs/release" "$OUT_DIR/examples/host-capability" "$OUT_DIR/npm" "$OUT_DIR/notices" "$OUT_DIR/sdk"
@@ -178,13 +225,24 @@ NODE
 
 node "$ROOT_DIR/scripts/generate_third_party_notices.mjs" "$ROOT_DIR" "$OUT_DIR/THIRD_PARTY_NOTICES.md"
 
-REDEVPLUGIN_PERFORMANCE_RUNTIME="$OUT_DIR/bin/redevplugin-runtime" \
-  "$ROOT_DIR/scripts/check_redevplugin_performance.sh" \
-  --release \
-  --output "$OUT_DIR/performance-evidence.json" \
-  --version "$VERSION" \
-  --source-commit "$SOURCE_COMMIT" \
-  --generated-at "$GENERATED_AT"
+if [[ -n "$PERFORMANCE_EVIDENCE" ]]; then
+  node "$ROOT_DIR/scripts/copy_redevplugin_performance_evidence.mjs" \
+    --input "$PERFORMANCE_EVIDENCE" \
+    --output "$OUT_DIR/performance-evidence.json" \
+    --contract "$OUT_DIR/contracts/spec/plugin/performance-contract-v1.json" \
+    --compatibility "$OUT_DIR/compatibility.json" \
+    --version "$VERSION" \
+    --source-commit "$SOURCE_COMMIT" \
+    --generated-at "$GENERATED_AT"
+else
+  REDEVPLUGIN_PERFORMANCE_RUNTIME="$OUT_DIR/bin/redevplugin-runtime" \
+    "$ROOT_DIR/scripts/check_redevplugin_performance.sh" \
+    --smoke \
+    --output "$OUT_DIR/performance-evidence.json" \
+    --version "$VERSION" \
+    --source-commit "$SOURCE_COMMIT" \
+    --generated-at "$GENERATED_AT"
+fi
 
 node --input-type=module - "$OUT_DIR" "$VERSION" "$RUNTIME_TARGET" "$SOURCE_COMMIT" "$GENERATED_AT" <<'NODE'
 import { createHash } from "node:crypto";
@@ -262,6 +320,10 @@ const sums = files.map((file) => `${file.sha256}  ${file.path}`).join("\n") + "\
 writeFileSync(join(outDir, "SHA256SUMS"), sums);
 NODE
 
-node "$ROOT_DIR/scripts/verify_redevplugin_release_bundle.mjs" "$OUT_DIR" "$VERSION"
+if [[ "$PERFORMANCE_GATE" == "release" ]]; then
+  node "$ROOT_DIR/scripts/verify_redevplugin_release_bundle.mjs" "$OUT_DIR" "$VERSION"
+else
+  node "$ROOT_DIR/scripts/verify_redevplugin_release_bundle.mjs" --skip-execution --allow-smoke "$OUT_DIR" "$VERSION"
+fi
 
 echo "redevplugin release bundle created at $OUT_DIR"

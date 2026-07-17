@@ -210,11 +210,12 @@ export const opaqueSurfaceSafeInputTypes = [
 ] as const;
 
 export const opaqueSurfaceRenderLimits = {
-  "max_message_bytes": 262144,
+  "max_message_bytes": 524288,
   "max_in_flight_requests": 256,
   "max_renders_per_second": 60,
   "max_render_depth": 32,
   "max_render_nodes": 4096,
+  "max_patch_operations": 1024,
   "max_attributes_per_element": 64,
   "max_text_length": 65536,
   "max_attribute_value_length": 4096,

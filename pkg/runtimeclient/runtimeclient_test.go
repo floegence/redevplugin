@@ -59,12 +59,12 @@ func TestReadIPCFrameRejectsNonCanonicalJSON(t *testing.T) {
 		name  string
 		frame string
 	}{
-		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v2","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
-		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v2","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
-		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v2","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
-		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v2","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
-		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v2","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
-		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v2","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
+		{name: "unknown field", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","payload":{},"future":true}`},
+		{name: "duplicate frame type", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","frame_type":"heartbeat","request_id":"r1","payload":{}}`},
+		{name: "case folded request id", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","REQUEST_ID":"r2","payload":{}}`},
+		{name: "case alias only", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","REQUEST_ID":"r1","payload":{}}`},
+		{name: "duplicate nested payload key", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","payload":{"ok":true,"ok":false}}`},
+		{name: "trailing JSON", frame: `{"ipc_version":"rust-ipc-v3","frame_type":"diagnostic","request_id":"r1","payload":{}} {}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -83,15 +83,15 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 		RuntimeGenerationID: "g1",
 	}
 	for _, payload := range []string{
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v2","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
-		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v2","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v2","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v2","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
-		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v2","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456","future":true}`,
+		`{"runtime_version":"1.0.0","runtime_version":"2.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","RUNTIME_VERSION":"2.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"RUNTIME_VERSION":"1.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"}`,
+		`{"runtime_version":"1.0.0","rust_ipc_version":"rust-ipc-v3","wasm_abi_version":"redevplugin-wasm-worker-v2","channel_nonce":"nonce_1234567890123456"} {}`,
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)
-		if _, err := validateHelloAck("hello_1", "g1", "nonce_1234567890123456", frame); !errors.Is(err, ErrRuntimeHandshake) {
+		if _, err := validateHelloAck("hello_1", "g1", "nonce_1234567890123456", DefaultRuntimeLimits(), frame); !errors.Is(err, ErrRuntimeHandshake) {
 			t.Fatalf("validateHelloAck(%s) error = %v, want ErrRuntimeHandshake", payload, err)
 		}
 	}
@@ -189,7 +189,7 @@ func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
 			name:     "storage file",
 			wantCode: "STORAGE_FILE_TOO_LARGE",
 			write: func(buffer *bytes.Buffer) error {
-				return (&ProcessSupervisor{}).writeStorageFileResponse(buffer, "g1", "r1", storageFileResponsePayload{
+				return (&ProcessSupervisor{}).writeStorageFileResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, storageFileResponsePayload{
 					Operation: "read", OK: true, DataBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
 					Usage: &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "workspace", QuotaBytes: 1, QuotaFiles: 1},
 				})
@@ -199,7 +199,7 @@ func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
 			name:     "storage kv",
 			wantCode: "STORAGE_KV_VALUE_TOO_LARGE",
 			write: func(buffer *bytes.Buffer) error {
-				return (&ProcessSupervisor{}).writeStorageKVResponse(buffer, "g1", "r1", storageKVResponsePayload{
+				return (&ProcessSupervisor{}).writeStorageKVResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, storageKVResponsePayload{
 					Operation: "get", OK: true, ValueBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
 					Usage: &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "settings", QuotaBytes: 1, QuotaFiles: 1},
 				})
@@ -211,7 +211,7 @@ func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
 			write: func(buffer *bytes.Buffer) error {
 				large := strings.Repeat("x", maxWASMHostcallResponseBytes+1)
 				rows := [][]storageSQLiteValueIPC{{{Text: &large}}}
-				return (&ProcessSupervisor{}).writeStorageSQLiteResponse(buffer, "g1", "r1", storageSQLiteResponsePayload{
+				return (&ProcessSupervisor{}).writeStorageSQLiteResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, storageSQLiteResponsePayload{
 					Operation: "query", OK: true, Rows: &rows, Columns: &[]string{}, Usage: &storage.Usage{PluginInstanceID: "plugini_1", StoreID: "db", QuotaBytes: 1, QuotaFiles: 1},
 				})
 			},
@@ -220,7 +220,7 @@ func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
 			name:     "network",
 			wantCode: "NETWORK_RESPONSE_TOO_LARGE",
 			write: func(buffer *bytes.Buffer) error {
-				return (&ProcessSupervisor{}).writeNetworkExecuteResponse(buffer, "g1", "r1", networkExecuteResponsePayload{
+				return (&ProcessSupervisor{}).writeNetworkExecuteResponse(buffer, "g1", ipcFrame{RequestID: "r1", ParentRequestID: "invoke1"}, networkExecuteResponsePayload{
 					OK: true, BodyBase64: strings.Repeat("A", maxWASMHostcallResponseBytes+1),
 				})
 			},
@@ -236,7 +236,9 @@ func TestBrokerResponsesFailClosedAboveWASMHostcallLimit(t *testing.T) {
 			if output.Len() > maxWASMHostcallResponseBytes {
 				t.Fatalf("bounded response length = %d, want <= %d", output.Len(), maxWASMHostcallResponseBytes)
 			}
-			if !strings.Contains(output.String(), tc.wantCode) || !strings.Contains(output.String(), `"error_origin":"hostcall"`) {
+			if !strings.Contains(output.String(), tc.wantCode) ||
+				!strings.Contains(output.String(), `"error_origin":"hostcall"`) ||
+				!strings.Contains(output.String(), `"parent_request_id":"invoke1"`) {
 				t.Fatalf("bounded response = %s, want %s hostcall error", output.String(), tc.wantCode)
 			}
 		})
@@ -357,12 +359,18 @@ func TestStorageSuccessResponsesRejectMixedOrIncompleteOperations(t *testing.T) 
 }
 
 func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
+	const maxHeartbeatStaleness = 5 * time.Second
 	store := &runtimeDiagnosticSink{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
-		Diagnostics: store,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: maxHeartbeatStaleness,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		Diagnostics:           store,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +397,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	}
 	if heartbeat.RuntimeGenerationID != health.RuntimeGenerationID ||
 		heartbeat.RuntimeUnixNano <= 0 ||
-		heartbeat.MaxStalenessMillis != int64(defaultRuntimeHeartbeatMaxStaleness/time.Millisecond) ||
+		heartbeat.MaxStalenessMillis != int64(maxHeartbeatStaleness/time.Millisecond) ||
 		heartbeat.HostSentUnixNanoEcho <= 0 {
 		t.Fatalf("heartbeat mismatch: %#v", heartbeat)
 	}
@@ -435,11 +443,16 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *testing.T) {
 	diagnostics := &runtimeDiagnosticSink{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:         os.Args[0],
-		Args:                []string{"-test.run=TestMain"},
-		Env:                 append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
-		Diagnostics:         diagnostics,
-		RuntimeLeaseReplays: NewMemoryRuntimeLeaseReplayStore(),
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		Diagnostics:           diagnostics,
+		RuntimeLeaseReplays:   NewMemoryRuntimeLeaseReplayStore(),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -474,9 +487,14 @@ func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *te
 
 func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE=1"),
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_FAIL_INVOKE=1"),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -563,270 +581,203 @@ func TestDecodeRuntimeResponseAcceptsClosedSuccessAndFailure(t *testing.T) {
 	}
 }
 
-func TestProcessSupervisorConfiguresBoundedInvocationAdmission(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{RuntimePath: os.Args[0]})
-	if err != nil {
-		t.Fatal(err)
+func TestRuntimeLimitsMustBeExplicitAndValid(t *testing.T) {
+	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{RuntimePath: os.Args[0], StreamSink: &recordingRuntimeStreamSink{}}); err == nil {
+		t.Fatal("NewProcessSupervisor() accepted zero runtime limits")
 	}
-	if supervisor.maxPendingInvocations != DefaultRuntimePendingInvocationLimit {
-		t.Fatalf("default max pending invocations = %d, want %d", supervisor.maxPendingInvocations, DefaultRuntimePendingInvocationLimit)
+	limits := DefaultRuntimeLimits()
+	if err := ValidateRuntimeLimits(limits); err != nil {
+		t.Fatalf("DefaultRuntimeLimits() error = %v", err)
 	}
-	if got, want := cap(supervisor.invocationAdmission), DefaultRuntimePendingInvocationLimit+1; got != want {
-		t.Fatalf("default invocation admission capacity = %d, want %d", got, want)
-	}
-
-	supervisor, err = NewProcessSupervisor(ProcessSupervisorOptions{
+	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
-		MaxPendingInvocations: MaxRuntimePendingInvocationLimit,
+		Limits:                limits,
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+	}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+		t.Fatalf("NewProcessSupervisor(without host services) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
+	}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Limits:                limits,
+		StreamSink:            &recordingRuntimeStreamSink{},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := cap(supervisor.invocationAdmission), MaxRuntimePendingInvocationLimit+1; got != want {
-		t.Fatalf("maximum invocation admission capacity = %d, want %d", got, want)
+	if supervisor.limits != limits {
+		t.Fatalf("runtime limits = %#v, want %#v", supervisor.limits, limits)
 	}
-
-	for _, invalid := range []int{-1, MaxRuntimePendingInvocationLimit + 1} {
-		_, err := NewProcessSupervisor(ProcessSupervisorOptions{
-			RuntimePath:           os.Args[0],
-			MaxPendingInvocations: invalid,
-		})
-		if !errors.Is(err, ErrRuntimePendingInvocationLimit) {
-			t.Fatalf("MaxPendingInvocations=%d error = %v, want %v", invalid, err, ErrRuntimePendingInvocationLimit)
+	invalid := []RuntimeLimits{
+		{},
+		{WorkerCount: 65, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: 65, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 2, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1025, ModuleCacheSourceBytes: 1},
+		{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 0},
+	}
+	for _, limits := range invalid {
+		if err := ValidateRuntimeLimits(limits); err == nil {
+			t.Fatalf("ValidateRuntimeLimits(%#v) accepted invalid limits", limits)
 		}
 	}
 }
 
-func TestProcessSupervisorCapsSameShardPendingInvocationsWithoutLeakingCallers(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+func TestProcessSupervisorTimingMustBeExplicitAndValid(t *testing.T) {
+	valid := ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE=1"),
-		MaxPendingInvocations: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
+		Limits:                DefaultRuntimeLimits(),
+		StreamSink:            &recordingRuntimeStreamSink{},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
-		t.Fatalf("Start() error = %v", err)
+	tests := []struct {
+		name   string
+		mutate func(*ProcessSupervisorOptions)
+	}{
+		{name: "zero handshake timeout", mutate: func(options *ProcessSupervisorOptions) { options.HandshakeTimeout = 0 }},
+		{name: "negative handshake timeout", mutate: func(options *ProcessSupervisorOptions) { options.HandshakeTimeout = -time.Second }},
+		{name: "zero heartbeat interval", mutate: func(options *ProcessSupervisorOptions) { options.HeartbeatInterval = 0 }},
+		{name: "negative heartbeat interval", mutate: func(options *ProcessSupervisorOptions) { options.HeartbeatInterval = -time.Second }},
+		{name: "zero heartbeat staleness", mutate: func(options *ProcessSupervisorOptions) { options.MaxHeartbeatStaleness = 0 }},
+		{name: "negative heartbeat staleness", mutate: func(options *ProcessSupervisorOptions) { options.MaxHeartbeatStaleness = -time.Second }},
+		{name: "staleness below interval", mutate: func(options *ProcessSupervisorOptions) { options.MaxHeartbeatStaleness = time.Second }},
 	}
-	t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
-
-	activeDone := make(chan error, 1)
-	go func() {
-		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_admission_active"}, "worker.echo", workerInvocationFixture())
-		activeDone <- invokeErr
-	}()
-	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
-
-	pendingCtx, cancelPending := context.WithCancel(context.Background())
-	pendingDone := make(chan error, 1)
-	go func() {
-		_, invokeErr := supervisor.invokeWorkerForTest(pendingCtx, Lease{LeaseID: "lease_admission_pending"}, "worker.echo", workerInvocationFixture())
-		pendingDone <- invokeErr
-	}()
-	waitForInvocationAdmissionCount(t, supervisor, 2)
-
-	_, busyErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_admission_busy"}, "worker.echo", workerInvocationFixture())
-	var typedBusy *RuntimeShardBusyError
-	if !errors.As(busyErr, &typedBusy) || !errors.Is(busyErr, ErrRuntimeShardBusy) || !errors.Is(busyErr, ErrRuntimeRequestFailed) {
-		t.Fatalf("full admission error = %v, want typed runtime shard busy error", busyErr)
-	}
-	if typedBusy.MaxPendingInvocations != 1 {
-		t.Fatalf("busy pending limit = %d, want 1", typedBusy.MaxPendingInvocations)
-	}
-
-	const rejectedCallers = 32
-	rejected := make(chan error, rejectedCallers)
-	for index := 0; index < rejectedCallers; index++ {
-		go func(index int) {
-			_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: fmt.Sprintf("lease_admission_rejected_%d", index)}, "worker.echo", workerInvocationFixture())
-			rejected <- invokeErr
-		}(index)
-	}
-	for index := 0; index < rejectedCallers; index++ {
-		select {
-		case invokeErr := <-rejected:
-			if !errors.Is(invokeErr, ErrRuntimeShardBusy) {
-				t.Fatalf("rejected caller %d error = %v, want %v", index, invokeErr, ErrRuntimeShardBusy)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := valid
+			test.mutate(&options)
+			if _, err := NewProcessSupervisor(options); err == nil {
+				t.Fatal("NewProcessSupervisor() accepted invalid runtime timing")
 			}
-		case <-time.After(time.Second):
-			t.Fatalf("rejected caller %d did not return", index)
-		}
+		})
 	}
-
-	cancelPending()
-	select {
-	case invokeErr := <-pendingDone:
-		if !errors.Is(invokeErr, context.Canceled) {
-			t.Fatalf("pending invocation error = %v, want %v", invokeErr, context.Canceled)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("pending invocation did not exit after cancellation")
-	}
-	waitForInvocationAdmissionCount(t, supervisor, 1)
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 2); err != nil {
-		t.Fatalf("Revoke() error = %v", err)
-	}
-	select {
-	case invokeErr := <-activeDone:
-		if !errors.Is(invokeErr, ErrRuntimeRequestFailed) {
-			t.Fatalf("active invocation error = %v, want %v", invokeErr, ErrRuntimeRequestFailed)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("active invocation did not exit after revoke")
-	}
-	waitForInvocationAdmissionCount(t, supervisor, 0)
 }
 
-func TestProcessSupervisorCanceledPendingInvocationReleasesAdmission(t *testing.T) {
+func TestProcessSupervisorRejectsTypedNilHostStreamSink(t *testing.T) {
+	var typedNil *recordingRuntimeStreamSink
+	_, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		StreamSink:            typedNil,
+	})
+	if !errors.Is(err, ErrRuntimeHostServicesInvalid) {
+		t.Fatalf("NewProcessSupervisor(typed nil stream sink) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
+	}
+}
+
+func TestRuntimeAdmissionCancellationDoesNotConsumeCapacity(t *testing.T) {
+	controller := newRuntimeAdmissionController(RuntimeLimits{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1})
+	releaseFirst, err := controller.acquire(context.Background(), "plugini_waiting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseSecond, err := controller.acquire(context.Background(), "plugini_waiting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := controller.acquire(ctx, "plugini_waiting"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquire() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	releaseFirst()
+	releaseSecond()
+	release, err := controller.acquire(context.Background(), "plugini_waiting")
+	if err != nil {
+		t.Fatalf("acquire() after cancellation error = %v", err)
+	}
+	release()
+}
+
+func TestRuntimeAdmissionPreservesQueueCapacityForOtherPlugins(t *testing.T) {
+	controller := newRuntimeAdmissionController(RuntimeLimits{WorkerCount: 8, QueueCapacity: 32, PerPluginConcurrency: 4})
+	releases := make([]func(), 0, 9)
+	for index := 0; index < 8; index++ {
+		release, err := controller.acquire(context.Background(), "plugini_saturated")
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := controller.acquire(ctx, "plugini_saturated"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ninth saturated-plugin acquire error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	releaseOther, err := controller.acquire(context.Background(), "plugini_other")
+	if err != nil {
+		t.Fatalf("other plugin acquire error = %v", err)
+	}
+	releases = append(releases, releaseOther)
+	for _, release := range releases {
+		release()
+	}
+}
+
+func TestProcessSupervisorMultiplexesSameShardInvocations(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		Limits:                RuntimeLimits{WorkerCount: 2, QueueCapacity: 2, PerPluginConcurrency: 2, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1 << 20},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           os.Args[0],
 		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE=1"),
-		MaxPendingInvocations: 1,
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_MULTIPLEX=1"),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
-		t.Fatalf("Start() error = %v", err)
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
 
-	activeDone := make(chan error, 1)
+	slowDone := make(chan error, 1)
 	go func() {
-		_, invokeErr := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_cancel_active"}, "worker.echo", workerInvocationFixture())
-		activeDone <- invokeErr
+		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_multiplex_slow"}, "worker.echo", workerInvocationFixture())
+		slowDone <- err
 	}()
 	waitForSustainedIPCLock(t, supervisor, 20*time.Millisecond)
-
-	invokePending := func(leaseID string) (context.CancelFunc, <-chan error) {
-		pendingCtx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() {
-			_, invokeErr := supervisor.invokeWorkerForTest(pendingCtx, Lease{LeaseID: leaseID}, "worker.echo", workerInvocationFixture())
-			done <- invokeErr
-		}()
-		return cancel, done
-	}
-
-	cancelFirst, firstDone := invokePending("lease_cancel_first")
-	waitForInvocationAdmissionCount(t, supervisor, 2)
-	cancelFirst()
-	select {
-	case invokeErr := <-firstDone:
-		if !errors.Is(invokeErr, context.Canceled) {
-			t.Fatalf("first pending invocation error = %v, want %v", invokeErr, context.Canceled)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first pending invocation did not exit")
-	}
-	waitForInvocationAdmissionCount(t, supervisor, 1)
-
-	cancelReplacement, replacementDone := invokePending("lease_cancel_replacement")
-	waitForInvocationAdmissionCount(t, supervisor, 2)
-	cancelReplacement()
-	select {
-	case invokeErr := <-replacementDone:
-		if !errors.Is(invokeErr, context.Canceled) {
-			t.Fatalf("replacement pending invocation error = %v, want %v", invokeErr, context.Canceled)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("replacement pending invocation did not exit")
-	}
-	waitForInvocationAdmissionCount(t, supervisor, 1)
-
-	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 2); err != nil {
-		t.Fatalf("Revoke() error = %v", err)
-	}
-	select {
-	case invokeErr := <-activeDone:
-		if !errors.Is(invokeErr, ErrRuntimeRequestFailed) {
-			t.Fatalf("active invocation error = %v, want %v", invokeErr, ErrRuntimeRequestFailed)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("active invocation did not exit after revoke")
-	}
-}
-
-func TestProcessSupervisorInvocationAdmissionIsIsolatedAcrossShards(t *testing.T) {
-	busyShard, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE=1"),
-		MaxPendingInvocations: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	freeShard, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:           os.Args[0],
-		Args:                  []string{"-test.run=TestMain"},
-		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
-		MaxPendingInvocations: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, supervisor := range []*ProcessSupervisor{busyShard, freeShard} {
-		if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
-			t.Fatalf("Start() error = %v", err)
-		}
-	}
-	t.Cleanup(func() {
-		stopRuntimeSupervisor(t, freeShard)
-		stopRuntimeSupervisor(t, busyShard)
-	})
-
-	activeDone := make(chan error, 1)
+	fastDone := make(chan error, 1)
 	go func() {
-		_, invokeErr := busyShard.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_cross_shard_active"}, "worker.echo", workerInvocationFixture())
-		activeDone <- invokeErr
+		_, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_multiplex_fast"}, "worker.echo", workerInvocationFixture())
+		fastDone <- err
 	}()
-	waitForSustainedIPCLock(t, busyShard, 20*time.Millisecond)
-	pendingCtx, cancelPending := context.WithCancel(context.Background())
-	pendingDone := make(chan error, 1)
-	go func() {
-		_, invokeErr := busyShard.invokeWorkerForTest(pendingCtx, Lease{LeaseID: "lease_cross_shard_pending"}, "worker.echo", workerInvocationFixture())
-		pendingDone <- invokeErr
-	}()
-	waitForInvocationAdmissionCount(t, busyShard, 2)
-
-	freeCtx, cancelFree := context.WithTimeout(context.Background(), time.Second)
-	defer cancelFree()
-	if _, err := freeShard.invokeWorkerForTest(freeCtx, Lease{LeaseID: "lease_cross_shard_free"}, "worker.echo", workerInvocationFixture()); err != nil {
-		t.Fatalf("free shard invocation was blocked by saturated shard: %v", err)
-	}
-
-	cancelPending()
 	select {
-	case invokeErr := <-pendingDone:
-		if !errors.Is(invokeErr, context.Canceled) {
-			t.Fatalf("busy shard pending invocation error = %v, want %v", invokeErr, context.Canceled)
+	case err := <-fastDone:
+		if err != nil {
+			t.Fatalf("fast invocation error = %v", err)
 		}
+	case err := <-slowDone:
+		t.Fatalf("slow invocation completed before fast invocation: %v", err)
 	case <-time.After(time.Second):
-		t.Fatal("busy shard pending invocation did not exit")
+		t.Fatal("multiplexed invocations did not complete")
 	}
-	if _, err := busyShard.Revoke(context.Background(), "plugini_1", 2); err != nil {
-		t.Fatalf("busy shard Revoke() error = %v", err)
-	}
-	select {
-	case invokeErr := <-activeDone:
-		if !errors.Is(invokeErr, ErrRuntimeRequestFailed) {
-			t.Fatalf("busy shard active invocation error = %v, want %v", invokeErr, ErrRuntimeRequestFailed)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("busy shard active invocation did not exit")
+	if err := <-slowDone; err != nil {
+		t.Fatalf("slow invocation error = %v", err)
 	}
 }
 
 func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFull(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		Limits:                RuntimeLimits{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1 << 20},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           os.Args[0],
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE=1"),
-		MaxPendingInvocations: 1,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -873,10 +824,15 @@ func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFul
 func TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime(t *testing.T) {
 	store := observability.NewMemoryStore()
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_DELAY_INVOKE_MILLIS=80"),
-		Diagnostics: store,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_DELAY_INVOKE_MILLIS=80"),
+		Diagnostics:           store,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -910,60 +866,21 @@ func TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime(t *
 	stopRuntimeSupervisor(t, supervisor)
 }
 
-func TestProcessSupervisorCanceledInvocationWaitingForIPCLockDoesNotInvalidateRuntime(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	health, err := supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	releaseIPC, err := supervisor.lockIPC(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	_, invokeErr := supervisor.invokeWorkerForTest(ctx, Lease{
-		LeaseID:             "lease_waiting",
-		RuntimeGenerationID: health.RuntimeGenerationID,
-		PluginInstanceID:    "plugini_1",
-	}, "worker.echo", workerInvocationFixture())
-	cancel()
-	releaseIPC()
-	if !errors.Is(invokeErr, context.DeadlineExceeded) {
-		t.Fatalf("InvokeWorker(waiting for IPC lock) error = %v, want %v", invokeErr, context.DeadlineExceeded)
-	}
-	health, err = supervisor.Health(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !health.Ready {
-		t.Fatalf("runtime should remain ready when a queued invocation is canceled before writing IPC: %#v", health)
-	}
-	if _, err := supervisor.Heartbeat(context.Background()); err != nil {
-		t.Fatalf("Heartbeat(after queued cancellation) error = %v", err)
-	}
-	stopRuntimeSupervisor(t, supervisor)
-}
-
 func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t *testing.T) {
 	store := observability.NewMemoryStore()
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
 		Env: append(os.Environ(),
 			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
 			"REDEVPLUGIN_RUNTIMECLIENT_WAIT_FOR_REVOKE_DURING_INVOKE=1",
 		),
 		Diagnostics: store,
+		StreamSink:  &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1015,12 +932,15 @@ func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t 
 func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
 	store := &runtimeDiagnosticSink{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
 		RuntimePath:           os.Args[0],
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BLOCK_HEARTBEAT=1"),
 		Diagnostics:           store,
 		HeartbeatInterval:     10 * time.Millisecond,
 		MaxHeartbeatStaleness: 30 * time.Millisecond,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1041,9 +961,14 @@ func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
 
 func TestProcessSupervisorStopWaitsForInvalidatedProcessBeforeRestart(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1096,7 +1021,14 @@ func TestProcessSupervisorStopWaitsForInvalidatedProcessBeforeRestart(t *testing
 }
 
 func TestProcessSupervisorConcurrentStopWaitersObserveSameExit(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{RuntimePath: os.Args[0]})
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Limits:                DefaultRuntimeLimits(),
+		StreamSink:            &recordingRuntimeStreamSink{},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1081,14 @@ func TestProcessSupervisorConcurrentStopWaitersObserveSameExit(t *testing.T) {
 }
 
 func TestProcessSupervisorStopMakesGenerationUnavailableBeforeExit(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{RuntimePath: os.Args[0]})
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Limits:                DefaultRuntimeLimits(),
+		StreamSink:            &recordingRuntimeStreamSink{},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1190,7 +1129,10 @@ func TestProcessSupervisorStopMakesGenerationUnavailableBeforeExit(t *testing.T)
 	if _, err := supervisor.InvokeWorker(context.Background(), Lease{}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("InvokeWorker() during Stop() error = %v, want %v", err, ErrRuntimeNotReady)
 	}
-	if pending := len(supervisor.invocationAdmission); pending != 0 {
+	supervisor.admission.mu.Lock()
+	pending := supervisor.admission.active
+	supervisor.admission.mu.Unlock()
+	if pending != 0 {
 		t.Fatalf("Stop-in-progress invocation admission count = %d, want 0", pending)
 	}
 
@@ -1208,8 +1150,10 @@ func TestProcessSupervisorStopMakesGenerationUnavailableBeforeExit(t *testing.T)
 func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing.T) {
 	store := observability.NewMemoryStore()
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
+		Limits:           DefaultRuntimeLimits(),
+		HandshakeTimeout: 5 * time.Second,
+		RuntimePath:      os.Args[0],
+		Args:             []string{"-test.run=TestMain"},
 		Env: append(os.Environ(),
 			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
 			"REDEVPLUGIN_RUNTIMECLIENT_DELAY_INVOKE_MILLIS=200",
@@ -1218,6 +1162,7 @@ func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing
 		Diagnostics:           store,
 		HeartbeatInterval:     10 * time.Millisecond,
 		MaxHeartbeatStaleness: 30 * time.Millisecond,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1263,8 +1208,13 @@ func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing
 
 func TestProcessSupervisorRejectsRevokeWhenRuntimeIsNotReady(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1383,7 +1333,11 @@ type ipcGoldenFixture struct {
 func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 	switch fixture.Kind {
 	case "hello_ack":
-		_, err := validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ChannelNonce, fixture.Frame)
+		var ack helloAckPayload
+		if err := json.Unmarshal(fixture.Frame.Payload, &ack); err != nil {
+			return err
+		}
+		_, err := validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ChannelNonce, ack.Limits, fixture.Frame)
 		return err
 	case "response":
 		if err := validateIPCResponse(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ResponseFrameType, fixture.Frame); err != nil {
@@ -1619,10 +1573,15 @@ func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
 		sha256:  fixtureArtifactSHA,
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1"),
-		Artifacts:   provider,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1"),
+		Artifacts:             provider,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1655,6 +1614,299 @@ func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
 	stopRuntimeSupervisor(t, supervisor)
 }
 
+func TestProcessSupervisorArtifactHostcallIsInvocationIndependentAndGenerationBound(t *testing.T) {
+	provider := &cancelAwareArtifactProvider{
+		started:  make(chan time.Time, 1),
+		canceled: make(chan error, 1),
+	}
+	oldWriter := &lockedBuffer{}
+	newWriter := &lockedBuffer{}
+	generationCtx, cancelGeneration := context.WithCancel(context.Background())
+	generation := &runtimeGeneration{id: "generation_old", ctx: generationCtx, stdin: oldWriter}
+	_, cancelInvocation := context.WithCancel(context.Background())
+	supervisor := &ProcessSupervisor{artifacts: provider, ipcIn: &serializedWriteCloser{WriteCloser: nopWriteCloser{Writer: newWriter}}}
+	request := ArtifactRequest{PackageHash: fixturePackageHash, Artifact: fixtureArtifact, ArtifactSHA256: fixtureArtifactSHA}
+	flight := &pendingCompileFlight{
+		generation: generation, parentRequestID: "invoke_old", artifactRequestID: "invoke_old:artifact",
+		artifact: request, wasmABIVersion: version.WASMABIVersion, registered: true,
+	}
+	supervisor.dispatchCompileFlightArtifact(generation, Health{RuntimeGenerationID: generation.id}, ipcFrame{
+		IPCVersion: version.RustIPCVersion, FrameType: ipcFrameTypeOpenHandle,
+		RequestID: flight.artifactRequestID, ParentRequestID: flight.parentRequestID, RuntimeGenerationID: generation.id,
+		Payload: mustMarshalRaw(request),
+	}, flight)
+
+	calledAt := <-provider.started
+	cancelInvocation()
+	select {
+	case err := <-provider.canceled:
+		t.Fatalf("artifact read inherited invocation cancellation: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancelGeneration()
+	select {
+	case err := <-provider.canceled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("artifact generation cancellation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("artifact read did not stop with its runtime generation")
+	}
+	deadline := time.Now().Add(time.Second)
+	for oldWriter.Len() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if oldWriter.Len() == 0 {
+		t.Fatal("artifact response was not written to the owning generation")
+	}
+	if newWriter.Len() != 0 {
+		t.Fatal("old generation artifact response was written to the current transport")
+	}
+	frame, err := readIPCFrame(bufio.NewReader(bytes.NewReader(oldWriter.Bytes())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failure hostcallFailurePayload
+	if err := decodeStrictJSON(frame.Payload, &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.OK || failure.Code != "ARTIFACT_READ_FAILED" {
+		t.Fatalf("artifact cancellation response = %#v", failure)
+	}
+	if elapsed := time.Since(calledAt); elapsed > time.Second {
+		t.Fatalf("artifact generation cancellation took %s", elapsed)
+	}
+}
+
+func TestProcessSupervisorRoutesLateCompileFlightArtifactAfterInvocationCancellation(t *testing.T) {
+	provider := &notifyingArtifactProvider{called: make(chan ArtifactRequest, 1)}
+	diagnostics := &runtimeDiagnosticSink{}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env: append(os.Environ(),
+			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_LATE_ARTIFACT_AFTER_CANCEL=1",
+		),
+		Artifacts:   provider,
+		Diagnostics: diagnostics,
+		StreamSink:  storeRuntimeStreamSink{store: stream.NewMemoryStore()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatal(err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := supervisor.invokeWorkerForTest(ctx, Lease{
+		LeaseID: "lease_late_artifact", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1",
+	}, "worker.echo", workerInvocationFixture()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("canceled InvokeWorker() error = %v, want context deadline", err)
+	}
+	select {
+	case request := <-provider.called:
+		if request != (ArtifactRequest{PackageHash: fixturePackageHash, Artifact: fixtureArtifact, ArtifactSHA256: fixtureArtifactSHA}) {
+			t.Fatalf("late compile flight artifact request = %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late compile flight artifact request was not routed")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		supervisor.pendingMu.Lock()
+		compileFlights := len(supervisor.compileFlights)
+		supervisor.pendingMu.Unlock()
+		if compileFlights == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("completed compile flight route was retained: %d", compileFlights)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for {
+		health, err = supervisor.Health(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !health.Ready {
+			t.Fatalf("late compile flight invalidated the owning generation: %#v diagnostics=%#v", health, diagnostics.list("plugin.runtime.ipc.invalidated"))
+		}
+		if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
+			LeaseID: "lease_after_late_artifact", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_2",
+		}, "worker.echo", workerInvocationFixtureForPlugin("plugini_2")); err == nil {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("independent invocation after late compile flight failed: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
+func TestCancelAcknowledgementRemovesOnlyNeverStartedCompileFlightIntent(t *testing.T) {
+	generation := &runtimeGeneration{id: "generation_cancel_cleanup", ctx: context.Background()}
+	unregistered := &pendingCompileFlight{generation: generation, parentRequestID: "invoke_queued", artifactRequestID: "invoke_queued:artifact"}
+	registered := &pendingCompileFlight{generation: generation, parentRequestID: "invoke_running", artifactRequestID: "invoke_running:artifact", registered: true}
+	supervisor := &ProcessSupervisor{compileFlights: map[string]*pendingCompileFlight{
+		unregistered.artifactRequestID: unregistered,
+		registered.artifactRequestID:   registered,
+	}}
+
+	supervisor.reconcileCompileFlightAfterCancelAck(generation, "invoke_queued", "queued")
+	supervisor.reconcileCompileFlightAfterCancelAck(generation, "invoke_running", "running")
+
+	supervisor.pendingMu.Lock()
+	defer supervisor.pendingMu.Unlock()
+	if _, exists := supervisor.compileFlights[unregistered.artifactRequestID]; exists {
+		t.Fatal("queued invocation retained an unregistered compile flight intent")
+	}
+	if supervisor.compileFlights[registered.artifactRequestID] != registered {
+		t.Fatal("running registered compile flight was removed by cancellation acknowledgement")
+	}
+}
+
+func TestProcessSupervisorInvalidatesRuntimeForUnknownCompileFlightLifecycle(t *testing.T) {
+	for _, frameType := range []string{ipcFrameTypeCompileFlightRegister, ipcFrameTypeCompileFlightComplete} {
+		t.Run(frameType, func(t *testing.T) {
+			provider := &recordingArtifactProvider{content: []byte("wasm bytes"), sha256: fixtureArtifactSHA}
+			supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+				Limits:                DefaultRuntimeLimits(),
+				HandshakeTimeout:      5 * time.Second,
+				HeartbeatInterval:     2 * time.Second,
+				MaxHeartbeatStaleness: 5 * time.Second,
+				RuntimePath:           os.Args[0],
+				Args:                  []string{"-test.run=TestMain"},
+				Env: append(os.Environ(),
+					"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+					"REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1",
+					"REDEVPLUGIN_RUNTIMECLIENT_UNKNOWN_COMPILE_FLIGHT="+frameType,
+				),
+				Artifacts:  provider,
+				StreamSink: &recordingRuntimeStreamSink{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+				t.Fatal(err)
+			}
+			health, err := supervisor.Health(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
+				LeaseID: "lease_unknown_flight", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1",
+			}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeIPCUnavailable) {
+				t.Fatalf("InvokeWorker() error = %v, want %v", err, ErrRuntimeIPCUnavailable)
+			}
+			wantProviderCalls := 0
+			if frameType == ipcFrameTypeCompileFlightComplete {
+				wantProviderCalls = 1
+			}
+			if provider.calls != wantProviderCalls {
+				t.Fatalf("artifact provider calls = %d, want %d", provider.calls, wantProviderCalls)
+			}
+			health, err = supervisor.Health(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if health.Ready {
+				t.Fatalf("runtime remained ready after unknown %s: %#v", frameType, health)
+			}
+			stopRuntimeSupervisor(t, supervisor)
+		})
+	}
+}
+
+func TestProcessSupervisorFailsOnlyPendingRequestsFromOwningGeneration(t *testing.T) {
+	oldGeneration := &runtimeGeneration{id: "generation_old", ctx: context.Background()}
+	newGeneration := &runtimeGeneration{id: "generation_new", ctx: context.Background()}
+	oldPending := &pendingIPCRequest{generation: oldGeneration, result: make(chan ipcCallResult, 1)}
+	newPending := &pendingIPCRequest{generation: newGeneration, result: make(chan ipcCallResult, 1)}
+	supervisor := &ProcessSupervisor{pending: map[string]*pendingIPCRequest{
+		"old": oldPending,
+		"new": newPending,
+	}}
+	want := errors.New("old generation failed")
+	supervisor.failPendingGeneration(oldGeneration, want)
+	select {
+	case result := <-oldPending.result:
+		if !errors.Is(result.err, want) {
+			t.Fatalf("old generation pending error = %v", result.err)
+		}
+	default:
+		t.Fatal("old generation pending request was not failed")
+	}
+	select {
+	case result := <-newPending.result:
+		t.Fatalf("new generation pending request was failed: %v", result.err)
+	default:
+	}
+	supervisor.pendingMu.Lock()
+	defer supervisor.pendingMu.Unlock()
+	if len(supervisor.pending) != 1 || supervisor.pending["new"] != newPending {
+		t.Fatalf("remaining pending requests = %#v", supervisor.pending)
+	}
+}
+
+func TestProcessSupervisorInvalidatesRuntimeForUnknownHostcallParent(t *testing.T) {
+	provider := &recordingArtifactProvider{content: []byte("wasm bytes"), sha256: fixtureArtifactSHA}
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env: append(os.Environ(),
+			"REDEVPLUGIN_RUNTIMECLIENT_HELPER=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1",
+			"REDEVPLUGIN_RUNTIMECLIENT_UNKNOWN_HOSTCALL_PARENT=1",
+		),
+		Artifacts:  provider,
+		StreamSink: &recordingRuntimeStreamSink{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		t.Fatal(err)
+	}
+	health, err := supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{
+		LeaseID: "lease_unknown_parent", RuntimeGenerationID: health.RuntimeGenerationID, PluginInstanceID: "plugini_1",
+	}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeIPCUnavailable) {
+		t.Fatalf("InvokeWorker() error = %v, want %v", err, ErrRuntimeIPCUnavailable)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("unknown parent reached artifact provider: %d", provider.calls)
+	}
+	health, err = supervisor.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health.Ready {
+		t.Fatalf("runtime remained ready after unknown hostcall parent: %#v", health)
+	}
+	stopRuntimeSupervisor(t, supervisor)
+}
+
 func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.T) {
 	validator := &recordingHandleGrantValidator{
 		result: HandleGrantValidationResult{
@@ -1666,10 +1918,15 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1"),
-		HandleGrants: validator,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1"),
+		HandleGrants:          validator,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1722,11 +1979,16 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
-		HandleGrants: validator,
-		StorageFiles: files,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
+		HandleGrants:          validator,
+		StorageFiles:          files,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1775,11 +2037,16 @@ func TestProcessSupervisorDeniesStorageOperationOutsideMethodBrokerAccess(t *tes
 	validator := &recordingHandleGrantValidator{}
 	files := &recordingStorageFilesBroker{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
-		HandleGrants: validator,
-		StorageFiles: files,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
+		HandleGrants:          validator,
+		StorageFiles:          files,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1828,11 +2095,16 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
-		HandleGrants: validator,
-		StorageKV:    kv,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
+		HandleGrants:          validator,
+		StorageKV:             kv,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1901,11 +2173,16 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:   os.Args[0],
-		Args:          []string{"-test.run=TestMain"},
-		Env:           append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
-		HandleGrants:  validator,
-		StorageSQLite: sqlite,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
+		HandleGrants:          validator,
+		StorageSQLite:         sqlite,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2051,11 +2328,16 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
-		Connectivity: broker,
-		Now:          func() time.Time { return now },
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+		Connectivity:          broker,
+		Now:                   func() time.Time { return now },
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2120,11 +2402,16 @@ func TestProcessSupervisorRejectsNetworkGrantClassifierVersionMismatch(t *testin
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
-		Connectivity: broker,
-		Now:          func() time.Time { return now },
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+		Connectivity:          broker,
+		Now:                   func() time.Time { return now },
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2180,12 +2467,17 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:     os.Args[0],
-		Args:            []string{"-test.run=TestMain"},
-		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-		Connectivity:    broker,
-		NetworkExecutor: executor,
-		Now:             func() time.Time { return now },
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+		Connectivity:          broker,
+		NetworkExecutor:       executor,
+		Now:                   func() time.Time { return now },
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2244,12 +2536,17 @@ func TestProcessSupervisorDeniesHTTPMethodOutsideMethodBrokerAccess(t *testing.T
 	broker := &recordingConnectivityBroker{}
 	executor := &recordingNetworkExecutor{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:     os.Args[0],
-		Args:            []string{"-test.run=TestMain"},
-		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-		Connectivity:    broker,
-		NetworkExecutor: executor,
-		Now:             func() time.Time { return now },
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+		Connectivity:          broker,
+		NetworkExecutor:       executor,
+		Now:                   func() time.Time { return now },
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2307,13 +2604,17 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 	}
 	streams := stream.NewMemoryStore()
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:     os.Args[0],
-		Args:            []string{"-test.run=TestMain"},
-		Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http_stream"),
-		Connectivity:    broker,
-		NetworkExecutor: executor,
-		StreamSink:      storeRuntimeStreamSink{store: streams},
-		Now:             func() time.Time { return now },
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http_stream"),
+		Connectivity:          broker,
+		NetworkExecutor:       executor,
+		StreamSink:            storeRuntimeStreamSink{store: streams},
+		Now:                   func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2428,12 +2729,17 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 			},
 		}
 		supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-			RuntimePath:   os.Args[0],
-			Args:          []string{"-test.run=TestMain"},
-			Env:           append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
-			Diagnostics:   diagnostics,
-			HandleGrants:  validator,
-			StorageSQLite: &recordingStorageSQLiteBroker{err: errors.New(sensitive)},
+			Limits:                DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+			RuntimePath:           os.Args[0],
+			Args:                  []string{"-test.run=TestMain"},
+			Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_SQLITE=query"),
+			Diagnostics:           diagnostics,
+			HandleGrants:          validator,
+			StorageSQLite:         &recordingStorageSQLiteBroker{err: errors.New(sensitive)},
+			StreamSink:            &recordingRuntimeStreamSink{},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -2480,13 +2786,18 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 			},
 		}
 		supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-			RuntimePath:     os.Args[0],
-			Args:            []string{"-test.run=TestMain"},
-			Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-			Diagnostics:     diagnostics,
-			Connectivity:    broker,
-			NetworkExecutor: &recordingNetworkExecutor{err: errors.New(sensitive)},
-			Now:             func() time.Time { return now },
+			Limits:                DefaultRuntimeLimits(),
+			HandshakeTimeout:      5 * time.Second,
+			HeartbeatInterval:     2 * time.Second,
+			MaxHeartbeatStaleness: 5 * time.Second,
+			RuntimePath:           os.Args[0],
+			Args:                  []string{"-test.run=TestMain"},
+			Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+			Diagnostics:           diagnostics,
+			Connectivity:          broker,
+			NetworkExecutor:       &recordingNetworkExecutor{err: errors.New(sensitive)},
+			Now:                   func() time.Time { return now },
+			StreamSink:            &recordingRuntimeStreamSink{},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -2633,12 +2944,17 @@ func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocatio
 			executor := &recordingNetworkExecutor{}
 			tc.response(executor)
 			supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-				RuntimePath:     os.Args[0],
-				Args:            []string{"-test.run=TestMain"},
-				Env:             append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE="+tc.operation),
-				Connectivity:    broker,
-				NetworkExecutor: executor,
-				Now:             func() time.Time { return now },
+				Limits:                DefaultRuntimeLimits(),
+				HandshakeTimeout:      5 * time.Second,
+				HeartbeatInterval:     2 * time.Second,
+				MaxHeartbeatStaleness: 5 * time.Second,
+				RuntimePath:           os.Args[0],
+				Args:                  []string{"-test.run=TestMain"},
+				Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE="+tc.operation),
+				Connectivity:          broker,
+				NetworkExecutor:       executor,
+				Now:                   func() time.Time { return now },
+				StreamSink:            &recordingRuntimeStreamSink{},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -2699,11 +3015,16 @@ func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
-		Connectivity: broker,
-		Now:          func() time.Time { return now },
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_EXECUTE=http"),
+		Connectivity:          broker,
+		Now:                   func() time.Time { return now },
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2724,9 +3045,14 @@ func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
 
 func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT=1"),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2755,10 +3081,15 @@ func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
-		HandleGrants: validator,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE=read"),
+		HandleGrants:          validator,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2791,10 +3122,15 @@ func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
 		},
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
-		HandleGrants: validator,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV=put"),
+		HandleGrants:          validator,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2828,11 +3164,16 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 	}
 	files := &recordingStorageFilesBroker{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE=read"),
-		HandleGrants: validator,
-		StorageFiles: files,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_FILE_ON_REVOKE=read"),
+		HandleGrants:          validator,
+		StorageFiles:          files,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2861,11 +3202,16 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 	}
 	kv := &recordingStorageKVBroker{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE=put"),
-		HandleGrants: validator,
-		StorageKV:    kv,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_STORAGE_KV_ON_REVOKE=put"),
+		HandleGrants:          validator,
+		StorageKV:             kv,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2885,10 +3231,15 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T) {
 	broker := &recordingConnectivityBroker{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE=1"),
-		Connectivity: broker,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_NETWORK_GRANT_ON_REVOKE=1"),
+		Connectivity:          broker,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2907,10 +3258,15 @@ func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T
 
 func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE=1"),
-		HandleGrants: &recordingHandleGrantValidator{},
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE_ON_REVOKE=1"),
+		HandleGrants:          &recordingHandleGrantValidator{},
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2927,10 +3283,15 @@ func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T)
 func TestProcessSupervisorRejectsInvalidHandleGrantRequestBeforeValidator(t *testing.T) {
 	validator := &recordingHandleGrantValidator{}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:  os.Args[0],
-		Args:         []string{"-test.run=TestMain"},
-		Env:          append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1", "REDEVPLUGIN_RUNTIMECLIENT_INVALID_HANDLE_REQUEST=1"),
-		HandleGrants: validator,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_VALIDATE_HANDLE=1", "REDEVPLUGIN_RUNTIMECLIENT_INVALID_HANDLE_REQUEST=1"),
+		HandleGrants:          validator,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2957,10 +3318,15 @@ func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 		sha256:  fixtureArtifactSHA,
 	}
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_WRONG_ARTIFACT=1"),
-		Artifacts:   provider,
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_ARTIFACT=1", "REDEVPLUGIN_RUNTIMECLIENT_REQUEST_WRONG_ARTIFACT=1"),
+		Artifacts:             provider,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2983,9 +3349,14 @@ func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 
 func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3001,9 +3372,14 @@ func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T)
 
 func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath: os.Args[0],
-		Args:        []string{"-test.run=TestMain"},
-		Env:         append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		Limits:                DefaultRuntimeLimits(),
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1"),
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3019,17 +3395,21 @@ func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
 }
 
 func TestProcessSupervisorRejectsMissingPath(t *testing.T) {
-	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{}); !errors.Is(err, ErrRuntimePathRequired) {
+	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{StreamSink: &recordingRuntimeStreamSink{}}); !errors.Is(err, ErrRuntimePathRequired) {
 		t.Fatalf("NewProcessSupervisor() error = %v, want ErrRuntimePathRequired", err)
 	}
 }
 
 func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:      os.Args[0],
-		Args:             []string{"-test.run=TestMain"},
-		Env:              append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_BAD_HELPER=1"),
-		HandshakeTimeout: 200 * time.Millisecond,
+		Limits:                DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_BAD_HELPER=1"),
+		HandshakeTimeout:      200 * time.Millisecond,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3049,10 +3429,14 @@ func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
 
 func TestProcessSupervisorFailsClosedOnHandshakeNonceMismatch(t *testing.T) {
 	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
-		RuntimePath:      os.Args[0],
-		Args:             []string{"-test.run=TestMain"},
-		Env:              append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE=1"),
-		HandshakeTimeout: 200 * time.Millisecond,
+		Limits:                DefaultRuntimeLimits(),
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+		RuntimePath:           os.Args[0],
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE=1"),
+		HandshakeTimeout:      200 * time.Millisecond,
+		StreamSink:            &recordingRuntimeStreamSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3123,6 +3507,7 @@ func runRuntimeClientHelper() {
 		RustIPCVersion: version.RustIPCVersion,
 		WASMABIVersion: version.WASMABIVersion,
 		ChannelNonce:   channelNonce,
+		Limits:         hello.Limits,
 	})
 	_ = json.NewEncoder(os.Stdout).Encode(ipcFrame{
 		IPCVersion:          version.RustIPCVersion,
@@ -3153,8 +3538,12 @@ func runRuntimeClientHelper() {
 		revoked,
 		&revokeOnce,
 		&heartbeatCount,
+		hello.Limits,
 	)
 	encoder := json.NewEncoder(os.Stdout)
+	var multiplexInvocations atomic.Int64
+	var lateArtifactInvocation *ipcFrame
+	var lateArtifactInvocationCount int
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -3166,6 +3555,32 @@ func runRuntimeClientHelper() {
 		}
 		switch request.FrameType {
 		case ipcFrameTypeInvokeWorker:
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_LATE_ARTIFACT_AFTER_CANCEL") == "1" {
+				lateArtifactInvocationCount++
+				if lateArtifactInvocationCount == 1 {
+					requestCopy := request
+					lateArtifactInvocation = &requestCopy
+					writeCompileFlightLifecycleFromHelper(encoder, request, ipcFrameTypeCompileFlightRegister)
+					continue
+				}
+			}
+			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_MULTIPLEX") == "1" {
+				invocationNumber := multiplexInvocations.Add(1)
+				go func(request ipcFrame, invocationNumber int64) {
+					if invocationNumber == 1 {
+						time.Sleep(150 * time.Millisecond)
+					}
+					raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: json.RawMessage(`{"data":{"from_runtime":true}}`)})
+					_ = encoder.Encode(ipcFrame{
+						IPCVersion:          version.RustIPCVersion,
+						FrameType:           ipcFrameTypeInvokeWorkerResult,
+						RequestID:           request.RequestID,
+						RuntimeGenerationID: request.RuntimeGenerationID,
+						Payload:             raw,
+					})
+				}(request, invocationNumber)
+				continue
+			}
 			if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUIRE_SIGNED_LEASE") == "1" && !verifySignedLeaseFromHelper(request, hello) {
 				os.Exit(62)
 			}
@@ -3252,10 +3667,77 @@ func runRuntimeClientHelper() {
 				RuntimeGenerationID: request.RuntimeGenerationID,
 				Payload:             raw,
 			})
+		case ipcFrameTypeCancelInvoke:
+			var cancelRequest cancelInvokeRequestPayload
+			_ = json.Unmarshal(request.Payload, &cancelRequest)
+			raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(cancelInvokeAckResultPayload{
+				InvocationRequestID: cancelRequest.InvocationRequestID,
+				Disposition:         "running",
+			})})
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           ipcFrameTypeCancelInvokeAck,
+				RequestID:           request.RequestID,
+				RuntimeGenerationID: request.RuntimeGenerationID,
+				Payload:             raw,
+			})
+			if lateArtifactInvocation != nil {
+				time.Sleep(25 * time.Millisecond)
+				invocation := *lateArtifactInvocation
+				artifact := artifactRequestPayloadFromInvoke(invocation)
+				_ = encoder.Encode(ipcFrame{
+					IPCVersion:          version.RustIPCVersion,
+					FrameType:           ipcFrameTypeOpenHandle,
+					RequestID:           invocation.RequestID + ":artifact",
+					ParentRequestID:     invocation.RequestID,
+					RuntimeGenerationID: invocation.RuntimeGenerationID,
+					Payload:             mustMarshalRaw(artifact),
+				})
+			}
+		case ipcFrameTypeOpenHandle:
+			if lateArtifactInvocation == nil || request.RequestID != lateArtifactInvocation.RequestID+":artifact" {
+				os.Exit(69)
+			}
+			invocation := *lateArtifactInvocation
+			artifact := artifactRequestPayloadFromInvoke(invocation)
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           "compile_flight_complete",
+				RequestID:           invocation.RequestID + ":artifact:complete",
+				ParentRequestID:     invocation.RequestID,
+				RuntimeGenerationID: invocation.RuntimeGenerationID,
+				Payload: mustMarshalRaw(map[string]any{
+					"artifact_request_id": invocation.RequestID + ":artifact",
+					"package_hash":        artifact.PackageHash,
+					"artifact":            artifact.Artifact,
+					"artifact_sha256":     artifact.ArtifactSHA256,
+					"wasm_abi_version":    version.WASMABIVersion,
+				}),
+			})
+			canceledPayload, _ := json.Marshal(runtimeResponsePayload{
+				OK: false, Code: "RUNTIME_INVOCATION_CANCELED", Message: "runtime invocation was canceled", ErrorOrigin: WorkerErrorOriginRuntime,
+			})
+			_ = encoder.Encode(ipcFrame{
+				IPCVersion:          version.RustIPCVersion,
+				FrameType:           ipcFrameTypeInvokeWorkerResult,
+				RequestID:           invocation.RequestID,
+				RuntimeGenerationID: invocation.RuntimeGenerationID,
+				Payload:             canceledPayload,
+			})
+			lateArtifactInvocation = nil
 		default:
 			os.Exit(6)
 		}
 	}
+}
+
+type notifyingArtifactProvider struct {
+	called chan ArtifactRequest
+}
+
+func (p *notifyingArtifactProvider) ReadArtifact(_ context.Context, req ArtifactRequest) (ArtifactResult, error) {
+	p.called <- req
+	return ArtifactResult{Content: []byte("wasm bytes"), SHA256: req.ArtifactSHA256}, nil
 }
 
 func runRuntimeClientControlHelper(
@@ -3264,6 +3746,7 @@ func runRuntimeClientControlHelper(
 	revoked chan struct{},
 	revokeOnce *sync.Once,
 	heartbeatCount *atomic.Int64,
+	limits RuntimeLimits,
 ) {
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -3288,6 +3771,10 @@ func runRuntimeClientControlHelper(
 				"runtime_unix_nano":     time.Now().UnixNano(),
 				"max_staleness_ms":      heartbeatReq.MaxStalenessMillis,
 				"host_sent_unix_nano":   heartbeatReq.SentUnixNano,
+				"active_invocations":    0,
+				"queued_invocations":    0,
+				"limits":                limits,
+				"module_cache":          ModuleCacheMetrics{},
 			})})
 			_ = encoder.Encode(ipcFrame{
 				IPCVersion:          version.RustIPCVersion,
@@ -3346,6 +3833,7 @@ func writeUnexpectedControlHostcall(encoder *json.Encoder, request ipcFrame) boo
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           frameType,
 		RequestID:           request.RequestID + ":unexpected-hostcall",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             mustMarshalRaw(payload),
 	})
@@ -3357,11 +3845,12 @@ func waitForSustainedIPCLock(t *testing.T, supervisor *ProcessSupervisor, durati
 	deadline := time.Now().Add(time.Second)
 	var occupiedSince time.Time
 	for time.Now().Before(deadline) {
-		select {
-		case <-supervisor.ipcGate:
-			supervisor.ipcGate <- struct{}{}
+		supervisor.pendingMu.Lock()
+		pending := len(supervisor.pending)
+		supervisor.pendingMu.Unlock()
+		if pending == 0 {
 			occupiedSince = time.Time{}
-		default:
+		} else {
 			if occupiedSince.IsZero() {
 				occupiedSince = time.Now()
 			} else if time.Since(occupiedSince) >= duration {
@@ -3377,12 +3866,18 @@ func waitForInvocationAdmissionCount(t *testing.T, supervisor *ProcessSupervisor
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if got := len(supervisor.invocationAdmission); got == want {
+		supervisor.admission.mu.Lock()
+		got := supervisor.admission.active
+		supervisor.admission.mu.Unlock()
+		if got == want {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("invocation admission count = %d, want %d", len(supervisor.invocationAdmission), want)
+	supervisor.admission.mu.Lock()
+	got := supervisor.admission.active
+	supervisor.admission.mu.Unlock()
+	t.Fatalf("invocation admission count = %d, want %d", got, want)
 }
 
 func verifySignedLeaseFromHelper(request ipcFrame, hello helloRequestPayload) bool {
@@ -3411,14 +3906,20 @@ func verifySignedLeaseFromHelper(request ipcFrame, hello helloRequestPayload) bo
 
 func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, request ipcFrame) bool {
 	artifactReq := artifactRequestPayloadFromInvoke(request)
+	writeCompileFlightLifecycleFromHelper(encoder, request, ipcFrameTypeCompileFlightRegister)
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_REQUEST_WRONG_ARTIFACT") == "1" {
 		artifactReq.Artifact = "workers/other.wasm"
 	}
 	rawArtifactReq, _ := json.Marshal(artifactReq)
+	parentRequestID := request.RequestID
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_UNKNOWN_HOSTCALL_PARENT") == "1" {
+		parentRequestID = request.RequestID + ":unknown"
+	}
 	_ = encoder.Encode(ipcFrame{
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeOpenHandle,
 		RequestID:           request.RequestID + ":artifact",
+		ParentRequestID:     parentRequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawArtifactReq,
 	})
@@ -3430,7 +3931,7 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(8)
 	}
-	if response.FrameType != ipcFrameTypeOpenHandle || response.RequestID != request.RequestID+":artifact" {
+	if response.FrameType != ipcFrameTypeOpenHandle || response.RequestID != request.RequestID+":artifact" || response.ParentRequestID != request.RequestID {
 		os.Exit(9)
 	}
 	var artifact artifactHandleResultPayload
@@ -3438,6 +3939,7 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		os.Exit(10)
 	}
 	if !artifact.OK {
+		writeCompileFlightLifecycleFromHelper(encoder, request, ipcFrameTypeCompileFlightComplete)
 		raw, _ := json.Marshal(runtimeResponsePayload{OK: false, Code: artifact.Code, Message: artifact.Message, ErrorOrigin: artifact.ErrorOrigin})
 		_ = encoder.Encode(ipcFrame{
 			IPCVersion:          version.RustIPCVersion,
@@ -3448,6 +3950,7 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		})
 		return false
 	}
+	writeCompileFlightLifecycleFromHelper(encoder, request, ipcFrameTypeCompileFlightComplete)
 	raw, _ := json.Marshal(runtimeResponsePayload{OK: true, Result: mustMarshalRaw(map[string]any{
 		"artifact": map[string]any{
 			"ok":             artifact.OK,
@@ -3463,6 +3966,32 @@ func requestArtifactFromHelper(reader *bufio.Reader, encoder *json.Encoder, requ
 		Payload:             raw,
 	})
 	return false
+}
+
+func writeCompileFlightLifecycleFromHelper(encoder *json.Encoder, request ipcFrame, frameType string) {
+	artifact := artifactRequestPayloadFromInvoke(request)
+	artifactRequestID := request.RequestID + ":artifact"
+	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_UNKNOWN_COMPILE_FLIGHT") == frameType {
+		artifactRequestID += ":unknown"
+	}
+	suffix := ":register"
+	if frameType == ipcFrameTypeCompileFlightComplete {
+		suffix = ":complete"
+	}
+	_ = encoder.Encode(ipcFrame{
+		IPCVersion:          version.RustIPCVersion,
+		FrameType:           frameType,
+		RequestID:           artifactRequestID + suffix,
+		ParentRequestID:     request.RequestID,
+		RuntimeGenerationID: request.RuntimeGenerationID,
+		Payload: mustMarshalRaw(compileFlightLifecyclePayload{
+			ArtifactRequestID: artifactRequestID,
+			PackageHash:       artifact.PackageHash,
+			Artifact:          artifact.Artifact,
+			ArtifactSHA256:    artifact.ArtifactSHA256,
+			WASMABIVersion:    version.WASMABIVersion,
+		}),
+	})
 }
 
 func artifactRequestPayloadFromInvoke(request ipcFrame) artifactHandleRequestPayload {
@@ -3483,6 +4012,7 @@ func validateHandleGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeValidateHandleGrant,
 		RequestID:           request.RequestID + ":handle_grant",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawHandleReq,
 	})
@@ -3494,7 +4024,7 @@ func validateHandleGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(14)
 	}
-	if response.FrameType != ipcFrameTypeValidateHandleGrant || response.RequestID != request.RequestID+":handle_grant" {
+	if response.FrameType != ipcFrameTypeValidateHandleGrant || response.RequestID != request.RequestID+":handle_grant" || response.ParentRequestID != request.RequestID {
 		os.Exit(15)
 	}
 	var grant handleGrantValidationResultPayload
@@ -3542,6 +4072,7 @@ func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, r
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeStorageFile,
 		RequestID:           request.RequestID + ":storage_file",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawStorageReq,
 	})
@@ -3553,7 +4084,7 @@ func requestStorageFileFromHelper(reader *bufio.Reader, encoder *json.Encoder, r
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(18)
 	}
-	if response.FrameType != ipcFrameTypeStorageFile || response.RequestID != request.RequestID+":storage_file" {
+	if response.FrameType != ipcFrameTypeStorageFile || response.RequestID != request.RequestID+":storage_file" || response.ParentRequestID != request.RequestID {
 		os.Exit(19)
 	}
 	var storageFile storageFileResponsePayload
@@ -3594,6 +4125,7 @@ func requestStorageKVFromHelper(reader *bufio.Reader, encoder *json.Encoder, req
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeStorageKV,
 		RequestID:           request.RequestID + ":storage_kv",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawStorageReq,
 	})
@@ -3605,7 +4137,7 @@ func requestStorageKVFromHelper(reader *bufio.Reader, encoder *json.Encoder, req
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(42)
 	}
-	if response.FrameType != ipcFrameTypeStorageKV || response.RequestID != request.RequestID+":storage_kv" {
+	if response.FrameType != ipcFrameTypeStorageKV || response.RequestID != request.RequestID+":storage_kv" || response.ParentRequestID != request.RequestID {
 		os.Exit(43)
 	}
 	var storageKV storageKVResponsePayload
@@ -3646,6 +4178,7 @@ func requestStorageSQLiteFromHelper(reader *bufio.Reader, encoder *json.Encoder,
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeStorageSQLite,
 		RequestID:           request.RequestID + ":storage_sqlite",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawStorageReq,
 	})
@@ -3657,7 +4190,7 @@ func requestStorageSQLiteFromHelper(reader *bufio.Reader, encoder *json.Encoder,
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(52)
 	}
-	if response.FrameType != ipcFrameTypeStorageSQLite || response.RequestID != request.RequestID+":storage_sqlite" {
+	if response.FrameType != ipcFrameTypeStorageSQLite || response.RequestID != request.RequestID+":storage_sqlite" || response.ParentRequestID != request.RequestID {
 		os.Exit(53)
 	}
 	var storageSQLite storageSQLiteResponsePayload
@@ -3698,6 +4231,7 @@ func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeNetworkGrant,
 		RequestID:           request.RequestID + ":network_grant",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawNetworkReq,
 	})
@@ -3709,7 +4243,7 @@ func requestNetworkGrantFromHelper(reader *bufio.Reader, encoder *json.Encoder, 
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(22)
 	}
-	if response.FrameType != ipcFrameTypeNetworkGrant || response.RequestID != request.RequestID+":network_grant" {
+	if response.FrameType != ipcFrameTypeNetworkGrant || response.RequestID != request.RequestID+":network_grant" || response.ParentRequestID != request.RequestID {
 		os.Exit(23)
 	}
 	var networkGrant networkGrantResponsePayload
@@ -3750,6 +4284,7 @@ func requestNetworkExecuteFromHelper(reader *bufio.Reader, encoder *json.Encoder
 		IPCVersion:          version.RustIPCVersion,
 		FrameType:           ipcFrameTypeNetworkExecute,
 		RequestID:           request.RequestID + ":network_execute",
+		ParentRequestID:     request.RequestID,
 		RuntimeGenerationID: request.RuntimeGenerationID,
 		Payload:             rawNetworkReq,
 	})
@@ -3761,7 +4296,7 @@ func requestNetworkExecuteFromHelper(reader *bufio.Reader, encoder *json.Encoder
 	if err := json.Unmarshal(line, &response); err != nil {
 		os.Exit(26)
 	}
-	if response.FrameType != ipcFrameTypeNetworkExecute || response.RequestID != request.RequestID+":network_execute" {
+	if response.FrameType != ipcFrameTypeNetworkExecute || response.RequestID != request.RequestID+":network_execute" || response.ParentRequestID != request.RequestID {
 		os.Exit(27)
 	}
 	var networkExecute networkExecuteResponsePayload
@@ -4116,6 +4651,40 @@ type recordingArtifactProvider struct {
 	err     error
 }
 
+type cancelAwareArtifactProvider struct {
+	started  chan time.Time
+	canceled chan error
+}
+
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(payload []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(payload)
+}
+
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Len()
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buffer.Bytes()...)
+}
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error { return nil }
+
 type recordingHandleGrantValidator struct {
 	calls  int
 	last   HandleGrantValidationRequest
@@ -4402,6 +4971,17 @@ func (p *recordingArtifactProvider) ReadArtifact(_ context.Context, req Artifact
 	return ArtifactResult{Content: append([]byte(nil), p.content...), SHA256: p.sha256}, nil
 }
 
+func (p *cancelAwareArtifactProvider) ReadArtifact(ctx context.Context, _ ArtifactRequest) (ArtifactResult, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > defaultRuntimeHostcallTimeout+250*time.Millisecond {
+		return ArtifactResult{}, errors.New("artifact context deadline is not bounded")
+	}
+	p.started <- time.Now()
+	<-ctx.Done()
+	p.canceled <- ctx.Err()
+	return ArtifactResult{}, ctx.Err()
+}
+
 func assertBoundedDeadline(t *testing.T, label string, calledAt time.Time, deadline time.Time, ok bool, max time.Duration) {
 	t.Helper()
 	if !ok {
@@ -4427,6 +5007,10 @@ func workerInvocationFixture() []byte {
 			{ConnectorID: "api", Transport: "udp", Operations: []string{"udp_round_trip"}},
 		},
 	})
+}
+
+func workerInvocationFixtureForPlugin(pluginInstanceID string) []byte {
+	return bytes.ReplaceAll(workerInvocationFixture(), []byte(`"plugin_instance_id":"plugini_1"`), []byte(`"plugin_instance_id":"`+pluginInstanceID+`"`))
 }
 
 func workerInvocationLeaseFixture() Lease {

@@ -170,6 +170,7 @@ async function openPlugin(
     sendSurfaceVisibility();
     elements.placeholder.hidden = true;
     elements.stage.setAttribute("aria-busy", "false");
+    restoreNavigationFocus(navigationTrigger);
   } catch (error) {
     if (sequence === openSequence) showError(surfaceError ?? error);
   } finally {

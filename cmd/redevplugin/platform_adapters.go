@@ -63,6 +63,13 @@ func (commandCoreActionAdapter) InvokeCoreAction(context.Context, capability.Inv
 
 type commandInactiveRuntimeManager struct{}
 
+func (commandInactiveRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
+	if services.StreamSink == nil {
+		return runtimeclient.ErrRuntimeHostServicesInvalid
+	}
+	return nil
+}
+
 func (commandInactiveRuntimeManager) Start(context.Context, runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	return runtimeclient.ManagerHealth{}, runtimeclient.ErrRuntimeNotReady
 }

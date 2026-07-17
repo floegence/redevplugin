@@ -110,8 +110,12 @@ function button(label: string, action: string): PluginUIVNode {
       disabled: state.busy,
       "data-redevplugin-action": action,
     },
-    children: [label],
+    children: [text(`action-${action}-label`, label)],
   };
+}
+
+function text(key: string, value: string): PluginUIVNode {
+  return { type: "text", key, text: value };
 }
 
 function render(): Promise<void> {
@@ -121,9 +125,9 @@ function render(): Promise<void> {
     tag: "main",
     attributes: { class: "plugin-surface" },
     children: [
-      { type: "element", key: "harness-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: ["Opaque worker surface"] },
-      { type: "element", key: "harness-title", tag: "h1", children: ["Plugin isolation lab"] },
-      { type: "element", key: "harness-status", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [state.status] },
+      { type: "element", key: "harness-eyebrow", tag: "p", attributes: { class: "eyebrow" }, children: [text("harness-eyebrow-text", "Opaque worker surface")] },
+      { type: "element", key: "harness-title", tag: "h1", children: [text("harness-title-text", "Plugin isolation lab")] },
+      { type: "element", key: "harness-status", tag: "p", attributes: { id: "plugin-status", class: "status", role: "status" }, children: [text("harness-status-text", state.status)] },
       {
         type: "element",
         key: "harness-actions",
@@ -135,21 +139,21 @@ function render(): Promise<void> {
           button("Dangerous action", "dangerous-action"),
         ],
       },
-      { type: "element", key: "security-title", tag: "h2", children: ["Worker security probe"] },
+      { type: "element", key: "security-title", tag: "h2", children: [text("security-title-text", "Worker security probe")] },
       {
         type: "element",
         key: "security-probe",
         tag: "pre",
         attributes: { id: "security-probe", "aria-label": "Worker security probe" },
-        children: [JSON.stringify(state.security, null, 2)],
+        children: [text("security-probe-text", JSON.stringify(state.security, null, 2))],
       },
-      { type: "element", key: "result-title", tag: "h2", children: ["Latest result"] },
+      { type: "element", key: "result-title", tag: "h2", children: [text("result-title-text", "Latest result")] },
       {
         type: "element",
         key: "plugin-result",
         tag: "pre",
         attributes: { id: "plugin-result", "aria-label": "Latest result" },
-        children: [state.result],
+        children: [text("plugin-result-text", state.result)],
       },
     ],
   });

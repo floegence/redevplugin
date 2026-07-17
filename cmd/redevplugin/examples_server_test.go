@@ -122,10 +122,11 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	hostReady := make(chan *host.Host, 1)
 	go func() {
 		serverResult <- examplesServerWithOptions(ctx, t.TempDir(), runtimePath, examplesServerOptions{
-			Listener:       listener,
-			Output:         io.Discard,
-			RepositoryRoot: repositoryRoot,
-			OnReady:        func(pluginHost *host.Host) { hostReady <- pluginHost },
+			Listener:          listener,
+			Output:            io.Discard,
+			RepositoryRoot:    repositoryRoot,
+			RuntimeShardCount: 1,
+			OnReady:           func(pluginHost *host.Host) { hostReady <- pluginHost },
 		})
 	}()
 	t.Cleanup(func() {

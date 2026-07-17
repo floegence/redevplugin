@@ -80,16 +80,17 @@ This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
 
 ## Keyed Renderer
 
-Plugin UI v5 keeps the authoring convenience of string text VNodes, but the SDK
-normalizes them into deterministic keys in a reserved namespace before sending
-the tree. Element keys remain explicit and globally unique.
+Plugin UI v5 requires every element and text VNode to carry a plugin-provided,
+globally unique key. Keys must remain stable for the same logical node across
+renders; the SDK does not accept string text VNodes or synthesize identity from
+tree position, sibling index, or text content.
 
 Structural operations are key and anchor based:
 
 - `insert_child(parent_key, before_key, node)`;
 - `remove_child(target_key)`;
 - `move_child(target_key, parent_key, before_key)`;
-- `set_text(target_key, text)` for normalized text nodes.
+- `set_text(target_key, text)` for explicitly keyed text nodes.
 
 Reconciliation indexes the current and next trees once, then uses keyed lookups
 and a longest-increasing-subsequence pass to minimize moves in O(n log n). The
@@ -99,9 +100,15 @@ all operations pass, in one animation frame. Insertion and removal touch only
 the affected subtree, and sibling anchors make moves constant-time at the graph
 layer. Invalid patches never partially mutate the live DOM.
 
+Bridge v5 admits at most 512 KiB of canonical JSON per message, 1,024
+operations per atomic patch, 4,096 rendered nodes, and 32,768 JSON structural
+nodes. The schema generates one shared policy for the SDK, trusted renderer,
+package validator, and performance harness. A 1,000-child reversal with
+maximum-length public keys remains one 999-move atomic patch.
+
 Canvas identity, control edit revisions, focus, selection, IME composition,
 scroll position, and first-commit visibility retain their established behavior.
-IPC v2 and UI v4 fixtures are rejection tests only; there is no legacy renderer
+Legacy IPC and UI version identifiers are rejected; there is no legacy renderer
 or dual-version decoder.
 
 ## Management Client

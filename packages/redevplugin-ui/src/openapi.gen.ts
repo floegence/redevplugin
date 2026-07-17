@@ -867,7 +867,7 @@ export interface components {
         CompatibilitySuccessResponse: {
             /** @constant */
             ok: true;
-            data: components["schemas"]["compatibility-manifest-v4.schema"];
+            data: components["schemas"]["compatibility-manifest-v5.schema"];
         };
         PluginMethodConfirmationPreparationSuccessResponse: {
             /** @constant */
@@ -1174,7 +1174,7 @@ export interface components {
         PluginCatalogResult: {
             plugins: components["schemas"]["PluginRecord"][];
         };
-        PluginCompatibilityManifest: components["schemas"]["compatibility-manifest-v4.schema"];
+        PluginCompatibilityManifest: components["schemas"]["compatibility-manifest-v5.schema"];
         PluginOperationList: {
             operations: components["schemas"]["OperationRecord"][];
             next_cursor?: string;
@@ -1405,7 +1405,7 @@ export interface components {
             };
             local_import_provenance?: components["schemas"]["LocalImportProvenance"];
             capability_contracts?: components["schemas"]["host-capability-pin-v1.schema"][];
-            manifest: components["schemas"]["manifest-v4.schema"];
+            manifest: components["schemas"]["manifest-v5.schema"];
             package_entries: components["schemas"]["PackageEntry"][];
             /** Format: date-time */
             activated_at: string;
@@ -1436,7 +1436,7 @@ export interface components {
             policy_revision: number;
             management_revision: number;
             revoke_epoch: number;
-            manifest: components["schemas"]["manifest-v4.schema"];
+            manifest: components["schemas"]["manifest-v5.schema"];
             package_entries: components["schemas"]["PackageEntry"][];
             version_history?: components["schemas"]["PluginVersion"][];
             /** Format: date-time */
@@ -1564,7 +1564,7 @@ export interface components {
             issued_at: string;
             /** Format: date-time */
             expires_at: string;
-            document: components["schemas"]["opaque-surface-document-v2.schema"];
+            document: components["schemas"]["opaque-surface-document-v3.schema"];
         };
         TrustedParentBridgeHandshake: {
             /** @constant */
@@ -1578,7 +1578,7 @@ export interface components {
             management_revision: number;
             revoke_epoch: number;
             /** @constant */
-            ui_protocol_version: "plugin-ui-v4";
+            ui_protocol_version: "plugin-ui-v5";
         };
         TrustedParentBridgeTokenRequest: {
             handshake: components["schemas"]["TrustedParentBridgeHandshake"];
@@ -2030,10 +2030,10 @@ export interface components {
             minProperties?: number;
             maxProperties?: number;
         } & (unknown & unknown)) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown);
-        /** ReDevPlugin manifest v4 */
-        "manifest-v4.schema": {
+        /** ReDevPlugin manifest v5 */
+        "manifest-v5.schema": {
             /** @constant */
-            schema_version: "redevplugin.manifest.v4";
+            schema_version: "redevplugin.manifest.v5";
             publisher: {
                 publisher_id: string;
                 display_name?: string;
@@ -2046,7 +2046,7 @@ export interface components {
                 api_version: "plugin-v1";
                 min_runtime_version: string;
                 /** @constant */
-                ui_protocol_version: "plugin-ui-v4";
+                ui_protocol_version: "plugin-ui-v5";
             };
             surfaces: {
                 surface_id: string;
@@ -2230,28 +2230,28 @@ export interface components {
             version: string;
             sha256: string;
         };
-        /** ReDevPlugin compatibility manifest v4 */
-        "compatibility-manifest-v4.schema": {
+        /** ReDevPlugin compatibility manifest v5 */
+        "compatibility-manifest-v5.schema": {
             /** @constant */
-            schema_version: "redevplugin.compatibility.v4";
+            schema_version: "redevplugin.compatibility.v5";
             matrix: {
                 redevplugin_go_version: string;
                 redevplugin_ui_version: string;
                 redevplugin_runtime_version: string;
                 /** @constant */
-                plugin_ui_protocol_version: "plugin-ui-v4";
+                plugin_ui_protocol_version: "plugin-ui-v5";
                 /** @constant */
-                plugin_host_protocol_version: "plugin-host-v2";
+                plugin_host_protocol_version: "plugin-host-v3";
                 /** @constant */
-                rust_ipc_version: "rust-ipc-v2";
+                rust_ipc_version: "rust-ipc-v3";
                 /** @constant */
                 wasm_abi_version: "redevplugin-wasm-worker-v2";
                 /** @constant */
-                manifest_schema_version: "manifest-v4";
+                manifest_schema_version: "manifest-v5";
                 /** @constant */
                 package_signature_schema_version: "package-signature-v1";
                 /** @constant */
-                release_metadata_schema_version: "release-metadata-v4";
+                release_metadata_schema_version: "release-metadata-v5";
                 /** @constant */
                 source_policy_schema_version: "source-policy-v1";
                 /** @constant */
@@ -2259,19 +2259,19 @@ export interface components {
                 /** @constant */
                 token_ticket_schema_version: "token-ticket-v2";
                 /** @constant */
-                bridge_schema_version: "bridge-v4";
+                bridge_schema_version: "bridge-v5";
                 /** @constant */
-                opaque_surface_document_schema_version: "opaque-surface-document-v2";
+                opaque_surface_document_schema_version: "opaque-surface-document-v3";
                 /** @constant */
-                opaque_surface_transport_schema_version: "opaque-surface-transport-v3";
+                opaque_surface_transport_schema_version: "opaque-surface-transport-v4";
                 /** @constant */
                 target_classifier_version: "target-classifier-v2";
                 /** @constant */
                 network_grant_schema_version: "network-grant-v1";
                 /** @constant */
-                plugin_platform_openapi_version: "plugin-platform-v4";
+                plugin_platform_openapi_version: "plugin-platform-v5";
                 /** @constant */
-                compatibility_schema_version: "compatibility-manifest-v4";
+                compatibility_schema_version: "compatibility-manifest-v5";
                 /** @constant */
                 release_manifest_schema_version: "release-manifest-v3";
                 /** @constant */
@@ -2289,7 +2289,11 @@ export interface components {
                 /** @constant */
                 host_capability_notices_schema_version: "host-capability-notices-v1";
                 /** @constant */
-                error_codes_schema_version: "error-codes-v2";
+                error_codes_schema_version: "error-codes-v3";
+                /** @constant */
+                performance_contract_version: "performance-contract-v1";
+                /** @constant */
+                performance_evidence_schema_version: "performance-evidence-v1";
                 /** @constant */
                 contract_registry_version: "contract-registry-v1";
             };
@@ -2325,10 +2329,10 @@ export interface components {
             size: number;
             content_type: string;
         };
-        /** ReDevPlugin opaque surface document v2 */
-        "opaque-surface-document-v2.schema": {
+        /** ReDevPlugin opaque surface document v3 */
+        "opaque-surface-document-v3.schema": {
             /** @constant */
-            schema_version: "redevplugin.opaque_surface_document.v2";
+            schema_version: "redevplugin.opaque_surface_document.v3";
             entry_path: components["schemas"]["package_path"];
             entry_sha256: components["schemas"]["$defs-sha256"];
             title?: string;

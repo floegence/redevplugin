@@ -592,6 +592,9 @@ func TestShowcaseUsesOneProductLayerAndAccessibleSecondaryDetails(t *testing.T) 
 			t.Fatalf("Showcase still exposes a duplicate app header or developer-first copy %q", forbidden)
 		}
 	}
+	if got := strings.Count(string(source), "restoreNavigationFocus(navigationTrigger);"); got != 2 {
+		t.Fatalf("Showcase navigation focus restoration phases = %d, want pre-open and post-mount", got)
+	}
 }
 
 func TestExampleInterfacesUseDistinctConsumerProductDesigns(t *testing.T) {

@@ -121,6 +121,9 @@ jobs:
           node --check scripts/verify_redevplugin_release_stress.mjs
           node --check scripts/test_published_release_verifier.mjs
           node --check scripts/test_npm_registry_release_verifier.mjs
+          node --check scripts/performance_contract.mjs
+          node --check scripts/copy_redevplugin_performance_evidence.mjs
+          node --check scripts/performance_contract.test.mjs
           node --check scripts/generate_redevplugin_performance_evidence.mjs
           node --check scripts/measure_redevplugin_ui_performance.mjs
           node --check scripts/measure_redevplugin_renderer_performance.mjs
@@ -163,8 +166,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: ./scripts/build_redevplugin_release.sh --version "0.0.0-ci.${GITHUB_RUN_NUMBER}"
+      - run: npx playwright install --with-deps chromium
+      - run: ./scripts/build_redevplugin_release.sh --performance-gate smoke --version "0.0.0-ci.${GITHUB_RUN_NUMBER}"
       - run: ./dist/redevplugin-release/bin/redevplugin verify-compatibility ./dist/redevplugin-release/compatibility.json ./dist/redevplugin-release/contracts
-      - run: node scripts/verify_redevplugin_release_bundle.mjs ./dist/redevplugin-release "0.0.0-ci.${GITHUB_RUN_NUMBER}"
+      - run: node scripts/verify_redevplugin_release_bundle.mjs --skip-execution --allow-smoke ./dist/redevplugin-release "0.0.0-ci.${GITHUB_RUN_NUMBER}"
       - name: Verify standalone published-release toolchain isolation
         run: node scripts/test_published_release_verifier.mjs ./dist/redevplugin-release "0.0.0-ci.${GITHUB_RUN_NUMBER}" "$GITHUB_SHA"

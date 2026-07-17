@@ -38,14 +38,14 @@ If a host needs more than adapter registration, route mounting, artifact
 selection, or product UI around ReDevPlugin, the missing reusable behavior
 belongs in ReDevPlugin first.
 
-Manifest v4 methods are executable contracts, not descriptive metadata. Both
+Manifest v5 methods are executable contracts, not descriptive metadata. Both
 request and response schemas are closed draft 2020-12 object schemas compiled
 during package validation. The Host keeps a bounded fingerprint+method LRU of
 compiled validators, rejects request mismatches before dispatch, canonicalizes
 and redacts adapter/runtime data, and rejects response mismatches before an
 operation or stream becomes visible.
 
-Manifest v4 surfaces express only host-neutral `view`, `command`, or
+Manifest v5 surfaces express only host-neutral `view`, `command`, or
 `background` roles plus optional `primary`, `secondary`, or `utility` intent.
 They do not encode product placement. A host maps those roles into its own
 navigation, workspace, settings, or command UI.
@@ -84,7 +84,11 @@ and marked that exact asset session prepared.
   reads, compatibility, and diagnostics.
 - `pkg/runtimeclient` manages the Rust runtime subprocess, negotiated capacity,
   multiplexed newline-delimited JSON IPC, invocation cancellation, and runtime
-  health/cache metrics.
+  health/cache metrics. A `Manager` must bind its required `RuntimeHostServices`
+  exactly once before it can create or start shards; Host supplies the runtime
+  stream sink from the same execution registry used by capability dispatch.
+  Runtime configuration therefore cannot omit stream delivery or infer a shard
+  count from a zero value.
 - `pkg/plugindata` owns settings, storage generations, immutable exports, and
   retained bindings. `pkg/observability`, `pkg/secrets`, `pkg/stream`,
   `pkg/operation`, `pkg/installstage`, and `pkg/security` provide the remaining
@@ -115,12 +119,24 @@ IPC request/response frames.
 Rust IPC v3 uses one Go reader, one serialized pipe writer, and a pending map
 keyed by `request_id`; a worker invocation no longer holds a process-wide IPC
 mutex. Runtime-origin artifact, grant, storage, and network frames include
-`parent_request_id`. The supervisor accepts them only while the matching signed
-invocation is live and only within that invocation's audience and broker
-permissions. `cancel_invoke` removes queued work or marks running work canceled;
-the runtime acknowledges cancellation and remains ready for unrelated work.
+`parent_request_id`. Grant, storage, and network frames are accepted only while
+the matching signed invocation is live and only within that invocation's
+audience and broker permissions. Artifact loading additionally uses bounded
+`compile_flight_register` and `compile_flight_complete` routes pre-registered by
+the Host for the exact runtime generation, parent request, package, artifact,
+digest, and WASM ABI. A registered compile flight may finish after its leader is
+canceled without granting any other hostcall authority; unknown or mismatched
+routes invalidate the runtime generation. Active hostcall and compile-flight
+artifact route capacities equal the negotiated `worker_count`; canceled
+hostcall retention equals `worker_count + queue_capacity`. Canceled routes do
+not consume active capacity, and retention exhaustion invalidates the runtime
+generation instead of silently evicting an authorization record.
+`cancel_invoke` removes queued work or
+marks running work canceled; the runtime acknowledges cancellation and remains
+ready for unrelated work.
 
-The Host-only `RuntimeLimits` defaults worker count to
+The Host must supply positive `RuntimeLimits`; `DefaultRuntimeLimits()` creates
+an explicit value with worker count
 `clamp(GOMAXPROCS, 4, 16)`, queue capacity to `min(worker_count * 4, 64)`, and
 per-plugin concurrency to `min(max(worker_count / 2, 2), 8)`. Go admission waits
 before consuming the execution lease. Rust enforces the same hello-negotiated
@@ -249,15 +265,23 @@ surface and stream handles. Asset tickets, sessions, gateway credentials,
 stream tickets, confirmation tokens, plugin identity bindings, and owner/session
 hashes remain in the trusted parent.
 
-Plugin UI v5 normalizes every string VNode into a deterministic keyed text node.
-Structural patches address keys and sibling anchors through `insert_child`,
-`remove_child`, and `move_child`; `set_text` addresses the text key directly.
+Plugin UI v5 requires plugins to provide a globally unique, stable key for every
+element and text VNode. The SDK rejects string text VNodes and never derives
+identity from tree position or sibling index. Structural patches address keys
+and sibling anchors through `insert_child`, `remove_child`, and `move_child`;
+`set_text` addresses the plugin-provided text key directly.
 The SDK indexes the current and next trees once and uses longest-increasing-
 subsequence reconciliation for O(n log n) keyed movement. The renderer validates
 the complete patch in a copy-on-write key-graph overlay, then commits the DOM in
 one animation frame. Failed validation cannot partially mutate the DOM. Focus,
 selection, IME, scroll, canvas identity, edit revisions, and first-commit
 visibility retain their existing semantics.
+
+Bridge v5 uses one closed render budget: 512 KiB of canonical JSON per message,
+1,024 operations per atomic patch, 4,096 rendered nodes, and 32,768 JSON
+structural nodes. The schema generates the matching SDK, renderer, package
+validator, and performance-harness constants; no layer carries an independent
+limit.
 
 The renderer owns a private liveness channel to the plugin worker. It sends a
 ping every 10 seconds and requires the matching pong within 5 seconds; timeout
@@ -302,6 +326,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/opaque-surface-transport-v4.schema.json`;
 - `spec/plugin/compatibility-manifest-v5.schema.json`;
 - `spec/plugin/release-manifest-v3.schema.json`;
+- `spec/plugin/performance-contract-v1.json`;
 - `spec/plugin/performance-evidence-v1.schema.json`;
 - `spec/plugin/ipc-v3.schema.json`;
 - `spec/plugin/wasm-worker-v2.schema.json`;

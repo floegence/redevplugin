@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const source = join(root, "spec/openapi/plugin-platform-v4.yaml");
+const source = join(root, "spec/openapi/plugin-platform-v5.yaml");
 const output = join(root, "packages/redevplugin-ui/src/openapi.gen.ts");
 const check = process.argv.includes("--check");
 const generated = check
