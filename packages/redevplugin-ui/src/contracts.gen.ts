@@ -50,7 +50,7 @@ export const redevPluginContractArtifacts = [
     id: "plugin-platform-openapi",
     path: "spec/openapi/plugin-platform-v5.yaml",
     version: "plugin-platform-v5",
-    sha256: "2e6f1f6506a2472f61c5d75ee98be6392f8f548b22db360bb94a01c2993b0be9",
+    sha256: "c7e8dd298ddd70426ccf1783bb34d410b6bd4f3e8fcf6025e2f2a53296579b9c",
   },
   {
     id: "manifest-schema",
@@ -92,7 +92,7 @@ export const redevPluginContractArtifacts = [
     id: "iframe-bridge-schema",
     path: "spec/plugin/bridge-v5.schema.json",
     version: "bridge-v5",
-    sha256: "5801d2b735b0b0dbd3995e65716bba21b31de898722ffb2e836beee6d79a8e1e",
+    sha256: "bc8bd753e098413ad6bb6946f86c00ba87ddae29a458cd7cf70c205e31cdc0fb",
   },
   {
     id: "opaque-surface-document-schema",
@@ -164,7 +164,7 @@ export const redevPluginContractArtifacts = [
     id: "error-codes-schema",
     path: "spec/plugin/error-codes-v3.schema.json",
     version: "error-codes-v3",
-    sha256: "cbab28ff40ed1e96280e6c8c89dcdce6a3017a0fc3ae125bac84c44a515beecd",
+    sha256: "685827324b58a677d1f8a7852bda314f7c652375d90dd47259d2c39a9c39b8b8",
   },
   {
     id: "performance-contract",

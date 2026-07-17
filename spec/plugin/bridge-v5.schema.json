@@ -582,6 +582,7 @@
                 "PLUGIN_BINDING_REVISION_MISMATCH",
                 "PLUGIN_VALUES_REVISION_MISMATCH",
                 "PLUGIN_CSRF_REQUIRED",
+                "PLUGIN_FEATURE_NOT_CONFIGURED",
                 "PLUGIN_CONFIRMATION_REJECTED",
                 "PLUGIN_BRIDGE_TIMEOUT",
                 "PLUGIN_BRIDGE_DISPOSED",

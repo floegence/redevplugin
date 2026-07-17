@@ -60,6 +60,7 @@ const (
 	ErrBridgeHandshakeRequired ErrorCode = "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED"
 	ErrPlatformRequestFailed   ErrorCode = "PLUGIN_PLATFORM_REQUEST_FAILED"
 	ErrStreamFailed            ErrorCode = "PLUGIN_STREAM_FAILED"
+	ErrFeatureNotConfigured    ErrorCode = "PLUGIN_FEATURE_NOT_CONFIGURED"
 )
 
 var platformErrorCodes = []ErrorCode{
@@ -112,6 +113,7 @@ var platformErrorCodes = []ErrorCode{
 	ErrBindingRevisionMismatch,
 	ErrValuesRevisionMismatch,
 	ErrCSRFRequired,
+	ErrFeatureNotConfigured,
 }
 
 var bridgeErrorCodes = append(platformErrorCodes, []ErrorCode{

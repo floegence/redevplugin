@@ -104,8 +104,8 @@ type MemoryStore struct {
 	maxDiagnosticEvents int
 	nextAuditSeq        uint64
 	nextDiagnosticSeq   uint64
-	auditEvents         []AuditEvent
-	diagnosticEvents    []DiagnosticEvent
+	auditEvents         fixedRing[AuditEvent]
+	diagnosticEvents    fixedRing[DiagnosticEvent]
 	securityJournal     *MemorySecurityAuditJournal
 }
 
@@ -119,17 +119,19 @@ func NewMemoryStore(opts ...MemoryStoreOptions) *MemoryStore {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	maxAuditEvents := options.MaxAuditEvents
-	if maxAuditEvents == 0 {
+	if maxAuditEvents <= 0 {
 		maxAuditEvents = defaultMaxEvents
 	}
 	maxDiagnosticEvents := options.MaxDiagnosticEvents
-	if maxDiagnosticEvents == 0 {
+	if maxDiagnosticEvents <= 0 {
 		maxDiagnosticEvents = defaultMaxEvents
 	}
 	return &MemoryStore{
 		now:                 now,
 		maxAuditEvents:      maxAuditEvents,
 		maxDiagnosticEvents: maxDiagnosticEvents,
+		auditEvents:         newFixedRing[AuditEvent](maxAuditEvents),
+		diagnosticEvents:    newFixedRing[DiagnosticEvent](maxDiagnosticEvents),
 		securityJournal:     NewMemorySecurityAuditJournal(MemorySecurityAuditJournalOptions{Now: now, MaxEntries: maxAuditEvents}),
 	}
 }
@@ -159,8 +161,7 @@ func (s *MemoryStore) AppendPluginAudit(_ context.Context, event AuditEvent) err
 	if strings.TrimSpace(event.EventID) == "" {
 		event.EventID = eventID("audit", s.nextAuditSeq)
 	}
-	s.auditEvents = append(s.auditEvents, event)
-	s.auditEvents = trimOldest(s.auditEvents, s.maxAuditEvents)
+	s.auditEvents.Push(event)
 	return nil
 }
 
@@ -203,8 +204,7 @@ func (s *MemoryStore) AppendPluginDiagnostic(_ context.Context, event Diagnostic
 	if strings.TrimSpace(event.EventID) == "" {
 		event.EventID = eventID("diagnostic", s.nextDiagnosticSeq)
 	}
-	s.diagnosticEvents = append(s.diagnosticEvents, event)
-	s.diagnosticEvents = trimOldest(s.diagnosticEvents, s.maxDiagnosticEvents)
+	s.diagnosticEvents.Push(event)
 	return nil
 }
 
@@ -228,8 +228,9 @@ func (s *MemoryStore) ListPluginDiagnostics(_ context.Context, req ListDiagnosti
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	events := make([]DiagnosticEvent, 0, minInt(limit, len(s.diagnosticEvents)))
-	for _, event := range s.diagnosticEvents {
+	diagnostics := s.diagnosticEvents.Snapshot()
+	events := make([]DiagnosticEvent, 0, minInt(limit, len(diagnostics)))
+	for _, event := range diagnostics {
 		if pluginID != "" && event.PluginID != pluginID {
 			continue
 		}
@@ -303,15 +304,41 @@ func normalizeOptionalDiagnosticSeverity(severity DiagnosticSeverity) (Diagnosti
 	return normalizeDiagnosticSeverity(severity)
 }
 
-func trimOldest[T any](records []T, max int) []T {
-	if max < 0 || len(records) <= max {
-		return records
-	}
-	if max == 0 {
-		return nil
-	}
-	return append([]T(nil), records[len(records)-max:]...)
+type fixedRing[T any] struct {
+	values []T
+	start  int
+	count  int
 }
+
+func newFixedRing[T any](capacity int) fixedRing[T] {
+	if capacity <= 0 {
+		capacity = defaultMaxEvents
+	}
+	return fixedRing[T]{values: make([]T, capacity)}
+}
+
+func (r *fixedRing[T]) Push(value T) {
+	if len(r.values) == 0 {
+		return
+	}
+	if r.count < len(r.values) {
+		r.values[(r.start+r.count)%len(r.values)] = value
+		r.count++
+		return
+	}
+	r.values[r.start] = value
+	r.start = (r.start + 1) % len(r.values)
+}
+
+func (r fixedRing[T]) Snapshot() []T {
+	result := make([]T, r.count)
+	for index := 0; index < r.count; index++ {
+		result[index] = r.values[(r.start+index)%len(r.values)]
+	}
+	return result
+}
+
+func (r fixedRing[T]) Len() int { return r.count }
 
 func sortDiagnosticEventsNewestFirst(events []DiagnosticEvent) {
 	sort.Slice(events, func(i, j int) bool {

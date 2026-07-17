@@ -704,6 +704,11 @@ func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 			Snippets:     []string{"catalog(): Promise<PluginCatalogResult>", `#getJSON("/_redevplugin/api/plugins/catalog"`},
 		},
 		{
+			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/features"},
+			Owner:        "PluginPlatformClient.features",
+			Snippets:     []string{"features(): Promise<PluginFeatures>", `#getJSON("/_redevplugin/api/plugins/features"`},
+		},
+		{
 			routeFixture: routeFixture{Method: "GET", Path: "/_redevplugin/api/plugins/platform/compatibility"},
 			Owner:        "PluginPlatformClient.getCompatibility",
 			Snippets:     []string{"getCompatibility(): Promise<PluginCompatibilityManifest>", `#getJSON("/_redevplugin/api/plugins/platform/compatibility"`},

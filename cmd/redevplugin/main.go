@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/installstage"
@@ -1196,33 +1195,26 @@ func cliContext(ctx context.Context) context.Context {
 func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.PluginData) host.Adapters {
 	events := observability.NewMemoryStore()
 	connectivityBroker := connectivity.NewMemoryBroker()
-	trustVerifier := trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}}
-	return host.Adapters{
-		Policy:                      staticPolicyAdapter{},
-		PackageTrustVerifier:        trustVerifier,
-		ReleaseMetadataVerifier:     trustVerifier,
-		RevocationVerifier:          trustVerifier,
-		ReleaseSourcePolicy:         commandReleaseSourceAdapter{},
-		ReleaseArtifactResolver:     commandReleaseSourceAdapter{},
-		HostRequirements:            commandHostRequirementPolicy{},
-		CapabilityContractArtifacts: commandReleaseSourceAdapter{},
-		CapabilityContractKeys:      commandReleaseSourceAdapter{},
-		Registry:                    registryStore,
-		Audit:                       events,
-		Diagnostics:                 events,
-		Secrets:                     secrets.NewMemoryStore(),
-		SurfaceCatalog:              commandSurfaceCatalogSink{},
-		Assets:                      pluginpkg.NewMemoryAssetStore(),
-		InstallStages:               installstage.NewMemoryStore(),
-		Capabilities:                capability.NewRegistry(),
-		CoreActions:                 commandCoreActionAdapter{},
-		SurfaceTokens:               bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
-		PluginData:                  pluginData,
-		Connectivity:                connectivityBroker,
-		NetworkExecutor:             connectivity.NewExecutor(connectivity.ExecutorOptions{}),
-		Operations:                  operation.NewMemoryStore(),
-		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
-		Streams:                     stream.NewMemoryStore(),
+	return host.Config{
+		Core: host.CoreAdapters{
+			Policy:              staticPolicyAdapter{},
+			Registry:            registryStore,
+			Audit:               events,
+			SecurityAudit:       events,
+			Diagnostics:         events,
+			SurfaceTokens:       bridge.NewSurfaceTokenService(nil, bridge.SurfaceTokenOptions{}),
+			PluginData:          pluginData,
+			Assets:              pluginpkg.NewMemoryAssetStore(),
+			InstallStages:       installstage.NewMemoryStore(),
+			Operations:          operation.NewMemoryStore(),
+			ConfirmationIntents: security.NewMemoryConfirmationIntentStore(),
+			Streams:             stream.NewMemoryStore(),
+		},
+		ConnectivityModule: &host.ConnectivityModule{
+			Broker:          connectivityBroker,
+			NetworkExecutor: connectivity.NewExecutor(connectivity.ExecutorOptions{}),
+		},
+		SecretsModule: &host.SecretsModule{Store: secrets.NewMemoryStore()},
 	}
 }
 

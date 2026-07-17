@@ -19,6 +19,7 @@ type PlatformSchemas = components["schemas"];
 
 export type PluginCatalogResult = PlatformSchemas["PluginCatalogResult"];
 export type PluginCatalogRecord = PluginCatalogResult["plugins"][number];
+export type PluginFeatures = PlatformSchemas["PluginFeaturesSuccessResponse"]["data"];
 export type PluginCompatibilityManifest = PlatformSchemas["PluginCompatibilityManifest"];
 export type PluginCompatibilityMatrix = PluginCompatibilityManifest["matrix"];
 export type PluginContractArtifact = PluginCompatibilityManifest["contracts"][number];
@@ -139,6 +140,7 @@ export class PluginPlatformClient {
   }
 
   catalog(): Promise<PluginCatalogResult> { return this.#getJSON("/_redevplugin/api/plugins/catalog"); }
+  features(): Promise<PluginFeatures> { return this.#getJSON("/_redevplugin/api/plugins/features"); }
   getCompatibility(): Promise<PluginCompatibilityManifest> { return this.#getJSON("/_redevplugin/api/plugins/platform/compatibility"); }
   installReleaseRef(request: PluginInstallReleaseRefRequest): Promise<PluginRecord> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/install-release-ref", request); }
   updateReleaseRef(request: PluginUpdateReleaseRefRequest): Promise<PluginRecord> { return this.#mutatePlugin("/_redevplugin/api/plugins/update-release-ref", request); }

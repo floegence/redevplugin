@@ -34,11 +34,11 @@ func NewSQLiteStore(ctx context.Context, path string, opts ...MemoryStoreOptions
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	maxAuditEvents := options.MaxAuditEvents
-	if maxAuditEvents == 0 {
+	if maxAuditEvents <= 0 {
 		maxAuditEvents = defaultMaxEvents
 	}
 	maxDiagnosticEvents := options.MaxDiagnosticEvents
-	if maxDiagnosticEvents == 0 {
+	if maxDiagnosticEvents <= 0 {
 		maxDiagnosticEvents = defaultMaxEvents
 	}
 
@@ -424,9 +424,6 @@ func nextSQLiteSequence(ctx context.Context, tx *sql.Tx, column string) (uint64,
 func trimSQLiteEvents(ctx context.Context, tx *sql.Tx, table string, max int) error {
 	if table != "plugin_audit_events" && table != "plugin_diagnostic_events" {
 		return fmt.Errorf("unsupported observability event table %q", table)
-	}
-	if max < 0 {
-		return nil
 	}
 	if max == 0 {
 		_, err := tx.ExecContext(ctx, `DELETE FROM `+table)

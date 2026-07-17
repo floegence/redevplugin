@@ -27,10 +27,11 @@ func TestMemoryStoreAppendsAudit(t *testing.T) {
 	details["phase"] = "mutated"
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	if len(store.auditEvents) != 1 {
-		t.Fatalf("stored audit count = %d, want 1", len(store.auditEvents))
+	audits := store.auditEvents.Snapshot()
+	if len(audits) != 1 {
+		t.Fatalf("stored audit count = %d, want 1", len(audits))
 	}
-	event := store.auditEvents[0]
+	event := audits[0]
 	if event.EventID == "" || event.Type != "plugin.installed" || event.PluginID != "com.example.a" || event.PluginInstanceID != "plugin_a" || event.OccurredAt != now {
 		t.Fatalf("stored audit event mismatch: %#v", event)
 	}
@@ -97,7 +98,7 @@ func TestMemoryStoreDiagnosticsListFiltersAndDefaults(t *testing.T) {
 		t.Fatalf("memory diagnostic list exposed internal details: %#v", events[0])
 	}
 	store.mu.RLock()
-	storedInternalCause := store.diagnosticEvents[0].InternalDetails["error"]
+	storedInternalCause := store.diagnosticEvents.Snapshot()[0].InternalDetails["error"]
 	store.mu.RUnlock()
 	if storedInternalCause != "internal-memory-cause" {
 		t.Fatalf("memory diagnostic sink lost internal cause: %#v", storedInternalCause)
@@ -151,7 +152,7 @@ func TestMemoryStoreTrimsOldestEvents(t *testing.T) {
 		}
 	}
 	store.mu.RLock()
-	audits := append([]AuditEvent(nil), store.auditEvents...)
+	audits := store.auditEvents.Snapshot()
 	store.mu.RUnlock()
 	if len(audits) != 2 || audits[0].Type != "b" || audits[1].Type != "c" {
 		t.Fatalf("trimmed audits mismatch: %#v", audits)

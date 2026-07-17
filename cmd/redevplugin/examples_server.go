@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/floegence/redevplugin/pkg/bridge"
-	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/connectivity"
 	"github.com/floegence/redevplugin/pkg/host"
 	"github.com/floegence/redevplugin/pkg/httpadapter"
@@ -32,7 +31,6 @@ import (
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
-	"github.com/floegence/redevplugin/pkg/trust"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -263,34 +261,26 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	if err != nil {
 		return err
 	}
-	trustVerifier := trust.Ed25519Verifier{Keyring: trust.StaticKeyring{}}
-	pluginHost, err := host.Open(ctx, host.Adapters{
-		Policy:                      staticPolicyAdapter{},
-		PackageTrustVerifier:        trustVerifier,
-		ReleaseMetadataVerifier:     trustVerifier,
-		RevocationVerifier:          trustVerifier,
-		ReleaseSourcePolicy:         commandReleaseSourceAdapter{},
-		ReleaseArtifactResolver:     commandReleaseSourceAdapter{},
-		HostRequirements:            commandHostRequirementPolicy{},
-		CapabilityContractArtifacts: commandReleaseSourceAdapter{},
-		CapabilityContractKeys:      commandReleaseSourceAdapter{},
-		Registry:                    registryStore,
-		Audit:                       events,
-		Diagnostics:                 events,
-		Secrets:                     secretStore,
-		RuntimeManager:              runtimeManager,
-		SurfaceCatalog:              commandSurfaceCatalogSink{},
-		Assets:                      assetStore,
-		InstallStages:               installstage.NewMemoryStore(),
-		Capabilities:                capability.NewRegistry(),
-		CoreActions:                 commandCoreActionAdapter{},
-		SurfaceTokens:               surfaceTokens,
-		PluginData:                  pluginData,
-		Connectivity:                connectivityBroker,
-		NetworkExecutor:             networkExecutor,
-		Operations:                  operationStore,
-		ConfirmationIntents:         confirmationIntentStore,
-		Streams:                     streamStore,
+	pluginHost, err := host.Open(ctx, host.Config{
+		Core: host.CoreAdapters{
+			Policy:              staticPolicyAdapter{},
+			Registry:            registryStore,
+			Audit:               events,
+			Diagnostics:         events,
+			SurfaceTokens:       surfaceTokens,
+			PluginData:          pluginData,
+			Assets:              assetStore,
+			InstallStages:       installstage.NewMemoryStore(),
+			Operations:          operationStore,
+			ConfirmationIntents: confirmationIntentStore,
+			Streams:             streamStore,
+		},
+		Runtime: &host.RuntimeModule{Manager: runtimeManager},
+		ConnectivityModule: &host.ConnectivityModule{
+			Broker:          connectivityBroker,
+			NetworkExecutor: networkExecutor,
+		},
+		SecretsModule: &host.SecretsModule{Store: secretStore},
 	})
 	if err != nil {
 		_ = secretStore.Close()

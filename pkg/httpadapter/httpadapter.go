@@ -682,6 +682,7 @@ var routes = []routeSpec{
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDowngrade }},
 	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCatalog }},
+	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/features"}, bind: func(h *Handler) http.HandlerFunc { return h.handleFeatures }},
 	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/platform/compatibility"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCompatibility }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/open"}, bind: func(h *Handler) http.HandlerFunc { return h.handleOpenSurface }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/surfaces/revoke-scope"}, bind: func(h *Handler) http.HandlerFunc { return h.handleRevokeSurfaceScope }},
@@ -1265,6 +1266,10 @@ func (h Handler) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: map[string]any{"plugins": records}})
+}
+
+func (h Handler) handleFeatures(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, successResponse{OK: true, Data: h.host.Features()})
 }
 
 func (h Handler) handleCompatibility(w http.ResponseWriter, _ *http.Request) {
@@ -2588,6 +2593,8 @@ func httpStatusForBridgeError(err error) int {
 
 func errorCodeForRPCError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrFeatureNotConfigured):
+		return security.ErrFeatureNotConfigured
 	case isCapabilityBusinessError(err):
 		return security.ErrCapabilityError
 	case isUnattestedStructuredRPCError(err):
@@ -2621,6 +2628,8 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 
 func publicPluginErrorMessage(code security.ErrorCode) string {
 	switch code {
+	case security.ErrFeatureNotConfigured:
+		return "plugin host feature is not configured"
 	case security.ErrInvalidRequest:
 		return "plugin request is invalid"
 	case security.ErrManifestInvalid:
@@ -2916,6 +2925,8 @@ func httpStatusForStreamError(err error) int {
 
 func httpStatusForRPCError(err error) int {
 	switch {
+	case errors.Is(err, host.ErrFeatureNotConfigured):
+		return http.StatusNotImplemented
 	case isCapabilityBusinessError(err):
 		return http.StatusUnprocessableEntity
 	case isUnattestedStructuredRPCError(err):
@@ -2943,6 +2954,8 @@ func httpStatusForRPCError(err error) int {
 
 func errorCodeForIntentError(err error) security.ErrorCode {
 	switch {
+	case errors.Is(err, host.ErrFeatureNotConfigured):
+		return security.ErrFeatureNotConfigured
 	case isCapabilityBusinessError(err):
 		return security.ErrCapabilityError
 	case isUnattestedStructuredRPCError(err):

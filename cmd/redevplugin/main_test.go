@@ -314,19 +314,19 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             runtimePath,
 		Descriptor:       mustDescribeCommandRuntime(t, runtimePath),
-		Diagnostics:      adapters.Diagnostics,
-		Assets:           adapters.Assets,
-		SurfaceTokens:    adapters.SurfaceTokens,
+		Diagnostics:      adapters.Core.Diagnostics,
+		Assets:           adapters.Core.Assets,
+		SurfaceTokens:    adapters.Core.SurfaceTokens,
 		PluginData:       pluginData,
-		Connectivity:     adapters.Connectivity,
-		NetworkExecutor:  adapters.NetworkExecutor,
+		Connectivity:     adapters.ConnectivityModule.Broker,
+		NetworkExecutor:  adapters.ConnectivityModule.NetworkExecutor,
 		ShardCount:       1,
 		HandshakeTimeout: 15 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapters.RuntimeManager = runtimeManager
+	adapters.Runtime = &host.RuntimeModule{Manager: runtimeManager}
 	h, err := host.Open(ctx, adapters)
 	if err != nil {
 		_ = pluginData.Close()
@@ -451,12 +451,12 @@ func TestCommandRuntimeManagerRequiresExplicitShardCount(t *testing.T) {
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:            os.Args[0],
 		Descriptor:      mustDescribeCommandRuntime(t, os.Args[0]),
-		Diagnostics:     adapters.Diagnostics,
-		Assets:          adapters.Assets,
-		SurfaceTokens:   adapters.SurfaceTokens,
+		Diagnostics:     adapters.Core.Diagnostics,
+		Assets:          adapters.Core.Assets,
+		SurfaceTokens:   adapters.Core.SurfaceTokens,
 		PluginData:      pluginData,
-		Connectivity:    adapters.Connectivity,
-		NetworkExecutor: adapters.NetworkExecutor,
+		Connectivity:    adapters.ConnectivityModule.Broker,
+		NetworkExecutor: adapters.ConnectivityModule.NetworkExecutor,
 		ShardCount:      0,
 	})
 	if !errors.Is(err, runtimeclient.ErrRuntimeShardCount) {
@@ -476,12 +476,12 @@ func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             os.Args[0],
 		Descriptor:       mustDescribeCommandRuntime(t, os.Args[0]),
-		Diagnostics:      adapters.Diagnostics,
-		Assets:           adapters.Assets,
-		SurfaceTokens:    adapters.SurfaceTokens,
+		Diagnostics:      adapters.Core.Diagnostics,
+		Assets:           adapters.Core.Assets,
+		SurfaceTokens:    adapters.Core.SurfaceTokens,
 		PluginData:       pluginData,
-		Connectivity:     adapters.Connectivity,
-		NetworkExecutor:  adapters.NetworkExecutor,
+		Connectivity:     adapters.ConnectivityModule.Broker,
+		NetworkExecutor:  adapters.ConnectivityModule.NetworkExecutor,
 		ShardCount:       1,
 		HandshakeTimeout: 15 * time.Second,
 	})
@@ -532,12 +532,12 @@ func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
 	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             os.Args[0],
-		Diagnostics:      adapters.Diagnostics,
-		Assets:           adapters.Assets,
-		SurfaceTokens:    adapters.SurfaceTokens,
+		Diagnostics:      adapters.Core.Diagnostics,
+		Assets:           adapters.Core.Assets,
+		SurfaceTokens:    adapters.Core.SurfaceTokens,
 		PluginData:       pluginData,
-		Connectivity:     adapters.Connectivity,
-		NetworkExecutor:  adapters.NetworkExecutor,
+		Connectivity:     adapters.ConnectivityModule.Broker,
+		NetworkExecutor:  adapters.ConnectivityModule.NetworkExecutor,
 		ShardCount:       1,
 		HandshakeTimeout: 15 * time.Second,
 	})

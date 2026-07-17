@@ -97,6 +97,12 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PluginCatalogResponse" }
         default: { $ref: "#/components/responses/PlatformErrorResponse" }
+  /_redevplugin/api/plugins/features:
+    get:
+      operationId: getPluginFeatures
+      responses:
+        "200": { $ref: "#/components/responses/PluginFeaturesResponse" }
+        default: { $ref: "#/components/responses/PlatformErrorResponse" }
   /_redevplugin/api/plugins/platform/compatibility:
     get:
       operationId: getPluginPlatformCompatibility
@@ -599,6 +605,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/PluginCatalogSuccessResponse"
+    PluginFeaturesResponse:
+      description: Closed set of optional host modules configured for this platform.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PluginFeaturesSuccessResponse"
     CompatibilityResponse:
       description: Released platform compatibility manifest.
       content:
@@ -1054,6 +1066,18 @@ components:
       properties:
         ok: { const: true }
         data: { $ref: "#/components/schemas/PluginCatalogResult" }
+    PluginFeaturesSuccessResponse:
+      type: object
+      required: [ok, data]
+      additionalProperties: false
+      properties:
+        ok: { const: true }
+        data:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [release, runtime, capability, connectivity, secrets, core_action]
     CompatibilitySuccessResponse:
       type: object
       required: [ok, data]
@@ -1563,6 +1587,7 @@ components:
         - PLUGIN_SURFACE_QUIESCE_TIMEOUT
         - PLUGIN_CONTRACT_MISMATCH
         - PLUGIN_CSRF_REQUIRED
+        - PLUGIN_FEATURE_NOT_CONFIGURED
     SurfaceDisposeResult:
       type: object
       required: [disposed]

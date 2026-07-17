@@ -56,6 +56,9 @@ func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Ma
 		if len(pkg.CapabilityBindings) == 0 {
 			return nil, nil
 		}
+		if err := h.requireFeature(FeatureCapability); err != nil {
+			return nil, err
+		}
 		pins = make([]capabilitycontract.Pin, 0, len(pkg.CapabilityBindings))
 		for _, binding := range pkg.CapabilityBindings {
 			contract, err := h.adapters.Capabilities.RequireContract(binding.Contract)
@@ -78,6 +81,9 @@ func (h *Host) resolvePackageCapabilityPins(ctx context.Context, pkg manifest.Ma
 }
 
 func (h *Host) ensureReleaseCapabilityContracts(ctx context.Context, release PluginPackageRelease, sourcePolicy SourcePolicySnapshot) ([]capabilitycontract.Pin, error) {
+	if err := h.requireFeature(FeatureCapability); err != nil {
+		return nil, err
+	}
 	requirement, err := h.selectHostRequirement(ctx, release)
 	if err != nil {
 		return nil, err
@@ -441,6 +447,9 @@ func (h *Host) validateManifestCapabilityContracts(plugin manifest.Manifest, pin
 }
 
 func (h *Host) resolveCapabilityMethod(record registry.PluginRecord, method manifest.MethodSpec) (resolvedCapabilityMethod, error) {
+	if err := h.requireFeature(FeatureCapability); err != nil {
+		return resolvedCapabilityMethod{}, err
+	}
 	binding, ok := manifestBinding(record.Manifest, method.Route.BindingID)
 	if !ok {
 		return resolvedCapabilityMethod{}, fmt.Errorf("capability binding %q is not declared", method.Route.BindingID)
@@ -665,6 +674,9 @@ func (h *Host) prepareCapabilityExecution(ctx context.Context, record registry.P
 }
 
 func (h *Host) resolvePinnedCapabilityContract(pins []capabilitycontract.Pin, binding manifest.CapabilityBinding) (capabilitycontract.VerifiedContract, error) {
+	if err := h.requireFeature(FeatureCapability); err != nil {
+		return capabilitycontract.VerifiedContract{}, err
+	}
 	for _, pin := range pins {
 		if pin != binding.Contract {
 			continue
