@@ -5,6 +5,7 @@ import "errors"
 type Outcome string
 
 const (
+	OutcomeCommitted    Outcome = "committed"
 	OutcomeNotCommitted Outcome = "not_committed"
 	OutcomeUnknown      Outcome = "unknown"
 )

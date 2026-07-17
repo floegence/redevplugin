@@ -17,3 +17,9 @@ func TestUnknownPreservesExplicitOutcome(t *testing.T) {
 		t.Fatalf("Unknown(raw) outcome = %q, want %q", outcome, OutcomeUnknown)
 	}
 }
+
+func TestCommittedOutcomeIsStable(t *testing.T) {
+	if OutcomeCommitted != "committed" {
+		t.Fatalf("committed outcome = %q", OutcomeCommitted)
+	}
+}

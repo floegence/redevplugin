@@ -317,7 +317,7 @@ func normalizeJournalEvent(event AuditEvent, now func() time.Time) (AuditEvent, 
 }
 
 func validMutationOutcome(outcome mutation.Outcome) bool {
-	return outcome == mutation.OutcomeNotCommitted || outcome == mutation.OutcomeUnknown
+	return outcome == mutation.OutcomeCommitted || outcome == mutation.OutcomeNotCommitted || outcome == mutation.OutcomeUnknown
 }
 
 func cloneAuditEvent(event AuditEvent) AuditEvent {
