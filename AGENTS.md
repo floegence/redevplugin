@@ -248,7 +248,7 @@ Use this checklist whenever adding or reviewing ReDevPlugin code:
   For opaque sandbox iframes, `event.origin` is diagnostic context only and is
   not an authorization input. Authorization must bind the window source,
   transferred `MessagePort`, asset session, surface instance, bridge nonce,
-  active fingerprint, session hash, state version, and revoke epoch. Host UI
+  active fingerprint, session hash, management revision, and revoke epoch. Host UI
   chrome may surround the surface but must not replace that path.
 - If a plugin backend executes, it must execute through the Rust
   `redevplugin-runtime` WASM actor/job model. Third-party native processes,
@@ -681,8 +681,8 @@ schemas, or missing release metadata.
 
 Expected gates for platform changes:
 
-- Go: formatting, `GOWORK=off go list ./...`, unit tests, race-sensitive lifecycle tests where practical,
-  linting, schema migration tests, HTTP adapter contract tests, and generated DTO
+- Go: formatting, `GOWORK=off go list ./cmd/... ./examples/... ./pkg/...`, unit tests, race-sensitive lifecycle tests where practical,
+  linting, SQLite schema initialization and reopen tests, HTTP adapter contract tests, and generated DTO
   checks.
 - TypeScript: clean install, typecheck, lint, unit tests, SDK contract tests,
   bridge replay tests, and build output checks.
@@ -705,8 +705,9 @@ workspace wiring:
 - Rust runtime checks must not rely on path overrides to host-product source
   trees.
 
-Do not ship a public contract change without tests that prove old/new failure
-modes fail closed and produce stable diagnostic errors.
+Do not ship a public contract change without tests that prove the current
+contract accepts valid inputs, rejects invalid and out-of-bound inputs with
+fail-closed behavior, and produces stable diagnostic errors.
 
 ## Repository Rule File
 

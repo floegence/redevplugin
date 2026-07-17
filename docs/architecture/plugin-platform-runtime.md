@@ -11,15 +11,15 @@ ReDevPlugin owns reusable extension mechanics:
 
 - package layout, canonical package hashing, detached signatures, validation,
   and asset storage;
-- plugin registry, install/update/enable/open/disable/uninstall lifecycle, data
-  export/import, retained data, and cleanup orchestration;
+- plugin registry, install/update/enable/open/disable/uninstall lifecycle,
+  PluginData export/import, retained bindings, and unreferenced object recovery;
 - permission grants, security policy evaluation, confirmation outcomes,
   stable errors, audit events, and diagnostics;
 - opaque iframe bootstrap, validated surface documents, asset tickets and
   sessions, typed `MessagePort` bridge messages, operation and stream envelopes,
   and TypeScript SDK helpers;
-- storage, settings, observability, secret binding metadata, permission,
-  cleanup, retained-data, and staged-install durable stores;
+- registry, PluginData, observability, secret binding metadata, operation,
+  stream, confirmation-intent, and staged-install durable stores;
 - Rust runtime IPC, WASM worker ABI validation, brokered storage/network
   hostcalls, runtime revocation state, and worker invocation payload contracts;
 - OpenAPI, JSON schemas, compatibility manifests, release manifests, release
@@ -38,14 +38,14 @@ If a host needs more than adapter registration, route mounting, artifact
 selection, or product UI around ReDevPlugin, the missing reusable behavior
 belongs in ReDevPlugin first.
 
-Manifest v2 methods are executable contracts, not descriptive metadata. Both
+Manifest v4 methods are executable contracts, not descriptive metadata. Both
 request and response schemas are closed draft 2020-12 object schemas compiled
 during package validation. The Host keeps a bounded fingerprint+method LRU of
 compiled validators, rejects request mismatches before dispatch, canonicalizes
 and redacts adapter/runtime data, and rejects response mismatches before an
 operation or stream becomes visible.
 
-Manifest v2 surfaces express only host-neutral `view`, `command`, or
+Manifest v4 surfaces express only host-neutral `view`, `command`, or
 `background` roles plus optional `primary`, `secondary`, or `utility` intent.
 They do not encode product placement. A host maps those roles into its own
 navigation, workspace, settings, or command UI.
@@ -68,7 +68,7 @@ and marked that exact asset session prepared.
   opaque surface documents from the generated bridge render policy, rejects
   native backend artifacts, and exposes filesystem-backed asset storage.
 - `pkg/host` coordinates lifecycle, permissions, policy, settings, storage,
-  network grants, runtime execution, retained data, cleanup, audit, and
+  network grants, runtime execution, retained data, audit, and
   diagnostics through host-provided adapters. Official or registry-backed
   installs should use release references resolved by host-registered
   `ReleaseSourcePolicyResolver` and `ReleaseArtifactResolver` adapters; the Host
@@ -79,10 +79,10 @@ and marked that exact asset session prepared.
   reads, compatibility, and diagnostics.
 - `pkg/runtimeclient` manages the Rust runtime subprocess and newline-delimited
   JSON IPC frames.
-- `pkg/storage`, `pkg/settings`, `pkg/observability`, `pkg/secrets`,
-  `pkg/permissions`, `pkg/stream`, `pkg/operation`,
-  `pkg/installstage`, `pkg/retaineddata`, `pkg/cleanup`, and `pkg/security`
-  provide memory and durable store implementations or shared lifecycle state.
+- `pkg/plugindata` owns settings, storage generations, immutable exports, and
+  retained bindings. `pkg/observability`, `pkg/secrets`, `pkg/stream`,
+  `pkg/operation`, `pkg/installstage`, and `pkg/security` provide the remaining
+  host-neutral contracts and durable state.
 - `pkg/protocol` tests keep OpenAPI, schemas, route fixtures, Go DTOs,
   TypeScript SDK bindings, Rust IPC, WASM ABI, and compatibility hashes aligned.
 
@@ -145,15 +145,15 @@ channel ID, and handshake `connection_nonce` needed to mint a
 creates an ephemeral Ed25519 keypair, sends its non-empty public-key set in the
 startup `hello` frame, overwrites any caller signature material, binds the lease
 to the current process audience, and signs every worker invocation. The
-canonical payload excludes the bearer token and covers the display token ID,
+canonical payload excludes the signature and covers the display token ID,
 plugin metadata, active package fingerprint, issued timestamp, method, effect,
 execution mode, Host-owned operation and stream ids, audit correlation id,
 surface and owner context, target descriptor hashes, quota limits, policy
 revisions, revoke epoch, expiry, `lease_nonce`, `key_id`, and runtime audience
 fields. `MintRuntimeExecutionLease` returns separate `lease_id` and display
 `token_id` values plus the same metadata, and worker-route dispatch records a
-`plugin.runtime.lease.issued` Host audit event without persisting the bearer
-lease token.
+`plugin.runtime.lease.issued` Host audit event with the bound identifiers,
+runtime audience, revisions, descriptor hashes, and expiry.
 
 The Go supervisor verifies the current runtime audience and Ed25519 signature
 before writing IPC. Rust requires the startup keyring and independently verifies
@@ -265,7 +265,7 @@ Machine-readable contracts are first-class platform artifacts:
 - `spec/plugin/worker-invocation-v2.schema.json`;
 - `spec/plugin/network-grant-v1.schema.json`;
 - `spec/plugin/error-codes-v2.schema.json`;
-- `spec/plugin/target-classifier-v1.json`;
+- `spec/plugin/target-classifier-v2.json`;
 - `spec/plugin/contract-registry-v1.json`, the generated inventory and SHA-256
   identity for every public contract above.
 
@@ -296,39 +296,27 @@ canonical release, then verifies package hash, manifest, entries, package
 signature/trust result, compatibility, and identity before mutating the
 registry.
 
-Manifest storage and settings migration metadata is part of that contract. A
-bootstrap migration may use `from_version: 0`, but the manifest validator and
-schema contract require each migration's `to_version` to match the active
-settings or store `schema_version`, require monotonic version ranges, and reject
-empty step hashes or negative estimates. Hosts can therefore detect migration
-intent from the package manifest instead of inferring it from ad hoc product
-logic. During update, the Host compares the installed settings/storage schema
-versions to the target package and rejects a registry switch unless the target
-manifest describes the exact current-to-target migration. During downgrade, the
-Host validates the current version's migration descriptor and requires it to be
-reversible before restoring the older version snapshot.
-
-Archive import is also fail-closed on schema boundaries. Storage archive
-namespaces must match the target store kind and schema version before the Host
-applies the target namespace and quota, and settings archives must match the
-target settings schema version before any values are imported into the target
-field set.
+The manifest defines the complete PluginData shape. Update and downgrade may
+switch package code only when the target shape hash is identical to the active
+shape; a different settings or storage schema requires a new plugin identity.
+Opaque bundle import verifies owner identity, shape hash, content hash, and the
+target management revision before publishing a new generation.
 
 ## Runtime State Model
 
-ReDevPlugin uses explicit stores instead of implicit process memory:
+ReDevPlugin uses explicit authorities instead of implicit process memory:
 
 - registry records track installed plugin package and lifecycle state;
 - staged install records capture pre-commit install/update progress;
-- storage and settings stores keep plugin data and redacted settings state;
+- PluginData keeps generation bindings, non-secret settings, files, KV, SQLite,
+  retained data, and export object metadata;
 - secret binding stores track secret references without secret plaintext;
-- permission and security policy stores drive authorization and revoke epochs;
+- registry authorization snapshots drive permission, policy, and revoke epochs;
 - confirmation intent stores keep dangerous-method approval state without
   persisting raw confirmation token capabilities and atomically consume either
   an approved intent or a scope-matched trusted-parent rejection;
 - operation and stream stores keep observable long-running work and buffered
   events;
-- retained-data and cleanup stores make keep-data/delete-data outcomes auditable;
 - observability stores persist audit and diagnostic events.
 
 Memory and durable store APIs expose immutable value boundaries. Registry,

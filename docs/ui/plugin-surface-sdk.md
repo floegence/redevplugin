@@ -14,8 +14,8 @@ Trusted host UI may:
 - call management APIs through `PluginPlatformClient`;
 - mount `PluginSurfaceHost` inside product chrome;
 - provide the authenticated parent-side surface transport and confirmation UI;
-- show settings, permissions, retained data, operations, audit, diagnostics, and
-  host-mediated intents;
+- show settings, permissions, retained data, operations, owner-scoped
+  diagnostics, and host-mediated intents;
 - register product-specific session, origin, CSRF, and policy adapters on the
   Go Host side.
 
@@ -53,7 +53,7 @@ authority is present in that message. The renderer acknowledges the exact frame
 generation with `redevplugin.surface.port_ack` over that port before the parent
 may mint a gateway lease. All later traffic is port-bound and binds
 the asset session, surface instance, bridge nonce, active fingerprint, owner and
-session hashes, state version, and revoke epoch. `event.origin` is diagnostic
+session hashes, management revision, and revoke epoch. `event.origin` is diagnostic
 context, not an authorization input.
 
 The trusted renderer transfers two ordered ports to the worker:
@@ -63,11 +63,16 @@ ids are monotonically increasing per bridge, duplicate/replayed ids are rejected
 timeouts send one `redevplugin.bridge.cancel`, and late responses after cancel or
 port close are ignored fail closed.
 
+Bridge errors carry the platform's optional `mutation_outcome` unchanged.
+Trusted-parent transport failures are reported as `unknown`; plugin UI must stop
+destructive retries and perform an authoritative read before allowing more
+mutations. An explicit `not_committed` outcome may keep the original retry path.
+
 The trusted-parent SDK computes `handshake_transcript_sha256` before it asks the Go
 Host for a parent-only `plugin_gateway_token`. The transcript is the SHA-256 of
-a length-prefixed `redevplugin.bridge.handshake.v2` field list containing the
+a length-prefixed `redevplugin.bridge.handshake.v3` field list containing the
 plugin ID, surface ID, surface instance ID, active fingerprint, bridge nonce,
-asset-session nonce, plugin state version, revoke epoch, UI protocol version,
+asset-session nonce, management revision, revoke epoch, UI protocol version,
 and `bridge_channel_id`. The Go Host recomputes the same hash and refuses to
 mint a parent-only gateway token if the transcript is missing or mismatched.
 This trusted-parent HTTP DTO is defined by OpenAPI, not by the plugin-visible
@@ -91,7 +96,7 @@ routes exposed by `pkg/httpadapter`, including:
 - secret bind/test/delete;
 - retained-data list/delete/bind;
 - host-mediated intent list/invoke;
-- audit and diagnostic event list.
+- owner-scoped diagnostic event list.
 
 `cancelOperation` is a trusted host-page command. It records
 `cancel_requested` in the Host operation store and signals the live execution
@@ -104,7 +109,7 @@ remains available through `getOperation` and `listOperations`.
 Plugin workers import generated host capability clients from signed artifact
 bundles. A generated client wraps `PluginBridgeClient`; it contains typed
 request, response, operation, stream, and business-error validation, but no URL,
-route, session, ticket, lease token, or host-product type. The matching bundle
+route, session, ticket, runtime lease, or host-product type. The matching bundle
 pin and compatibility metadata are verified by the Host before installation.
 Operation calls expose one opaque operation id. Subscription calls expose that
 operation id plus one opaque stream handle; raw stream ids and tickets remain in
@@ -113,9 +118,10 @@ capability version, details-schema SHA-256, error code, and details payload all
 match the signed contract.
 
 List helpers preserve the same data wrapper fields returned by the Go HTTP
-adapter, such as `operations`, `permissions`, `audit_events`, and
-`diagnostic_events`, so host pages can consume the SDK and raw HTTP contract
-consistently.
+adapter, such as `operations`, `permissions`, and `diagnostic_events`, so host
+pages can consume the SDK and raw HTTP contract consistently. Audit events stay
+behind the host's internal `AuditSink`; the generic HTTP adapter and TypeScript
+client do not expose them.
 
 Trusted product UI should not transport official `.redevplugin` package bytes
 through browser state. For official or registry-backed installs, call
@@ -168,6 +174,11 @@ same tags, attributes, input types, and size/depth limits. Lazy image, font, and
 media blobs are created inside the opaque frame; executable plugin code runs
 only in the hardened Dedicated Worker. Asset sessions, tickets, gateway tokens,
 stream tickets, and confirmation tokens never cross into plugin code.
+
+`PluginBridgeClient.render(...)` validates that same generated policy in one
+worker-side pass before it queues a mount or patch. Invalid tags, attributes,
+input types, and bounded values therefore fail locally instead of producing a
+patch that the trusted renderer would reject later.
 
 The same policy owns interactive resource budgets. A surface may transfer four
 canvases, each dimension is capped at 4096 pixels, aggregate canvas area is
@@ -260,9 +271,9 @@ When a capability preflight returns the host-neutral typed risk plan contract,
 the SDK exposes it as `PluginRiskPlan` with `PluginRiskFlag` entries and the
 `redevplugin.capability.risk_plan.v1` schema version. Host pages can use
 `isPluginRiskPlan(intent.plan)` before rendering severity, admin requirement,
-data-loss risk, destructive-operation markers, and redacted details. Legacy
-generic preflight objects are still represented as ordinary records so existing
-host pages remain compatible.
+data-loss risk, destructive-operation markers, and redacted details. Preflight
+payloads outside that closed contract are rejected before a confirmation intent
+is exposed to the host page.
 
 ## Settings And Intents
 
@@ -271,7 +282,7 @@ Settings helpers must preserve manifest validation and secret redaction:
 - non-secret settings are validated against the manifest schema;
 - secret settings are represented by redacted references and require secret
   lifecycle APIs to bind/test/delete;
-- settings archives never restore secret plaintext or bound-secret state.
+- PluginData bundles never include secret plaintext or secret binding metadata.
 
 Host-mediated intents are invoked by trusted host UI, not by giving sandboxed
 iframes management credentials. Intent execution still preserves local policy

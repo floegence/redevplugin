@@ -10,7 +10,7 @@ host-controlled validation, policy, quota, lifecycle, and revocation checks.
 The Host library is the security authority. Plugin UI and WASM workers must not
 self-report identity, permissions, routes, vault access, storage roots, network
 targets, or runtime generation. The Host derives those values from installed
-registry records, session adapters, policy stores, manifests, package hashes,
+registry records, session adapters, authorization snapshots, manifests, package hashes,
 grants, and runtime state.
 
 Host products provide concrete policy and adapters, but the reusable security
@@ -46,7 +46,7 @@ ReDevPlugin rejects:
   configuration, and Cargo dependency sections;
 - package sizes and paths that exceed configured limits.
 
-Every manifest v2 method must provide request and response JSON Schemas whose
+Every manifest v4 method must provide request and response JSON Schemas whose
 root is a closed object. Every nested schema that declares `type: object` must
 also set `additionalProperties: false`. ReDevPlugin rejects remote `$ref`
 resources, schema documents over 256 KiB, excessive schema depth/node counts,
@@ -161,7 +161,7 @@ trusted renderer gives each plugin worker two ordered ports: a private
 claimed by the plugin SDK. All subsequent lifecycle, render, RPC, cancel, asset,
 stream, and confirmation traffic uses those ports. Authorization binds the
 window source, frame generation, port, asset session, surface instance, bridge
-nonce, active fingerprint, owner and session hashes, state version, and revoke
+nonce, active fingerprint, owner and session hashes, management revision, and revoke
 epoch. `event.origin` is diagnostic context only.
 
 Token and ticket kinds are described in `token-ticket-v2.schema.json`. Schema
@@ -200,9 +200,9 @@ plan that the parent approved.
 
 Capability adapters may return `capability.RiskPlan` for dynamic preflight
 plans. ReDevPlugin treats `redevplugin.capability.risk_plan.v1` as a
-host-neutral closed-world contract: typed plans are normalized, validated, and
-redacted before their `plan_hash` is computed, while legacy generic plan objects
-without that schema version remain supported for compatibility.
+host-neutral closed-world contract: the current schema version is mandatory,
+typed plans are normalized, validated, and redacted before their `plan_hash` is
+computed, and every other payload shape fails closed.
 
 Confirmation intents are stored through a Host-provided store with in-memory
 and SQLite implementations. The store persists only intent metadata,
@@ -261,8 +261,8 @@ Renewal timers start only after the surface reaches ready state.
 
 ## Permissions And Policy
 
-The Host evaluates security policy before permission grants. Policy stores can
-cap allowed permission IDs and deny method execution. Policy updates bump
+The Host evaluates security policy before permission grants. Registry-owned
+authorization snapshots cap allowed permission IDs and deny method execution. Policy updates bump
 revision and revoke epochs, refresh connectivity policy, and revoke runtime
 capabilities. Runtime revocation ACKs are decoded as structured evidence, and
 Host audit events include the closed socket/stream/storage-handle counters
@@ -276,10 +276,11 @@ instance, not to retained user data.
 
 Storage access is brokered by the Host. Plugins do not receive arbitrary
 filesystem roots. File, KV, SQLite, export, import, quota, namespace, and
-retained-data operations go through Host APIs and stores.
+retained-data operations go through the single PluginData adapter.
 
-Settings stores validate non-secret settings against the manifest schema. Secret
-settings are redacted and must be changed through the secret lifecycle.
+PluginData validates and persists non-secret settings against the manifest
+schema with a values revision. Secret settings are redacted and must be changed
+through the independent secret lifecycle.
 
 Secret binding stores only persist plugin instance, scope, secret reference,
 bound/test/delete metadata, and timestamps. They never store secret plaintext,
@@ -332,8 +333,8 @@ The Go supervisor can also be configured with a runtime lease replay store. The
 memory store protects one host process, while the SQLite store persists the
 consumed `lease_id + lease_nonce` hash across runtime restarts until the lease
 expires. A duplicate lease is rejected before worker IPC or artifact reads and
-records a `plugin.runtime.lease.replayed` diagnostic. The stores do not persist
-the raw lease token or raw nonce.
+records a `plugin.runtime.lease.replayed` diagnostic. The stores persist only a
+hash of the lease identifier and nonce.
 
 WASM binary validation is duplicated across the process boundary by design.
 The Go package validator compiles the entire module with Wazero before accepting
@@ -345,7 +346,7 @@ The manifest cannot request more than 256 MiB per worker, and a Host package
 trust policy may enforce a lower ceiling. Hosts can additionally configure an
 Ed25519 runtime lease verifier on the Go supervisor. The verifier checks a
 canonical `runtime_execution_lease` payload
-that excludes the bearer `lease_token` and the signature itself, while covering
+that excludes the signature itself, while covering
 the display token ID, plugin metadata, active package fingerprint, issued
 timestamp, worker method, effect, execution mode, surface and owner context,
 descriptor hashes, quota limits, policy and management revisions, revoke epoch,
@@ -355,7 +356,7 @@ instance, IPC channel ID, and handshake `connection_nonce`. Rejected signatures
 record `plugin.runtime.lease.signature_rejected` and fail before worker IPC or
 artifact reads. Worker-route dispatch records `plugin.runtime.lease.issued` with
 lease/token IDs, runtime IDs, revision bindings, descriptor hashes, and expiry
-metadata; the cleartext bearer `lease_token` is never written to audit details.
+metadata.
 The supervisor can include the matching runtime lease public keys in the startup
 `hello` frame. Once the Rust runtime receives a non-empty keyring, it verifies
 worker lease signatures with the same canonical payload and rejects unsigned,

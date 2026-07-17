@@ -21,38 +21,36 @@ capabilities.
   WASM ABI schema, worker invocation payload schema, stable error-code schema,
   and target classifier fixture
 - Host-neutral Go package boundaries for manifest validation, package IO,
-  registry, host adapters, bridge, storage, runtime supervision, grants, cleanup,
+  registry, host adapters, bridge, PluginData, runtime supervision, grants,
   capability adapters, HTTP routes, session context, and web security.
 - Host capability contracts are published as signed exact-pin bundles containing
   a restricted schema, compatibility metadata, generated plugin-side client,
   notices, manifest, and signature. The Host verifies source-policy key usage,
   every file digest, publisher identity, compatibility floor, and the complete
   pin before a package can bind the capability.
-- Storage brokers include both an in-memory test broker and a filesystem-backed
-  broker that creates per-plugin-instance namespace directories under a
-  host-selected state root, enforces byte and file-count quota accounting,
-  rejects symlink escape attempts, supports export/import archives, and makes
-  uninstall data deletion or retention observable on disk.
+- `plugindata.FileStore` is the single data authority behind lifecycle,
+  non-secret settings, files, KV, SQLite, retained bindings, and opaque export
+  bundles. It resolves every request through the current registry binding,
+  enforces quotas and filesystem boundaries, and publishes generation changes
+  with semantic revision checks.
 - Stream stores include both in-memory and SQLite-backed implementations. The
   SQLite store persists stream records and buffered events, enforces the same
   backpressure behavior, drains read events from the buffer, marks streams
-  orphaned during plugin disable/uninstall transitions, and uses a package-local
-  schema migration marker with newer-schema fail-closed behavior.
-- Settings stores include both in-memory and SQLite-backed implementations. The
-  SQLite store persists setting records and export archives, reuses the shared
-  validation/default/secret-redaction lifecycle, restores settings across
-  process restarts, and keeps retained bind/import behavior durable without
-  storing secret plaintext.
+  orphaned during plugin disable/uninstall transitions, and initializes its
+  single current schema idempotently across process restarts.
+- The settings package defines schema normalization and validation only.
+  PluginData persists non-secret values with a values revision; the independent
+  SecretStore contributes redacted binding metadata and never enters an export
+  bundle.
 - Observability stores include both in-memory and SQLite-backed implementations.
-  The SQLite store persists audit and diagnostic events, preserves the same
-  filtering, defaults, newest-first ordering, retention limits, and generated
-  event IDs as the in-memory store, and uses a package-local schema migration
-  marker with newer-schema fail-closed behavior.
+  Audit events are append-only through the host adapter contract. Owner-scoped
+  diagnostic listing preserves filtering, defaults, newest-first ordering,
+  retention limits, and generated event IDs across idempotent reopen.
 - Secret binding stores include both in-memory and SQLite-backed
   implementations. They persist only plugin-instance, scope, secret-ref, bound
   state, and test/delete metadata, never secret plaintext, so hosts can keep the
   actual vault implementation product-owned while reusing common lifecycle
-  state, filtering, cleanup, and newer-schema fail-closed behavior.
+  state, filtering, cleanup, and durable current-schema storage.
 - Confirmation intent stores include both in-memory and SQLite-backed
   implementations. They persist the server-held intent metadata and
   confirmation token id, request hash, plan hash, and expiry, but not the raw
@@ -60,20 +58,15 @@ capabilities.
   any recovered intent fail closed instead of silently confirming.
 - Host lifecycle APIs include `RefreshEnabledPlugins`, which lets an embedding
   product restore enabled plugin runtime state after restart by replaying
-  storage/settings initialization, connectivity policy installation, and
+  connectivity policy installation and
   surface publication from the durable registry without re-enabling plugins.
   The mountable HTTP adapter exposes the same behavior at
   `POST /_redevplugin/api/plugins/runtime/refresh-enabled`, so hosts can keep
   route mounting thin instead of reimplementing the refresh loop.
-- Manifest validation binds settings and storage migration metadata to the
-  declared schema versions: bootstrap migrations may start at `from_version: 0`,
-  but every migration must point `to_version` at the active schema version and
-  carry a non-empty `steps_hash`, non-negative estimates, and a monotonic version
-  range before a package can be installed.
-- Host update and downgrade flows compare the currently installed settings and
-  storage schema versions with the target package. Updates must describe the
-  exact current-to-target migration, and downgrades require the current version's
-  migration descriptor to be reversible before the registry can switch versions.
+- Updates and downgrades require the target package to keep the exact current
+  PluginData shape. A package that changes settings or storage schema must use a
+  new plugin identity before release; the platform has no conversion or
+  compatibility path.
 - Plugin package IO keeps deterministic canonical package hashes separate from
   detached `signatures/package.sig` metadata. Signature files are retained for
   trust verification but are excluded from canonical package entries, asset
@@ -178,11 +171,11 @@ capabilities.
 - Contract tests that keep the Go HTTP route set, OpenAPI paths, route fixture,
   generated render policy, TypeScript SDK route coverage, and package validator
   aligned.
-- Manifest v2 requires every method to declare closed request and response
+- Manifest v4 requires every method to declare closed request and response
   object schemas. Package validation compiles those schemas without remote
   references; Host dispatch validates requests before adapters/runtime and
   validates canonical redacted responses before returning them to plugin code.
-- Manifest v2 surface declarations use only host-neutral `view`, `command`, or
+- Manifest v4 surface declarations use only host-neutral `view`, `command`, or
   `background` kinds with optional `primary`, `secondary`, or `utility` intent.
   Activity bars, workbench panes, settings pages, and modal placement remain
   host-product decisions.
@@ -227,8 +220,8 @@ capabilities.
   supervisor instance, requires a non-empty public-key set in the startup
   `hello` frame, binds every worker lease to the current runtime audience, and
   signs every invocation. Callers cannot provide, disable, or override the
-  signature or public key. The canonical payload excludes `lease_token` and
-  `signature` and covers the display token ID, plugin metadata, active package
+  signature or public key. The canonical payload excludes only `signature` and
+  covers the display token ID, plugin metadata, active package
   fingerprint, issued timestamp, method, effect, execution mode, Host-owned
   operation and stream ids, audit correlation id, surface and owner context,
   descriptor hashes, quota limits, policy and management revisions, revoke
@@ -240,7 +233,7 @@ capabilities.
   binding before replay-cache consumption or artifact open. Worker-route
   dispatch emits a `plugin.runtime.lease.issued` Host audit event with
   lease/token IDs, runtime IDs, revision bindings, descriptor hashes, and expiry
-  metadata, but not the bearer `lease_token`.
+  metadata.
 - Rust runtime control-channel freshness is enforced inside the runtime as well
   as by the Go supervisor. After the heartbeat max-staleness window expires, the
   Rust runtime rejects new worker invocations before opening artifacts and
@@ -260,12 +253,14 @@ capabilities.
   enable/disable/uninstall, surface open, runtime
   start/health/refresh-enabled/stop, settings schema/read/patch, operation
   list/get/cancel, data export/import, permission grant/revoke/list, secret
-  bind/test/delete, host-mediated intent list/invoke, and audit/diagnostic event
-  list. The raw package import/update surface is intentionally separated into
+  bind/test/delete, host-mediated intent list/invoke, and owner-scoped diagnostic
+  event list. Audit events remain an internal host adapter contract and are not
+  exposed by the generic HTTP/TypeScript platform surface. The raw package
+  import/update surface is intentionally separated into
   `PluginLocalImportClient`, exported only from
   `@floegence/redevplugin-ui/local-import`, for explicit dev/admin local-import
   route sets. List helpers preserve the same data wrapper fields returned by the
-  Go HTTP adapter, such as `operations`, `permissions`, `audit_events`, and
+  Go HTTP adapter, such as `operations`, `permissions`, and
   `diagnostic_events`, so host products can consume the SDK and raw HTTP contract
   consistently. The browser harness uses the platform client from the host page to
   exercise settings management without exposing management
@@ -335,10 +330,9 @@ capabilities.
   exposed to the sandboxed iframe.
 - Capability adapters can return `capability.RiskPlan` from preflight methods to
   use the host-neutral `redevplugin.capability.risk_plan.v1` contract. The Host
-  validates and normalizes that typed plan before hashing it, rejects unknown or
-  invalid risk fields fail-closed, and still accepts legacy generic preflight
-  objects that do not declare a risk-plan schema version. The TypeScript SDK
-  exports matching `PluginRiskPlan` / `PluginRiskFlag` types plus
+  requires the current schema version, validates and normalizes the closed typed
+  plan before hashing it, and rejects unknown or invalid risk fields fail-closed.
+  The TypeScript SDK exports matching `PluginRiskPlan` / `PluginRiskFlag` types plus
   `isPluginRiskPlan()` so trusted parent UI can render the typed plan without
   brittle ad hoc shape checks.
 - Capability, worker, and core-action method results pass through the Host-owned
@@ -430,57 +424,43 @@ capabilities.
   stream-store bridge stream IDs; revoke epochs
   clear matching registry entries and report the actual closed counts. Resource
   classes that are purely Host-owned report zero because Rust has no matching
-  handle to close. The earlier fixed `*_demo` imports and
-  `redevplugin.network/http_request` alias are removed; ABI v2 workers import
-  only the closed storage and `redevplugin.network/execute` hostcalls. Host integration tests build
+  handle to close. ABI v2 workers import only the closed storage and
+  `redevplugin.network/execute` hostcalls. Host integration tests build
   and exercise the real Rust runtime whenever a local Cargo toolchain is
-  available, including FileBroker file writes, KV writes, SQLite DDL through the
-  filesystem-backed broker, generated scaffold broker workers using the memory
+  available, including FileStore file writes, KV writes, SQLite DDL through the
+  plugin data broker, generated scaffold broker workers using the memory
   ABI, HTTP/WebSocket/TCP/UDP network memory hostcalls, and linear-memory HTTP
   executor paths.
-- `redevplugin inspect-storage <storage-root> [plugin-instance-id]` reports
-  filesystem broker namespaces plus byte and file-count quota/usage without
-  dumping plugin file contents. Host products can wrap this for diagnostics
-  while keeping the storage root selection in their own adapter layer.
-- Host data export/import keeps storage archives and settings archives as
-  separate refs. Storage imports require each archive namespace to match the
-  target store kind and schema version before applying target quotas. Settings
-  imports require the archive schema version to match the target manifest schema,
-  validate non-secret fields against that target schema, and never restore secret
-  plaintext or a bound-secret state; users must rebind secret refs after moving
-  plugin data to another environment.
+- `redevplugin inspect-data <state-root> [plugin-instance-id]` reports catalog
+  bindings, export objects, namespaces, and byte/file quota usage without
+  dumping plugin file contents or scanning an unowned filesystem root.
+- Host data export/import uses one opaque `bundle_ref` for the complete declared
+  non-secret dataset. Import validates publisher/plugin ownership, the settings
+  schema, namespace kind/scope/schema version, content hash, and target quotas
+  before atomically swapping the active generation. Secret bindings remain in
+  the host secret store and are never included in an exported bundle.
 - `redevplugin dev-install <state-root> <package>` creates a persistent local
   development state root for Flower-generated plugins. The matching
   `dev-enable`, `dev-open <surface-id>`, `dev-disable`,
   `dev-secret-bind <secret-ref> [user|environment]`,
   `dev-secret-test <secret-ref> [user|environment]`,
   `dev-secret-delete <secret-ref> [user|environment]`,
-  `dev-permission-grant <permission-id> [granted-by]`,
+  `dev-permission-grant <permission-id>`,
   `dev-permission-revoke <permission-id> [reason]`,
   `dev-permission-list [--active-only]`,
-  `dev-export-data [--include-secrets]`,
-  `dev-import-data [--archive-ref <ref>] [--settings-archive-ref <ref>] [--delete-existing|--merge]`,
-  `dev-uninstall [--delete-data|--keep-data]`, and `dev-status` commands replay
-  the saved package through the real Host lifecycle APIs while keeping the
-  copied package, filesystem storage root, manifest-level settings, redacted
-  secret-ref binding/test state, and permission grant/revoke records under the
-  same state root. Dev secret commands never
-  store secret plaintext; they only persist the declared `secret_ref`, scope,
-  bound flag, and test status that the Host settings API can expose as redacted
-  state. Dev permission commands call the Host permission APIs, so policy
+  `dev-export-data`, `dev-import-data <bundle-ref>`,
+  `dev-delete-export <bundle-ref>`, `dev-uninstall`, and `dev-status` commands
+  call the real Host lifecycle APIs. The state root contains
+  `registry.sqlite`, `plugin-data/`, `secrets.sqlite`, the installed package,
+  and verified capability artifacts; it has no JSON mirrors of registry,
+  authorization, settings, or secret state. Dev secret commands never store
+  secret plaintext. Dev permission commands call the Host permission APIs, so policy
   revisions and revoke epochs move exactly as they do in an embedded host
-  product. Dev data export/import commands call the Host data lifecycle APIs and
-  persist returned storage/settings archive refs under the same state root;
-  settings archives never restore secret plaintext, so secret refs must still be
-  rebound after moving data between environments. This gives generated plugins a local, auditable
+  product. Dev data commands call the Host data lifecycle APIs and operate on
+  cataloged opaque bundle refs. This gives generated plugins a local, auditable
   install -> enable -> open -> disable -> uninstall flow without importing any
-  host-product internals. Uninstall removes the copied package; `--delete-data`
-  also removes plugin storage namespaces, manifest settings, dev secret-ref
-  state, and permission grants,
-  while `--keep-data` marks declared plugin data retained and preserves redacted
-  dev secret-ref state for the local developer profile. Permission grants are
-  removed on every uninstall, including `--keep-data`, because authorization is
-  tied to the installed plugin lifecycle rather than retained user data.
+  host-product internals. Dev uninstall always removes the copied package,
+  plugin data, settings, secret bindings, and authorization records.
 - `redevplugin examples-server <state-root> <runtime-path>` starts the
   user-facing Examples Showcase with Memos, Weather, and Sky Strike. Every
   example uses the Go Host, HTTP adapter, real Rust runtime, installable plugin
@@ -541,7 +521,6 @@ provide a local sibling integration path for host products.
 - [Security model](docs/security/plugin-platform-security.md)
 - [Plugin surface SDK](docs/ui/plugin-surface-sdk.md)
 - [CI and release gates](docs/release/ci-and-release-gates.md)
-- [A2 TDD evidence](docs/release/a2-tdd-evidence.md)
 - [A3 TDD evidence](docs/release/a3-tdd-evidence.md)
 
 ## Release Integrity
@@ -594,8 +573,8 @@ vendoring, not an instruction to wire a sibling checkout.
 ## Local Checks
 
 ```bash
-GOWORK=off go list ./...
-GOWORK=off go test ./...
+GOWORK=off go list ./cmd/... ./examples/... ./pkg/...
+GOWORK=off go test ./cmd/... ./examples/... ./pkg/...
 npm ci
 npx playwright install chromium
 npm run check

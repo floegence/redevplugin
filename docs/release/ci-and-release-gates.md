@@ -9,12 +9,12 @@ manifest, contract hashes, and release evidence set.
 
 Go checks that can be affected by a workspace must run with `GOWORK=off`.
 The CI Go job initializes the Rust toolchain with `rustup show` before
-`go test ./...` because the CLI scaffold integration test builds the released
+`go test ./cmd/... ./examples/... ./pkg/...` because the CLI scaffold integration test builds the released
 Rust runtime as part of the Go package test suite.
 
 CI actions are pinned to immutable commit SHAs and top-level permissions default
-to `contents: read`. The Go job checks `gofmt`, `GOWORK=off go list ./...`,
-`GOWORK=off go test ./...`, and
+to `contents: read`. The Go job checks `gofmt`, `GOWORK=off go list ./cmd/... ./examples/... ./pkg/...`,
+`GOWORK=off go test ./cmd/... ./examples/... ./pkg/...`, and
 the pinned `golangci-lint` version. The TypeScript job runs ESLint, typecheck,
 build, UI unit tests, Examples generation checks, browser harness tests, plus
 the bridge replay/cancellation gate.
@@ -44,9 +44,9 @@ the pinned WASM target before that check.
 Core local checks:
 
 ```bash
-GOWORK=off go list ./...
-GOWORK=off go test ./...
-GOWORK=off golangci-lint run ./...
+GOWORK=off go list ./cmd/... ./examples/... ./pkg/...
+GOWORK=off go test ./cmd/... ./examples/... ./pkg/...
+GOWORK=off golangci-lint run ./cmd/... ./examples/... ./pkg/...
 npm ci
 npx playwright install chromium
 npm run check
@@ -151,15 +151,15 @@ and `--summary PATH`.
   entries, or a non-zero required step fail closed.
 
 The script always emits a JSON summary. `stress_evidence` contains structured
-counters for stream backpressure and direct-store close fail-closed checks,
+counters for stream backpressure and scoped terminal-close checks,
 operation cancel ownership and inactive-operation non-redispatch, connectivity
 classifier/grant denials, runtime revoke ACK p95 latency, KV and SQLite storage
 quota pressure, and SQLite sidecar/sparse bypass checks. CI uploads summaries as artifacts, and tagged release workflows
 include release-mode stress evidence in the published checksum and signature
 evidence chain.
 
-Host-owned stream terminal audit behavior is verified separately at the scoped
-adapter sink boundary. Direct stream stores do not emit Host audit events.
+Host-owned stream terminal audit behavior is verified at the scoped adapter
+sink boundary.
 
 ## Release Bundle
 
@@ -175,8 +175,6 @@ adapter sink boundary. Direct stream stores do not emit Host audit events.
 - `SHA256SUMS`;
 - generated third-party notices and lockfile evidence;
 - the root MIT `LICENSE`;
-- `docs/release/a2-tdd-evidence.md` so changelog evidence links remain valid in
-  standalone bundles;
 - `docs/release/a3-tdd-evidence.md` plus the complete signed
   `examples/host-capability/sample-documents-v1/` artifact;
 - `notices/THIRD_PARTY_LICENSES.json` plus actual redistributed license, notice,

@@ -5,12 +5,19 @@
 - Replace whole-tree plugin UI rendering with the keyed, revisioned
   `plugin-ui-v4` mount/patch protocol, atomic animation-frame commits, local
   control echo, and IME-safe edit revisions.
+- Carry explicit mutation outcomes through trusted-parent bridge errors so a
+  plugin can reconcile an unknown destructive result before enabling writes.
+- Validate worker VNode tags, attributes, input types, and render limits against
+  the generated opaque-surface policy before emitting a mount or patch.
 - Add deterministic parallel surface replacement, first-commit visibility,
   structured quiesce timing, and reliable lifecycle persistence acknowledgments.
-- Disable enabled legacy UI records as `disabled_incompatible` while preserving
-  their packages and data for update, export, and uninstall.
-- Migrate the examples and scaffold to stable VNode keys, a single-call Memos
+- Update the examples and scaffold to stable VNode keys, a single-call Memos
   bootstrap, and an explicit fresh/stale/expired SQLite forecast cache.
+- Use Registry authorization snapshots and one generation-based PluginData
+  authority for settings, storage, retained bindings, permissions, and policy.
+- Require capability preflight plans to use the closed
+  `redevplugin.capability.risk_plan.v1` contract, and resolve capability adapters
+  only by exact signed contract pin.
 
 ## v0.4.3
 
@@ -31,8 +38,7 @@
 - Browser acceptance coverage now verifies desktop and compact Memos layouts,
   title focus, readable editor width, stale-search rejection, search and pin
   behavior, deletion focus containment and failure recovery, autosave failure
-  recovery, quiesce persistence, and removal of the retired dashboard overview
-  and metadata rail.
+  recovery, quiesce persistence, and the focused notebook information hierarchy.
 
 ## v0.4.2
 
@@ -82,14 +88,11 @@
   `(request_ptr, request_len) -> packed(response_ptr, response_len)` invocation.
 - Storage handle grants are minted and injected by the Host for declared stores;
   plugins no longer receive or submit grant tokens through method parameters.
-- The UI protocol, bridge schema, opaque surface document/transport schemas,
-  and OpenAPI contract advance together to `plugin-ui-v3`, `bridge-v3`, opaque
-  surface v2, and `plugin-platform-v3`.
-- `redevplugin examples-server` replaces the retired browser demo commands.
-  URL state preserves the selected example across refresh and browser history,
+- `redevplugin examples-server` serves the product examples. URL state preserves
+  the selected example across refresh and browser history,
   while desktop and mobile layouts share the same runtime behavior.
-- The CLI scaffold now emits one ABI v2 Rust worker and generated browser
-  worker, removing the old WAT and duplicate broker-worker paths.
+- The CLI scaffold emits one ABI v2 Rust worker and generated browser worker
+  through a single canonical build path.
 - Platform release bundles now use `redevplugin.release_manifest.v3`. The npm
   tarball and Rust worker SDK crate are each built once, embedded byte-for-byte
   in every runtime target bundle, and verified for cross-bundle identity.
@@ -187,16 +190,16 @@
 - Release stress validation now runs against the exact summary produced by
   `check_redevplugin_stress.sh --release` before signing or publication, using
   the same validator as downloaded GitHub Release assets.
-- Stream backpressure evidence no longer expects direct stream-store closure to
-  emit a Host audit event after terminal ownership moved to scoped adapter
-  sinks. The Host subscription regression now explicitly proves that sink
+- Stream backpressure evidence verifies terminal audit ownership at the scoped
+  adapter sink. The Host subscription regression explicitly proves that sink
   closure records `plugin.stream.closed`.
 - ZIP fixtures sort map-backed paths before writing entries, eliminating the
   case-fold collision diagnostic flake seen in the first A3 main CI run.
 - The `v0.3.0` tag published the npm package but did not produce a GitHub
-  Release because its verifier retained the obsolete direct-store close-audit
-  counter. `v0.3.1` produced the complete signed artifact set, but its final
-  published-release verifier still depended on checkout-root TypeScript state.
+  Release because the signed stress summary and verifier expected different
+  counter sets. `v0.3.1` produced the complete signed artifact set, but its
+  final published-release verifier still depended on checkout-root TypeScript
+  state.
 
 ## v0.3.0
 
@@ -331,9 +334,6 @@
 - Structured A2 browser acceptance evidence and supported/unsupported
   screenshots for opaque-origin isolation, exact sandbox/CSP policy, credential
   absence, worker hardening, and deterministic disposal.
-- A maintained [A2 TDD evidence record](docs/release/a2-tdd-evidence.md) covering
-  red-to-green tests, generated contracts, release gates, and host/plugin API
-  boundaries.
 
 ### Security
 
@@ -374,8 +374,6 @@
 - Surface assets and streams are read through authenticated parent-only POST
   routes. Asset requests carry only a server-issued `binding_id`; the Host
   resolves the prepared path/digest binding and rejects arbitrary package paths.
-  Plugin subdomains, cookie bootstrap, GET asset/stream routes, query credentials,
-  and browser CSP-report ingestion are removed from the active v2 contract.
 - Release automation packs the npm package once, embeds identical bytes in every
   runtime bundle, publishes those bytes with npm provenance, rejects mutable
   GitHub Release reruns, executes binaries on their native matrix runners, and
