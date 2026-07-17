@@ -322,6 +322,38 @@ CREATE TABLE IF NOT EXISTS plugin_observability_meta (
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_security_audit_meta (
+	id INTEGER PRIMARY KEY CHECK(id = 1),
+	seq INTEGER NOT NULL
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_security_audit_meta(id, seq) VALUES(1, 0)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS plugin_security_audit_journal (
+	seq INTEGER PRIMARY KEY,
+	event_id TEXT NOT NULL UNIQUE,
+	type TEXT NOT NULL,
+	plugin_id TEXT NOT NULL,
+	plugin_instance_id TEXT NOT NULL,
+	surface_id TEXT NOT NULL,
+	surface_instance_id TEXT NOT NULL,
+	request_id TEXT NOT NULL,
+	actor TEXT NOT NULL,
+	occurred_at INTEGER NOT NULL,
+	details_json BLOB NOT NULL,
+	state TEXT NOT NULL CHECK(state IN ('pending', 'completed')),
+	mutation_outcome TEXT NOT NULL,
+	completion_details_json BLOB NOT NULL,
+	created_at INTEGER NOT NULL,
+	completed_at INTEGER,
+	exported_at INTEGER
+)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS plugin_audit_events (
 	seq INTEGER PRIMARY KEY,
 	event_id TEXT NOT NULL,
@@ -363,6 +395,7 @@ CREATE TABLE IF NOT EXISTS plugin_diagnostic_events (
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_plugin_instance ON plugin_diagnostic_events(plugin_instance_id, type, severity, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_surface ON plugin_diagnostic_events(surface_instance_id, severity, occurred_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_plugin_diagnostics_owner ON plugin_diagnostic_events(owner_session_hash, owner_user_hash, owner_env_hash, session_channel_id_hash, occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_plugin_security_audit_journal_state ON plugin_security_audit_journal(state, exported_at, seq)`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return err
@@ -399,7 +432,14 @@ func trimSQLiteEvents(ctx context.Context, tx *sql.Tx, table string, max int) er
 		_, err := tx.ExecContext(ctx, `DELETE FROM `+table)
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE seq NOT IN (SELECT seq FROM `+table+` ORDER BY seq DESC LIMIT ?)`, max)
+	var current uint64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM `+table).Scan(&current); err != nil {
+		return err
+	}
+	if current <= uint64(max) {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE seq <= ?`, current-uint64(max))
 	return err
 }
 

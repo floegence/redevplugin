@@ -106,6 +106,7 @@ type MemoryStore struct {
 	nextDiagnosticSeq   uint64
 	auditEvents         []AuditEvent
 	diagnosticEvents    []DiagnosticEvent
+	securityJournal     *MemorySecurityAuditJournal
 }
 
 func NewMemoryStore(opts ...MemoryStoreOptions) *MemoryStore {
@@ -129,6 +130,7 @@ func NewMemoryStore(opts ...MemoryStoreOptions) *MemoryStore {
 		now:                 now,
 		maxAuditEvents:      maxAuditEvents,
 		maxDiagnosticEvents: maxDiagnosticEvents,
+		securityJournal:     NewMemorySecurityAuditJournal(MemorySecurityAuditJournalOptions{Now: now, MaxEntries: maxAuditEvents}),
 	}
 }
 
