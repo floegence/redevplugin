@@ -4,6 +4,18 @@
 
 ### Added
 
+- Add immutable runtime descriptors and strict SemVer validation across install,
+  update, downgrade, enable, surface opening, worker invocation, and runtime
+  startup, including exact target, IPC, WASM ABI, and artifact SHA-256 checks.
+- Add durable pending/completed/exported security-audit journals for memory and
+  SQLite hosts, startup reconciliation, stable event IDs, idempotent export, and
+  explicit committed/not-committed/unknown mutation outcomes.
+- Add explicit Host feature modules, the closed `Host.Features()` contract, and
+  `GET /_redevplugin/api/plugins/features`; unconfigured features now return
+  `PLUGIN_FEATURE_NOT_CONFIGURED` instead of relying on placeholder adapters.
+- Add fixed-seed Go fuzz gates and Rust property tests for packages, manifests,
+  response normalization, strict JSON, IPC, stream state, SQLite tokenization,
+  scheduler fairness, module cache limits, and target classification.
 - Add `rust-ipc-v3` invocation cancellation, Host/Rust negotiated runtime
   limits, per-plugin fair scheduling, capacity errors, and health metrics for
   active and queued invocations plus the compiled-module cache.
@@ -18,6 +30,18 @@
 
 ### Changed
 
+- Replace unbounded package materialization and Base64 local imports with
+  positive immutable read limits, bounded `ReaderAt` artifact descriptors,
+  streaming package uploads, metadata-only worker hot paths, and symlink-safe
+  rooted asset access.
+- Normalize every adapter result and business-error detail into a JSON data tree
+  before redaction and response-schema validation, failing closed for cycles and
+  non-JSON values without mutating the adapter-owned input.
+- Bundle external JSON Schemas structurally into namespaced OpenAPI components;
+  generated TypeScript contracts now preserve manifest, capability pin, and
+  settings patch types without `$defs` leakage or `unknown` collapse.
+- Replace append-and-copy in-memory observability retention with fixed-capacity
+  rings and replace SQLite retention scans with bounded sequence-range deletes.
 - Replace serialized runtime invocation IPC with one reader, one serialized
   writer, request routing by `request_id`, and runtime-origin hostcalls bound to
   their signed invocation through `parent_request_id`.
@@ -85,6 +109,8 @@
 
 ### Removed
 
+- Remove CLI release, SurfaceCatalog, and CoreAction placeholder adapters; CLI
+  and example hosts now declare only modules they actually provide.
 - Remove IPC v2 decoding, UI v4 rendering, polling stream stores, and legacy
   renderer compatibility paths. Current schemas reject incompatible
   Host/runtime/UI combinations without alternate decoders.
