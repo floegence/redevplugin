@@ -18,12 +18,12 @@ import (
 func TestBuildAndReadPackage(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var buf bytes.Buffer
-	built, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	built, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("BuildFromDir() error = %v", err)
 	}
 
-	read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions())
+	read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -40,11 +40,11 @@ func TestBuildGeneratedPluginFixtures(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := filepath.Join("..", "..", "testdata", "generated_plugins", name)
 			var buf bytes.Buffer
-			built, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			built, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err != nil {
 				t.Fatalf("BuildFromDir(%s) error = %v", name, err)
 			}
-			read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions())
+			read, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits())
 			if err != nil {
 				t.Fatalf("Read(%s) error = %v", name, err)
 			}
@@ -62,11 +62,11 @@ func TestBuildPackageIsDeterministic(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var first bytes.Buffer
 	var second bytes.Buffer
-	firstPkg, err := BuildFromDir(context.Background(), dir, &first, DefaultReadOptions())
+	firstPkg, err := BuildFromDir(context.Background(), dir, &first, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondPkg, err := BuildFromDir(context.Background(), dir, &second, DefaultReadOptions())
+	secondPkg, err := BuildFromDir(context.Background(), dir, &second, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestBuildPackageIsDeterministic(t *testing.T) {
 func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var builtBytes bytes.Buffer
-	built, err := BuildFromDir(context.Background(), dir, &builtBytes, DefaultReadOptions())
+	built, err := BuildFromDir(context.Background(), dir, &builtBytes, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
 	if !bytes.Equal(first.Bytes(), second.Bytes()) {
 		t.Fatal("WritePackage() bytes are not deterministic")
 	}
-	read, err := Read(context.Background(), bytes.NewReader(first.Bytes()), int64(first.Len()), DefaultReadOptions())
+	read, err := Read(context.Background(), bytes.NewReader(first.Bytes()), int64(first.Len()), DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -109,7 +109,7 @@ func TestWritePackageRoundTripsUnsignedPackage(t *testing.T) {
 func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var before bytes.Buffer
-	beforePkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadOptions())
+	beforePkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	var after bytes.Buffer
-	afterPkg, err := BuildFromDir(context.Background(), dir, &after, DefaultReadOptions())
+	afterPkg, err := BuildFromDir(context.Background(), dir, &after, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 		t.Fatalf("package signature was not parsed: %#v", afterPkg.PackageSignature)
 	}
 
-	read, err := Read(context.Background(), bytes.NewReader(after.Bytes()), int64(after.Len()), DefaultReadOptions())
+	read, err := Read(context.Background(), bytes.NewReader(after.Bytes()), int64(after.Len()), DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestSignaturesAreExcludedFromCanonicalHash(t *testing.T) {
 func TestWritePackageMaterializesDetachedSignature(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var before bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadOptions())
+	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestWritePackageMaterializesDetachedSignature(t *testing.T) {
 	if err := WritePackage(context.Background(), &signedBytes, pkg); err != nil {
 		t.Fatalf("WritePackage() error = %v", err)
 	}
-	read, err := Read(context.Background(), bytes.NewReader(signedBytes.Bytes()), int64(signedBytes.Len()), DefaultReadOptions())
+	read, err := Read(context.Background(), bytes.NewReader(signedBytes.Bytes()), int64(signedBytes.Len()), DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -218,7 +218,7 @@ func TestReadRejectsSignatureHashMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits()); err == nil {
 		t.Fatal("Read() expected signature hash mismatch error")
 	}
 }
@@ -226,7 +226,7 @@ func TestReadRejectsSignatureHashMismatch(t *testing.T) {
 func TestBuildRejectsSignatureIdentityMismatch(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var before bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadOptions())
+	pkg, err := BuildFromDir(context.Background(), dir, &before, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestBuildRejectsSignatureIdentityMismatch(t *testing.T) {
 	}
 
 	var after bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &after, DefaultReadOptions()); err == nil {
+	if _, err := BuildFromDir(context.Background(), dir, &after, DefaultReadLimits()); err == nil {
 		t.Fatal("BuildFromDir() expected signature identity mismatch error")
 	}
 }
@@ -268,7 +268,7 @@ func TestBuildRejectsUnsupportedSignatureEntry(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 	requireValidationError(t, err, ValidationCodePackagePathForbidden, "unsupported_signature_entry", "signatures/extra.sig", "")
 }
 
@@ -286,7 +286,7 @@ func TestReadRejectsUnsafePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits()); err == nil {
 		t.Fatal("Read() expected unsafe path error")
 	}
 }
@@ -307,7 +307,7 @@ func TestReadRejectsDuplicateEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits()); err == nil {
 		t.Fatal("Read() expected duplicate entry error")
 	}
 }
@@ -348,7 +348,7 @@ func TestReadRejectsAmbiguousArchivePaths(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := packageZipBytes(t, tc.entries)
-			_, err := Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), DefaultReadOptions())
+			_, err := Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), DefaultReadLimits())
 			requireValidationError(t, err, ValidationCodePackagePathForbidden, tc.reason, tc.path, "")
 		})
 	}
@@ -366,7 +366,7 @@ func TestReadRejectsNonRegularArchiveEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions())
+	_, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits())
 	requireValidationError(t, err, ValidationCodePackagePathForbidden, "non_regular_entry", "ui/runtime.pipe", "")
 }
 
@@ -374,7 +374,7 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 	tests := []struct {
 		name    string
 		entries map[string][]byte
-		opts    ReadOptions
+		opts    ReadLimits
 		want    ValidationErrorCode
 		reason  string
 		path    string
@@ -395,7 +395,7 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 				"manifest.json": []byte(validManifestJSON()),
 				"ui/index.html": []byte("<!doctype html><title>Plugin</title>"),
 			},
-			opts:   ReadOptions{MaxUncompressedBytes: 1, MaxFiles: 16, MaxEntryBytes: 1 << 20, MaxCompressionRatio: 100},
+			opts:   testReadLimits(1, 16, 1<<20, 512, 100),
 			want:   ValidationCodePackageTooLarge,
 			reason: "total_uncompressed_bytes",
 		},
@@ -404,7 +404,7 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 			entries: map[string][]byte{
 				"manifest.json": []byte(validManifestJSON()),
 			},
-			opts:   ReadOptions{MaxPathBytes: 4},
+			opts:   testReadLimits(128<<20, 4096, 32<<20, 4, 100),
 			want:   ValidationCodePackageTooLarge,
 			reason: "path_length",
 			path:   "manifest.json",
@@ -436,8 +436,8 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := packageZipBytes(t, tc.entries)
 			opts := tc.opts
-			if opts == (ReadOptions{}) {
-				opts = DefaultReadOptions()
+			if opts == (ReadLimits{}) {
+				opts = DefaultReadLimits()
 			}
 			_, err := Read(context.Background(), bytes.NewReader(raw), int64(len(raw)), opts)
 			requireValidationError(t, err, tc.want, tc.reason, tc.path, tc.pointer)
@@ -448,7 +448,7 @@ func TestReadClassifiesPackageValidationErrors(t *testing.T) {
 func TestBuildFromDirRejectsPathLengthLimit(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var buf bytes.Buffer
-	_, err := BuildFromDir(context.Background(), dir, &buf, ReadOptions{MaxPathBytes: 4})
+	_, err := BuildFromDir(context.Background(), dir, &buf, testReadLimits(128<<20, 4096, 32<<20, 4, 100))
 	requireValidationError(t, err, ValidationCodePackageTooLarge, "path_length", "manifest.json", "")
 }
 
@@ -468,7 +468,7 @@ func TestBuildAcceptsPackageLocalSurfaceAssets(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "ui", "assets", "icon.png"), minimalPNGForTest())
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err != nil {
 		t.Fatalf("BuildFromDir() local surface assets error = %v", err)
 	}
 }
@@ -551,7 +551,7 @@ func TestBuildRejectsUnsafeSurfaceHTMLAssets(t *testing.T) {
 			mustWrite(t, filepath.Join(dir, "ui", "index.html"), tc.html)
 
 			var buf bytes.Buffer
-			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
 			}
@@ -587,7 +587,7 @@ func TestBuildRejectsSurfaceEntryWithoutPackagedHTML(t *testing.T) {
 			mustWrite(t, filepath.Join(dir, "manifest.json"), tc.manifest)
 
 			var buf bytes.Buffer
-			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
 			}
@@ -652,7 +652,7 @@ func TestBuildValidatesSurfaceIconAsset(t *testing.T) {
 			}
 
 			var buf bytes.Buffer
-			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("BuildFromDir() icon error = %v", err)
@@ -680,7 +680,7 @@ func TestBuildRejectsServiceWorkerRegistrationDependency(t *testing.T) {
 			mustWrite(t, filepath.Join(dir, "ui", "assets", "app.js"), source)
 
 			var buf bytes.Buffer
-			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err == nil || !strings.Contains(err.Error(), "Service Worker registration APIs are not allowed") {
 				t.Fatalf("BuildFromDir() error = %v, want Service Worker rejection", err)
 			}
@@ -798,7 +798,7 @@ func TestBuildRejectsForbiddenExecutablePackageArtifacts(t *testing.T) {
 			mustWriteBytes(t, filepath.Join(dir, filepath.FromSlash(tc.entryPath)), tc.content)
 
 			var buf bytes.Buffer
-			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("BuildFromDir() error = %v, want substring %q", err, tc.wantErr)
 			}
@@ -812,7 +812,7 @@ func TestBuildReportsArtifactBoundaryBeforeInvalidSurfaceShape(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "package.json"), `{"scripts":{"postinstall":"node install.js"}}`)
 
 	var buf bytes.Buffer
-	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 	if err == nil || !strings.Contains(err.Error(), `package manager lifecycle script "postinstall" is not allowed`) {
 		t.Fatalf("BuildFromDir() error = %v, want artifact boundary rejection", err)
 	}
@@ -826,7 +826,7 @@ func TestBuildAllowsNonExecutableBinaryDataAsset(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "ui", "assets", "model.bin"), []byte{0x00, 0x01, 0x02, 0x03})
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err != nil {
 		t.Fatalf("BuildFromDir() binary data asset error = %v", err)
 	}
 }
@@ -836,7 +836,7 @@ func TestBuildRejectsMissingWorkerArtifact(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "manifest.json"), workerManifestJSON())
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err == nil {
 		t.Fatal("BuildFromDir() expected missing worker artifact error")
 	}
 }
@@ -860,7 +860,7 @@ func TestReadRejectsMissingWorkerArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits()); err == nil {
 		t.Fatal("Read() expected missing worker artifact error")
 	}
 }
@@ -871,7 +871,7 @@ func TestBuildRejectsMalformedWorkerWASM(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "workers", "echo.wasm"), "wasm-placeholder")
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err == nil {
 		t.Fatal("BuildFromDir() expected malformed worker wasm error")
 	}
 }
@@ -919,7 +919,7 @@ func TestReadRejectsWorkerMissingRequiredInvokeExport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadOptions()); err == nil {
+	if _, err := Read(context.Background(), bytes.NewReader(buf.Bytes()), int64(buf.Len()), DefaultReadLimits()); err == nil {
 		t.Fatal("Read() expected missing worker export error")
 	}
 }
@@ -930,7 +930,7 @@ func TestBuildRejectsRequiredInvokeExportedAsMemory(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalMemoryExportWASMForTest("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err == nil {
 		t.Fatal("BuildFromDir() expected non-function worker export error")
 	}
 }
@@ -941,7 +941,7 @@ func TestBuildAcceptsWorkerWASMExport(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("BuildFromDir() worker error = %v", err)
 	}
@@ -956,7 +956,7 @@ func TestBuildRejectsWorkerTableAboveLimit(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithTableForTest(maxWASMTableElements+1))
 
 	var buf bytes.Buffer
-	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	_, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 	if err == nil || !strings.Contains(err.Error(), "table") {
 		t.Fatalf("BuildFromDir() error = %v, want table element limit", err)
 	}
@@ -968,7 +968,7 @@ func TestBuildRejectsUnsupportedWorkerImport(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithHostcallForTest("redeven.shell", "execute"))
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err == nil {
 		t.Fatal("BuildFromDir() expected unsupported worker import error")
 	}
 }
@@ -979,7 +979,7 @@ func TestBuildAcceptsSupportedWorkerImport(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), workerWASMWithHostcallForTest("redevplugin.network", "execute"))
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err != nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err != nil {
 		t.Fatalf("BuildFromDir() worker import error = %v", err)
 	}
 }
@@ -991,7 +991,7 @@ func TestBuildRejectsUnsupportedActorWorkerMode(t *testing.T) {
 	mustWriteBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 
 	var buf bytes.Buffer
-	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions()); err == nil {
+	if _, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits()); err == nil {
 		t.Fatal("BuildFromDir() expected unsupported actor worker mode error")
 	}
 }
@@ -1001,7 +1001,7 @@ func TestAssetStoreReadsPackageAssets(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeFixturePackageDir(t)
 			var buf bytes.Buffer
-			pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1047,7 +1047,7 @@ func TestAssetStoreDeletePackage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeFixturePackageDir(t)
 			var buf bytes.Buffer
-			pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+			pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1068,7 +1068,7 @@ func TestAssetStoreDeletePackage(t *testing.T) {
 func TestFileAssetStorePersistsAssetsAcrossOpen(t *testing.T) {
 	dir := writeFixturePackageDir(t)
 	var buf bytes.Buffer
-	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadOptions())
+	pkg, err := BuildFromDir(context.Background(), dir, &buf, DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1188,6 +1188,30 @@ func requireValidationError(t *testing.T, err error, code ValidationErrorCode, r
 	if validationErr.Code != code || validationErr.Reason != reason || validationErr.Path != entryPath || validationErr.Pointer != pointer {
 		t.Fatalf("validation error = %#v, want code=%s reason=%s path=%s pointer=%s", validationErr, code, reason, entryPath, pointer)
 	}
+}
+
+func testReadLimits(uncompressed int64, files int, entry int64, path int, ratio int64) ReadLimits {
+	limits, err := DefaultReadLimits().WithMaxUncompressedBytes(uncompressed)
+	if err != nil {
+		panic(err)
+	}
+	limits, err = limits.WithMaxFiles(files)
+	if err != nil {
+		panic(err)
+	}
+	limits, err = limits.WithMaxEntryBytes(entry)
+	if err != nil {
+		panic(err)
+	}
+	limits, err = limits.WithMaxPathBytes(path)
+	if err != nil {
+		panic(err)
+	}
+	limits, err = limits.WithMaxCompressionRatio(ratio)
+	if err != nil {
+		panic(err)
+	}
+	return limits
 }
 
 func decodeSharedWASMFixture(t *testing.T, name string) []byte {

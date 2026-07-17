@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -15,6 +16,7 @@ var (
 
 type AssetStore interface {
 	PutPackage(ctx context.Context, pkg Package) error
+	ReadPackageMetadata(ctx context.Context, packageHash string) ([]Entry, error)
 	ReadAsset(ctx context.Context, packageHash string, assetPath string) (Asset, error)
 	DeletePackage(ctx context.Context, packageHash string) error
 }
@@ -78,6 +80,25 @@ func (s *MemoryAssetStore) ReadAsset(_ context.Context, packageHash string, asse
 	}
 	asset.Content = append([]byte(nil), asset.Content...)
 	return asset, nil
+}
+
+func (s *MemoryAssetStore) ReadPackageMetadata(_ context.Context, packageHash string) ([]Entry, error) {
+	if s == nil {
+		return nil, errors.New("package asset store is nil")
+	}
+	packageHash = strings.TrimSpace(packageHash)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assets, ok := s.packages[packageHash]
+	if !ok {
+		return nil, ErrPackageAssetNotFound
+	}
+	entries := make([]Entry, 0, len(assets))
+	for _, asset := range assets {
+		entries = append(entries, asset.Entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return entries, nil
 }
 
 func (s *MemoryAssetStore) DeletePackage(_ context.Context, packageHash string) error {

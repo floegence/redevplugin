@@ -226,7 +226,7 @@ function isSurfacePortEnvelope(value: unknown): value is { type: "redevplugin.su
 }
 
 class FakeFetch {
-  calls: Array<{ input: string; init: FetchInitLike }> = [];
+  calls: Array<{ input: string; init: Omit<FetchInitLike, "body"> & { body?: any } }> = [];
   responses: Array<
     | { status: number; body: unknown }
     | ((input: string, init: FetchInitLike) => Promise<FetchResponseLike>)
@@ -2666,11 +2666,7 @@ test("local package update tears down matching local surface hosts after success
   fetch.push(lifecyclePluginRecord);
   const client = new PluginLocalImportClient({ fetch: fetch.fetch, surfaceScope: scope });
 
-  await client.updateLocalPackage({
-    plugin_instance_id: hostBootstrap.pluginInstanceId,
-    package_base64: "cGtn",
-    expected_management_revision: 7,
-  });
+	await client.updateLocalPackage(hostBootstrap.pluginInstanceId, 7, new Blob(["pkg"]));
 
   assert.throws(
     () => host.sendLifecycle({ type: "hidden" }),

@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/_redevplugin/api/plugins/local-import/install": {
+    "/_redevplugin/api/plugins/local-imports": {
         parameters: {
             query?: never;
             header?: never;
@@ -84,7 +84,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/_redevplugin/api/plugins/local-import/update": {
+    "/_redevplugin/api/plugins/{plugin_instance_id}/local-import": {
         parameters: {
             query?: never;
             header?: never;
@@ -92,8 +92,8 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
-        post: operations["updateLocalPackage"];
+        put: operations["updateLocalPackage"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1521,18 +1521,9 @@ export interface components {
             version: components["schemas"]["StrictSemVer"];
             expected_hashes: components["schemas"]["PackageHashSet"];
         };
-        ImportLocalPackageRequest: {
-            package_base64: string;
-            plugin_instance_id?: string;
-        };
         InstallReleaseRefRequest: {
             release_ref: components["schemas"]["PluginReleaseRef"];
             plugin_instance_id?: string;
-        };
-        UpdateLocalPackageRequest: {
-            plugin_instance_id: string;
-            package_base64: string;
-            expected_management_revision: number;
         };
         UpdateReleaseRefRequest: {
             plugin_instance_id: string;
@@ -2768,19 +2759,9 @@ export interface components {
         SurfaceInstanceID: string;
     };
     requestBodies: {
-        ImportLocalPackageRequest: {
-            content: {
-                "application/json": components["schemas"]["ImportLocalPackageRequest"];
-            };
-        };
         InstallReleaseRefRequest: {
             content: {
                 "application/json": components["schemas"]["InstallReleaseRefRequest"];
-            };
-        };
-        UpdateLocalPackageRequest: {
-            content: {
-                "application/json": components["schemas"]["UpdateLocalPackageRequest"];
             };
         };
         UpdateReleaseRefRequest: {
@@ -2956,12 +2937,18 @@ export type $defs = Record<string, never>;
 export interface operations {
     importLocalPackage: {
         parameters: {
-            query?: never;
+            query?: {
+                plugin_instance_id?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["ImportLocalPackageRequest"];
+        requestBody: {
+            content: {
+                "application/vnd.redevplugin.package+zip": string;
+            };
+        };
         responses: {
             200: components["responses"]["PluginRecordResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];
@@ -3021,12 +3008,20 @@ export interface operations {
     };
     updateLocalPackage: {
         parameters: {
-            query?: never;
+            query: {
+                expected_management_revision: number;
+            };
             header?: never;
-            path?: never;
+            path: {
+                plugin_instance_id: string;
+            };
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["UpdateLocalPackageRequest"];
+        requestBody: {
+            content: {
+                "application/vnd.redevplugin.package+zip": string;
+            };
+        };
         responses: {
             200: components["responses"]["PluginRecordResponse"];
             default: components["responses"]["MutationPlatformErrorResponse"];

@@ -437,7 +437,7 @@ func inspectData(ctx context.Context, root string, pluginInstanceID string) erro
 
 func validate(ctx context.Context, filename string) error {
 	if strings.HasSuffix(filename, ".redevplugin") || strings.HasSuffix(filename, ".zip") {
-		pkg, err := pluginpkg.ReadFile(ctx, filename, pluginpkg.DefaultReadOptions())
+		pkg, err := pluginpkg.ReadFile(ctx, filename, pluginpkg.DefaultReadLimits())
 		if err != nil {
 			return err
 		}
@@ -480,7 +480,7 @@ func buildPackage(ctx context.Context, srcDir string, outFile string) error {
 		}
 	}
 	var buf bytes.Buffer
-	pkg, err := pluginpkg.BuildFromDir(ctx, srcDir, &buf, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.BuildFromDir(ctx, srcDir, &buf, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return err
 	}
@@ -795,7 +795,7 @@ func keygen(keyID string, privateFile string, publicFile string) error {
 }
 
 func signPackage(ctx context.Context, packageFile string, privateKeyFile string, outFile string) error {
-	pkg, err := pluginpkg.ReadFile(ctx, packageFile, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.ReadFile(ctx, packageFile, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return err
 	}
@@ -815,7 +815,7 @@ func signPackage(ctx context.Context, packageFile string, privateKeyFile string,
 	if err := writeBytesFile(outFile, buf.Bytes(), 0o644); err != nil {
 		return err
 	}
-	signedPkg, err := pluginpkg.Read(ctx, bytes.NewReader(buf.Bytes()), int64(buf.Len()), pluginpkg.DefaultReadOptions())
+	signedPkg, err := pluginpkg.Read(ctx, bytes.NewReader(buf.Bytes()), int64(buf.Len()), pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return err
 	}

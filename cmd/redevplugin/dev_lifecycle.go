@@ -143,7 +143,7 @@ func devInstall(ctx context.Context, stateRoot string, packageFile string, capab
 	if err != nil {
 		return err
 	}
-	pkg, err := pluginpkg.Read(ctx, bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(ctx, bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return err
 	}
@@ -592,7 +592,7 @@ func loadDevHarness(ctx context.Context, stateRoot string) (devHarness, registry
 		return devHarness{}, registry.PluginRecord{}, err
 	}
 	packagePath := filepath.Join(stateRoot, devPackageFile)
-	pkg, err := pluginpkg.ReadFile(ctx, packagePath, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.ReadFile(ctx, packagePath, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return devHarness{}, registry.PluginRecord{}, errDevStateNotInstalled

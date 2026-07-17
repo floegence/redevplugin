@@ -1,5 +1,9 @@
 [
   {
+    "method": "PUT",
+    "path": "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"
+  },
+  {
     "method": "GET",
     "path": "/_redevplugin/api/plugins/{plugin_instance_id}/settings"
   },
@@ -61,11 +65,7 @@
   },
   {
     "method": "POST",
-    "path": "/_redevplugin/api/plugins/local-import/install"
-  },
-  {
-    "method": "POST",
-    "path": "/_redevplugin/api/plugins/local-import/update"
+    "path": "/_redevplugin/api/plugins/local-imports"
   },
   {
     "method": "GET",

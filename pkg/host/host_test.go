@@ -2238,7 +2238,7 @@ func TestLocalInstallRejectsCapabilityMethodAliasesThatGeneratedClientsCannotCal
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "RPC")
 	var packageBytes bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "must match route.target_method") {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadLimits()); err == nil || !strings.Contains(err.Error(), "must match route.target_method") {
 		t.Fatalf("BuildFromDir() error = %v, want method alias rejection", err)
 	}
 }
@@ -2249,7 +2249,7 @@ func TestLocalInstallRejectsCapabilityPolicyDeclaredByPluginManifest(t *testing.
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Danger")
 	var packageBytes bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadOptions()); err == nil || !strings.Contains(err.Error(), "derive policy and schemas from the signed capability contract") {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &packageBytes, pluginpkg.DefaultReadLimits()); err == nil || !strings.Contains(err.Error(), "derive policy and schemas from the signed capability contract") {
 		t.Fatalf("BuildFromDir() error = %v, want unsigned policy rejection", err)
 	}
 }
@@ -8974,7 +8974,7 @@ func buildFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), fixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Plugin")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8986,7 +8986,7 @@ func buildVersionedLifecyclePackage(t *testing.T, version string, title string) 
 	writeFile(t, filepath.Join(dir, "manifest.json"), lifecycleManifestJSON(version, title))
 	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -8998,7 +8998,7 @@ func buildStorageFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), storageFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Storage")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9010,7 +9010,7 @@ func buildSettingsFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), settingsFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Settings")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9028,7 +9028,7 @@ func buildDataShapeFixturePackage(t *testing.T, opts dataShapeFixtureOptions) []
 	writeFile(t, filepath.Join(dir, "manifest.json"), dataShapeFixtureManifestJSON(opts))
 	writeSurfaceFixture(t, dir, "Data Shape")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9045,7 +9045,7 @@ func buildVersionedRPCPackage(t *testing.T, version string, title string) []byte
 	writeFile(t, filepath.Join(dir, "manifest.json"), rpcFixtureManifestJSON(version, title))
 	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9057,7 +9057,7 @@ func buildDangerousRPCFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), dangerousRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Danger")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9076,7 +9076,7 @@ func buildMethodContractFixturePackage(t *testing.T) []byte {
 		writeFile(t, filepath.Join(dir, filepath.FromSlash(relative)), string(content))
 	}
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9124,7 +9124,7 @@ func buildIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), addIntentToManifestJSON(t, manifestJSON, dangerous))
 	writeSurfaceFixture(t, dir, "Intent")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9167,7 +9167,7 @@ func buildCapabilityPinnedFixturePackage(
 	writeFile(t, filepath.Join(dir, "manifest.json"), string(encoded)+"\n")
 	writeSurfaceFixture(t, dir, title)
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9179,7 +9179,7 @@ func buildOperationRPCFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), operationRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Operation")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9191,7 +9191,7 @@ func buildSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), subscriptionRPCFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Subscription")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9203,7 +9203,7 @@ func buildCoreActionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), coreActionFixtureManifestJSON())
 	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9216,7 +9216,7 @@ func buildDangerousCoreActionFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9230,7 +9230,7 @@ func buildCoreActionOperationFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), manifestJSON)
 	writeSurfaceFixture(t, dir, "Core Action")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9243,7 +9243,7 @@ func buildWorkerFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9257,7 +9257,7 @@ func buildDangerousWorkerFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9272,7 +9272,7 @@ func buildWorkerOperationFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9286,7 +9286,7 @@ func buildMutatingWorkerFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9301,7 +9301,7 @@ func buildWorkerSubscriptionFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9314,7 +9314,7 @@ func buildWorkerNetworkFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Network")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9329,7 +9329,7 @@ func buildWorkerNetworkSubscriptionFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Network Stream")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9345,7 +9345,7 @@ func buildWorkerNetworkSubscriptionMemoryHostcallFixturePackage(t *testing.T) []
 	request := []byte(`{"connector_id":"api","transport":"http","destination":"https://api.example.com","operation":"http_stream","method":"POST","path":"/v1/worker","headers":{"Content-Type":["text/plain"]},"body_base64":"aGVsbG8gZnJvbSBtZW1vcnkgaG9zdGNhbGw=","max_request_bytes":1024,"max_response_bytes":4096,"max_chunk_bytes":4,"max_buffered_bytes":65536,"timeout_ms":1000,"content_type":"text/plain"}`)
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), importedMemoryHostcallWorkerWASMForTest("redevplugin.network", "execute", "network_execute", "redevplugin_worker_invoke", request))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9358,7 +9358,7 @@ func buildWorkerNetworkMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Network Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9371,7 +9371,7 @@ func buildWorkerNetworkTransportMemoryHostcallFixturePackage(t *testing.T, trans
 	writeSurfaceFixture(t, dir, "Worker Network Transport Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), networkTransportMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke", transport))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9384,7 +9384,7 @@ func buildWorkerStorageFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Storage")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9397,7 +9397,7 @@ func buildWorkerStorageMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Storage Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9410,7 +9410,7 @@ func buildWorkerStorageKVMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Storage KV Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageKVMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9423,7 +9423,7 @@ func buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t *testing.T) []byte {
 	writeSurfaceFixture(t, dir, "Worker Storage SQLite Memory Hostcall")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), storageSQLiteMemoryHostcallWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -9435,7 +9435,7 @@ func buildNetworkFixturePackage(t *testing.T) []byte {
 	writeFile(t, filepath.Join(dir, "manifest.json"), networkFixtureManifestJSON(false))
 	writeSurfaceFixture(t, dir, "Network")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -10665,6 +10665,11 @@ type recordingReleaseArtifactResolver struct {
 	calls    int
 }
 
+func artifactSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 type recordingCapabilityContractArtifactResolver struct {
 	result ResolvedCapabilityContractArtifact
 	err    error
@@ -10792,12 +10797,13 @@ func resolvedArtifactForPackage(t *testing.T, ref PluginReleaseRef, pkg pluginpk
 		ReleaseMetadataSignature: []byte("release-metadata-signature"),
 		Reader:                   bytes.NewReader(packageBytes),
 		Size:                     int64(len(packageBytes)),
+		ArtifactSHA256:           artifactSHA256(packageBytes),
 	}
 }
 
 func readTestPackage(t *testing.T, data []byte) pluginpkg.Package {
 	t.Helper()
-	pkg, err := pluginpkg.Read(hostTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(hostTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -10889,6 +10895,7 @@ func resolvedArtifactForRelease(t *testing.T, ref PluginReleaseRef, release Plug
 		ReleaseMetadataSignature: []byte("release-metadata-signature"),
 		Reader:                   bytes.NewReader(packageBytes),
 		Size:                     int64(len(packageBytes)),
+		ArtifactSHA256:           artifactSHA256(packageBytes),
 	}
 }
 

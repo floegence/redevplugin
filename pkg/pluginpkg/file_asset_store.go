@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -20,8 +22,9 @@ const (
 )
 
 type FileAssetStore struct {
-	mu   sync.Mutex
-	root string
+	mu      sync.RWMutex
+	rootDir string
+	root    *os.Root
 }
 
 type fileAssetManifest struct {
@@ -38,8 +41,20 @@ func NewFileAssetStore(root string) (*FileAssetStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	store := &FileAssetStore{root: abs}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return nil, err
+	}
+	rootHandle, err := os.OpenRoot(abs)
+	if err != nil {
+		return nil, err
+	}
+	store := &FileAssetStore{rootDir: abs, root: rootHandle}
 	if err := os.MkdirAll(store.packagesRoot(), 0o700); err != nil {
+		_ = rootHandle.Close()
+		return nil, err
+	}
+	if err := rootHandle.MkdirAll(fileAssetPackagesDir, 0o700); err != nil {
+		_ = rootHandle.Close()
 		return nil, err
 	}
 	return store, nil
@@ -103,7 +118,7 @@ func (s *FileAssetStore) PutPackage(ctx context.Context, pkg Package) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, assets[entry.Path], 0o600); err != nil {
+		if err := s.writeRootFile(target, assets[entry.Path], 0o600); err != nil {
 			return err
 		}
 	}
@@ -111,17 +126,18 @@ func (s *FileAssetStore) PutPackage(ctx context.Context, pkg Package) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(tmpPath, fileAssetManifestFile), manifestBytes, 0o600); err != nil {
+	manifestPath := filepath.Join(tmpPath, fileAssetManifestFile)
+	if err := s.writeRootFile(manifestPath, manifestBytes, 0o600); err != nil {
 		return err
 	}
 	finalPath, err := s.packagePath(manifest.PackageHash)
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(finalPath); err != nil {
+	if err := s.removeRoot(finalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := s.renameRoot(tmpPath, finalPath); err != nil {
 		return err
 	}
 	cleanupTmp = false
@@ -141,18 +157,19 @@ func (s *FileAssetStore) ReadAsset(ctx context.Context, packageHash string, asse
 		return Asset{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
 
 	base, err := s.packagePath(packageHash)
 	if err != nil {
 		return Asset{}, err
 	}
-	manifest, err := readFileAssetManifest(base)
+	manifest, err := s.readRootManifest(base)
 	if err != nil {
+		s.mu.RUnlock()
 		return Asset{}, err
 	}
 	if manifest.PackageHash != packageHash {
+		s.mu.RUnlock()
 		return Asset{}, fmt.Errorf("%w: package hash mismatch", ErrPackageAssetNotFound)
 	}
 	var entry Entry
@@ -165,13 +182,32 @@ func (s *FileAssetStore) ReadAsset(ctx context.Context, packageHash string, asse
 		}
 	}
 	if !found {
+		s.mu.RUnlock()
 		return Asset{}, ErrPackageAssetNotFound
 	}
 	target, err := resolveAssetFilePath(filepath.Join(base, fileAssetFilesDir), assetPath)
 	if err != nil {
+		s.mu.RUnlock()
 		return Asset{}, err
 	}
-	info, err := os.Lstat(target)
+	if err := rejectIntermediateSymlinks(s.rootDir, target); err != nil {
+		s.mu.RUnlock()
+		return Asset{}, err
+	}
+	rel, err := s.rootPath(target)
+	s.mu.RUnlock()
+	if err != nil {
+		return Asset{}, err
+	}
+	file, err := s.root.Open(rel)
+	if errors.Is(err, os.ErrNotExist) {
+		return Asset{}, ErrPackageAssetNotFound
+	}
+	if err != nil {
+		return Asset{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
 	if errors.Is(err, os.ErrNotExist) {
 		return Asset{}, ErrPackageAssetNotFound
 	}
@@ -181,10 +217,7 @@ func (s *FileAssetStore) ReadAsset(ctx context.Context, packageHash string, asse
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return Asset{}, fmt.Errorf("%w: asset path is not a regular file", ErrInvalidAssetPath)
 	}
-	content, err := os.ReadFile(target)
-	if errors.Is(err, os.ErrNotExist) {
-		return Asset{}, ErrPackageAssetNotFound
-	}
+	content, err := io.ReadAll(file)
 	if err != nil {
 		return Asset{}, err
 	}
@@ -195,6 +228,32 @@ func (s *FileAssetStore) ReadAsset(ctx context.Context, packageHash string, asse
 		Entry:   entry,
 		Content: append([]byte(nil), content...),
 	}, nil
+}
+
+func (s *FileAssetStore) ReadPackageMetadata(ctx context.Context, packageHash string) ([]Entry, error) {
+	if s == nil {
+		return nil, errors.New("package asset store is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	packageHash = strings.TrimSpace(packageHash)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	base, err := s.packagePath(packageHash)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := s.readRootManifest(base)
+	if err != nil {
+		return nil, err
+	}
+	if manifest.PackageHash != packageHash {
+		return nil, fmt.Errorf("%w: package hash mismatch", ErrPackageAssetNotFound)
+	}
+	entries := append([]Entry(nil), manifest.Entries...)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return entries, nil
 }
 
 func (s *FileAssetStore) DeletePackage(_ context.Context, packageHash string) error {
@@ -213,11 +272,70 @@ func (s *FileAssetStore) DeletePackage(_ context.Context, packageHash string) er
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(target)
+	return s.removeRoot(target)
 }
 
 func (s *FileAssetStore) packagesRoot() string {
-	return filepath.Join(s.root, fileAssetPackagesDir)
+	return filepath.Join(s.rootDir, fileAssetPackagesDir)
+}
+
+func (s *FileAssetStore) rootPath(path string) (string, error) {
+	if s == nil || s.root == nil {
+		return "", errors.New("package asset store is nil")
+	}
+	rel, err := filepath.Rel(s.rootDir, path)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: path escapes asset store root", ErrInvalidAssetPath)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func (s *FileAssetStore) writeRootFile(path string, content []byte, perm os.FileMode) error {
+	rel, err := s.rootPath(path)
+	if err != nil {
+		return err
+	}
+	return s.root.WriteFile(rel, content, perm)
+}
+
+func (s *FileAssetStore) renameRoot(from, to string) error {
+	fromRel, err := s.rootPath(from)
+	if err != nil {
+		return err
+	}
+	toRel, err := s.rootPath(to)
+	if err != nil {
+		return err
+	}
+	return s.root.Rename(fromRel, toRel)
+}
+
+func (s *FileAssetStore) removeRoot(path string) error {
+	rel, err := s.rootPath(path)
+	if err != nil {
+		return err
+	}
+	return s.root.RemoveAll(rel)
+}
+
+func (s *FileAssetStore) readRootManifest(base string) (fileAssetManifest, error) {
+	path := filepath.Join(base, fileAssetManifestFile)
+	rel, err := s.rootPath(path)
+	if err != nil {
+		return fileAssetManifest{}, err
+	}
+	raw, err := s.root.ReadFile(rel)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileAssetManifest{}, ErrPackageAssetNotFound
+	}
+	if err != nil {
+		return fileAssetManifest{}, err
+	}
+	var manifest fileAssetManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return fileAssetManifest{}, err
+	}
+	return manifest, nil
 }
 
 func (s *FileAssetStore) packagePath(packageHash string) (string, error) {
@@ -264,19 +382,30 @@ func resolveAssetFilePath(root string, assetPath string) (string, error) {
 	return target, nil
 }
 
-func readFileAssetManifest(base string) (fileAssetManifest, error) {
-	raw, err := os.ReadFile(filepath.Join(base, fileAssetManifestFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return fileAssetManifest{}, ErrPackageAssetNotFound
+func rejectIntermediateSymlinks(rootDir, target string) error {
+	rel, err := filepath.Rel(rootDir, target)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: path escapes asset store root", ErrInvalidAssetPath)
 	}
-	if err != nil {
-		return fileAssetManifest{}, err
+	current := rootDir
+	parts := strings.Split(rel, string(filepath.Separator))
+	for _, part := range parts[:len(parts)-1] {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return ErrPackageAssetNotFound
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: intermediate symlink is not allowed", ErrInvalidAssetPath)
+		}
 	}
-	var manifest fileAssetManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return fileAssetManifest{}, err
-	}
-	return manifest, nil
+	return nil
 }
 
 func validateStoredAssetContent(entry Entry, content []byte) error {

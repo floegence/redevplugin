@@ -479,6 +479,7 @@ type ResolvedPackageArtifact struct {
 	ReleaseMetadataSignature []byte      `json:"-"`
 	Reader                   io.ReaderAt `json:"-"`
 	Size                     int64       `json:"size"`
+	ArtifactSHA256           string      `json:"artifact_sha256"`
 }
 
 type CoreActionAdapter interface {
@@ -953,6 +954,12 @@ var (
 	ErrReleaseArtifactResolverRequired  = errors.New("release artifact resolver is required")
 	ErrReleaseRefVerificationFailed     = errors.New("release ref verification failed")
 	ErrReleaseRefPolicyDenied           = errors.New("release ref source policy denied")
+)
+
+const (
+	maxReleaseMetadataBytes     int64 = 1 << 20
+	maxReleaseMetadataSignature int64 = 64 << 10
+	maxReleasePackageBytes      int64 = 256 << 20
 )
 
 type ListOperationsRequest struct {
@@ -2235,7 +2242,7 @@ func (h *Host) ImportLocalPackage(ctx context.Context, req ImportLocalPackageReq
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
-	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2356,7 +2363,7 @@ func (h *Host) UpdateLocalPackage(ctx context.Context, req UpdateLocalPackageReq
 	if req.PackageReader == nil {
 		return registry.PluginRecord{}, errors.New("package reader is required")
 	}
-	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(ctx, req.PackageReader, req.PackageSize, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}
@@ -2536,6 +2543,26 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
 	}
+	if resolved.Reader == nil || resolved.Size <= 0 || resolved.Size > maxReleasePackageBytes {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: package artifact size is invalid", ErrReleaseRefVerificationFailed)
+	}
+	if len(resolved.ReleaseMetadataBytes) == 0 || int64(len(resolved.ReleaseMetadataBytes)) > maxReleaseMetadataBytes {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: release metadata exceeds size limit", ErrReleaseRefVerificationFailed)
+	}
+	if len(resolved.ReleaseMetadataSignature) == 0 || int64(len(resolved.ReleaseMetadataSignature)) > maxReleaseMetadataSignature {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: release metadata signature exceeds size limit", ErrReleaseRefVerificationFailed)
+	}
+	expectedArtifactSHA := strings.TrimPrefix(strings.TrimSpace(resolved.ArtifactSHA256), "sha256:")
+	if !isLowerHexSHA256(expectedArtifactSHA) {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: package artifact sha256 is required", ErrReleaseRefVerificationFailed)
+	}
+	hasher := sha256.New()
+	if _, err := io.CopyN(hasher, io.NewSectionReader(resolved.Reader, 0, resolved.Size), resolved.Size); err != nil {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: package artifact read failed: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expectedArtifactSHA {
+		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: package artifact sha256 mismatch", ErrReleaseRefVerificationFailed)
+	}
 	release, err := parseSignedReleaseMetadata(ref, resolved.ReleaseMetadataBytes)
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
@@ -2547,10 +2574,7 @@ func (h *Host) resolveReleasePackage(ctx context.Context, action PackageTrustAct
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
 	}
-	if resolved.Reader == nil {
-		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, fmt.Errorf("%w: artifact reader is required", ErrReleaseRefVerificationFailed)
-	}
-	pkg, err := pluginpkg.Read(ctx, resolved.Reader, resolved.Size, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(ctx, resolved.Reader, resolved.Size, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return pluginpkg.Package{}, PluginPackageRelease{}, SourcePolicySnapshot{}, nil, err
 	}
@@ -3433,6 +3457,14 @@ func validateSHA256Hex(value string) error {
 		return errors.New("must be a valid sha256 hex digest")
 	}
 	return nil
+}
+
+func isLowerHexSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
 }
 
 func hashSetsEqual(left PackageHashSet, right PackageHashSet) bool {

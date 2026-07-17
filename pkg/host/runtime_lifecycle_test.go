@@ -427,5 +427,5 @@ func TestRuntimeHandleGrantValidatorUsesSurfaceTokens(t *testing.T) {
 }
 
 func pluginPackageFromBytesForRuntimeTest(raw []byte) (pluginpkg.Package, error) {
-	return pluginpkg.Read(hostTestContext(), bytes.NewReader(raw), int64(len(raw)), pluginpkg.DefaultReadOptions())
+	return pluginpkg.Read(hostTestContext(), bytes.NewReader(raw), int64(len(raw)), pluginpkg.DefaultReadLimits())
 }

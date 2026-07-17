@@ -120,7 +120,7 @@ func TestCLIKeygenSignAndValidatePackage(t *testing.T) {
 		t.Fatalf("validate summary mismatch: %#v sign=%#v", validateResult, signSummary)
 	}
 
-	signedPkg, err := pluginpkg.ReadFile(context.Background(), signedPackage, pluginpkg.DefaultReadOptions())
+	signedPkg, err := pluginpkg.ReadFile(context.Background(), signedPackage, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
@@ -236,7 +236,7 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package scaffold error = %v", err)
 	}
-	generatedPackage, err := pluginpkg.ReadFile(context.Background(), packageFile, pluginpkg.DefaultReadOptions())
+	generatedPackage, err := pluginpkg.ReadFile(context.Background(), packageFile, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		t.Fatalf("ReadFile(scaffold) error = %v", err)
 	}

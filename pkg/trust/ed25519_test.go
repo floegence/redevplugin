@@ -302,7 +302,7 @@ func unsignedFixturePackage(t *testing.T) pluginpkg.Package {
 	writeFile(t, filepath.Join(dir, "ui", "index.html"), `<!doctype html><title>Trust</title><body><main>Trust</main><script type="text/redevplugin-worker" src="assets/app.js"></script></body>`)
 	writeFile(t, filepath.Join(dir, "ui", "assets", "app.js"), "void 0;")
 	var buf bytes.Buffer
-	pkg, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.BuildFromDir(context.Background(), dir, &buf, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

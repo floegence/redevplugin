@@ -429,7 +429,7 @@ func buildWorkerFixturePackageVersion(t *testing.T, pluginVersion string, minimu
 	writeSurfaceFixture(t, dir, "Worker")
 	writeBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buffer bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buffer, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(hostTestContext(), dir, &buffer, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()

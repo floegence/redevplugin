@@ -483,7 +483,7 @@ func newExamplesPublicResolver(dnsAddress string) *net.Resolver {
 
 func ensureExamplePlugin(ctx context.Context, pluginHost *host.Host, repositoryRoot string, spec examplePluginSpec) (registry.PluginRecord, error) {
 	var archive bytes.Buffer
-	pkg, err := pluginpkg.BuildFromDir(ctx, filepath.Join(repositoryRoot, "examples", "plugins", spec.Slug), &archive, pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.BuildFromDir(ctx, filepath.Join(repositoryRoot, "examples", "plugins", spec.Slug), &archive, pluginpkg.DefaultReadLimits())
 	if err != nil {
 		return registry.PluginRecord{}, err
 	}

@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"sort"
@@ -352,20 +353,9 @@ type routeSpec struct {
 	queryKeys []string
 }
 
-type importLocalPackageRequest struct {
-	PackageBase64    string `json:"package_base64"`
-	PluginInstanceID string `json:"plugin_instance_id,omitempty"`
-}
-
 type installReleaseRefRequest struct {
 	ReleaseRef       host.PluginReleaseRef `json:"release_ref"`
 	PluginInstanceID string                `json:"plugin_instance_id,omitempty"`
-}
-
-type updateLocalPackageRequest struct {
-	PluginInstanceID           string  `json:"plugin_instance_id"`
-	PackageBase64              string  `json:"package_base64"`
-	ExpectedManagementRevision *uint64 `json:"expected_management_revision"`
 }
 
 type updateReleaseRefRequest struct {
@@ -683,12 +673,12 @@ func (e *jsonLimitError) status() int {
 }
 
 var routes = []routeSpec{
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/install"}, bind: func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackage }},
+	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-imports"}, bind: func(h *Handler) http.HandlerFunc { return h.handleImportLocalPackageUpload }, queryKeys: []string{"plugin_instance_id"}},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/install-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleInstallReleaseRef }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/enable"}, bind: func(h *Handler) http.HandlerFunc { return h.handleEnable }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/disable"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDisable }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/uninstall"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUninstall }},
-	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/local-import/update"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackage }},
+	{Route: Route{Method: http.MethodPut, Path: "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateLocalPackageUpload }, queryKeys: []string{"expected_management_revision"}},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/update-release-ref"}, bind: func(h *Handler) http.HandlerFunc { return h.handleUpdateReleaseRef }},
 	{Route: Route{Method: http.MethodPost, Path: "/_redevplugin/api/plugins/downgrade"}, bind: func(h *Handler) http.HandlerFunc { return h.handleDowngrade }},
 	{Route: Route{Method: http.MethodGet, Path: "/_redevplugin/api/plugins/catalog"}, bind: func(h *Handler) http.HandlerFunc { return h.handleCatalog }},
@@ -1006,21 +996,27 @@ func requiredRevision(value *uint64, field string) (uint64, error) {
 	return *value, nil
 }
 
-func (h Handler) handleImportLocalPackage(w http.ResponseWriter, r *http.Request) {
-	var req importLocalPackageRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
+const localImportContentType = "application/vnd.redevplugin.package+zip"
+const maxLocalImportBytes int64 = 256 << 20
+
+func (h Handler) handleImportLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
+	if err := requirePackageContentType(r); err != nil {
+		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
-	if err != nil || len(packageBytes) == 0 {
-		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "package_base64 is invalid", errorDetails{}, mutation.OutcomeNotCommitted)
+	file, size, cleanup, err := stagePackageUpload(r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errPackageUploadTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeMutationError(w, status, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
+	defer cleanup()
 	record, err := h.host.ImportLocalPackage(r.Context(), host.ImportLocalPackageRequest{
-		PackageReader:    bytes.NewReader(packageBytes),
-		PackageSize:      int64(len(packageBytes)),
-		PluginInstanceID: req.PluginInstanceID,
+		PackageReader: file, PackageSize: size,
+		PluginInstanceID: strings.TrimSpace(r.URL.Query().Get("plugin_instance_id")),
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1105,26 +1101,29 @@ func (h Handler) handleUninstall(w http.ResponseWriter, r *http.Request) {
 	writeMutationSuccess(w, record)
 }
 
-func (h Handler) handleUpdateLocalPackage(w http.ResponseWriter, r *http.Request) {
-	var req updateLocalPackageRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeMutationInvalidRequestError(w, err)
+func (h Handler) handleUpdateLocalPackageUpload(w http.ResponseWriter, r *http.Request) {
+	if err := requirePackageContentType(r); err != nil {
+		writeMutationError(w, http.StatusUnsupportedMediaType, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	expectedManagementRevision, ok := requireExpectedManagementRevision(w, req.ExpectedManagementRevision)
-	if !ok {
+	revision, err := strconv.ParseUint(r.URL.Query().Get("expected_management_revision"), 10, 64)
+	if err != nil || revision == 0 || revision > uint64(maxJSONSafeInteger) {
+		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "expected_management_revision must be a positive safe integer", errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
-	packageBytes, err := base64.StdEncoding.DecodeString(req.PackageBase64)
-	if err != nil || len(packageBytes) == 0 {
-		writeMutationError(w, http.StatusBadRequest, security.ErrInvalidRequest, "package_base64 is invalid", errorDetails{}, mutation.OutcomeNotCommitted)
+	file, size, cleanup, err := stagePackageUpload(r)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errPackageUploadTooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeMutationError(w, status, security.ErrInvalidRequest, err.Error(), errorDetails{}, mutation.OutcomeNotCommitted)
 		return
 	}
+	defer cleanup()
 	record, err := h.host.UpdateLocalPackage(r.Context(), host.UpdateLocalPackageRequest{
-		PluginInstanceID:           req.PluginInstanceID,
-		ExpectedManagementRevision: expectedManagementRevision,
-		PackageReader:              bytes.NewReader(packageBytes),
-		PackageSize:                int64(len(packageBytes)),
+		PluginInstanceID:           routeParameter(r.URL.Path, "/_redevplugin/api/plugins/{plugin_instance_id}/local-import", "plugin_instance_id"),
+		ExpectedManagementRevision: revision, PackageReader: file, PackageSize: size,
 	})
 	if err != nil {
 		code := errorCodeForManagementError(err)
@@ -1132,6 +1131,84 @@ func (h Handler) handleUpdateLocalPackage(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeMutationSuccess(w, record)
+}
+
+var errPackageUploadTooLarge = errors.New("package upload exceeds the maximum compressed size")
+
+func requirePackageContentType(r *http.Request) error {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != localImportContentType {
+		return fmt.Errorf("content type must be %s", localImportContentType)
+	}
+	if r.ContentLength == 0 {
+		return errors.New("package upload body is required")
+	}
+	if r.ContentLength > maxLocalImportBytes {
+		return errPackageUploadTooLarge
+	}
+	return nil
+}
+
+func stagePackageUpload(r *http.Request) (*os.File, int64, func(), error) {
+	tmp, err := os.CreateTemp("", "redevplugin-package-*")
+	if err != nil {
+		return nil, 0, func() {}, err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return nil, 0, func() {}, err
+	}
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}
+	var total int64
+	buf := make([]byte, 32*1024)
+	for {
+		if err := r.Context().Err(); err != nil {
+			cleanup()
+			return nil, 0, func() {}, err
+		}
+		n, readErr := r.Body.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			if total > maxLocalImportBytes {
+				cleanup()
+				return nil, 0, func() {}, errPackageUploadTooLarge
+			}
+			if _, err := tmp.Write(buf[:n]); err != nil {
+				cleanup()
+				return nil, 0, func() {}, err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			cleanup()
+			return nil, 0, func() {}, readErr
+		}
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, 0, func() {}, err
+	}
+	return tmp, total, cleanup, nil
+}
+
+func routeParameter(requestPath, pattern, name string) string {
+	patternParts := strings.Split(strings.Trim(pattern, "/"), "/")
+	requestParts := strings.Split(strings.Trim(requestPath, "/"), "/")
+	for i, part := range patternParts {
+		if part == "{"+name+"}" && i < len(requestParts) {
+			value, err := url.PathUnescape(requestParts[i])
+			if err == nil {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 func (h Handler) handleUpdateReleaseRef(w http.ResponseWriter, r *http.Request) {

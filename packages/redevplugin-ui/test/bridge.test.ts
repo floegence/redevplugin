@@ -20,7 +20,7 @@ import { PluginLocalImportClient } from "../src/local-import.js";
 
 type FetchCall = {
   input: string;
-  init: FetchInitLike;
+  init: Omit<FetchInitLike, "body"> & { body?: any };
 };
 
 class FakeFetch {
@@ -345,8 +345,8 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal("importLocalPackage" in client, false);
   assert.equal("updateLocalPackage" in client, false);
 
-  const installed = await localImportClient.importLocalPackage({ package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
-  const updated = await localImportClient.updateLocalPackage({ plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", expected_management_revision: 1 });
+  const installed = await localImportClient.importLocalPackage(new Blob(["pkg"]), { pluginInstanceId: "plugin_instance_1" });
+  const updated = await localImportClient.updateLocalPackage("plugin_instance_1", 1, new Blob(["pkg2"]));
   const downgraded = await client.downgradePlugin({ plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
   const enabled = await client.enablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 3 });
   const disabled = await client.disablePlugin({ plugin_instance_id: "plugin_instance_1", expected_management_revision: 4, reason: "admin" });
@@ -366,10 +366,11 @@ test("platform client manages plugin lifecycle and surface opening routes", asyn
   assert.equal(surface.asset_ticket, "asset_ticket_1");
   assert.equal(toPluginSurfaceHostBootstrap(surface).runtimeGenerationId, "runtime_gen_1");
   assert.equal(uninstalled.enable_state, "disabled");
-  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-import/install");
-  assert.deepEqual(JSON.parse(fetch.calls[0]?.init.body ?? ""), { package_base64: "cGtn", plugin_instance_id: "plugin_instance_1" });
-  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/local-import/update");
-  assert.deepEqual(JSON.parse(fetch.calls[1]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", package_base64: "cGtnMg", expected_management_revision: 1 });
+  assert.equal(fetch.calls[0]?.input, "/_redevplugin/api/plugins/local-imports?plugin_instance_id=plugin_instance_1");
+  assert.equal(fetch.calls[0]?.init.body instanceof Blob, true);
+  assert.equal(fetch.calls[0]?.init.headers["Content-Type"], "application/vnd.redevplugin.package+zip");
+  assert.equal(fetch.calls[1]?.input, "/_redevplugin/api/plugins/plugin_instance_1/local-import?expected_management_revision=1");
+  assert.equal(fetch.calls[1]?.init.body instanceof Blob, true);
   assert.equal(fetch.calls[2]?.input, "/_redevplugin/api/plugins/downgrade");
   assert.deepEqual(JSON.parse(fetch.calls[2]?.init.body ?? ""), { plugin_instance_id: "plugin_instance_1", version: "1.0.0", expected_management_revision: 2 });
   assert.equal(fetch.calls[3]?.input, "/_redevplugin/api/plugins/enable");

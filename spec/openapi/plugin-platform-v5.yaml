@@ -7,11 +7,19 @@ x-redevplugin-query-policy:
   reject_unknown_parameters: true
   reject_duplicate_parameters: true
 paths:
-  /_redevplugin/api/plugins/local-import/install:
+  /_redevplugin/api/plugins/local-imports:
     post:
       operationId: importLocalPackage
+      parameters:
+        - name: plugin_instance_id
+          in: query
+          required: false
+          schema: { type: string, minLength: 1 }
       requestBody:
-        $ref: "#/components/requestBodies/ImportLocalPackageRequest"
+        required: true
+        content:
+          application/vnd.redevplugin.package+zip:
+            schema: { type: string, format: binary }
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
@@ -47,11 +55,23 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
-  /_redevplugin/api/plugins/local-import/update:
-    post:
+  /_redevplugin/api/plugins/{plugin_instance_id}/local-import:
+    put:
       operationId: updateLocalPackage
+      parameters:
+        - name: plugin_instance_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: expected_management_revision
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 9007199254740991 }
       requestBody:
-        $ref: "#/components/requestBodies/UpdateLocalPackageRequest"
+        required: true
+        content:
+          application/vnd.redevplugin.package+zip:
+            schema: { type: string, format: binary }
       responses:
         "200": { $ref: "#/components/responses/PluginRecordResponse" }
         default: { $ref: "#/components/responses/MutationPlatformErrorResponse" }
@@ -736,24 +756,12 @@ components:
           schema:
             $ref: "#/components/schemas/SettingsSnapshotSuccessResponse"
   requestBodies:
-    ImportLocalPackageRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ImportLocalPackageRequest"
     InstallReleaseRefRequest:
       required: true
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/InstallReleaseRefRequest"
-    UpdateLocalPackageRequest:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/UpdateLocalPackageRequest"
     UpdateReleaseRefRequest:
       required: true
       content:
@@ -2079,13 +2087,6 @@ components:
         version: { $ref: "#/components/schemas/StrictSemVer" }
         expected_hashes:
           $ref: "#/components/schemas/PackageHashSet"
-    ImportLocalPackageRequest:
-      type: object
-      required: [package_base64]
-      additionalProperties: false
-      properties:
-        package_base64: { type: string, contentEncoding: base64, minLength: 1 }
-        plugin_instance_id: { type: string, minLength: 1 }
     InstallReleaseRefRequest:
       type: object
       required: [release_ref]
@@ -2094,14 +2095,6 @@ components:
         release_ref:
           $ref: "#/components/schemas/PluginReleaseRef"
         plugin_instance_id: { type: string, minLength: 1 }
-    UpdateLocalPackageRequest:
-      type: object
-      required: [plugin_instance_id, package_base64, expected_management_revision]
-      additionalProperties: false
-      properties:
-        plugin_instance_id: { type: string, minLength: 1 }
-        package_base64: { type: string, contentEncoding: base64, minLength: 1 }
-        expected_management_revision: { type: integer, minimum: 1, maximum: 9007199254740991 }
     UpdateReleaseRefRequest:
       type: object
       required: [plugin_instance_id, release_ref, expected_management_revision]

@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -329,8 +330,8 @@ func TestRouteSetHasManagementAndSandboxRoutes(t *testing.T) {
 
 func TestRouteSetIncludesLocalImportRoutes(t *testing.T) {
 	want := map[string]bool{
-		"POST /_redevplugin/api/plugins/local-import/install": false,
-		"POST /_redevplugin/api/plugins/local-import/update":  false,
+		"POST /_redevplugin/api/plugins/local-imports":                    false,
+		"PUT /_redevplugin/api/plugins/{plugin_instance_id}/local-import": false,
 	}
 	for _, route := range RouteSet() {
 		key := route.Method + " " + route.Path
@@ -390,25 +391,29 @@ func TestRequestIsMutationClassifiesPutAndDelete(t *testing.T) {
 
 func TestHandlerLocalImportRoutesAreAlwaysMounted(t *testing.T) {
 	tests := []struct {
-		name string
-		path string
-		body string
+		name   string
+		path   string
+		method string
+		body   []byte
 	}{
 		{
-			name: "install",
-			path: "/_redevplugin/api/plugins/local-import/install",
-			body: `{"package_base64":"not-base64"}`,
+			name:   "install",
+			method: http.MethodPost,
+			path:   "/_redevplugin/api/plugins/local-imports",
+			body:   []byte("not-a-zip"),
 		},
 		{
-			name: "update",
-			path: "/_redevplugin/api/plugins/local-import/update",
-			body: `{"plugin_instance_id":"plugini_test","package_base64":"not-base64"}`,
+			name:   "update",
+			method: http.MethodPut,
+			path:   "/_redevplugin/api/plugins/plugini_test/local-import?expected_management_revision=1",
+			body:   []byte("not-a-zip"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := mustNewHandler(t, newHTTPTestHost(t), allowHTTPTestGuard())
-			req := newJSONHTTPRequest(http.MethodPost, tt.path, bytes.NewBufferString(tt.body))
+			req := httptest.NewRequest(tt.method, tt.path, bytes.NewReader(tt.body))
+			req.Header.Set("Content-Type", localImportContentType)
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -720,7 +725,7 @@ func TestHandlerRejectsDuplicateQueryParameters(t *testing.T) {
 		route := route
 		t.Run(route.Method+" "+route.Path, func(t *testing.T) {
 			key := route.queryKeys[0]
-			req := httptest.NewRequest(route.Method, route.Path+"?"+key+"=first&"+key+"=second", nil)
+			req := httptest.NewRequest(route.Method, samplePathForRoute(route.Path)+"?"+key+"=first&"+key+"=second", nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
@@ -730,8 +735,12 @@ func TestHandlerRejectsDuplicateQueryParameters(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 				t.Fatal(err)
 			}
-			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != "" {
-				t.Fatalf("duplicate query envelope = %#v", envelope)
+			wantOutcome := ""
+			if requestIsMutation(req) {
+				wantOutcome = string(mutation.OutcomeNotCommitted)
+			}
+			if envelope.OK || envelope.Code != string(security.ErrInvalidRequest) || envelope.MutationOutcome != wantOutcome {
+				t.Fatalf("duplicate query envelope = %#v, want mutation_outcome %q", envelope, wantOutcome)
 			}
 		})
 	}
@@ -761,7 +770,7 @@ func TestHandlerWebSecurityRejectsHostSpecificOriginDecision(t *testing.T) {
 	handler := mustNewHandler(t, newHTTPTestHost(t), guard)
 	for _, path := range []string{
 		"/_redevplugin/api/plugins/install-release-ref",
-		"/_redevplugin/api/plugins/local-import/install",
+		"/_redevplugin/api/plugins/local-imports",
 		"/_redevplugin/api/plugins/enable",
 		"/_redevplugin/api/plugins/surfaces/surface_test/prepare",
 	} {
@@ -968,9 +977,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	packageBytes := buildHTTPFixturePackage(t)
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(packageBytes),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, packageBytes)
 	if installed.PluginInstanceID == "" || installed.EnableState != registry.EnableDisabled {
 		t.Fatalf("install response mismatch: %#v", installed)
 	}
@@ -1019,9 +1026,7 @@ func TestHandlerManagementLifecycleFlow(t *testing.T) {
 func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{surfaceCatalog: httpFailingSurfaceCatalogSink{}})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPFixturePackage(t))
 
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
@@ -1042,9 +1047,7 @@ func TestHandlerReportsUnknownMutationOutcomeAfterCommit(t *testing.T) {
 func TestHandlerManagementRevisionContractFailsClosed(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPFixturePackage(t))
 
 	for _, tc := range []struct {
 		body     map[string]any
@@ -1173,9 +1176,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 	v1 := buildHTTPVersionedFixturePackage(t, "1.0.0", "HTTP")
 	v2 := buildHTTPVersionedFixturePackage(t, "2.0.0", "HTTP v2")
 
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(v1),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, v1)
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -1184,11 +1185,7 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 		t.Fatalf("enable response mismatch: %#v", enabled)
 	}
 
-	updated := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/update", map[string]any{
-		"plugin_instance_id":           installed.PluginInstanceID,
-		"expected_management_revision": enabled.ManagementRevision,
-		"package_base64":               base64.StdEncoding.EncodeToString(v2),
-	})
+	updated := putLocalImport[registry.PluginRecord](t, handler, installed.PluginInstanceID, enabled.ManagementRevision, v2)
 	if updated.Version != "2.0.0" || updated.EnableState != registry.EnableEnabled || len(updated.VersionHistory) != 1 || updated.VersionHistory[0].Version != "1.0.0" {
 		t.Fatalf("update response mismatch: %#v", updated)
 	}
@@ -1206,24 +1203,18 @@ func TestHandlerUpdateAndDowngradeFlow(t *testing.T) {
 func TestHandlerManagementRejectsInvalidInstallAndTrustStateInput(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewBufferString(`{"package_base64":"not-base64"}`))
+	req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", bytes.NewBufferString("not-a-zip"))
+	req.Header.Set("Content-Type", localImportContentType)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid install status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
-	raw, err := json.Marshal(map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-		"trust_state":    "verified",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
+	req = newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", bytes.NewBufferString(`{"unexpected":true}`))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("trust_state input status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }
@@ -1264,13 +1255,8 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			raw, err := json.Marshal(map[string]any{
-				"package_base64": base64.StdEncoding.EncodeToString(buildHTTPRawPackage(t, tt.entries)),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			req := newJSONHTTPRequest(http.MethodPost, "/_redevplugin/api/plugins/local-import/install", bytes.NewReader(raw))
+			req := httptest.NewRequest(http.MethodPost, "/_redevplugin/api/plugins/local-imports", bytes.NewReader(buildHTTPRawPackage(t, tt.entries)))
+			req.Header.Set("Content-Type", localImportContentType)
 			rec := httptest.NewRecorder()
 
 			handler.ServeHTTP(rec, req)
@@ -1303,9 +1289,7 @@ func TestHandlerInstallMapsPackageValidationErrorDetails(t *testing.T) {
 func TestHandlerEnableMapsBlockedNetworkTarget(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPBlockedNetworkFixturePackage(t)),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPBlockedNetworkFixturePackage(t))
 	raw, err := json.Marshal(map[string]any{"plugin_instance_id": installed.PluginInstanceID, "expected_management_revision": installed.ManagementRevision})
 	if err != nil {
 		t.Fatal(err)
@@ -3198,9 +3182,7 @@ func TestHandlerDataExportImportFlow(t *testing.T) {
 func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t)),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPStorageFixturePackage(t))
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -3236,10 +3218,8 @@ func TestHandlerRetainedDataLifecycleFlow(t *testing.T) {
 func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	packageBase64 := base64.StdEncoding.EncodeToString(buildHTTPStorageFixturePackage(t))
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": packageBase64,
-	})
+	packageBytes := buildHTTPStorageFixturePackage(t)
+	installed := postLocalImport[registry.PluginRecord](t, handler, packageBytes)
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -3252,10 +3232,7 @@ func TestHandlerBindRetainedDataRestoresPayload(t *testing.T) {
 	listed := getJSON[struct {
 		RetainedData []plugindata.Binding `json:"retained_data"`
 	}](t, handler, "/_redevplugin/api/plugins/retained-data?plugin_instance_id="+installed.PluginInstanceID)
-	target := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64":     packageBase64,
-		"plugin_instance_id": "plugini_http_storage_rebind_target",
-	})
+	target := postLocalImport[registry.PluginRecord](t, handler, packageBytes, "plugini_http_storage_rebind_target")
 
 	bound := postJSON[plugindata.Binding](t, handler, "/_redevplugin/api/plugins/retained-data/bind", map[string]any{
 		"source_plugin_instance_id":           installed.PluginInstanceID,
@@ -3720,9 +3697,7 @@ func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
 func TestHandlerRefreshEnabledRuntimeState(t *testing.T) {
 	h := newHTTPTestHost(t)
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
-	installed := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/local-import/install", map[string]any{
-		"package_base64": base64.StdEncoding.EncodeToString(buildHTTPFixturePackage(t)),
-	})
+	installed := postLocalImport[registry.PluginRecord](t, handler, buildHTTPFixturePackage(t))
 	enabled := postJSON[registry.PluginRecord](t, handler, "/_redevplugin/api/plugins/enable", map[string]any{
 		"plugin_instance_id":           installed.PluginInstanceID,
 		"expected_management_revision": installed.ManagementRevision,
@@ -3757,6 +3732,45 @@ func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) 
 	}
 	if !envelope.OK {
 		t.Fatalf("POST %s returned not ok: %s", path, rec.Body.String())
+	}
+	var data T
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func postLocalImport[T any](t *testing.T, handler http.Handler, packageBytes []byte, pluginInstanceID ...string) T {
+	path := "/_redevplugin/api/plugins/local-imports"
+	if len(pluginInstanceID) > 0 && pluginInstanceID[0] != "" {
+		path += "?plugin_instance_id=" + url.QueryEscape(pluginInstanceID[0])
+	}
+	return requestBinary[T](t, handler, http.MethodPost, path, packageBytes, http.StatusOK)
+}
+
+func putLocalImport[T any](t *testing.T, handler http.Handler, pluginInstanceID string, revision uint64, packageBytes []byte) T {
+	path := "/_redevplugin/api/plugins/" + url.PathEscape(pluginInstanceID) + "/local-import?expected_management_revision=" + strconv.FormatUint(revision, 10)
+	return requestBinary[T](t, handler, http.MethodPut, path, packageBytes, http.StatusOK)
+}
+
+func requestBinary[T any](t *testing.T, handler http.Handler, method, path string, body []byte, wantStatus int) T {
+	t.Helper()
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", localImportContentType)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+	var envelope struct {
+		OK   bool            `json:"ok"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK {
+		t.Fatalf("%s %s returned not ok: %s", method, path, rec.Body.String())
 	}
 	var data T
 	if err := json.Unmarshal(envelope.Data, &data); err != nil {
@@ -4312,7 +4326,7 @@ func buildHTTPFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4343,7 +4357,7 @@ func buildHTTPVersionedFixturePackage(t *testing.T, version string, title string
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpVersionedFixtureManifestJSON(version, title))
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>"+title+"</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4355,7 +4369,7 @@ func buildHTTPStorageFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpStorageFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Storage</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4367,7 +4381,7 @@ func buildHTTPRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP RPC</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4379,7 +4393,7 @@ func buildHTTPDangerousRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpDangerousRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Danger</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4395,7 +4409,7 @@ func buildHTTPIntentFixturePackage(t *testing.T, dangerous bool) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), addHTTPIntentToManifestJSON(t, manifestJSON, dangerous))
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Intent</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4407,7 +4421,7 @@ func buildHTTPOperationRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpOperationRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Operation</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4419,7 +4433,7 @@ func buildHTTPSubscriptionRPCFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSubscriptionRPCFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Subscription</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4431,7 +4445,7 @@ func buildHTTPCoreActionFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpCoreActionFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Core Action</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4444,7 +4458,7 @@ func buildHTTPWorkerFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Worker</title>")
 	writeHTTPBytes(t, filepath.Join(dir, "workers", "echo.wasm"), minimalHTTPWorkerWASMForTest("redevplugin_worker_invoke"))
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4456,7 +4470,7 @@ func buildHTTPSettingsFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpSettingsFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Settings</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4468,7 +4482,7 @@ func buildHTTPBlockedNetworkFixturePackage(t *testing.T) []byte {
 	writeHTTPFile(t, filepath.Join(dir, "manifest.json"), httpBlockedNetworkFixtureManifestJSON())
 	writeHTTPFile(t, filepath.Join(dir, "ui", "index.html"), "<!doctype html><title>HTTP Network</title>")
 	var buf bytes.Buffer
-	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadOptions()); err != nil {
+	if _, err := pluginpkg.BuildFromDir(httpTestContext(), dir, &buf, pluginpkg.DefaultReadLimits()); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -4919,6 +4933,11 @@ type httpRecordingReleaseArtifactResolver struct {
 	last     host.ReleaseArtifactResolveRequest
 }
 
+func artifactSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 type httpRecordingReleaseSourcePolicyResolver struct {
 	snapshot host.SourcePolicySnapshot
 	err      error
@@ -5000,12 +5019,13 @@ func httpResolvedArtifactForPackage(t *testing.T, ref host.PluginReleaseRef, pkg
 		ReleaseMetadataSignature: []byte("release-metadata-signature"),
 		Reader:                   bytes.NewReader(packageBytes),
 		Size:                     int64(len(packageBytes)),
+		ArtifactSHA256:           artifactSHA256(packageBytes),
 	}
 }
 
 func readHTTPTestPackage(t *testing.T, data []byte) pluginpkg.Package {
 	t.Helper()
-	pkg, err := pluginpkg.Read(httpTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadOptions())
+	pkg, err := pluginpkg.Read(httpTestContext(), bytes.NewReader(data), int64(len(data)), pluginpkg.DefaultReadLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

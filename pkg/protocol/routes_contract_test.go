@@ -129,10 +129,8 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 	}
 	defaultSDK := string(defaultSDKRaw)
 	for _, forbidden := range []string{
-		"importLocalPackage(request: PluginImportLocalPackageRequest)",
-		"updateLocalPackage(request: PluginUpdateLocalPackageRequest)",
-		"export type PluginImportLocalPackageRequest",
-		"export type PluginUpdateLocalPackageRequest",
+		"importLocalPackage(",
+		"updateLocalPackage(",
 	} {
 		if strings.Contains(defaultSDK, forbidden) {
 			t.Fatalf("default TypeScript entrypoint must not expose local-import symbol %q", forbidden)
@@ -145,12 +143,11 @@ func TestLocalImportRoutesUseDedicatedTypeScriptEntrypoint(t *testing.T) {
 	localImportSDK := string(localImportRaw)
 	for _, snippet := range []string{
 		"export class PluginLocalImportClient",
-		"export type PluginImportLocalPackageRequest",
-		"export type PluginUpdateLocalPackageRequest",
-		"importLocalPackage(request: PluginImportLocalPackageRequest)",
-		`#requestMutation("/_redevplugin/api/plugins/local-import/install"`,
-		"updateLocalPackage(request: PluginUpdateLocalPackageRequest)",
-		`#requestMutation<PluginRecord>("/_redevplugin/api/plugins/local-import/update"`,
+		"export type PluginUploadProgress",
+		"importLocalPackage(packageBlob: Blob",
+		"/_redevplugin/api/plugins/local-imports",
+		"updateLocalPackage(pluginInstanceId: string",
+		"/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import",
 	} {
 		if !strings.Contains(localImportSDK, snippet) {
 			t.Fatalf("local-import TypeScript entrypoint missing snippet %q", snippet)
@@ -184,6 +181,23 @@ func TestOpenAPIDefinesJSONRequestBodies(t *testing.T) {
 	for name, values := range mediaTypes {
 		if !reflect.DeepEqual(values, []string{"application/json"}) {
 			t.Fatalf("OpenAPI request body %s media types = %#v, want application/json only", name, values)
+		}
+	}
+}
+
+func TestOpenAPIDefinesBoundedPackageUploadBodies(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "spec", "openapi", "plugin-platform-v5.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, snippet := range []string{
+		"/_redevplugin/api/plugins/local-imports:",
+		"/_redevplugin/api/plugins/{plugin_instance_id}/local-import:",
+		"application/vnd.redevplugin.package+zip:",
+	} {
+		if !strings.Contains(text, snippet) {
+			t.Fatalf("OpenAPI package upload contract missing %q", snippet)
 		}
 	}
 }
@@ -225,8 +239,6 @@ func TestOpenAPIRequestSchemasDefineCriticalFields(t *testing.T) {
 		"pointer:",
 		"InstallReleaseRefRequest:",
 		"UpdateReleaseRefRequest:",
-		"ImportLocalPackageRequest:",
-		"UpdateLocalPackageRequest:",
 		"PluginReleaseRef:",
 		"PackageHashSet:",
 		"release_metadata_sha256:",
@@ -647,14 +659,14 @@ func readOpenAPIRoutes(path string) ([]routeFixture, error) {
 func typeScriptSDKRouteBindings() []typeScriptSDKRouteBinding {
 	return []typeScriptSDKRouteBinding{
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/install"},
+			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/local-imports"},
 			Owner:        "PluginLocalImportClient.importLocalPackage",
-			Snippets:     []string{"importLocalPackage(request: PluginImportLocalPackageRequest)", `#requestMutation("/_redevplugin/api/plugins/local-import/install"`},
+			Snippets:     []string{"importLocalPackage(packageBlob: Blob", "/_redevplugin/api/plugins/local-imports"},
 		},
 		{
-			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/update"},
+			routeFixture: routeFixture{Method: "PUT", Path: "/_redevplugin/api/plugins/{plugin_instance_id}/local-import"},
 			Owner:        "PluginLocalImportClient.updateLocalPackage",
-			Snippets:     []string{"updateLocalPackage(request: PluginUpdateLocalPackageRequest)", `#requestMutation<PluginRecord>("/_redevplugin/api/plugins/local-import/update"`},
+			Snippets:     []string{"updateLocalPackage(pluginInstanceId: string", "/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/local-import"},
 		},
 		{
 			routeFixture: routeFixture{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
@@ -915,12 +927,10 @@ func routesWithoutTypeScriptSDKBindings() []routeWithoutTypeScriptSDKBinding {
 
 func requiredJSONRequestBodyRoutes() []routeFixture {
 	return []routeFixture{
-		{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/install"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/install-release-ref"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/enable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/disable"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/uninstall"},
-		{Method: "POST", Path: "/_redevplugin/api/plugins/local-import/update"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/update-release-ref"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/downgrade"},
 		{Method: "POST", Path: "/_redevplugin/api/plugins/surfaces/open"},

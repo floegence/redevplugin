@@ -271,7 +271,7 @@ func TestExamplePluginPackagesAreCompleteAndInstallable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			packageRoot := filepath.Join(root, "examples", "plugins", name)
 			var archive strings.Builder
-			pkg, err := pluginpkg.BuildFromDir(context.Background(), packageRoot, &archive, pluginpkg.DefaultReadOptions())
+			pkg, err := pluginpkg.BuildFromDir(context.Background(), packageRoot, &archive, pluginpkg.DefaultReadLimits())
 			if err != nil {
 				t.Fatalf("BuildFromDir(%s) error = %v", name, err)
 			}

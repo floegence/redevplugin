@@ -54,12 +54,74 @@ type Package struct {
 	SignatureFiles    map[string][]byte `json:"-"`
 }
 
-type ReadOptions struct {
-	MaxUncompressedBytes int64 `json:"max_uncompressed_bytes"`
-	MaxFiles             int   `json:"max_files"`
-	MaxEntryBytes        int64 `json:"max_entry_bytes"`
-	MaxPathBytes         int   `json:"max_path_bytes"`
-	MaxCompressionRatio  int64 `json:"max_compression_ratio"`
+// ReadLimits is an immutable set of resource limits for package archives.
+//
+// Limits deliberately have no zero-value semantics: callers must start with
+// DefaultReadLimits and use a validated With... method. This prevents a
+// missing option from silently disabling ZIP decompression guards.
+type ReadLimits struct {
+	maxUncompressedBytes int64
+	maxFiles             int
+	maxEntryBytes        int64
+	maxPathBytes         int
+	maxCompressionRatio  int64
+}
+
+func DefaultReadLimits() ReadLimits {
+	return ReadLimits{
+		maxUncompressedBytes: 128 << 20,
+		maxFiles:             4096,
+		maxEntryBytes:        32 << 20,
+		maxPathBytes:         512,
+		maxCompressionRatio:  100,
+	}
+}
+
+func (l ReadLimits) validate() error {
+	if l.maxUncompressedBytes <= 0 || l.maxFiles <= 0 || l.maxEntryBytes <= 0 || l.maxPathBytes <= 0 || l.maxCompressionRatio <= 0 {
+		return errors.New("all package read limits must be positive; use DefaultReadLimits")
+	}
+	return nil
+}
+
+func (l ReadLimits) WithMaxUncompressedBytes(value int64) (ReadLimits, error) {
+	if value <= 0 {
+		return ReadLimits{}, errors.New("max uncompressed bytes must be positive")
+	}
+	l.maxUncompressedBytes = value
+	return l, l.validate()
+}
+
+func (l ReadLimits) WithMaxFiles(value int) (ReadLimits, error) {
+	if value <= 0 {
+		return ReadLimits{}, errors.New("max files must be positive")
+	}
+	l.maxFiles = value
+	return l, l.validate()
+}
+
+func (l ReadLimits) WithMaxEntryBytes(value int64) (ReadLimits, error) {
+	if value <= 0 {
+		return ReadLimits{}, errors.New("max entry bytes must be positive")
+	}
+	l.maxEntryBytes = value
+	return l, l.validate()
+}
+
+func (l ReadLimits) WithMaxPathBytes(value int) (ReadLimits, error) {
+	if value <= 0 {
+		return ReadLimits{}, errors.New("max path bytes must be positive")
+	}
+	l.maxPathBytes = value
+	return l, l.validate()
+}
+
+func (l ReadLimits) WithMaxCompressionRatio(value int64) (ReadLimits, error) {
+	if value <= 0 {
+		return ReadLimits{}, errors.New("max compression ratio must be positive")
+	}
+	l.maxCompressionRatio = value
+	return l, l.validate()
 }
 
 const PackageSignaturePath = "signatures/package.sig"
@@ -133,31 +195,13 @@ type PackageSignature struct {
 	SignedAt      string `json:"signed_at,omitempty"`
 }
 
-type Reader interface {
-	ReadPackage(ctx context.Context, r io.Reader, opts ReadOptions) (Package, error)
-}
-
-type Writer interface {
-	WritePackage(ctx context.Context, w io.Writer, pkg Package) error
-}
-
 var deterministicModTime = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 
-func DefaultReadOptions() ReadOptions {
-	return ReadOptions{
-		MaxUncompressedBytes: 128 << 20,
-		MaxFiles:             4096,
-		MaxEntryBytes:        32 << 20,
-		MaxPathBytes:         512,
-		MaxCompressionRatio:  100,
+func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, limits ReadLimits) (Package, error) {
+	if err := limits.validate(); err != nil {
+		return Package{}, err
 	}
-}
-
-func BuildFromDir(ctx context.Context, srcDir string, w io.Writer, opts ReadOptions) (Package, error) {
-	if opts == (ReadOptions{}) {
-		opts = DefaultReadOptions()
-	}
-	files, signatureFiles, err := collectFiles(srcDir, opts)
+	files, signatureFiles, err := collectFiles(srcDir, limits)
 	if err != nil {
 		return Package{}, err
 	}
@@ -258,16 +302,16 @@ func writePackageZip(ctx context.Context, w io.Writer, pkg Package) error {
 	return nil
 }
 
-func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Package, error) {
-	if opts == (ReadOptions{}) {
-		opts = DefaultReadOptions()
+func Read(ctx context.Context, r io.ReaderAt, size int64, limits ReadLimits) (Package, error) {
+	if err := limits.validate(); err != nil {
+		return Package{}, err
 	}
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
 		return Package{}, wrapValidationError(ValidationCodePackageInvalid, "zip_invalid", "", "", err)
 	}
-	if opts.MaxFiles > 0 && len(zr.File) > opts.MaxFiles {
-		return Package{}, validationErrorf(ValidationCodePackageTooLarge, "file_count", "", "", "too many files: %d > %d", len(zr.File), opts.MaxFiles)
+	if len(zr.File) > limits.maxFiles {
+		return Package{}, validationErrorf(ValidationCodePackageTooLarge, "file_count", "", "", "too many files: %d > %d", len(zr.File), limits.maxFiles)
 	}
 
 	files := map[string][]byte{}
@@ -285,7 +329,7 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 		if err != nil {
 			return Package{}, err
 		}
-		if err := validateEntryPathLength(entryPath, opts.MaxPathBytes); err != nil {
+		if err := validateEntryPathLength(entryPath, limits.maxPathBytes); err != nil {
 			return Package{}, err
 		}
 		if _, ok := seenPaths[entryPath]; ok {
@@ -306,14 +350,14 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 		if !file.FileInfo().Mode().IsRegular() {
 			return Package{}, validationErrorf(ValidationCodePackagePathForbidden, "non_regular_entry", entryPath, "", "non-regular entry %q is not allowed", entryPath)
 		}
-		if opts.MaxEntryBytes > 0 && int64(file.UncompressedSize64) > opts.MaxEntryBytes {
+		if int64(file.UncompressedSize64) > limits.maxEntryBytes {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entryPath, "", "entry %q too large", entryPath)
 		}
-		if opts.MaxCompressionRatio > 0 && file.CompressedSize64 > 0 && int64(file.UncompressedSize64/file.CompressedSize64) > opts.MaxCompressionRatio {
+		if file.CompressedSize64 > 0 && int64(file.UncompressedSize64/file.CompressedSize64) > limits.maxCompressionRatio {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "compression_ratio", entryPath, "", "entry %q compression ratio exceeds limit", entryPath)
 		}
 		total += int64(file.UncompressedSize64)
-		if opts.MaxUncompressedBytes > 0 && total > opts.MaxUncompressedBytes {
+		if total > limits.maxUncompressedBytes {
 			return Package{}, validationErrorf(ValidationCodePackageTooLarge, "total_uncompressed_bytes", "", "", "package too large")
 		}
 		rc, err := file.Open()
@@ -344,7 +388,7 @@ func Read(ctx context.Context, r io.ReaderAt, size int64, opts ReadOptions) (Pac
 	return packageFromFiles(files, signatureFiles)
 }
 
-func ReadFile(ctx context.Context, filename string, opts ReadOptions) (Package, error) {
+func ReadFile(ctx context.Context, filename string, limits ReadLimits) (Package, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return Package{}, err
@@ -354,7 +398,7 @@ func ReadFile(ctx context.Context, filename string, opts ReadOptions) (Package, 
 	if err != nil {
 		return Package{}, err
 	}
-	return Read(ctx, file, stat.Size(), opts)
+	return Read(ctx, file, stat.Size(), limits)
 }
 
 func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte) (Package, error) {
@@ -410,7 +454,7 @@ func packageFromFiles(files map[string][]byte, signatureFiles map[string][]byte)
 	}, nil
 }
 
-func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[string][]byte, error) {
+func collectFiles(srcDir string, limits ReadLimits) (map[string][]byte, map[string][]byte, error) {
 	files := map[string][]byte{}
 	signatureFiles := map[string][]byte{}
 	securityPaths := map[string]string{}
@@ -430,7 +474,7 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 		if err != nil {
 			return err
 		}
-		if err := validateEntryPathLength(entryPath, opts.MaxPathBytes); err != nil {
+		if err := validateEntryPathLength(entryPath, limits.maxPathBytes); err != nil {
 			return err
 		}
 		info, err := d.Info()
@@ -451,14 +495,14 @@ func collectFiles(srcDir string, opts ReadOptions) (map[string][]byte, map[strin
 			return validationErrorf(ValidationCodePackagePathForbidden, "ambiguous_entry", entryPath, "", "entry %q aliases %q after Unicode case folding", entryPath, previous)
 		}
 		securityPaths[securityKey] = entryPath
-		if opts.MaxFiles > 0 && len(files)+1 > opts.MaxFiles {
+		if len(files)+1 > limits.maxFiles {
 			return validationErrorf(ValidationCodePackageTooLarge, "file_count", "", "", "too many files")
 		}
-		if opts.MaxEntryBytes > 0 && info.Size() > opts.MaxEntryBytes {
+		if info.Size() > limits.maxEntryBytes {
 			return validationErrorf(ValidationCodePackageTooLarge, "entry_bytes", entryPath, "", "entry %q too large", entryPath)
 		}
 		total += info.Size()
-		if opts.MaxUncompressedBytes > 0 && total > opts.MaxUncompressedBytes {
+		if total > limits.maxUncompressedBytes {
 			return validationErrorf(ValidationCodePackageTooLarge, "total_uncompressed_bytes", "", "", "package too large")
 		}
 		content, err := os.ReadFile(filename)
