@@ -49,11 +49,13 @@ fn run() -> Result<(), String> {
     let limits = hello.limits;
     let runtime_version =
         option_env!("REDEVPLUGIN_RUNTIME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+    let actual_target = compiled_runtime_target()?;
     let ack = redevplugin_ipc::hello_ack_frame(
         &request_id,
         &runtime_generation_id,
         &channel_nonce,
         runtime_version,
+        &actual_target,
         redevplugin_ipc::WASM_ABI_VERSION,
         limits,
     );
@@ -134,6 +136,20 @@ fn run() -> Result<(), String> {
         .join()
         .map_err(|_| "runtime IPC writer panicked".to_string())??;
     Ok(())
+}
+
+fn compiled_runtime_target() -> Result<redevplugin_ipc::RuntimeTarget, String> {
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "darwin",
+        other => return Err(format!("unsupported compiled runtime os {other}")),
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => return Err(format!("unsupported compiled runtime arch {other}")),
+    };
+    redevplugin_ipc::RuntimeTarget::new(os, arch)
 }
 
 fn dispatch_runtime_input(
@@ -2850,6 +2866,27 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn compiled_runtime_target_uses_platform_canonical_names() {
+        let target = compiled_runtime_target().expect("supported runtime build target");
+        let expected_os = if cfg!(target_os = "macos") {
+            "darwin"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else {
+            panic!("test is running on an unsupported runtime os")
+        };
+        let expected_arch = if cfg!(target_arch = "x86_64") {
+            "amd64"
+        } else if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            panic!("test is running on an unsupported runtime architecture")
+        };
+        assert_eq!(target.os(), expected_os);
+        assert_eq!(target.arch(), expected_arch);
+    }
 
     #[test]
     fn canceled_outstanding_hostcall_consumes_late_exact_response() {

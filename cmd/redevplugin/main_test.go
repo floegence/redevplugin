@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -256,12 +257,12 @@ func TestCLIScaffoldProducesPackageablePlugin(t *testing.T) {
 	if document.Worker.Type != pluginpkg.OpaqueSurfaceWorkerClassic || document.Worker.Path != "ui/assets/app.js" {
 		t.Fatalf("scaffold opaque worker = %#v", document.Worker)
 	}
-	if _, err := captureCLIOutput(t, "install-local", packageFile); err != nil {
-		t.Fatalf("install-local scaffold package error = %v", err)
+	if _, err := captureCLIOutput(t, "install-local", packageFile); !errors.Is(err, host.ErrPluginRuntimeNotConfigured) {
+		t.Fatalf("install-local scaffold package error = %v, want ErrPluginRuntimeNotConfigured", err)
 	}
 	for _, action := range []string{"enable", "disable", "uninstall"} {
-		if _, err := captureCLIOutput(t, action, packageFile); err != nil {
-			t.Fatalf("%s scaffold package error = %v", action, err)
+		if _, err := captureCLIOutput(t, action, packageFile); !errors.Is(err, host.ErrPluginRuntimeNotConfigured) {
+			t.Fatalf("%s scaffold package error = %v, want ErrPluginRuntimeNotConfigured", action, err)
 		}
 	}
 
@@ -277,7 +278,10 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	repoRoot := cliRepoRoot(t)
 	build := exec.Command("cargo", "build", "-p", "redevplugin-runtime")
 	build.Dir = repoRoot
-	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	oldRuntimeVersion := version.RuntimeVersion
+	version.RuntimeVersion = "0.5.0"
+	t.Cleanup(func() { version.RuntimeVersion = oldRuntimeVersion })
+	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+version.RuntimeVersion)
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
 	}
@@ -309,6 +313,7 @@ func TestCLIScaffoldRunsGeneratedWorkerThroughBuiltRustRuntime(t *testing.T) {
 	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
 	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             runtimePath,
+		Descriptor:       mustDescribeCommandRuntime(t, runtimePath),
 		Diagnostics:      adapters.Diagnostics,
 		Assets:           adapters.Assets,
 		SurfaceTokens:    adapters.SurfaceTokens,
@@ -445,6 +450,7 @@ func TestCommandRuntimeManagerRequiresExplicitShardCount(t *testing.T) {
 	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:            os.Args[0],
+		Descriptor:      mustDescribeCommandRuntime(t, os.Args[0]),
 		Diagnostics:     adapters.Diagnostics,
 		Assets:          adapters.Assets,
 		SurfaceTokens:   adapters.SurfaceTokens,
@@ -469,6 +475,7 @@ func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
 	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
 	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             os.Args[0],
+		Descriptor:       mustDescribeCommandRuntime(t, os.Args[0]),
 		Diagnostics:      adapters.Diagnostics,
 		Assets:           adapters.Assets,
 		SurfaceTokens:    adapters.SurfaceTokens,
@@ -483,6 +490,71 @@ func TestCommandRuntimeManagerProvidesExplicitRuntimeTiming(t *testing.T) {
 	}
 }
 
+func TestDescribeCommandRuntimeUsesExactArtifactAndPlatformContract(t *testing.T) {
+	runtimePath := filepath.Join(t.TempDir(), "redevplugin-runtime")
+	content := []byte("runtime artifact\n")
+	if err := os.WriteFile(runtimePath, content, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := describeCommandRuntime(runtimePath, runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH})
+	if err != nil {
+		t.Fatalf("describeCommandRuntime() error = %v", err)
+	}
+	sum := sha256.Sum256(content)
+	if descriptor.Version().String() != version.RuntimeVersion ||
+		descriptor.Target() != (runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH}) ||
+		descriptor.IPCVersion() != version.RustIPCVersion ||
+		descriptor.WASMABIVersion() != version.WASMABIVersion ||
+		descriptor.ArtifactSHA256() != fmt.Sprintf("%x", sum) {
+		t.Fatalf("runtime descriptor mismatch: %#v", descriptor)
+	}
+}
+
+func TestDescribeCommandRuntimeRejectsNonCanonicalRuntimeVersion(t *testing.T) {
+	original := version.RuntimeVersion
+	version.RuntimeVersion = "v0.5.0"
+	t.Cleanup(func() { version.RuntimeVersion = original })
+
+	_, err := describeCommandRuntime(filepath.Join(t.TempDir(), "missing-runtime"), runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH})
+	if !errors.Is(err, version.ErrInvalidSemVer) {
+		t.Fatalf("describeCommandRuntime() error = %v, want %v", err, version.ErrInvalidSemVer)
+	}
+}
+
+func TestCommandRuntimeManagerRejectsMissingDescriptor(t *testing.T) {
+	ctx := cliContext(context.Background())
+	registryStore := registry.NewMemoryStore()
+	pluginData, err := plugindata.Open(ctx, t.TempDir(), registryStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pluginData.Close() })
+	adapters := newEphemeralCLIAdapters(registryStore, pluginData)
+	_, err = newCommandRuntimeManager(commandRuntimeDependencies{
+		Path:             os.Args[0],
+		Diagnostics:      adapters.Diagnostics,
+		Assets:           adapters.Assets,
+		SurfaceTokens:    adapters.SurfaceTokens,
+		PluginData:       pluginData,
+		Connectivity:     adapters.Connectivity,
+		NetworkExecutor:  adapters.NetworkExecutor,
+		ShardCount:       1,
+		HandshakeTimeout: 15 * time.Second,
+	})
+	if !errors.Is(err, runtimeclient.ErrRuntimeDescriptorInvalid) {
+		t.Fatalf("newCommandRuntimeManager() error = %v, want %v", err, runtimeclient.ErrRuntimeDescriptorInvalid)
+	}
+}
+
+func mustDescribeCommandRuntime(t *testing.T, path string) runtimeclient.RuntimeDescriptor {
+	t.Helper()
+	descriptor, err := describeCommandRuntime(path, runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
 func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	dir := t.TempDir()
 	scaffoldDir := filepath.Join(dir, "generated")
@@ -491,6 +563,7 @@ func TestCLIDevLifecyclePersistsGeneratedPluginState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.lifecycle", "Generated Lifecycle Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
+	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
@@ -623,6 +696,7 @@ func TestCLIDevLifecyclePersistsPluginSettingsState(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.settings", "Generated Settings Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
+	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
@@ -722,6 +796,7 @@ func TestCLIDevLifecycleExportsAndImportsPluginData(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.data", "Generated Data Plugin", scaffoldDir); err != nil {
 		t.Fatalf("scaffold command error = %v", err)
 	}
+	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	addLifecycleSettingsToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
@@ -894,6 +969,7 @@ func TestCLIDevLifecyclePersistsPermissionGrants(t *testing.T) {
 		t.Fatalf("scaffold command error = %v", err)
 	}
 	capabilityRoot, capabilityPin, capabilityPublicKey := buildCLITestCapabilityArtifact(t, dir, filepath.Join(scaffoldDir, "dist", "manifest.json"))
+	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatalf("package command error = %v", err)
 	}
@@ -1202,6 +1278,7 @@ func TestCLIInspectDataReportsCatalogWithoutFileContents(t *testing.T) {
 	if _, err := captureCLIOutput(t, "scaffold", "com.example.generated.inspect", "Generated Inspect Plugin", scaffoldDir); err != nil {
 		t.Fatal(err)
 	}
+	makeScaffoldUIOnly(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	addLifecycleStorageToManifest(t, filepath.Join(scaffoldDir, "dist", "manifest.json"))
 	if _, err := captureCLIOutput(t, "package", filepath.Join(scaffoldDir, "dist"), packageFile); err != nil {
 		t.Fatal(err)
@@ -1313,6 +1390,44 @@ func writeCLITestFile(t *testing.T, filename string, content string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func makeScaffoldUIOnly(t *testing.T, filename string) {
+	t.Helper()
+	raw, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, "workers")
+	methods, _ := document["methods"].([]any)
+	uiMethods := make([]any, 0, len(methods))
+	for _, item := range methods {
+		method, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("manifest method has unexpected shape: %#v", item)
+		}
+		route, _ := method["route"].(map[string]any)
+		if route["kind"] == "worker" {
+			continue
+		}
+		uiMethods = append(uiMethods, method)
+	}
+	if len(uiMethods) == 0 {
+		delete(document, "methods")
+	} else {
+		document["methods"] = uiMethods
+	}
+	updated, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, updated, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

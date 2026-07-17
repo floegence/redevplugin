@@ -141,7 +141,7 @@ impl RuntimeLimits {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HelloPayload {
-    target: HelloTarget,
+    target: RuntimeTargetPayload,
     host_process_id: u64,
     host_ipc_version: String,
     host_wasm_abi: String,
@@ -153,9 +153,43 @@ struct HelloPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HelloTarget {
+struct RuntimeTargetPayload {
     os: String,
     arch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTarget {
+    os: String,
+    arch: String,
+}
+
+impl RuntimeTarget {
+    pub fn new(os: &str, arch: &str) -> Result<Self, String> {
+        let target = Self {
+            os: os.to_string(),
+            arch: arch.to_string(),
+        };
+        target.validate()?;
+        Ok(target)
+    }
+
+    pub fn os(&self) -> &str {
+        &self.os
+    }
+
+    pub fn arch(&self) -> &str {
+        &self.arch
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !matches!(self.os.as_str(), "darwin" | "linux")
+            || !matches!(self.arch.as_str(), "amd64" | "arm64")
+        {
+            return Err("unsupported runtime target".to_string());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -307,6 +341,7 @@ pub struct FrameIdentity {
 pub struct HelloFrame {
     pub request_id: String,
     pub runtime_generation_id: String,
+    pub target: RuntimeTarget,
     pub channel_nonce: String,
     pub runtime_lease_public_keys: Vec<RuntimeLeasePublicKey>,
     pub limits: RuntimeLimits,
@@ -1443,17 +1478,20 @@ pub fn hello_ack_frame(
     runtime_generation_id: &str,
     channel_nonce: &str,
     runtime_version: &str,
+    actual_target: &RuntimeTarget,
     wasm_abi_version: &str,
     limits: RuntimeLimits,
 ) -> String {
     let limits = serde_json::to_string(&limits).expect("runtime limits serialize");
     format!(
-        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"runtime_version\":\"{}\",\"rust_ipc_version\":\"{}\",\"wasm_abi_version\":\"{}\",\"channel_nonce\":\"{}\",\"limits\":{}}}}}",
+        "{{\"ipc_version\":\"{}\",\"frame_type\":\"{}\",\"request_id\":\"{}\",\"runtime_generation_id\":\"{}\",\"payload\":{{\"runtime_version\":\"{}\",\"actual_target\":{{\"os\":\"{}\",\"arch\":\"{}\"}},\"rust_ipc_version\":\"{}\",\"wasm_abi_version\":\"{}\",\"channel_nonce\":\"{}\",\"limits\":{}}}}}",
         RUST_IPC_VERSION,
         FRAME_TYPE_HELLO_ACK,
         escape_json_string(request_id),
         escape_json_string(runtime_generation_id),
         escape_json_string(runtime_version),
+        escape_json_string(actual_target.os()),
+        escape_json_string(actual_target.arch()),
         RUST_IPC_VERSION,
         escape_json_string(wasm_abi_version),
         escape_json_string(channel_nonce),
@@ -2956,9 +2994,8 @@ pub fn parse_hello_frame(input: &str) -> Result<HelloFrame, String> {
             "invalid hello payload".to_string()
         }
     })?;
-    if payload.target.os.trim().is_empty() || payload.target.arch.trim().is_empty() {
-        return Err("invalid hello target".to_string());
-    }
+    let target = RuntimeTarget::new(&payload.target.os, &payload.target.arch)
+        .map_err(|_| "invalid hello target".to_string())?;
     if payload.host_process_id == 0 || payload.started_unix_nano == 0 {
         return Err("invalid hello process metadata".to_string());
     }
@@ -2977,6 +3014,7 @@ pub fn parse_hello_frame(input: &str) -> Result<HelloFrame, String> {
     Ok(HelloFrame {
         request_id: frame.request_id,
         runtime_generation_id: runtime_generation_id.to_string(),
+        target,
         channel_nonce: payload.channel_nonce,
         runtime_lease_public_keys,
         limits,
@@ -3308,7 +3346,7 @@ mod tests {
             .map(|value| format!(",\"channel_nonce\":\"{value}\""))
             .unwrap_or_default();
         format!(
-            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"test","arch":"test"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v3","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys},"limits":{{"worker_count":8,"queue_capacity":32,"per_plugin_concurrency":4,"module_cache_entries":64,"module_cache_source_bytes":134217728}}}}}}"#
+            r#"{{"ipc_version":"rust-ipc-v3","frame_type":"hello","request_id":"r1","runtime_generation_id":"g1","payload":{{"target":{{"os":"linux","arch":"amd64"}},"host_process_id":1,"host_ipc_version":"rust-ipc-v3","host_wasm_abi":"redevplugin-wasm-worker-v2","started_unix_nano":1{channel_nonce},"runtime_lease_public_keys":{public_keys},"limits":{{"worker_count":8,"queue_capacity":32,"per_plugin_concurrency":4,"module_cache_entries":64,"module_cache_source_bytes":134217728}}}}}}"#
         )
     }
 
@@ -3435,7 +3473,28 @@ mod tests {
         assert_eq!(generation_id, "g1");
         assert_eq!(channel_nonce, "nonce_1234567890");
         let parsed = parse_hello_frame(&input).expect("typed hello");
+        assert_eq!(parsed.target, RuntimeTarget::new("linux", "amd64").unwrap());
         assert_eq!(parsed.limits, runtime_limits());
+    }
+
+    #[test]
+    fn rejects_noncanonical_hello_targets() {
+        let public_key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let valid = hello_frame(
+            Some("nonce_1234567890"),
+            &format!(
+                r#"[{{"algorithm":"ed25519","key_id":"host_ephemeral_key_1","public_key_base64":"{public_key}"}}]"#
+            ),
+        );
+        for invalid in [
+            valid.replace(r#""os":"linux""#, r#""os":"macos""#),
+            valid.replace(r#""arch":"amd64""#, r#""arch":"x86_64""#),
+        ] {
+            assert_eq!(
+                parse_hello_frame(&invalid).unwrap_err(),
+                "invalid hello target"
+            );
+        }
     }
 
     #[test]
@@ -3912,17 +3971,20 @@ mod tests {
 
     #[test]
     fn renders_hello_ack_frame() {
+        let actual_target = RuntimeTarget::new("linux", "amd64").unwrap();
         let frame = hello_ack_frame(
             "r1",
             "g1",
             "nonce_1",
             "0.0.0-dev",
+            &actual_target,
             WASM_ABI_VERSION,
             runtime_limits(),
         );
         assert!(frame.contains(r#""frame_type":"hello_ack""#));
         assert!(frame.contains(r#""request_id":"r1""#));
         assert!(frame.contains(r#""runtime_generation_id":"g1""#));
+        assert!(frame.contains(r#""actual_target":{"os":"linux","arch":"amd64"}"#));
         assert!(frame.contains(r#""rust_ipc_version":"rust-ipc-v3""#));
         assert!(frame.contains(r#""channel_nonce":"nonce_1""#));
         assert!(frame.contains(r#""worker_count":8"#));
@@ -3987,6 +4049,15 @@ mod tests {
             let frame_json = serde_json::to_string(&frame).expect("compact frame");
             match fixture_name {
                 "valid_hello_ack.json" => {
+                    let actual_target = RuntimeTarget::new(
+                        frame["payload"]["actual_target"]["os"]
+                            .as_str()
+                            .expect("actual_target.os"),
+                        frame["payload"]["actual_target"]["arch"]
+                            .as_str()
+                            .expect("actual_target.arch"),
+                    )
+                    .expect("actual_target");
                     let encoded = hello_ack_frame(
                         fixture["request_id"].as_str().expect("request_id"),
                         fixture["runtime_generation_id"]
@@ -3996,6 +4067,7 @@ mod tests {
                         frame["payload"]["runtime_version"]
                             .as_str()
                             .expect("runtime_version"),
+                        &actual_target,
                         WASM_ABI_VERSION,
                         runtime_limits(),
                     );

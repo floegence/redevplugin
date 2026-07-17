@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -84,9 +85,7 @@ type Health struct {
 	RuntimeGenerationID string             `json:"runtime_generation_id"`
 	IPCChannelID        string             `json:"ipc_channel_id,omitempty"`
 	ConnectionNonce     string             `json:"connection_nonce,omitempty"`
-	RuntimeVersion      string             `json:"runtime_version,omitempty"`
-	RustIPCVersion      string             `json:"rust_ipc_version,omitempty"`
-	WASMABIVersion      string             `json:"wasm_abi_version,omitempty"`
+	Descriptor          RuntimeDescriptor  `json:"descriptor"`
 	Ready               bool               `json:"ready"`
 	ActiveInvocations   int                `json:"active_invocations"`
 	QueuedInvocations   int                `json:"queued_invocations"`
@@ -217,6 +216,7 @@ var (
 	ErrRuntimeIPCUnavailable = errors.New("runtime ipc transport is unavailable")
 	ErrRuntimeHandshake      = errors.New("runtime ipc handshake failed")
 	ErrRuntimeRequestFailed  = errors.New("runtime ipc request failed")
+	ErrRuntimeArtifactDigest = errors.New("runtime artifact digest mismatch")
 	// ErrRuntimeTimingInvalid reports a non-positive or internally inconsistent
 	// process handshake and heartbeat timing configuration.
 	ErrRuntimeTimingInvalid = errors.New("runtime timing is invalid")
@@ -260,6 +260,7 @@ func (e *WorkerExecutionError) Unwrap() error {
 // HeartbeatInterval.
 type ProcessSupervisorOptions struct {
 	RuntimePath           string
+	Descriptor            RuntimeDescriptor
 	Args                  []string
 	Env                   []string
 	Dir                   string
@@ -294,6 +295,7 @@ type ProcessSupervisor struct {
 	mu                     sync.Mutex
 	pendingMu              sync.Mutex
 	path                   string
+	descriptor             RuntimeDescriptor
 	args                   []string
 	env                    []string
 	dir                    string
@@ -416,6 +418,7 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 	keyring := StaticRuntimeLeaseSigningKeyring{Keys: []RuntimeLeaseSigningKey{{KeyID: keyID, PublicKey: publicKey}}}
 	return &ProcessSupervisor{
 		path:                   path,
+		descriptor:             options.Descriptor,
 		args:                   append([]string(nil), options.Args...),
 		env:                    append([]string(nil), options.Env...),
 		dir:                    strings.TrimSpace(options.Dir),
@@ -441,12 +444,22 @@ func NewProcessSupervisor(options ProcessSupervisorOptions) (*ProcessSupervisor,
 		admission:              newRuntimeAdmissionController(options.Limits),
 		pending:                map[string]*pendingIPCRequest{},
 		compileFlights:         map[string]*pendingCompileFlight{},
+		health: Health{
+			Descriptor: options.Descriptor,
+			Limits:     options.Limits,
+		},
 	}, nil
 }
 
 func validateProcessSupervisorOptions(options ProcessSupervisorOptions, requireHostServices bool) error {
 	if strings.TrimSpace(options.RuntimePath) == "" {
 		return ErrRuntimePathRequired
+	}
+	if options.Descriptor.Version().String() == "" {
+		return fmt.Errorf("%w: descriptor is required", ErrRuntimeDescriptorInvalid)
+	}
+	if err := options.Descriptor.CompatibleWithPlatform(); err != nil {
+		return err
 	}
 	if err := ValidateRuntimeLimits(options.Limits); err != nil {
 		return err
@@ -506,6 +519,12 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := ValidateTarget(target); err != nil {
+		return err
+	}
+	if target != s.descriptor.Target() {
+		return fmt.Errorf("%w: requested target os=%q arch=%q", ErrRuntimeDescriptorMismatch, target.OS, target.Arch)
+	}
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 	s.mu.Lock()
@@ -517,10 +536,21 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		s.mu.Unlock()
 		return ErrRuntimeNotReady
 	}
+	s.mu.Unlock()
+	verifiedPath, cleanupVerifiedPath, err := s.prepareRuntimeExecutable(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanupVerifiedPath()
+	s.mu.Lock()
+	if s.readyLocked() || s.cmd != nil {
+		s.mu.Unlock()
+		return ErrRuntimeNotReady
+	}
 	s.seq++
 	generationID := fmt.Sprintf("runtime_gen_%d_%d", s.now().UnixNano(), s.seq)
 	runtimeCtx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(runtimeCtx, s.path, s.args...)
+	cmd := exec.CommandContext(runtimeCtx, verifiedPath, s.args...)
 	controlRuntimeRead, controlHostWrite, err := os.Pipe()
 	if err != nil {
 		cancel()
@@ -588,6 +618,7 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		RuntimeInstanceID:   fmt.Sprintf("runtime_%d", cmd.Process.Pid),
 		RuntimeGenerationID: generationID,
 		IPCChannelID:        fmt.Sprintf("ipc_%d_%d", cmd.Process.Pid, s.seq),
+		Descriptor:          s.descriptor,
 		Limits:              s.limits,
 	}
 	exit := &processExit{done: make(chan struct{}), ipcReaderDone: make(chan struct{})}
@@ -636,9 +667,6 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 	}
 	s.mu.Lock()
 	if s.cmd == cmd && runtimeCtx.Err() == nil {
-		health.RuntimeVersion = ack.RuntimeVersion
-		health.RustIPCVersion = ack.RustIPCVersion
-		health.WASMABIVersion = ack.WASMABIVersion
 		health.ConnectionNonce = ack.ChannelNonce
 		health.Limits = ack.Limits
 		health.Ready = true
@@ -653,13 +681,140 @@ func (s *ProcessSupervisor) Start(ctx context.Context, target Target) error {
 		s.readIPCLoop(stdoutReader, generation, health)
 	}()
 	s.emit("plugin.runtime.ipc.handshake", "info", "runtime ipc handshake completed", map[string]any{
-		"runtime_instance_id":   health.RuntimeInstanceID,
-		"runtime_generation_id": health.RuntimeGenerationID,
-		"runtime_version":       health.RuntimeVersion,
-		"rust_ipc_version":      health.RustIPCVersion,
-		"wasm_abi_version":      health.WASMABIVersion,
+		"runtime_instance_id":     health.RuntimeInstanceID,
+		"runtime_generation_id":   health.RuntimeGenerationID,
+		"runtime_version":         health.Descriptor.Version().String(),
+		"rust_ipc_version":        health.Descriptor.IPCVersion(),
+		"wasm_abi_version":        health.Descriptor.WASMABIVersion(),
+		"runtime_target_os":       health.Descriptor.Target().OS,
+		"runtime_target_arch":     health.Descriptor.Target().Arch,
+		"runtime_artifact_sha256": health.Descriptor.ArtifactSHA256(),
 	})
 	go s.heartbeatLoop(runtimeCtx, health)
+	return nil
+}
+
+func (s *ProcessSupervisor) Preflight(ctx context.Context, target Target) (RuntimeDescriptor, error) {
+	if s == nil {
+		return RuntimeDescriptor{}, ErrRuntimePathRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return RuntimeDescriptor{}, err
+	}
+	if err := ValidateTarget(target); err != nil {
+		return RuntimeDescriptor{}, err
+	}
+	if target != s.descriptor.Target() {
+		return RuntimeDescriptor{}, fmt.Errorf("%w: requested target os=%q arch=%q", ErrRuntimeDescriptorMismatch, target.OS, target.Arch)
+	}
+	if err := s.descriptor.CompatibleWithPlatform(); err != nil {
+		return RuntimeDescriptor{}, err
+	}
+	if err := verifyRuntimeExecutable(ctx, s.path, s.descriptor.ArtifactSHA256()); err != nil {
+		return RuntimeDescriptor{}, err
+	}
+	return s.descriptor, nil
+}
+
+const maxRuntimeExecutableBytes int64 = 256 << 20
+
+func verifyRuntimeExecutable(ctx context.Context, path string, expectedSHA256 string) error {
+	file, err := openRuntimeExecutable(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if err := copyBoundedRuntimeExecutable(ctx, file, hasher); err != nil {
+		return err
+	}
+	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expectedSHA256 {
+		return fmt.Errorf("%w: got %s want %s", ErrRuntimeArtifactDigest, actual, expectedSHA256)
+	}
+	return nil
+}
+
+func (s *ProcessSupervisor) prepareRuntimeExecutable(ctx context.Context) (string, func(), error) {
+	source, err := openRuntimeExecutable(s.path)
+	if err != nil {
+		return "", nil, err
+	}
+	defer source.Close()
+	directory, err := os.MkdirTemp("", "redevplugin-runtime-verified-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(directory) }
+	verifiedPath := filepath.Join(directory, "redevplugin-runtime")
+	destination, err := os.OpenFile(verifiedPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	hasher := sha256.New()
+	if err := copyBoundedRuntimeExecutable(ctx, source, io.MultiWriter(destination, hasher)); err != nil {
+		_ = destination.Close()
+		cleanup()
+		return "", nil, err
+	}
+	if err := destination.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != s.descriptor.ArtifactSHA256() {
+		cleanup()
+		return "", nil, fmt.Errorf("%w: got %s want %s", ErrRuntimeArtifactDigest, actual, s.descriptor.ArtifactSHA256())
+	}
+	if err := os.Chmod(verifiedPath, 0o500); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return verifiedPath, cleanup, nil
+}
+
+func copyBoundedRuntimeExecutable(ctx context.Context, source *os.File, destination io.Writer) error {
+	info, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxRuntimeExecutableBytes {
+		return fmt.Errorf("%w: runtime artifact must be a non-empty regular file no larger than %d bytes", ErrRuntimeArtifactDigest, maxRuntimeExecutableBytes)
+	}
+	remaining := info.Size()
+	buffer := make([]byte, 128*1024)
+	for remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		readSize := int64(len(buffer))
+		if remaining < readSize {
+			readSize = remaining
+		}
+		read, readErr := source.Read(buffer[:readSize])
+		if read > 0 {
+			written, writeErr := destination.Write(buffer[:read])
+			if writeErr != nil {
+				return writeErr
+			}
+			if written != read {
+				return io.ErrShortWrite
+			}
+			remaining -= int64(read)
+		}
+		if readErr != nil && !(errors.Is(readErr, io.EOF) && remaining == 0) {
+			return readErr
+		}
+		if read == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	var extra [1]byte
+	if read, err := source.Read(extra[:]); read != 0 || !errors.Is(err, io.EOF) {
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		return fmt.Errorf("%w: runtime artifact size changed while reading", ErrRuntimeArtifactDigest)
+	}
 	return nil
 }
 
@@ -1218,6 +1373,7 @@ type helloRequestPayload struct {
 
 type helloAckPayload struct {
 	RuntimeVersion string        `json:"runtime_version"`
+	ActualTarget   Target        `json:"actual_target"`
 	RustIPCVersion string        `json:"rust_ipc_version"`
 	WASMABIVersion string        `json:"wasm_abi_version"`
 	ChannelNonce   string        `json:"channel_nonce"`
@@ -1663,7 +1819,7 @@ func (s *ProcessSupervisor) performHandshake(ctx context.Context, stdin io.Write
 		if got.err != nil {
 			return helloAckPayload{}, fmt.Errorf("%w: read hello ack: %v", ErrRuntimeHandshake, got.err)
 		}
-		return validateHelloAck(requestID, health.RuntimeGenerationID, channelNonce, s.limits, got.frame)
+		return validateHelloAck(requestID, health.RuntimeGenerationID, channelNonce, s.descriptor, s.limits, got.frame)
 	}
 }
 
@@ -4444,7 +4600,7 @@ func dereferenceJSONType(targetType reflect.Type) reflect.Type {
 	return targetType
 }
 
-func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce string, expectedLimits RuntimeLimits, frame ipcFrame) (helloAckPayload, error) {
+func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce string, expectedDescriptor RuntimeDescriptor, expectedLimits RuntimeLimits, frame ipcFrame) (helloAckPayload, error) {
 	if frame.IPCVersion != version.RustIPCVersion {
 		return helloAckPayload{}, fmt.Errorf("%w: ipc_version %q", ErrRuntimeHandshake, frame.IPCVersion)
 	}
@@ -4461,8 +4617,28 @@ func validateHelloAck(requestID string, runtimeGenerationID string, channelNonce
 	if err := decodeStrictJSON(frame.Payload, &ack); err != nil {
 		return helloAckPayload{}, fmt.Errorf("%w: decode payload: %v", ErrRuntimeHandshake, err)
 	}
-	if ack.RuntimeVersion == "" || ack.RustIPCVersion != version.RustIPCVersion || ack.WASMABIVersion != version.WASMABIVersion {
-		return helloAckPayload{}, fmt.Errorf("%w: incompatible versions runtime=%q ipc=%q wasm=%q", ErrRuntimeHandshake, ack.RuntimeVersion, ack.RustIPCVersion, ack.WASMABIVersion)
+	runtimeVersion, err := version.ParseSemVer(ack.RuntimeVersion)
+	if err != nil {
+		return helloAckPayload{}, fmt.Errorf("%w: runtime version: %v", ErrRuntimeHandshake, err)
+	}
+	actualDescriptor, err := NewRuntimeDescriptor(
+		runtimeVersion,
+		ack.ActualTarget,
+		ack.RustIPCVersion,
+		ack.WASMABIVersion,
+		expectedDescriptor.ArtifactSHA256(),
+	)
+	if err != nil || actualDescriptor != expectedDescriptor {
+		return helloAckPayload{}, fmt.Errorf(
+			"%w: %w: runtime=%q target=%s/%s ipc=%q wasm=%q",
+			ErrRuntimeHandshake,
+			ErrRuntimeDescriptorMismatch,
+			ack.RuntimeVersion,
+			ack.ActualTarget.OS,
+			ack.ActualTarget.Arch,
+			ack.RustIPCVersion,
+			ack.WASMABIVersion,
+		)
 	}
 	if ack.ChannelNonce != channelNonce {
 		return helloAckPayload{}, fmt.Errorf("%w: channel_nonce mismatch", ErrRuntimeHandshake)

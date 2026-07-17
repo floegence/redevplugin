@@ -244,8 +244,13 @@ func examplesServerWithOptions(ctx context.Context, stateRoot string, runtimePat
 	operationStore := operation.NewMemoryStore()
 	confirmationIntentStore := security.NewMemoryConfirmationIntentStore()
 	streamStore := stream.NewMemoryStore()
+	runtimeDescriptor, err := describeCommandRuntime(runtimePath, runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	if err != nil {
+		return err
+	}
 	runtimeManager, err := newCommandRuntimeManager(commandRuntimeDependencies{
 		Path:             runtimePath,
+		Descriptor:       runtimeDescriptor,
 		Diagnostics:      events,
 		Assets:           assetStore,
 		SurfaceTokens:    surfaceTokens,

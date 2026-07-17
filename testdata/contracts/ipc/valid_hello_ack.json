@@ -12,6 +12,10 @@
     "runtime_generation_id": "runtime_gen_fixture",
     "payload": {
       "runtime_version": "0.0.0-dev",
+      "actual_target": {
+        "os": "linux",
+        "arch": "amd64"
+      },
       "rust_ipc_version": "rust-ipc-v3",
       "wasm_abi_version": "redevplugin-wasm-worker-v2",
       "channel_nonce": "nonce_fixture_1234",

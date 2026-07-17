@@ -35,15 +35,23 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_HELPER") == "1" {
+		writeRuntimeHelperStartMarker()
 		runRuntimeClientHelper()
 		return
 	}
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_HELPER") == "1" {
+		writeRuntimeHelperStartMarker()
 		os.Stdout.WriteString("not-json\n")
 		time.Sleep(10 * time.Second)
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func writeRuntimeHelperStartMarker() {
+	if path := os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_START_MARKER"); path != "" {
+		_ = os.WriteFile(path, []byte("started"), 0o600)
+	}
 }
 
 func TestReadBoundedIPCLineRejectsOversizedFrame(t *testing.T) {
@@ -91,7 +99,14 @@ func TestValidateHelloAckRejectsNonCanonicalPayload(t *testing.T) {
 	} {
 		frame := baseFrame
 		frame.Payload = json.RawMessage(payload)
-		if _, err := validateHelloAck("hello_1", "g1", "nonce_1234567890123456", DefaultRuntimeLimits(), frame); !errors.Is(err, ErrRuntimeHandshake) {
+		if _, err := validateHelloAck(
+			"hello_1",
+			"g1",
+			"nonce_1234567890123456",
+			testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
+			DefaultRuntimeLimits(),
+			frame,
+		); !errors.Is(err, ErrRuntimeHandshake) {
 			t.Fatalf("validateHelloAck(%s) error = %v, want ErrRuntimeHandshake", payload, err)
 		}
 	}
@@ -361,7 +376,7 @@ func TestStorageSuccessResponsesRejectMixedOrIncompleteOperations(t *testing.T) 
 func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	const maxHeartbeatStaleness = 5 * time.Second
 	store := &runtimeDiagnosticSink{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -376,7 +391,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -386,9 +401,10 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 	if !health.Ready ||
 		health.RuntimeInstanceID == "" ||
 		health.RuntimeGenerationID == "" ||
-		health.RuntimeVersion != version.RuntimeVersion ||
-		health.RustIPCVersion != version.RustIPCVersion ||
-		health.WASMABIVersion != version.WASMABIVersion {
+		health.Descriptor.Version().String() != version.RuntimeVersion ||
+		health.Descriptor.Target() != testRuntimeTarget ||
+		health.Descriptor.IPCVersion() != version.RustIPCVersion ||
+		health.Descriptor.WASMABIVersion() != version.WASMABIVersion {
 		t.Fatalf("health mismatch: %#v", health)
 	}
 	heartbeat, err := supervisor.Heartbeat(context.Background())
@@ -442,7 +458,7 @@ func TestProcessSupervisorLifecycleAndDiagnostics(t *testing.T) {
 
 func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *testing.T) {
 	diagnostics := &runtimeDiagnosticSink{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -457,7 +473,7 @@ func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -486,7 +502,7 @@ func TestProcessSupervisorRuntimeLeaseReplayStoreRejectsDuplicateBeforeIPC(t *te
 }
 
 func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -499,7 +515,7 @@ func TestProcessSupervisorMapsRuntimeRequestFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -582,14 +598,14 @@ func TestDecodeRuntimeResponseAcceptsClosedSuccessAndFailure(t *testing.T) {
 }
 
 func TestRuntimeLimitsMustBeExplicitAndValid(t *testing.T) {
-	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{RuntimePath: os.Args[0], StreamSink: &recordingRuntimeStreamSink{}}); err == nil {
+	if _, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{RuntimePath: os.Args[0], StreamSink: &recordingRuntimeStreamSink{}}); err == nil {
 		t.Fatal("NewProcessSupervisor() accepted zero runtime limits")
 	}
 	limits := DefaultRuntimeLimits()
 	if err := ValidateRuntimeLimits(limits); err != nil {
 		t.Fatalf("DefaultRuntimeLimits() error = %v", err)
 	}
-	if _, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	if _, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
 		Limits:                limits,
 		HandshakeTimeout:      5 * time.Second,
@@ -598,7 +614,7 @@ func TestRuntimeLimitsMustBeExplicitAndValid(t *testing.T) {
 	}); !errors.Is(err, ErrRuntimeHostServicesInvalid) {
 		t.Fatalf("NewProcessSupervisor(without host services) error = %v, want %v", err, ErrRuntimeHostServicesInvalid)
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
 		Limits:                limits,
 		StreamSink:            &recordingRuntimeStreamSink{},
@@ -652,8 +668,86 @@ func TestProcessSupervisorTimingMustBeExplicitAndValid(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			options := valid
 			test.mutate(&options)
-			if _, err := NewProcessSupervisor(options); err == nil {
+			if _, err := newTestProcessSupervisor(t, options); err == nil {
 				t.Fatal("NewProcessSupervisor() accepted invalid runtime timing")
+			}
+		})
+	}
+}
+
+func TestProcessSupervisorRequiresExplicitDescriptor(t *testing.T) {
+	_, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Limits:                DefaultRuntimeLimits(),
+		StreamSink:            &recordingRuntimeStreamSink{},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+	})
+	if !errors.Is(err, ErrRuntimeDescriptorInvalid) {
+		t.Fatalf("NewProcessSupervisor() error = %v, want ErrRuntimeDescriptorInvalid", err)
+	}
+}
+
+func TestProcessSupervisorRejectsDigestMismatchBeforeStartingProcess(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), "runtime-started")
+	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		RuntimePath:           os.Args[0],
+		Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("0", 64)),
+		Args:                  []string{"-test.run=TestMain"},
+		Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", "REDEVPLUGIN_RUNTIMECLIENT_START_MARKER="+markerPath),
+		Limits:                DefaultRuntimeLimits(),
+		StreamSink:            &recordingRuntimeStreamSink{},
+		HandshakeTimeout:      5 * time.Second,
+		HeartbeatInterval:     2 * time.Second,
+		MaxHeartbeatStaleness: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeArtifactDigest) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeArtifactDigest", err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runtime helper process was started before digest validation: %v", err)
+	}
+}
+
+func TestProcessSupervisorRejectsHelloDescriptorMismatch(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		env  string
+	}{
+		{name: "runtime version", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION=99.0.0"},
+		{name: "build metadata", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION=" + version.RuntimeVersion + "+different-build"},
+		{name: "target os", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET_OS=linux"},
+		{name: "target arch", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET_ARCH=amd64"},
+		{name: "ipc", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_IPC_VERSION=rust-ipc-v99"},
+		{name: "wasm abi", env: "REDEVPLUGIN_RUNTIMECLIENT_ACK_WASM_ABI_VERSION=redevplugin-wasm-worker-v99"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
+				RuntimePath:           os.Args[0],
+				Args:                  []string{"-test.run=TestMain"},
+				Env:                   append(os.Environ(), "REDEVPLUGIN_RUNTIMECLIENT_HELPER=1", test.env),
+				Limits:                DefaultRuntimeLimits(),
+				StreamSink:            &recordingRuntimeStreamSink{},
+				HandshakeTimeout:      5 * time.Second,
+				HeartbeatInterval:     2 * time.Second,
+				MaxHeartbeatStaleness: 5 * time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := supervisor.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeHandshake) || !errors.Is(err, ErrRuntimeDescriptorMismatch) {
+				t.Fatalf("Start() error = %v, want handshake descriptor mismatch", err)
+			}
+			health, healthErr := supervisor.Health(context.Background())
+			if healthErr != nil {
+				t.Fatal(healthErr)
+			}
+			if health.Ready {
+				t.Fatalf("mismatched hello left runtime ready: %#v", health)
 			}
 		})
 	}
@@ -661,7 +755,7 @@ func TestProcessSupervisorTimingMustBeExplicitAndValid(t *testing.T) {
 
 func TestProcessSupervisorRejectsTypedNilHostStreamSink(t *testing.T) {
 	var typedNil *recordingRuntimeStreamSink
-	_, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	_, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
@@ -724,7 +818,7 @@ func TestRuntimeAdmissionPreservesQueueCapacityForOtherPlugins(t *testing.T) {
 }
 
 func TestProcessSupervisorMultiplexesSameShardInvocations(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                RuntimeLimits{WorkerCount: 2, QueueCapacity: 2, PerPluginConcurrency: 2, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1 << 20},
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -737,7 +831,7 @@ func TestProcessSupervisorMultiplexesSameShardInvocations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
@@ -769,7 +863,7 @@ func TestProcessSupervisorMultiplexesSameShardInvocations(t *testing.T) {
 }
 
 func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFull(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                RuntimeLimits{WorkerCount: 1, QueueCapacity: 1, PerPluginConcurrency: 1, ModuleCacheEntries: 1, ModuleCacheSourceBytes: 1 << 20},
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -782,7 +876,7 @@ func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFul
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
@@ -823,7 +917,7 @@ func TestProcessSupervisorControlIPCRemainsAvailableWhenInvocationAdmissionIsFul
 
 func TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime(t *testing.T) {
 	store := observability.NewMemoryStore()
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -837,7 +931,7 @@ func TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -868,7 +962,7 @@ func TestProcessSupervisorDrainsCanceledInvocationWithoutInvalidatingRuntime(t *
 
 func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t *testing.T) {
 	store := observability.NewMemoryStore()
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -885,7 +979,7 @@ func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -931,7 +1025,7 @@ func TestProcessSupervisorRevokeUsesIndependentControlChannelDuringInvocation(t 
 
 func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
 	store := &runtimeDiagnosticSink{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		RuntimePath:           os.Args[0],
@@ -945,7 +1039,7 @@ func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	waitForDiagnostic(t, store, "plugin.runtime.ipc.invalidated")
@@ -960,7 +1054,7 @@ func TestProcessSupervisorHeartbeatInvalidatesStaleRuntime(t *testing.T) {
 }
 
 func TestProcessSupervisorStopWaitsForInvalidatedProcessBeforeRestart(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1014,14 +1108,14 @@ func TestProcessSupervisorStopWaitsForInvalidatedProcessBeforeRestart(t *testing
 		t.Fatalf("Stop() after invalidated process cleanup error = %v", err)
 	}
 
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() after invalidated process cleanup error = %v", err)
 	}
 	stopRuntimeSupervisor(t, supervisor)
 }
 
 func TestProcessSupervisorConcurrentStopWaitersObserveSameExit(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
 		Limits:                DefaultRuntimeLimits(),
 		StreamSink:            &recordingRuntimeStreamSink{},
@@ -1081,7 +1175,7 @@ func TestProcessSupervisorConcurrentStopWaitersObserveSameExit(t *testing.T) {
 }
 
 func TestProcessSupervisorStopMakesGenerationUnavailableBeforeExit(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		RuntimePath:           os.Args[0],
 		Limits:                DefaultRuntimeLimits(),
 		StreamSink:            &recordingRuntimeStreamSink{},
@@ -1123,7 +1217,7 @@ func TestProcessSupervisorStopMakesGenerationUnavailableBeforeExit(t *testing.T)
 	if health.Ready {
 		t.Fatalf("Health() remained ready while Stop() waited for process exit: %#v", health)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); !errors.Is(err, ErrRuntimeNotReady) {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeNotReady) {
 		t.Fatalf("Start() during Stop() error = %v, want %v", err, ErrRuntimeNotReady)
 	}
 	if _, err := supervisor.InvokeWorker(context.Background(), Lease{}, "worker.echo", workerInvocationFixture()); !errors.Is(err, ErrRuntimeNotReady) {
@@ -1149,7 +1243,7 @@ func TestProcessSupervisorStopMakesGenerationUnavailableBeforeExit(t *testing.T)
 
 func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing.T) {
 	store := observability.NewMemoryStore()
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:           DefaultRuntimeLimits(),
 		HandshakeTimeout: 5 * time.Second,
 		RuntimePath:      os.Args[0],
@@ -1167,7 +1261,7 @@ func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -1207,7 +1301,7 @@ func TestProcessSupervisorHeartbeatContinuesWhileIPCRequestIsInFlight(t *testing
 }
 
 func TestProcessSupervisorRejectsRevokeWhenRuntimeIsNotReady(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1337,7 +1431,15 @@ func validateIPCGoldenFixture(fixture ipcGoldenFixture) error {
 		if err := json.Unmarshal(fixture.Frame.Payload, &ack); err != nil {
 			return err
 		}
-		_, err := validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ChannelNonce, ack.Limits, fixture.Frame)
+		runtimeVersion, err := version.ParseSemVer(ack.RuntimeVersion)
+		if err != nil {
+			return err
+		}
+		descriptor, err := NewRuntimeDescriptor(runtimeVersion, ack.ActualTarget, ack.RustIPCVersion, ack.WASMABIVersion, strings.Repeat("a", 64))
+		if err != nil {
+			return err
+		}
+		_, err = validateHelloAck(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ChannelNonce, descriptor, ack.Limits, fixture.Frame)
 		return err
 	case "response":
 		if err := validateIPCResponse(fixture.RequestID, fixture.RuntimeGenerationID, fixture.ResponseFrameType, fixture.Frame); err != nil {
@@ -1572,7 +1674,7 @@ func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
 		content: []byte("wasm bytes"),
 		sha256:  fixtureArtifactSHA,
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1586,7 +1688,7 @@ func TestProcessSupervisorServesBoundArtifactHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -1681,7 +1783,7 @@ func TestProcessSupervisorArtifactHostcallIsInvocationIndependentAndGenerationBo
 func TestProcessSupervisorRoutesLateCompileFlightArtifactAfterInvocationCancellation(t *testing.T) {
 	provider := &notifyingArtifactProvider{called: make(chan ArtifactRequest, 1)}
 	diagnostics := &runtimeDiagnosticSink{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1699,7 +1801,7 @@ func TestProcessSupervisorRoutesLateCompileFlightArtifactAfterInvocationCancella
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -1782,7 +1884,7 @@ func TestProcessSupervisorInvalidatesRuntimeForUnknownCompileFlightLifecycle(t *
 	for _, frameType := range []string{ipcFrameTypeCompileFlightRegister, ipcFrameTypeCompileFlightComplete} {
 		t.Run(frameType, func(t *testing.T) {
 			provider := &recordingArtifactProvider{content: []byte("wasm bytes"), sha256: fixtureArtifactSHA}
-			supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+			supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 				Limits:                DefaultRuntimeLimits(),
 				HandshakeTimeout:      5 * time.Second,
 				HeartbeatInterval:     2 * time.Second,
@@ -1800,7 +1902,7 @@ func TestProcessSupervisorInvalidatesRuntimeForUnknownCompileFlightLifecycle(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+			if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 				t.Fatal(err)
 			}
 			health, err := supervisor.Health(context.Background())
@@ -1864,7 +1966,7 @@ func TestProcessSupervisorFailsOnlyPendingRequestsFromOwningGeneration(t *testin
 
 func TestProcessSupervisorInvalidatesRuntimeForUnknownHostcallParent(t *testing.T) {
 	provider := &recordingArtifactProvider{content: []byte("wasm bytes"), sha256: fixtureArtifactSHA}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1882,7 +1984,7 @@ func TestProcessSupervisorInvalidatesRuntimeForUnknownHostcallParent(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -1917,7 +2019,7 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 			MaxTotalBytes:       4096,
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1931,7 +2033,7 @@ func TestProcessSupervisorValidatesHandleGrantDuringWorkerInvocation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -1978,7 +2080,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 			Usage:     storage.Usage{PluginInstanceID: "plugini_1", StoreID: "workspace", UsageBytes: 5, QuotaBytes: 4096},
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -1993,7 +2095,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2036,7 +2138,7 @@ func TestProcessSupervisorServesStorageFileRequestDuringWorkerInvocation(t *test
 func TestProcessSupervisorDeniesStorageOperationOutsideMethodBrokerAccess(t *testing.T) {
 	validator := &recordingHandleGrantValidator{}
 	files := &recordingStorageFilesBroker{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2051,7 +2153,7 @@ func TestProcessSupervisorDeniesStorageOperationOutsideMethodBrokerAccess(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2094,7 +2196,7 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 			Usage:     storage.Usage{PluginInstanceID: "plugini_1", StoreID: "settings", UsageBytes: 8, QuotaBytes: 4096},
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2109,7 +2211,7 @@ func TestProcessSupervisorServesStorageKVRequestDuringWorkerInvocation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2172,7 +2274,7 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 			Usage: storage.Usage{PluginInstanceID: "plugini_1", StoreID: "db", UsageBytes: 4096, QuotaBytes: 8192},
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2187,7 +2289,7 @@ func TestProcessSupervisorServesStorageSQLiteRequestDuringWorkerInvocation(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2327,7 +2429,7 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 			ExpiresAt:               now.Add(30 * time.Second),
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2342,7 +2444,7 @@ func TestProcessSupervisorMintsNetworkGrantDuringWorkerInvocation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2401,7 +2503,7 @@ func TestProcessSupervisorRejectsNetworkGrantClassifierVersionMismatch(t *testin
 			ExpiresAt:               now.Add(30 * time.Second),
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2416,7 +2518,7 @@ func TestProcessSupervisorRejectsNetworkGrantClassifierVersionMismatch(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2466,7 +2568,7 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 			Body:       []byte(`{"ok":true}`),
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2482,7 +2584,7 @@ func TestProcessSupervisorExecutesNetworkDuringWorkerInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2535,7 +2637,7 @@ func TestProcessSupervisorDeniesHTTPMethodOutsideMethodBrokerAccess(t *testing.T
 	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
 	broker := &recordingConnectivityBroker{}
 	executor := &recordingNetworkExecutor{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2551,7 +2653,7 @@ func TestProcessSupervisorDeniesHTTPMethodOutsideMethodBrokerAccess(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2603,7 +2705,7 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 		streamChunks: [][]byte{[]byte("alpha\n"), []byte("beta\n")},
 	}
 	streams := stream.NewMemoryStore()
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -2619,7 +2721,7 @@ func TestProcessSupervisorStreamsHTTPNetworkDuringWorkerInvocation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -2728,7 +2830,7 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 				RuntimeGenerationID: "runtime_gen_test",
 			},
 		}
-		supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -2744,7 +2846,7 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 			t.Fatalf("Start() error = %v", err)
 		}
 		t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
@@ -2785,7 +2887,7 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 				ExpiresAt:               now.Add(30 * time.Second),
 			},
 		}
-		supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+		supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -2802,7 +2904,7 @@ func TestRuntimeHostcallFailuresRedactPublicErrorsAndRetainDiagnostics(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+		if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 			t.Fatalf("Start() error = %v", err)
 		}
 		t.Cleanup(func() { stopRuntimeSupervisor(t, supervisor) })
@@ -2943,7 +3045,7 @@ func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocatio
 			}
 			executor := &recordingNetworkExecutor{}
 			tc.response(executor)
-			supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+			supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 				Limits:                DefaultRuntimeLimits(),
 				HandshakeTimeout:      5 * time.Second,
 				HeartbeatInterval:     2 * time.Second,
@@ -2959,7 +3061,7 @@ func TestProcessSupervisorExecutesWebSocketAndSocketNetworkDuringWorkerInvocatio
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+			if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 				t.Fatalf("Start() error = %v", err)
 			}
 			health, err := supervisor.Health(context.Background())
@@ -3014,7 +3116,7 @@ func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
 			ExpiresAt:               now.Add(30 * time.Second),
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3029,7 +3131,7 @@ func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -3044,7 +3146,7 @@ func TestProcessSupervisorDeniesNetworkExecuteWithoutExecutor(t *testing.T) {
 }
 
 func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3057,7 +3159,7 @@ func TestProcessSupervisorDeniesNetworkGrantWithoutBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -3080,7 +3182,7 @@ func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 			MaxTotalBytes:       4096,
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3094,7 +3196,7 @@ func TestProcessSupervisorDeniesStorageFileWithoutBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -3121,7 +3223,7 @@ func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
 			MaxTotalBytes:       4096,
 		},
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3135,7 +3237,7 @@ func TestProcessSupervisorDeniesStorageKVWithoutBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -3163,7 +3265,7 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 		},
 	}
 	files := &recordingStorageFilesBroker{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3178,7 +3280,7 @@ func TestProcessSupervisorDeniesStorageFileOutsideWorkerInvocation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -3201,7 +3303,7 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 		},
 	}
 	kv := &recordingStorageKVBroker{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3216,7 +3318,7 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -3230,7 +3332,7 @@ func TestProcessSupervisorDeniesStorageKVOutsideWorkerInvocation(t *testing.T) {
 
 func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T) {
 	broker := &recordingConnectivityBroker{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3244,7 +3346,7 @@ func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -3257,7 +3359,7 @@ func TestProcessSupervisorDeniesNetworkGrantOutsideWorkerInvocation(t *testing.T
 }
 
 func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3271,7 +3373,7 @@ func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.Revoke(context.Background(), "plugini_1", 3); !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -3282,7 +3384,7 @@ func TestProcessSupervisorDeniesHandleGrantOutsideWorkerInvocation(t *testing.T)
 
 func TestProcessSupervisorRejectsInvalidHandleGrantRequestBeforeValidator(t *testing.T) {
 	validator := &recordingHandleGrantValidator{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3296,7 +3398,7 @@ func TestProcessSupervisorRejectsInvalidHandleGrantRequestBeforeValidator(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -3317,7 +3419,7 @@ func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 		content: []byte("wasm bytes"),
 		sha256:  fixtureArtifactSHA,
 	}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3331,7 +3433,7 @@ func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -3348,7 +3450,7 @@ func TestProcessSupervisorDeniesUnboundArtifactHandle(t *testing.T) {
 }
 
 func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3361,7 +3463,7 @@ func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_1"}, "worker.echo", []byte(`{"message":"hello"}`)); !errors.Is(err, ErrRuntimeRequestFailed) {
@@ -3371,7 +3473,7 @@ func TestProcessSupervisorRequiresWorkerInvocationArtifactIdentity(t *testing.T)
 }
 
 func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -3384,7 +3486,7 @@ func TestProcessSupervisorRejectsNonWorkerArtifactPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	payload := []byte(fmt.Sprintf(`{"package_hash":%q,"artifact":"ui/index.html","artifact_sha256":%q,"worker_id":"echo_worker","method":"worker.echo"}`, fixturePackageHash, fixtureArtifactSHA))
@@ -3401,7 +3503,7 @@ func TestProcessSupervisorRejectsMissingPath(t *testing.T) {
 }
 
 func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
@@ -3414,7 +3516,7 @@ func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"})
+	err = supervisor.Start(context.Background(), testRuntimeTarget)
 	if !errors.Is(err, ErrRuntimeHandshake) {
 		t.Fatalf("Start() error = %v, want ErrRuntimeHandshake", err)
 	}
@@ -3428,7 +3530,7 @@ func TestProcessSupervisorFailsClosedOnBadHandshake(t *testing.T) {
 }
 
 func TestProcessSupervisorFailsClosedOnHandshakeNonceMismatch(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
@@ -3441,7 +3543,7 @@ func TestProcessSupervisorFailsClosedOnHandshakeNonceMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"})
+	err = supervisor.Start(context.Background(), testRuntimeTarget)
 	if !errors.Is(err, ErrRuntimeHandshake) {
 		t.Fatalf("Start() error = %v, want ErrRuntimeHandshake", err)
 	}
@@ -3502,10 +3604,16 @@ func runRuntimeClientHelper() {
 	if os.Getenv("REDEVPLUGIN_RUNTIMECLIENT_BAD_NONCE") == "1" {
 		channelNonce = "wrong_channel_nonce"
 	}
+	runtimeVersion := envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_RUNTIME_VERSION", version.RuntimeVersion)
+	actualTarget := Target{
+		OS:   envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET_OS", hello.Target.OS),
+		Arch: envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_TARGET_ARCH", hello.Target.Arch),
+	}
 	payload, _ := json.Marshal(helloAckPayload{
-		RuntimeVersion: version.RuntimeVersion,
-		RustIPCVersion: version.RustIPCVersion,
-		WASMABIVersion: version.WASMABIVersion,
+		RuntimeVersion: runtimeVersion,
+		ActualTarget:   actualTarget,
+		RustIPCVersion: envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_IPC_VERSION", version.RustIPCVersion),
+		WASMABIVersion: envOrDefault("REDEVPLUGIN_RUNTIMECLIENT_ACK_WASM_ABI_VERSION", version.WASMABIVersion),
 		ChannelNonce:   channelNonce,
 		Limits:         hello.Limits,
 	})
@@ -3729,6 +3837,13 @@ func runRuntimeClientHelper() {
 			os.Exit(6)
 		}
 	}
+}
+
+func envOrDefault(key string, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }
 
 type notifyingArtifactProvider struct {

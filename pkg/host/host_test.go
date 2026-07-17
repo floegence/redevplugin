@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/storage"
 	"github.com/floegence/redevplugin/pkg/stream"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 type responseBoundaryContainer struct {
@@ -138,7 +140,7 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 			Audit:                       observabilityStore,
 			Diagnostics:                 observabilityStore,
 			Secrets:                     secrets.NewMemoryStore(),
-			RuntimeManager:              &recordingRuntimeManager{},
+			RuntimeManager:              newRecordingRuntimeManager(),
 			SurfaceCatalog:              &surfaceSink{},
 			Assets:                      pluginpkg.NewMemoryAssetStore(),
 			InstallStages:               installstage.NewMemoryStore(),
@@ -171,7 +173,6 @@ func TestOpenRequiresCompletePlatformDependencies(t *testing.T) {
 		{name: "audit", clear: func(a *Adapters) { a.Audit = nil }},
 		{name: "diagnostics", clear: func(a *Adapters) { a.Diagnostics = nil }},
 		{name: "secrets", clear: func(a *Adapters) { a.Secrets = nil }},
-		{name: "runtime manager", clear: func(a *Adapters) { a.RuntimeManager = nil }},
 		{name: "surface catalog", clear: func(a *Adapters) { a.SurfaceCatalog = nil }},
 		{name: "assets", clear: func(a *Adapters) { a.Assets = nil }},
 		{name: "install stages", clear: func(a *Adapters) { a.InstallStages = nil }},
@@ -752,7 +753,7 @@ func TestInstallReleaseRefResolvesArtifactAndInstallsVerifiedPackage(t *testing.
 
 func TestInstallReleaseRefRejectsSourceSecurityFloorRollbackBeforeArtifactResolution(t *testing.T) {
 	ctx := hostTestContext()
-	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Bytes := buildSignedReleasePackageBytes(t, buildWorkerFixturePackageVersion(t, "1.0.0", "0.0.0-dev"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
 	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
 	v1Policy := sourcePolicyForRelease(v1Ref)
@@ -1886,9 +1887,7 @@ func TestUpdateReleaseRefRejectsDowngradeWhenSourcePolicyBlocks(t *testing.T) {
 
 func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testing.T) {
 	ctx := hostTestContext()
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	metadataVerifier := &recordingReleaseMetadataVerifier{}
 	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official-v1"}}
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
@@ -1898,7 +1897,7 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 		releaseMetadataVerifier: metadataVerifier,
 		runtimeManager:          runtime,
 	})
-	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Bytes := buildSignedReleasePackageBytes(t, buildWorkerFixturePackageVersion(t, "1.0.0", "0.0.0-dev"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
 	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
 	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v1Ref)}
@@ -1912,10 +1911,10 @@ func TestUpdateReleaseRefSwitchesEnabledPluginAndRevokesOldSurfaceToken(t *testi
 	if _, err := h.EnablePlugin(ctx, EnableRequest{PluginInstanceID: installed.PluginInstanceID, Now: now, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)}); err != nil {
 		t.Fatalf("EnablePlugin() error = %v", err)
 	}
-	bootstrap, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "lifecycle.view")
+	bootstrap, gateway := openSurfaceAndMintGateway(t, h, installed.PluginInstanceID, "worker.view")
 
 	verifier.metadata = map[string]string{"trust.key_id": "official-v2"}
-	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Bytes := buildSignedReleasePackageBytes(t, buildWorkerFixturePackageVersion(t, "2.0.0", "0.0.0-dev"), "official")
 	v2Pkg := readTestPackage(t, v2Bytes)
 	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
 	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
@@ -2016,10 +2015,8 @@ func TestUpdateReleaseRefFailureRestoresCurrentRecord(t *testing.T) {
 
 func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T) {
 	ctx := hostTestContext()
-	runtime := &recordingRuntimeManager{
-		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		revokeErr: errors.New("runtime revoke unavailable"),
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.revokeErr = errors.New("runtime revoke unavailable")
 	verifier := &recordingPackageTrustVerifier{trustState: registry.TrustVerified, metadata: map[string]string{"trust.key_id": "official-v1"}}
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
@@ -2028,7 +2025,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 		runtimeManager:     runtime,
 		connectivityBroker: connectivity.NewMemoryBroker(),
 	})
-	v1Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "1.0.0", "Lifecycle"), "official")
+	v1Bytes := buildSignedReleasePackageBytes(t, buildWorkerFixturePackageVersion(t, "1.0.0", "0.0.0-dev"), "official")
 	v1Pkg := readTestPackage(t, v1Bytes)
 	v1Ref := releaseRefForPackage(t, "official", v1Pkg)
 	h.adapters.ReleaseMetadataVerifier = &recordingReleaseMetadataVerifier{}
@@ -2044,7 +2041,7 @@ func TestUpdateReleaseRefRuntimeRevokeFailureRestoresCurrentRecord(t *testing.T)
 	}
 
 	verifier.metadata = map[string]string{"trust.key_id": "official-v2"}
-	v2Bytes := buildSignedReleasePackageBytes(t, buildVersionedLifecyclePackage(t, "2.0.0", "Lifecycle v2"), "official")
+	v2Bytes := buildSignedReleasePackageBytes(t, buildWorkerFixturePackageVersion(t, "2.0.0", "0.0.0-dev"), "official")
 	v2Pkg := readTestPackage(t, v2Bytes)
 	v2Ref := releaseRefForPackage(t, "official", v2Pkg)
 	h.adapters.ReleaseSourcePolicy = &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(v2Ref)}
@@ -2379,13 +2376,9 @@ func TestMintBridgeTokenRejectsCurrentSourcePolicyEpochAdvance(t *testing.T) {
 
 func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
 	ctx := hostTestContext()
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		revokeResult: runtimeclient.RevokeResult{
-			ClosedStorageHandleCount: 1,
-		},
-	}
-	packageBytes := buildSignedReleasePackageBytes(t, buildStorageFixturePackage(t), "official")
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.revokeResult = runtimeclient.RevokeResult{ClosedStorageHandleCount: 1}
+	packageBytes := buildSignedReleasePackageBytes(t, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t), "official")
 	pkg := readTestPackage(t, packageBytes)
 	ref := releaseRefForPackage(t, "official", pkg)
 	sourceResolver := &recordingReleaseSourcePolicyResolver{snapshot: sourcePolicyForRelease(ref)}
@@ -2475,18 +2468,14 @@ func TestCurrentSourcePolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) 
 
 func TestUnsignedLocalPolicyFailureRevokesStorageHandleAndRuntime(t *testing.T) {
 	ctx := hostTestContext()
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		revokeResult: runtimeclient.RevokeResult{
-			ClosedStorageHandleCount: 1,
-		},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.revokeResult = runtimeclient.RevokeResult{ClosedStorageHandleCount: 1}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
 		runtimeManager: runtime,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildStorageFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, buildWorkerStorageSQLiteMemoryHostcallFixturePackage(t))
 	if err != nil {
 		t.Fatalf("ImportLocalPackageBytes() error = %v", err)
 	}
@@ -2639,13 +2628,13 @@ func TestSurfaceBridgeLifecycle(t *testing.T) {
 }
 
 func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
-	runtime := &recordingRuntimeManager{health: runtimeclient.Health{
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_surface",
 		IPCChannelID:        "ipc_surface",
 		ConnectionNonce:     "connection_nonce_surface_123456",
 		Ready:               true,
-	}}
+	})
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -2654,7 +2643,7 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
 	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
-	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(hostTestContext(), h, buildWorkerFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2664,7 +2653,7 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 
 	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceID:         "lifecycle.view",
+		SurfaceID:         "worker.view",
 		SurfaceInstanceID: "surface_runtime_generation",
 
 		Now: now.Add(time.Second), ExpectedManagementRevision: mustManagementRevision(t, h,
@@ -2682,23 +2671,23 @@ func TestOpenSurfaceBindsRuntimeGenerationFromSupervisor(t *testing.T) {
 }
 
 func TestMintBridgeTokenRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
-	runtime := &recordingRuntimeManager{health: runtimeclient.Health{
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_1",
 		IPCChannelID:        "ipc_surface",
 		ConnectionNonce:     "connection_nonce_surface_123456",
 		Ready:               true,
-	}}
+	})
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
 		runtimeManager: runtime,
 	})
 	now := stableRecentTestNow()
-	installed := installAndEnablePlugin(t, h, buildFixturePackage(t))
+	installed := installAndEnablePlugin(t, h, buildWorkerFixturePackage(t))
 	bootstrap, err := h.OpenSurface(hostTestContext(), OpenSurfaceRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
-		SurfaceID:         "lifecycle.view",
+		SurfaceID:         "worker.view",
 		SurfaceInstanceID: "surface_runtime_restart_before_bridge",
 
 		ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID),
@@ -2975,13 +2964,13 @@ func TestCapabilityTargetProjectorMayAddHostDerivedFields(t *testing.T) {
 }
 
 func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.T) {
-	runtime := &recordingRuntimeManager{health: runtimeclient.Health{
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
 		RuntimeInstanceID:   "runtime_surface",
 		RuntimeGenerationID: "runtime_generation_1",
 		IPCChannelID:        "ipc_surface",
 		ConnectionNonce:     "connection_nonce_surface_123456",
 		Ready:               true,
-	}}
+	})
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
@@ -2990,7 +2979,7 @@ func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.
 		capabilityAdapter: capabilityAdapter,
 		runtimeManager:    runtime,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	runtime.health.RuntimeGenerationID = "runtime_generation_2"
 
 	_, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -2999,14 +2988,14 @@ func TestCallPluginMethodRejectsSurfaceAfterRuntimeGenerationChanges(t *testing.
 
 		BridgeChannelID: "bridge_rpc",
 		GatewayToken:    gateway.GatewayToken,
-		Method:          "echo.ping",
+		Method:          "worker.echo",
 		Params:          map[string]any{"message": "hello"},
 	})
 	if !errors.Is(err, bridge.ErrTokenRevoked) {
 		t.Fatalf("CallPluginMethod() after runtime restart error = %v, want %v", err, bridge.ErrTokenRevoked)
 	}
-	if capabilityAdapter.calls != 0 {
-		t.Fatalf("capability adapter calls = %d, want 0", capabilityAdapter.calls)
+	if runtime.calls != 0 {
+		t.Fatalf("runtime calls = %d, want 0", runtime.calls)
 	}
 }
 
@@ -3420,14 +3409,8 @@ func TestCallPluginMethodRequiresGrantedBindingPermissions(t *testing.T) {
 }
 
 func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		revokeResult: runtimeclient.RevokeResult{
-			ClosedSocketCount:        3,
-			ClosedStreamCount:        4,
-			ClosedStorageHandleCount: 5,
-		},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.revokeResult = runtimeclient.RevokeResult{ClosedSocketCount: 3, ClosedStreamCount: 4, ClosedStorageHandleCount: 5}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -3435,7 +3418,17 @@ func TestRevokePermissionRevokesRuntimeCapabilities(t *testing.T) {
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 		runtimeManager:    runtime,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
+	beforeGrant := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
+	if _, err := h.GrantPermission(hostTestContext(), GrantPermissionRequest{
+		PluginInstanceID:           installed.PluginInstanceID,
+		PermissionID:               "read",
+		ExpectedPolicyRevision:     beforeGrant.PolicyRevision,
+		ExpectedManagementRevision: beforeGrant.ManagementRevision,
+		ExpectedRevokeEpoch:        beforeGrant.RevokeEpoch,
+	}); err != nil {
+		t.Fatalf("GrantPermission() error = %v", err)
+	}
 	expected := mustAuthorizationRevisions(t, h, installed.PluginInstanceID)
 	if _, err := h.RevokePermission(hostTestContext(), RevokePermissionRequest{
 		PluginInstanceID:           installed.PluginInstanceID,
@@ -3794,10 +3787,8 @@ func TestRuntimeStreamCloseCannotCompleteCanceledOperation(t *testing.T) {
 }
 
 func TestWorkerOperationCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
 	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -3821,10 +3812,8 @@ func TestWorkerOperationCompletesWhenSynchronousRuntimeInvocationReturns(t *test
 }
 
 func TestMutatingWorkerMarksRuntimeDispatchFailureOutcomeUnknown(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		err:    errors.New("runtime response was lost"),
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.err = errors.New("runtime response was lost")
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 	installed, gateway := installEnableAndMintGateway(t, h, buildMutatingWorkerFixturePackage(t), "worker.view")
 
@@ -3848,10 +3837,8 @@ func TestMutatingWorkerMarksRuntimeDispatchFailureOutcomeUnknown(t *testing.T) {
 }
 
 func TestWorkerSubscriptionCompletesWhenSynchronousRuntimeInvocationReturns(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerSubscriptionFixturePackage(t), "worker.view")
 	result, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -4183,10 +4170,8 @@ func TestDisableTransitionsOpenStreamsAndRevokesStreamTickets(t *testing.T) {
 }
 
 func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
@@ -4300,10 +4285,8 @@ func TestCallPluginMethodDispatchesWorkerRoute(t *testing.T) {
 }
 
 func TestCallPluginMethodWorkerPayloadIncludesEmptyParams(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
@@ -4347,10 +4330,8 @@ func TestMarshalWorkerCanonicalJSONMatchesRuntimeContract(t *testing.T) {
 }
 
 func TestCallPluginMethodWorkerPayloadCarriesHostOnlyStorageGrants(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
@@ -4414,10 +4395,8 @@ func TestCallPluginMethodWorkerRouteRequiresRuntimeManager(t *testing.T) {
 }
 
 func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
@@ -4446,10 +4425,8 @@ func TestCallPluginMethodWorkerRouteFailsClosedAfterDisable(t *testing.T) {
 }
 
 func TestCallPluginMethodWorkerRouteFailsClosedAfterUninstall(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		result: capability.Result{Data: map[string]any{"from_worker": true}},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode:      true,
 		localGenerated:     true,
@@ -4591,14 +4568,12 @@ func TestCallPluginMethodRejectsUnattestedTargetProjectorBusinessError(t *testin
 }
 
 func TestCallPluginMethodRejectsUnattestedRuntimeBusinessError(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{
-			RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1",
-			ConnectionNonce: "connection_nonce_1234567890", Ready: true,
-		},
-		err: &capability.BusinessError{
-			Code: "FORGED", Message: "runtime controlled message", Details: map[string]any{"secret_token": "runtime-secret"},
-		},
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+		RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1",
+		ConnectionNonce: "connection_nonce_1234567890", Ready: true,
+	})
+	runtime.err = &capability.BusinessError{
+		Code: "FORGED", Message: "runtime controlled message", Details: map[string]any{"secret_token": "runtime-secret"},
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, runtimeManager: runtime,
@@ -4650,10 +4625,8 @@ func TestDangerousWorkerAndCoreActionRoutesRequireConfirmation(t *testing.T) {
 	})
 
 	t.Run("worker", func(t *testing.T) {
-		runtime := &recordingRuntimeManager{
-			health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-			result: capability.Result{Data: map[string]any{"from_worker": true}},
-		}
+		runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+		runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 		installed, gateway := installEnableAndMintGateway(t, h, buildDangerousWorkerFixturePackage(t), "worker.view")
 		call := CallMethodRequest{
@@ -5934,10 +5907,8 @@ func TestCancelOperationUsesRouteLocalExecutionRegistration(t *testing.T) {
 	})
 
 	t.Run("worker", func(t *testing.T) {
-		runtime := &recordingRuntimeManager{
-			health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-			result: capability.Result{Data: map[string]any{"from_worker": true}},
-		}
+		runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+		runtime.result = capability.Result{Data: map[string]any{"from_worker": true}}
 		h, _, _ := newTestHostWithOptions(t, testHostOptions{developerMode: true, localGenerated: true, runtimeManager: runtime})
 		installed, gateway := installEnableAndMintGateway(t, h, buildWorkerOperationFixturePackage(t), "worker.view")
 		started, err := h.CallPluginMethod(hostTestContext(), CallMethodRequest{
@@ -7210,9 +7181,7 @@ func TestHostCloseCancelsDurationQuotaJobsBeforeExpiry(t *testing.T) {
 }
 
 func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	capabilityAdapter := &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"result": "done"}}}
 	confirmationIntents := security.NewMemoryConfirmationIntentStore()
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
@@ -7224,15 +7193,15 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 		connectivityBroker:  connectivity.NewMemoryBroker(),
 		confirmationIntents: confirmationIntents,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousRPCFixturePackage(t), "danger.view")
+	installed, gateway := installEnableAndMintGateway(t, h, buildDangerousWorkerFixturePackage(t), "worker.view")
 	call := CallMethodRequest{
 		PluginInstanceID:  installed.PluginInstanceID,
 		SurfaceInstanceID: "surface_rpc",
 
 		BridgeChannelID: "bridge_rpc",
 		GatewayToken:    gateway.GatewayToken,
-		Method:          "danger.run",
-		Params:          map[string]any{"target": "db"},
+		Method:          "worker.echo",
+		Params:          map[string]any{"message": "hello"},
 	}
 	confirmation, err := h.PrepareMethodConfirmation(hostTestContext(), prepareConfirmationRequest(call))
 	if err != nil {
@@ -7281,10 +7250,8 @@ func TestDisableRevokesSurfaceTokensConfirmationIntentsAndRuntime(t *testing.T) 
 
 func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 	ctx := hostTestContext()
-	runtime := &recordingRuntimeManager{
-		health:    runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		revokeErr: errors.New("runtime pipe closed"),
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.revokeErr = errors.New("runtime pipe closed")
 	connectivityBroker := connectivity.NewMemoryBroker()
 	diagnostics := &diagnosticSink{}
 	h, surfaces, _ := newTestHostWithOptions(t, testHostOptions{
@@ -7294,7 +7261,7 @@ func TestDisableFailsClosedWhenRuntimeRevokeFails(t *testing.T) {
 		connectivityBroker: connectivityBroker,
 		diagnostics:        diagnostics,
 	})
-	installed, err := ImportLocalPackageBytes(ctx, h, buildNetworkFixturePackage(t))
+	installed, err := ImportLocalPackageBytes(ctx, h, buildWorkerNetworkFixturePackage(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7919,7 +7886,7 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 		ConfirmationIntents:         security.NewMemoryConfirmationIntentStore(),
 		Streams:                     stream.NewMemoryStore(),
 		Secrets:                     secrets.NewMemoryStore(),
-		RuntimeManager:              &recordingRuntimeManager{},
+		RuntimeManager:              newRecordingRuntimeManager(),
 		CoreActions:                 &recordingCoreActionAdapter{},
 	})
 	if err != nil {
@@ -7973,14 +7940,8 @@ func TestRefreshEnabledPluginsRestoresRuntimeState(t *testing.T) {
 }
 
 func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		revokeResult: runtimeclient.RevokeResult{
-			ClosedSocketCount:        8,
-			ClosedStreamCount:        9,
-			ClosedStorageHandleCount: 10,
-		},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	runtime.revokeResult = runtimeclient.RevokeResult{ClosedSocketCount: 8, ClosedStreamCount: 9, ClosedStorageHandleCount: 10}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:     true,
 		localGenerated:    true,
@@ -7988,7 +7949,7 @@ func TestUninstallRevokesSurfaceTokensAndRuntime(t *testing.T) {
 		capabilityID:      "example.capability.echo",
 		capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"ok": true}}},
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	uninstalled, err := h.UninstallPlugin(hostTestContext(), UninstallRequest{PluginInstanceID: installed.PluginInstanceID, DeleteData: true, ExpectedManagementRevision: mustManagementRevision(t, h, installed.PluginInstanceID)})
 	if err != nil {
 		t.Fatalf("UninstallPlugin() error = %v", err)
@@ -8540,6 +8501,7 @@ type testHostOptions struct {
 	streams                 stream.Store
 	runtimeManager          runtimeclient.Manager
 	runtimeManagerFactory   func(testRuntimeManagerDependencies) (runtimeclient.Manager, error)
+	withoutRuntimeManager   bool
 	secrets                 SecretStoreAdapter
 	audit                   AuditSink
 	diagnostics             DiagnosticsSink
@@ -8709,8 +8671,8 @@ func newTestHostWithOptions(t *testing.T, opts testHostOptions) (*Host, *surface
 			t.Fatal(err)
 		}
 	}
-	if runtimeManager == nil {
-		runtimeManager = &recordingRuntimeManager{}
+	if runtimeManager == nil && !opts.withoutRuntimeManager {
+		runtimeManager = newRecordingRuntimeManager()
 	}
 	host, err := Open(hostTestContext(), Adapters{
 		Policy: policyAdapter{
@@ -10125,7 +10087,7 @@ func workerFixtureManifestJSON() string {
 			"display_name": "Worker",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
+			"min_runtime_version": "0.0.0-dev",
 			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
@@ -10163,7 +10125,7 @@ func workerNetworkFixtureManifestJSON() string {
 			"display_name": "Worker Network",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
+			"min_runtime_version": "0.0.0-dev",
 			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
@@ -10229,7 +10191,7 @@ func workerNetworkTransportFixtureManifestJSON(transport connectivity.Transport)
 			"display_name": "Worker Network Transport",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
+			"min_runtime_version": "0.0.0-dev",
 			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
@@ -10271,7 +10233,7 @@ func workerStorageFixtureManifestJSON() string {
 			"display_name": "Worker Storage",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
+			"min_runtime_version": "0.0.0-dev",
 			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
@@ -10321,7 +10283,7 @@ func workerStorageKVFixtureManifestJSON() string {
 			"display_name": "Worker Storage KV",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
+			"min_runtime_version": "0.0.0-dev",
 			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
@@ -10371,7 +10333,7 @@ func workerStorageSQLiteFixtureManifestJSON() string {
 			"display_name": "Worker Storage SQLite",
 			"version": "1.0.0",
 			"api_version": "plugin-v1",
-			"min_runtime_version": "0.1.0",
+			"min_runtime_version": "0.0.0-dev",
 			"ui_protocol_version": "plugin-ui-v5"
 		},
 		"surfaces": [
@@ -10990,7 +10952,7 @@ func releaseForPackage(ref PluginReleaseRef, pkg pluginpkg.Package) PluginPackag
 		},
 		Compatibility: &ReleaseCompatibility{
 			MinReDevPluginVersion: "0.1.0",
-			MinRuntimeVersion:     "0.1.0",
+			MinRuntimeVersion:     pkg.Manifest.Plugin.MinRuntimeVersion,
 			UIProtocolVersion:     "plugin-ui-v5",
 		},
 	}
@@ -11506,12 +11468,18 @@ func (s *failingSecretListStore) List(context.Context, secrets.ListRequest) ([]s
 
 type recordingRuntimeManager struct {
 	calls             int
+	preflightCalls    int
 	startCalls        int
 	stopCalls         int
 	revokeCalls       int
 	startedTarget     runtimeclient.Target
 	health            runtimeclient.Health
+	descriptor        runtimeclient.RuntimeDescriptor
+	bindingDescriptor runtimeclient.RuntimeDescriptor
 	result            capability.Result
+	preflightErr      error
+	healthErr         error
+	bindErr           error
 	err               error
 	startErr          error
 	stopErr           error
@@ -11525,6 +11493,46 @@ type recordingRuntimeManager struct {
 	lastRevokeEpoch   uint64
 	invokeContext     context.Context
 	hostServices      runtimeclient.RuntimeHostServices
+}
+
+func newRecordingRuntimeManager() *recordingRuntimeManager {
+	descriptor := hostTestRuntimeDescriptor()
+	return &recordingRuntimeManager{
+		descriptor: descriptor,
+		health: runtimeclient.Health{
+			RuntimeInstanceID:   "runtime_test",
+			RuntimeGenerationID: "runtime_gen_test",
+			IPCChannelID:        "ipc_test",
+			ConnectionNonce:     "connection_nonce_test_1234567890",
+			Descriptor:          descriptor,
+			Ready:               true,
+		},
+	}
+}
+
+func newRecordingRuntimeManagerWithHealth(health runtimeclient.Health) *recordingRuntimeManager {
+	manager := newRecordingRuntimeManager()
+	health.Descriptor = manager.descriptor
+	manager.health = health
+	return manager
+}
+
+func hostTestRuntimeDescriptor() runtimeclient.RuntimeDescriptor {
+	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	if err != nil {
+		panic(err)
+	}
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(
+		runtimeVersion,
+		runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH},
+		version.RustIPCVersion,
+		version.WASMABIVersion,
+		strings.Repeat("a", 64),
+	)
+	if err != nil {
+		panic(err)
+	}
+	return descriptor
 }
 
 func surfaceIDForMethod(method string) string {
@@ -11739,15 +11747,29 @@ func (s *recordingSecretStore) List(_ context.Context, req secrets.ListRequest) 
 func (r *recordingRuntimeManager) Start(_ context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	r.startCalls++
 	r.startedTarget = target
-	if r.health == (runtimeclient.Health{}) {
-		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
-	}
 	return r.managerHealth(), r.startErr
+}
+
+func (r *recordingRuntimeManager) Preflight(_ context.Context, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+	r.preflightCalls++
+	if r.preflightErr != nil {
+		return runtimeclient.RuntimeDescriptor{}, r.preflightErr
+	}
+	if r.descriptor.Version().String() == "" {
+		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorInvalid
+	}
+	if r.descriptor.Target() != target {
+		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorMismatch
+	}
+	return r.descriptor, nil
 }
 
 func (r *recordingRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
 	if services.StreamSink == nil {
 		return runtimeclient.ErrRuntimeHostServicesInvalid
+	}
+	if r.descriptor.Version().String() == "" || r.health.Descriptor != r.descriptor {
+		return runtimeclient.ErrRuntimeDescriptorInvalid
 	}
 	r.hostServices = services
 	return nil
@@ -11764,19 +11786,23 @@ func (r *recordingRuntimeManager) Stop(context.Context) error {
 }
 
 func (r *recordingRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {
-	if r.health == (runtimeclient.Health{}) {
-		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
+	if r.healthErr != nil {
+		return runtimeclient.ManagerHealth{}, r.healthErr
 	}
 	return r.managerHealth(), nil
 }
 
 func (r *recordingRuntimeManager) managerHealth() runtimeclient.ManagerHealth {
-	return runtimeclient.ManagerHealth{Ready: r.health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: r.health}}}
+	return runtimeclient.ManagerHealth{Ready: r.health.Ready, Descriptor: r.health.Descriptor, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: r.health}}}
 }
 
 func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
-	if r.health == (runtimeclient.Health{}) {
-		r.health = runtimeclient.Health{RuntimeInstanceID: "runtime_test", RuntimeGenerationID: "runtime_gen_test", IPCChannelID: "ipc_test", ConnectionNonce: "connection_nonce_test_1234567890", Ready: true}
+	if r.bindErr != nil {
+		return runtimeclient.RuntimeBinding{}, r.bindErr
+	}
+	descriptor := r.health.Descriptor
+	if r.bindingDescriptor.Version().String() != "" {
+		descriptor = r.bindingDescriptor
 	}
 	return runtimeclient.RuntimeBinding{
 		RuntimeShardID:      "runtime_shard_00",
@@ -11784,6 +11810,7 @@ func (r *recordingRuntimeManager) BindPlugin(context.Context, string) (runtimecl
 		RuntimeGenerationID: r.health.RuntimeGenerationID,
 		IPCChannelID:        r.health.IPCChannelID,
 		ConnectionNonce:     r.health.ConnectionNonce,
+		Descriptor:          descriptor,
 	}, nil
 }
 

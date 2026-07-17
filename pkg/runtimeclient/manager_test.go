@@ -3,6 +3,7 @@ package runtimeclient
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,7 +19,7 @@ func TestProcessManagerStartsEveryShardAndBindsDeterministically(t *testing.T) {
 		{health: testShardHealth("c")},
 	}
 	manager := testProcessManager(t, shards)
-	health, err := manager.Start(context.Background(), Target{OS: "test", Arch: "test"})
+	health, err := manager.Start(context.Background(), testRuntimeTarget)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -58,7 +59,7 @@ func TestProcessManagerStartRollsBackStartedShards(t *testing.T) {
 		{health: testShardHealth("c")},
 	}
 	manager := testProcessManager(t, shards)
-	if _, err := manager.Start(context.Background(), Target{}); !errors.Is(err, startFailure) {
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); !errors.Is(err, startFailure) {
 		t.Fatalf("Start() error = %v, want %v", err, startFailure)
 	}
 	if shards[0].stopCalls.Load() != 1 {
@@ -84,9 +85,58 @@ func TestProcessManagerStartReportsUnknownWhenRollbackFails(t *testing.T) {
 		{health: testShardHealth("b"), startErr: startFailure},
 	}
 	manager := testProcessManager(t, shards)
-	_, err := manager.Start(context.Background(), Target{})
+	_, err := manager.Start(context.Background(), testRuntimeTarget)
 	if !errors.Is(err, startFailure) || !errors.Is(err, rollbackFailure) || !errors.Is(err, ErrManagerLifecycleOutcomeUnknown) {
 		t.Fatalf("Start() error = %v, want start, rollback, and unknown outcome errors", err)
+	}
+}
+
+func TestProcessManagerPreflightRejectsShardDescriptorDrift(t *testing.T) {
+	first := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
+	second := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("b", 64))
+	manager := testProcessManager(t, []*fakeProcessShard{
+		{health: testShardHealth("a"), descriptor: first},
+		{health: testShardHealth("b"), descriptor: second},
+	})
+
+	if _, err := manager.Preflight(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeDescriptorMismatch) {
+		t.Fatalf("Preflight() error = %v, want ErrRuntimeDescriptorMismatch", err)
+	}
+}
+
+func TestProcessManagerPreflightRejectsDescriptorForDifferentTarget(t *testing.T) {
+	wrongTarget := Target{OS: "linux", Arch: "amd64"}
+	manager := testProcessManager(t, []*fakeProcessShard{{
+		health:     testShardHealth("a"),
+		descriptor: testRuntimeDescriptor(wrongTarget, strings.Repeat("a", 64)),
+	}})
+
+	if _, err := manager.Preflight(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeDescriptorMismatch) {
+		t.Fatalf("Preflight() error = %v, want ErrRuntimeDescriptorMismatch", err)
+	}
+}
+
+func TestProcessManagerStartRejectsReadyShardDescriptorMismatch(t *testing.T) {
+	configured := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
+	running := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("b", 64))
+	shard := &fakeProcessShard{
+		descriptor: configured,
+		health: Health{
+			RuntimeInstanceID:   "instance_a",
+			RuntimeGenerationID: "generation_a",
+			IPCChannelID:        "ipc_a",
+			ConnectionNonce:     "nonce_a",
+			Descriptor:          running,
+			Ready:               true,
+		},
+	}
+	manager := testProcessManager(t, []*fakeProcessShard{shard})
+
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); !errors.Is(err, ErrRuntimeDescriptorMismatch) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeDescriptorMismatch", err)
+	}
+	if shard.startCalls.Load() != 0 {
+		t.Fatalf("Start() calls = %d, want zero for mismatched ready shard", shard.startCalls.Load())
 	}
 }
 
@@ -96,7 +146,7 @@ func TestProcessManagerDoesNotRemapFailedShard(t *testing.T) {
 		{health: testShardHealth("b")},
 	}
 	manager := testProcessManager(t, shards)
-	if _, err := manager.Start(context.Background(), Target{}); err != nil {
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	pluginInstanceID := pluginForShard(t, len(shards), 1)
@@ -122,7 +172,7 @@ func TestProcessManagerDoesNotRemapFailedShard(t *testing.T) {
 func TestProcessManagerRejectsStaleBindingAndLease(t *testing.T) {
 	shards := []*fakeProcessShard{{health: testShardHealth("a")}}
 	manager := testProcessManager(t, shards)
-	if _, err := manager.Start(context.Background(), Target{}); err != nil {
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	binding, err := manager.BindPlugin(context.Background(), "plugini_1")
@@ -148,6 +198,29 @@ func TestProcessManagerRejectsStaleBindingAndLease(t *testing.T) {
 	}
 }
 
+func TestProcessManagerRejectsStaleBindingDescriptorBeforeDispatch(t *testing.T) {
+	shard := &fakeProcessShard{health: testShardHealth("a")}
+	manager := testProcessManager(t, []*fakeProcessShard{shard})
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := manager.BindPlugin(context.Background(), "plugini_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseForBinding("plugini_1", binding)
+	shard.mu.Lock()
+	shard.health.Descriptor = testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("b", 64))
+	shard.mu.Unlock()
+
+	if _, err := manager.InvokeWorker(context.Background(), binding, lease, "worker.echo", nil); !errors.Is(err, ErrRuntimeBindingInvalid) {
+		t.Fatalf("InvokeWorker() error = %v, want ErrRuntimeBindingInvalid", err)
+	}
+	if shard.invokeCalls.Load() != 0 {
+		t.Fatalf("InvokeWorker() dispatch calls = %d, want zero", shard.invokeCalls.Load())
+	}
+}
+
 func TestProcessManagerRoutesDifferentShardsWithoutGlobalBlocking(t *testing.T) {
 	slowStarted := make(chan struct{})
 	releaseSlow := make(chan struct{})
@@ -162,7 +235,7 @@ func TestProcessManagerRoutesDifferentShardsWithoutGlobalBlocking(t *testing.T) 
 		}},
 	}
 	manager := testProcessManager(t, shards)
-	if _, err := manager.Start(context.Background(), Target{}); err != nil {
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	slowPlugin := pluginForShard(t, len(shards), 0)
@@ -224,7 +297,7 @@ func TestProcessManagerTerminatesOwningShardWhenRevokeFails(t *testing.T) {
 	revokeFailure := errors.New("revoke acknowledgement lost")
 	shards := []*fakeProcessShard{{health: testShardHealth("a"), revokeErr: revokeFailure}}
 	manager := testProcessManager(t, shards)
-	if _, err := manager.Start(context.Background(), Target{}); err != nil {
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	result, err := manager.Revoke(context.Background(), "plugini_1", 4)
@@ -244,7 +317,7 @@ func TestProcessManagerReturnsRevokeAndTerminationFailures(t *testing.T) {
 	stopFailure := errors.New("termination failed")
 	shards := []*fakeProcessShard{{health: testShardHealth("a"), revokeErr: revokeFailure, stopErr: stopFailure}}
 	manager := testProcessManager(t, shards)
-	if _, err := manager.Start(context.Background(), Target{}); err != nil {
+	if _, err := manager.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatal(err)
 	}
 	_, err := manager.Revoke(context.Background(), "plugini_1", 4)
@@ -269,6 +342,7 @@ func TestProcessManagerBindsRequiredHostServicesBeforeCreatingShards(t *testing.
 		ShardCount: 2,
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           "redevplugin-runtime",
+			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -309,6 +383,7 @@ func TestProcessManagerRejectsTypedNilHostStreamSinkAndAllowsRetry(t *testing.T)
 		ShardCount: 1,
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           "redevplugin-runtime",
+			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -338,11 +413,21 @@ func TestProcessManagerRejectsTypedNilHostStreamSinkAndAllowsRetry(t *testing.T)
 
 func testProcessManager(t *testing.T, shards []*fakeProcessShard) *ProcessManager {
 	t.Helper()
+	configuredDescriptor := testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64))
+	for _, shard := range shards {
+		if shard.descriptor.Version().String() == "" {
+			shard.descriptor = configuredDescriptor
+		}
+		if shard.health.Descriptor.Version().String() == "" {
+			shard.health.Descriptor = shard.descriptor
+		}
+	}
 	next := 0
 	manager, err := newProcessManager(ProcessManagerOptions{
 		ShardCount: len(shards),
 		Supervisor: ProcessSupervisorOptions{
 			RuntimePath:           "redevplugin-runtime",
+			Descriptor:            testRuntimeDescriptor(testRuntimeTarget, strings.Repeat("a", 64)),
 			Limits:                DefaultRuntimeLimits(),
 			HandshakeTimeout:      5 * time.Second,
 			HeartbeatInterval:     2 * time.Second,
@@ -395,17 +480,19 @@ func leaseForBinding(pluginInstanceID string, binding RuntimeBinding) Lease {
 }
 
 type fakeProcessShard struct {
-	mu          sync.Mutex
-	health      Health
-	startErr    error
-	stopErr     error
-	revokeErr   error
-	invoke      func(context.Context) ([]byte, error)
-	stop        func()
-	startCalls  atomic.Int64
-	stopCalls   atomic.Int64
-	invokeCalls atomic.Int64
-	revokeCalls atomic.Int64
+	mu           sync.Mutex
+	health       Health
+	descriptor   RuntimeDescriptor
+	preflightErr error
+	startErr     error
+	stopErr      error
+	revokeErr    error
+	invoke       func(context.Context) ([]byte, error)
+	stop         func()
+	startCalls   atomic.Int64
+	stopCalls    atomic.Int64
+	invokeCalls  atomic.Int64
+	revokeCalls  atomic.Int64
 }
 
 type recordingRuntimeStreamSink struct{}
@@ -429,8 +516,21 @@ func (s *fakeProcessShard) Start(context.Context, Target) error {
 	}
 	s.mu.Lock()
 	s.health.Ready = true
+	s.health.Descriptor = s.descriptor
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *fakeProcessShard) Preflight(_ context.Context, target Target) (RuntimeDescriptor, error) {
+	if s.preflightErr != nil {
+		return RuntimeDescriptor{}, s.preflightErr
+	}
+	descriptor := s.descriptor
+	if descriptor.Version().String() == "" {
+		descriptor = testRuntimeDescriptor(target, strings.Repeat("a", 64))
+	}
+	s.descriptor = descriptor
+	return descriptor, nil
 }
 
 func (s *fakeProcessShard) Stop(context.Context) error {

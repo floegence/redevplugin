@@ -26,15 +26,7 @@
             "additionalProperties": false,
             "required": ["target", "host_process_id", "host_ipc_version", "host_wasm_abi", "started_unix_nano", "channel_nonce", "runtime_lease_public_keys", "limits"],
             "properties": {
-              "target": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["os", "arch"],
-                "properties": {
-                  "os": { "type": "string", "minLength": 1 },
-                  "arch": { "type": "string", "minLength": 1 }
-                }
-              },
+              "target": { "$ref": "#/$defs/runtime_target" },
               "host_process_id": { "type": "integer", "minimum": 1 },
               "host_ipc_version": { "const": "rust-ipc-v3" },
               "host_wasm_abi": { "const": "redevplugin-wasm-worker-v2" },
@@ -69,9 +61,10 @@
           "payload": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["runtime_version", "rust_ipc_version", "wasm_abi_version", "channel_nonce", "limits"],
+            "required": ["runtime_version", "actual_target", "rust_ipc_version", "wasm_abi_version", "channel_nonce", "limits"],
             "properties": {
-              "runtime_version": { "type": "string", "minLength": 1 },
+              "runtime_version": { "$ref": "#/$defs/semver" },
+              "actual_target": { "$ref": "#/$defs/runtime_target" },
               "rust_ipc_version": { "const": "rust-ipc-v3" },
               "wasm_abi_version": { "const": "redevplugin-wasm-worker-v2" },
               "channel_nonce": { "type": "string", "minLength": 16 },
@@ -398,6 +391,19 @@
     }
   ],
   "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "runtime_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": { "enum": ["darwin", "linux"] },
+        "arch": { "enum": ["amd64", "arm64"] }
+      }
+    },
     "runtime_limits": {
       "type": "object",
       "description": "Route capacities are derived exactly from negotiated limits: active hostcall routes = worker_count, canceled hostcall retention = worker_count + queue_capacity, and compile-flight artifact routes = worker_count.",

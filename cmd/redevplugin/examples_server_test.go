@@ -144,6 +144,9 @@ func TestExamplesWeatherPluginFetchesLiveForecast(t *testing.T) {
 	var pluginHost *host.Host
 	select {
 	case pluginHost = <-hostReady:
+	case err := <-serverResult:
+		cancel()
+		t.Fatalf("examples server failed before Host readiness: %v", err)
 	case <-time.After(20 * time.Second):
 		t.Fatal("examples Host did not become ready")
 	}
@@ -231,13 +234,16 @@ type hostPluginRecord struct {
 }
 
 func TestExamplesHealthHandlerReadsLiveRuntimeHealth(t *testing.T) {
+	descriptor := mustDescribeCommandRuntime(t, os.Args[0])
 	runtimeHealth := &examplesRuntimeHealthStub{health: runtimeclient.ManagerHealth{
-		Ready: true,
+		Ready:      true,
+		Descriptor: descriptor,
 		Shards: []runtimeclient.ShardHealth{{
 			RuntimeShardID: "runtime_shard_00",
 			Health: runtimeclient.Health{
 				Ready:               true,
 				RuntimeGenerationID: "runtime_generation_1",
+				Descriptor:          descriptor,
 			},
 		}},
 	}}
@@ -398,6 +404,9 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 	}()
 	select {
 	case <-ready:
+	case err := <-result:
+		cancel()
+		t.Fatalf("first examples server failed before Host readiness: %v", err)
 	case <-time.After(20 * time.Second):
 		cancel()
 		t.Fatal("first examples Host did not become ready")
@@ -415,6 +424,11 @@ func primeExamplesPersistentState(t *testing.T, stateRoot string, runtimePath st
 
 func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	t.Helper()
+	const runtimeVersion = "0.5.0"
+	previousRuntimeVersion := version.RuntimeVersion
+	version.RuntimeVersion = runtimeVersion
+	t.Cleanup(func() { version.RuntimeVersion = previousRuntimeVersion })
+
 	cargo := "cargo"
 	if _, err := exec.LookPath(cargo); err != nil {
 		home, homeErr := os.UserHomeDir()
@@ -428,7 +442,7 @@ func buildExamplesRuntime(t *testing.T, repositoryRoot string) string {
 	}
 	command := exec.Command(cargo, "build", "-p", "redevplugin-runtime")
 	command.Dir = repositoryRoot
-	command.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
+	command.Env = append(os.Environ(), "CARGO_TERM_COLOR=never", "REDEVPLUGIN_RUNTIME_VERSION="+runtimeVersion)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cargo build -p redevplugin-runtime failed: %v\n%s", err, output)
 	}

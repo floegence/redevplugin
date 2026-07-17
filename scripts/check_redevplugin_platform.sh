@@ -77,15 +77,18 @@ export GOWORK=off
   go run ./cmd/redevplugin validate "$tmp_scaffold_dir/manifest.json" >/dev/null
   go run ./cmd/redevplugin package "$tmp_scaffold_dir/dist" "$tmp_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_package" >/dev/null
+  rm -f "$tmp_fixture_package"
+  go run ./cmd/redevplugin package testdata/generated_plugins/minimal "$tmp_fixture_package" >/dev/null
+  go run ./cmd/redevplugin validate "$tmp_fixture_package" >/dev/null
   go run ./cmd/redevplugin keygen test-key "$tmp_private_key" "$tmp_public_key" >/dev/null
-  go run ./cmd/redevplugin sign "$tmp_package" "$tmp_private_key" "$tmp_signed_package" >/dev/null
+  go run ./cmd/redevplugin sign "$tmp_fixture_package" "$tmp_private_key" "$tmp_signed_package" >/dev/null
   go run ./cmd/redevplugin validate "$tmp_signed_package" | grep -q '"signed": true'
   go run ./cmd/redevplugin install-verified "$tmp_signed_package" "$tmp_public_key" | grep -q '"trust_state": "verified"'
-  go run ./cmd/redevplugin install-local "$tmp_package" >/dev/null
-  go run ./cmd/redevplugin enable "$tmp_package" >/dev/null
-  go run ./cmd/redevplugin disable "$tmp_package" >/dev/null
-  go run ./cmd/redevplugin uninstall "$tmp_package" >/dev/null
-  go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_package" | grep -q '"enable_state": "disabled"'
+  go run ./cmd/redevplugin install-local "$tmp_fixture_package" >/dev/null
+  go run ./cmd/redevplugin enable "$tmp_fixture_package" >/dev/null
+  go run ./cmd/redevplugin disable "$tmp_fixture_package" >/dev/null
+  go run ./cmd/redevplugin uninstall "$tmp_fixture_package" >/dev/null
+  go run ./cmd/redevplugin dev-install "$tmp_dev_state_root" "$tmp_fixture_package" | grep -q '"enable_state": "disabled"'
   test -f "$tmp_dev_state_root/registry.sqlite"
   test -d "$tmp_dev_state_root/plugin-data"
   test -f "$tmp_dev_state_root/secrets.sqlite"
@@ -95,7 +98,7 @@ export GOWORK=off
   fi
   go run ./cmd/redevplugin dev-enable "$tmp_dev_state_root" | grep -q '"enable_state": "enabled"'
   go run ./cmd/redevplugin inspect-data "$tmp_dev_state_root" | grep -q '"binding_count": 1'
-  dev_open_output=$(go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "com.example.smoke.view")
+  dev_open_output=$(go run ./cmd/redevplugin dev-open "$tmp_dev_state_root" "minimal.view")
   grep -q '"surface_instance_id":' <<<"$dev_open_output"
   grep -q '"bridge_nonce":' <<<"$dev_open_output"
   grep -q '"asset_ticket_id":' <<<"$dev_open_output"

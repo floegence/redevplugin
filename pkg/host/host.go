@@ -93,6 +93,8 @@ var (
 	ErrPluginTrustUnavailable        = errors.New("plugin trust is unavailable")
 	ErrPluginTrustDenied             = errors.New("plugin trust does not allow execution")
 	ErrPluginUIProtocolUnsupported   = errors.New("plugin UI protocol is unsupported")
+	ErrPluginRuntimeNotConfigured    = errors.New("plugin runtime is not configured")
+	ErrPluginRuntimeIncompatible     = errors.New("plugin runtime is incompatible")
 	ErrSecurityEventPersistence      = errors.New("plugin security event persistence failed")
 	ErrHostClosed                    = errors.New("plugin host is closed")
 )
@@ -1101,9 +1103,6 @@ func Open(ctx context.Context, adapters Adapters) (*Host, error) {
 	if adapters.Secrets == nil {
 		return nil, errors.New("secret store is required")
 	}
-	if adapters.RuntimeManager == nil {
-		return nil, errors.New("runtime manager is required")
-	}
 	if adapters.SurfaceCatalog == nil {
 		return nil, errors.New("surface catalog sink is required")
 	}
@@ -1169,11 +1168,13 @@ func Open(ctx context.Context, adapters Adapters) (*Host, error) {
 	if host.executions.beginTerminalMaintenance(maintenanceNow) {
 		host.executions.finishTerminalMaintenance()
 	}
-	if err := host.adapters.RuntimeManager.BindHostServices(runtimeclient.RuntimeHostServices{
-		StreamSink: hostRuntimeStreamSink{executions: host.executions},
-	}); err != nil {
-		lifecycleCancel()
-		return nil, fmt.Errorf("bind runtime manager host services: %w", err)
+	if host.adapters.RuntimeManager != nil {
+		if err := host.adapters.RuntimeManager.BindHostServices(runtimeclient.RuntimeHostServices{
+			StreamSink: hostRuntimeStreamSink{executions: host.executions},
+		}); err != nil {
+			lifecycleCancel()
+			return nil, fmt.Errorf("bind runtime manager host services: %w", err)
+		}
 	}
 	return host, nil
 }
@@ -1315,9 +1316,13 @@ func (h *Host) OpenSurface(ctx context.Context, req OpenSurfaceRequest) (bridge.
 			return bridge.SurfaceBootstrap{}, err
 		}
 	}
-	runtimeGenerationID, err := h.currentRuntimeGeneration(ctx, record.PluginInstanceID)
-	if err != nil {
-		return bridge.SurfaceBootstrap{}, err
+	runtimeGenerationID := h.surfaceGenerationID
+	if pluginHasWorkers(record.Manifest) {
+		binding, err := h.bindCompatibleWorkerRuntime(ctx, record)
+		if err != nil {
+			return bridge.SurfaceBootstrap{}, err
+		}
+		runtimeGenerationID = binding.RuntimeGenerationID
 	}
 	bootstrap, err := h.surfaceTokens.OpenSurface(bridge.OpenSurfaceRequest{
 		PluginID:             record.PluginID,
@@ -2280,6 +2285,13 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 	} else if !errors.Is(err, registry.ErrNotFound) {
 		return registry.PluginRecord{}, err
 	}
+	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	stage, err := h.createInstallStage(ctx, installstage.ActionInstall, pkg, pluginInstanceID, trustInput.stageRequestedTrust(), now)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -2305,6 +2317,7 @@ func (h *Host) installResolvedPackage(ctx context.Context, pkg pluginpkg.Package
 		return registry.PluginRecord{}, err
 	}
 	record := packageRecord(pkg, trustAssessment, pluginInstanceID, metadata, capabilityPins)
+	record.RuntimeRequirement = runtimeRequirement
 	if trustInput.LocalImport {
 		record.LocalImportProvenance = localImportProvenance(now)
 	}
@@ -2398,6 +2411,13 @@ func (h *Host) UpdateReleaseRef(ctx context.Context, req UpdateReleaseRefRequest
 }
 
 func (h *Host) updateResolvedPackage(ctx context.Context, current registry.PluginRecord, pkg pluginpkg.Package, trustInput packageTrustInput, now time.Time, baseMetadata map[string]string) (registry.PluginRecord, error) {
+	runtimeRequirement, err := runtimeRequirementForPackage(pkg.Manifest, trustInput)
+	if err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.preflightWorkerRuntime(ctx, registry.PluginRecord{Manifest: pkg.Manifest, RuntimeRequirement: runtimeRequirement}); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	stage, err := h.createInstallStage(ctx, installstage.ActionUpdate, pkg, current.PluginInstanceID, trustInput.stageRequestedTrust(), now)
 	if err != nil {
 		return registry.PluginRecord{}, err
@@ -2413,6 +2433,7 @@ func (h *Host) updateResolvedPackage(ctx context.Context, current registry.Plugi
 	metadata := cloneStringMap(trustAssessment.Metadata)
 	metadata = mergeStringMap(baseMetadata, metadata)
 	next := packageRecord(pkg, trustAssessment, current.PluginInstanceID, metadata, capabilityPins)
+	next.RuntimeRequirement = runtimeRequirement
 	if trustInput.LocalImport {
 		next.LocalImportProvenance = localImportProvenance(now)
 	}
@@ -2707,8 +2728,8 @@ func validateReleaseRef(ref PluginReleaseRef) error {
 	if strings.TrimSpace(ref.PluginID) == "" {
 		return fmt.Errorf("%w: plugin_id is required", ErrReleaseRefVerificationFailed)
 	}
-	if strings.TrimSpace(ref.Version) == "" {
-		return fmt.Errorf("%w: version is required", ErrReleaseRefVerificationFailed)
+	if _, err := version.ParseSemVer(ref.Version); err != nil {
+		return fmt.Errorf("%w: version is invalid: %v", ErrReleaseRefVerificationFailed, err)
 	}
 	return validateHashSet("release_ref.expected_hashes", ref.ExpectedHashes)
 }
@@ -3166,8 +3187,10 @@ func validateReleaseHostRequirements(requirements []HostRequirement) error {
 			return fmt.Errorf("%w: %s.host_id is duplicated", ErrReleaseRefVerificationFailed, prefix)
 		}
 		seenHosts[hostID] = struct{}{}
-		if strings.TrimSpace(requirement.MinHostVersion) != requirement.MinHostVersion {
-			return fmt.Errorf("%w: %s.min_host_version must not contain surrounding whitespace", ErrReleaseRefVerificationFailed, prefix)
+		if requirement.MinHostVersion != "" {
+			if _, err := version.ParseSemVer(requirement.MinHostVersion); err != nil {
+				return fmt.Errorf("%w: %s.min_host_version is invalid: %v", ErrReleaseRefVerificationFailed, prefix, err)
+			}
 		}
 		seenContracts := make(map[string]struct{}, len(requirement.RequiredCapabilityContracts))
 		for contractIndex, contract := range requirement.RequiredCapabilityContracts {
@@ -3175,8 +3198,8 @@ func validateReleaseHostRequirements(requirements []HostRequirement) error {
 			if strings.TrimSpace(contract.CapabilityID) == "" {
 				return fmt.Errorf("%w: %s.capability_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
 			}
-			if strings.TrimSpace(contract.CapabilityVersion) == "" {
-				return fmt.Errorf("%w: %s.capability_version is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			if _, err := version.ParseSemVer(contract.CapabilityVersion); err != nil {
+				return fmt.Errorf("%w: %s.capability_version is invalid: %v", ErrReleaseRefVerificationFailed, contractPrefix, err)
 			}
 			contractRef := contract.Contract
 			if strings.TrimSpace(contractRef.PublisherID) == "" {
@@ -3185,8 +3208,8 @@ func validateReleaseHostRequirements(requirements []HostRequirement) error {
 			if strings.TrimSpace(contractRef.ContractID) == "" {
 				return fmt.Errorf("%w: %s.contract_id is required", ErrReleaseRefVerificationFailed, contractPrefix)
 			}
-			if strings.TrimSpace(contractRef.ContractVersion) == "" {
-				return fmt.Errorf("%w: %s.contract_version is required", ErrReleaseRefVerificationFailed, contractPrefix)
+			if _, err := version.ParseSemVer(contractRef.ContractVersion); err != nil {
+				return fmt.Errorf("%w: %s.contract_version is invalid: %v", ErrReleaseRefVerificationFailed, contractPrefix, err)
 			}
 			contractKey := contract.CapabilityID + "\x00" + contract.CapabilityVersion + "\x00" + contractRef.ContractID + "\x00" + contractRef.ContractVersion
 			if _, exists := seenContracts[contractKey]; exists {
@@ -3252,11 +3275,12 @@ func validateReleaseCompatibility(pkg pluginpkg.Package, release PluginPackageRe
 		return fmt.Errorf("%w: release compatibility is required", ErrReleaseRefVerificationFailed)
 	}
 	compatibility := release.Compatibility
-	if strings.TrimSpace(compatibility.MinReDevPluginVersion) == "" {
-		return fmt.Errorf("%w: release compatibility min_redevplugin_version is required", ErrReleaseRefVerificationFailed)
+	minimumReDevPluginVersion, err := version.ParseSemVer(compatibility.MinReDevPluginVersion)
+	if err != nil {
+		return fmt.Errorf("%w: release compatibility min_redevplugin_version is invalid: %v", ErrReleaseRefVerificationFailed, err)
 	}
-	if strings.TrimSpace(compatibility.MinRuntimeVersion) == "" {
-		return fmt.Errorf("%w: release compatibility min_runtime_version is required", ErrReleaseRefVerificationFailed)
+	if _, err := version.ParseSemVer(compatibility.MinRuntimeVersion); err != nil {
+		return fmt.Errorf("%w: release compatibility min_runtime_version is invalid: %v", ErrReleaseRefVerificationFailed, err)
 	}
 	if strings.TrimSpace(compatibility.UIProtocolVersion) == "" {
 		return fmt.Errorf("%w: release compatibility ui_protocol_version is required", ErrReleaseRefVerificationFailed)
@@ -3267,36 +3291,42 @@ func validateReleaseCompatibility(pkg pluginpkg.Package, release PluginPackageRe
 	if compatibility.UIProtocolVersion != pkg.Manifest.Plugin.UIProtocolVersion {
 		return fmt.Errorf("%w: release compatibility ui_protocol_version does not match package manifest", ErrReleaseRefVerificationFailed)
 	}
-	matrix := version.CurrentMatrix()
-	if isConcreteReleaseVersion(matrix.GoModuleVersion) && comparePluginVersion(normalizeVersionForCompare(compatibility.MinReDevPluginVersion), normalizeVersionForCompare(matrix.GoModuleVersion)) > 0 {
+	currentReDevPluginVersion, err := version.ParseSemVer(version.CurrentCompatibilityVersion())
+	if err != nil {
+		return fmt.Errorf("%w: current redevplugin version is invalid: %v", ErrReleaseRefVerificationFailed, err)
+	}
+	if currentReDevPluginVersion.Compare(minimumReDevPluginVersion) < 0 {
 		return fmt.Errorf("%w: release requires newer redevplugin go version", ErrReleaseRefVerificationFailed)
 	}
-	if isConcreteReleaseVersion(matrix.RuntimeVersion) && comparePluginVersion(normalizeVersionForCompare(compatibility.MinRuntimeVersion), normalizeVersionForCompare(matrix.RuntimeVersion)) > 0 {
-		return fmt.Errorf("%w: release requires newer redevplugin runtime version", ErrReleaseRefVerificationFailed)
-	}
-	for _, target := range compatibility.SupportedTargets {
-		if strings.TrimSpace(target) == "" {
-			return fmt.Errorf("%w: release compatibility supported_targets contains an empty target", ErrReleaseRefVerificationFailed)
+	seenTargets := make(map[string]struct{}, len(compatibility.SupportedTargets))
+	for _, value := range compatibility.SupportedTargets {
+		target, err := parseRuntimeTarget(value)
+		if err != nil || runtimeTargetString(target) != value {
+			return fmt.Errorf("%w: release compatibility supported target %q is invalid", ErrReleaseRefVerificationFailed, value)
 		}
+		if _, exists := seenTargets[value]; exists {
+			return fmt.Errorf("%w: release compatibility supported target %q is duplicated", ErrReleaseRefVerificationFailed, value)
+		}
+		seenTargets[value] = struct{}{}
 	}
 	return nil
 }
 
-func isConcreteReleaseVersion(value string) bool {
-	value = strings.TrimSpace(value)
-	return value != "" && value != "0.0.0-dev" && value != "(devel)"
-}
-
-func normalizeVersionForCompare(value string) string {
-	return strings.TrimPrefix(strings.TrimSpace(value), "v")
-}
-
 func enforceReleaseSourcePolicy(action PackageTrustAction, current *registry.PluginRecord, ref PluginReleaseRef, snapshot SourcePolicySnapshot) error {
+	nextVersion, err := version.ParseSemVer(ref.Version)
+	if err != nil {
+		return fmt.Errorf("%w: release version is invalid: %v", ErrReleaseRefVerificationFailed, err)
+	}
 	if snapshot.InstallPolicy == PackageInstallBlock || snapshot.InstallPolicy == PackageInstallReviewRequired {
 		return fmt.Errorf("%w: source policy install_policy is %s", ErrReleaseRefPolicyDenied, snapshot.InstallPolicy)
 	}
-	if action == PackageTrustActionUpdate && current != nil && comparePluginVersion(ref.Version, current.Version) < 0 {
-		if snapshot.DowngradePolicy == PackageDowngradeBlock || snapshot.DowngradePolicy == PackageDowngradeReviewRequired {
+	if action == PackageTrustActionUpdate && current != nil {
+		currentVersion, err := version.ParseSemVer(current.Version)
+		if err != nil {
+			return fmt.Errorf("%w: installed plugin version is invalid: %v", ErrReleaseRefVerificationFailed, err)
+		}
+		if nextVersion.Compare(currentVersion) < 0 &&
+			(snapshot.DowngradePolicy == PackageDowngradeBlock || snapshot.DowngradePolicy == PackageDowngradeReviewRequired) {
 			return fmt.Errorf("%w: source policy downgrade_policy is %s", ErrReleaseRefPolicyDenied, snapshot.DowngradePolicy)
 		}
 	}
@@ -3421,54 +3451,6 @@ func normalizeSHA256(value string) string {
 		return ""
 	}
 	return "sha256:" + value
-}
-
-func comparePluginVersion(left string, right string) int {
-	leftParts, leftOK := parseNumericVersion(left)
-	rightParts, rightOK := parseNumericVersion(right)
-	if !leftOK || !rightOK {
-		return strings.Compare(left, right)
-	}
-	maxLen := len(leftParts)
-	if len(rightParts) > maxLen {
-		maxLen = len(rightParts)
-	}
-	for i := 0; i < maxLen; i++ {
-		leftPart := 0
-		if i < len(leftParts) {
-			leftPart = leftParts[i]
-		}
-		rightPart := 0
-		if i < len(rightParts) {
-			rightPart = rightParts[i]
-		}
-		if leftPart < rightPart {
-			return -1
-		}
-		if leftPart > rightPart {
-			return 1
-		}
-	}
-	return 0
-}
-
-func parseNumericVersion(value string) ([]int, bool) {
-	if value == "" {
-		return nil, false
-	}
-	parts := strings.Split(value, ".")
-	out := make([]int, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			return nil, false
-		}
-		number, err := strconv.Atoi(part)
-		if err != nil {
-			return nil, false
-		}
-		out = append(out, number)
-	}
-	return out, true
 }
 
 func mergePrefixedMetadata(base map[string]string, prefix string, values map[string]string) error {
@@ -3747,6 +3729,9 @@ func (h *Host) DowngradePlugin(ctx context.Context, req DowngradeRequest) (regis
 	if err := requireStablePluginDataShape(current.Manifest, next.Manifest); err != nil {
 		return registry.PluginRecord{}, err
 	}
+	if err := h.preflightWorkerRuntime(ctx, next); err != nil {
+		return registry.PluginRecord{}, err
+	}
 	next.VersionHistory = remaining
 	next = prepareVersionSwitchRecord(current, next, versionSnapshot(current, req.Now), req.Now)
 	if next.EnableState == registry.EnableEnabled {
@@ -3982,6 +3967,7 @@ func versionSnapshot(record registry.PluginRecord, now time.Time) registry.Plugi
 		CapabilityContracts:      append([]capabilitycontract.Pin(nil), record.CapabilityContracts...),
 		Manifest:                 record.Manifest,
 		PackageEntries:           cloneEntries(record.PackageEntries),
+		RuntimeRequirement:       cloneRuntimeRequirement(record.RuntimeRequirement),
 		ActivatedAt:              now,
 		Metadata:                 cloneStringMap(record.Metadata),
 	}
@@ -4002,6 +3988,7 @@ func recordFromVersionSnapshot(current registry.PluginRecord, snapshot registry.
 	next.CapabilityContracts = append([]capabilitycontract.Pin(nil), snapshot.CapabilityContracts...)
 	next.Manifest = snapshot.Manifest
 	next.PackageEntries = cloneEntries(snapshot.PackageEntries)
+	next.RuntimeRequirement = cloneRuntimeRequirement(snapshot.RuntimeRequirement)
 	next.Metadata = cloneStringMap(snapshot.Metadata)
 	return next
 }
@@ -4014,14 +4001,210 @@ func cloneLocalImportProvenance(provenance *registry.LocalImportProvenance) *reg
 	return &clone
 }
 
-func selectVersionSnapshot(history []registry.PluginVersion, version string, packageHash string) (registry.PluginVersion, []registry.PluginVersion, error) {
-	version = strings.TrimSpace(version)
+func cloneRuntimeRequirement(requirement *registry.RuntimeRequirement) *registry.RuntimeRequirement {
+	if requirement == nil {
+		return nil
+	}
+	return &registry.RuntimeRequirement{
+		MinVersion:       requirement.MinVersion,
+		SupportedTargets: append([]string(nil), requirement.SupportedTargets...),
+	}
+}
+
+func runtimeRequirementForPackage(pluginManifest manifest.Manifest, input packageTrustInput) (*registry.RuntimeRequirement, error) {
+	if !pluginHasWorkers(pluginManifest) {
+		return nil, nil
+	}
+	minimumVersion, err := version.ParseSemVer(pluginManifest.Plugin.MinRuntimeVersion)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid minimum runtime version: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	requirement := &registry.RuntimeRequirement{MinVersion: minimumVersion.String()}
+	if input.Release != nil && input.Release.Compatibility != nil {
+		requirement.SupportedTargets = append([]string(nil), input.Release.Compatibility.SupportedTargets...)
+	}
+	seenTargets := make(map[string]struct{}, len(requirement.SupportedTargets))
+	for _, value := range requirement.SupportedTargets {
+		target, err := parseRuntimeTarget(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: supported target %q: %v", ErrPluginRuntimeIncompatible, value, err)
+		}
+		canonical := runtimeTargetString(target)
+		if canonical != value {
+			return nil, fmt.Errorf("%w: supported target %q is not canonical", ErrPluginRuntimeIncompatible, value)
+		}
+		if _, exists := seenTargets[canonical]; exists {
+			return nil, fmt.Errorf("%w: supported target %q is duplicated", ErrPluginRuntimeIncompatible, value)
+		}
+		seenTargets[canonical] = struct{}{}
+	}
+	sort.Strings(requirement.SupportedTargets)
+	return requirement, nil
+}
+
+func pluginHasWorkers(pluginManifest manifest.Manifest) bool {
+	return len(pluginManifest.Workers) > 0
+}
+
+func parseRuntimeTarget(value string) (runtimeclient.Target, error) {
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return runtimeclient.Target{}, runtimeclient.ErrRuntimeTargetUnsupported
+	}
+	target := runtimeclient.Target{OS: parts[0], Arch: parts[1]}
+	if err := runtimeclient.ValidateTarget(target); err != nil {
+		return runtimeclient.Target{}, err
+	}
+	return target, nil
+}
+
+func runtimeTargetString(target runtimeclient.Target) string {
+	return target.OS + "/" + target.Arch
+}
+
+func currentRuntimeTarget() runtimeclient.Target {
+	return runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}
+}
+
+func validateWorkerRuntimeDescriptor(record registry.PluginRecord, descriptor runtimeclient.RuntimeDescriptor, expectedTarget runtimeclient.Target) error {
+	if !pluginHasWorkers(record.Manifest) {
+		return nil
+	}
+	if record.RuntimeRequirement == nil {
+		return fmt.Errorf("%w: worker runtime requirement is missing", ErrPluginRuntimeIncompatible)
+	}
+	minimumVersion, err := version.ParseSemVer(record.RuntimeRequirement.MinVersion)
+	if err != nil {
+		return fmt.Errorf("%w: invalid minimum runtime version: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	if err := descriptor.CompatibleWithPlatform(); err != nil {
+		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	if descriptor.Target() != expectedTarget {
+		return fmt.Errorf(
+			"%w: runtime target %s does not match expected %s",
+			ErrPluginRuntimeIncompatible,
+			runtimeTargetString(descriptor.Target()),
+			runtimeTargetString(expectedTarget),
+		)
+	}
+	if descriptor.Version().Compare(minimumVersion) < 0 {
+		return fmt.Errorf(
+			"%w: runtime %s is below required %s",
+			ErrPluginRuntimeIncompatible,
+			descriptor.Version().String(),
+			minimumVersion.String(),
+		)
+	}
+	if len(record.RuntimeRequirement.SupportedTargets) > 0 {
+		actualTarget := runtimeTargetString(descriptor.Target())
+		supported := false
+		for _, target := range record.RuntimeRequirement.SupportedTargets {
+			if target == actualTarget {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("%w: runtime target %s is unsupported by the package", ErrPluginRuntimeIncompatible, actualTarget)
+		}
+	}
+	for _, worker := range record.Manifest.Workers {
+		if worker.ABI != descriptor.WASMABIVersion() {
+			return fmt.Errorf(
+				"%w: worker %q ABI %s does not match runtime %s",
+				ErrPluginRuntimeIncompatible,
+				worker.WorkerID,
+				worker.ABI,
+				descriptor.WASMABIVersion(),
+			)
+		}
+	}
+	return nil
+}
+
+func (h *Host) preflightWorkerRuntime(ctx context.Context, record registry.PluginRecord) error {
+	if !pluginHasWorkers(record.Manifest) {
+		return nil
+	}
+	if h.adapters.RuntimeManager == nil {
+		return ErrPluginRuntimeNotConfigured
+	}
+	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, currentRuntimeTarget())
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	return validateWorkerRuntimeDescriptor(record, descriptor, currentRuntimeTarget())
+}
+
+func (h *Host) bindCompatibleWorkerRuntime(ctx context.Context, record registry.PluginRecord) (runtimeclient.RuntimeBinding, error) {
+	if !pluginHasWorkers(record.Manifest) {
+		return runtimeclient.RuntimeBinding{}, fmt.Errorf("%w: plugin has no workers", ErrPluginRuntimeIncompatible)
+	}
+	if h.adapters.RuntimeManager == nil {
+		return runtimeclient.RuntimeBinding{}, ErrPluginRuntimeNotConfigured
+	}
+	health, err := h.adapters.RuntimeManager.Health(ctx)
+	if err != nil {
+		return runtimeclient.RuntimeBinding{}, err
+	}
+	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
+		return runtimeclient.RuntimeBinding{}, err
+	}
+	if err := validateWorkerRuntimeDescriptor(record, health.Descriptor, currentRuntimeTarget()); err != nil {
+		return runtimeclient.RuntimeBinding{}, err
+	}
+	binding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
+	if err != nil {
+		return runtimeclient.RuntimeBinding{}, err
+	}
+	if binding.Descriptor != health.Descriptor {
+		return runtimeclient.RuntimeBinding{}, fmt.Errorf("%w: runtime binding descriptor changed", ErrPluginRuntimeIncompatible)
+	}
+	if strings.TrimSpace(binding.RuntimeGenerationID) == "" {
+		return runtimeclient.RuntimeBinding{}, fmt.Errorf("%w: runtime binding generation is missing", ErrPluginRuntimeIncompatible)
+	}
+	return binding, nil
+}
+
+func validateRuntimeManagerHealth(health runtimeclient.ManagerHealth, expected runtimeclient.RuntimeDescriptor) error {
+	if len(health.Shards) == 0 {
+		return runtimeclient.ErrRuntimeNotReady
+	}
+	if err := expected.CompatibleWithPlatform(); err != nil {
+		return fmt.Errorf("%w: %v", ErrPluginRuntimeIncompatible, err)
+	}
+	if health.Descriptor != expected {
+		return fmt.Errorf("%w: manager descriptor mismatch", ErrPluginRuntimeIncompatible)
+	}
+	for _, shard := range health.Shards {
+		if shard.Descriptor != expected {
+			return fmt.Errorf("%w: runtime shard %q descriptor mismatch", ErrPluginRuntimeIncompatible, shard.RuntimeShardID)
+		}
+	}
+	if !health.Ready {
+		return runtimeclient.ErrRuntimeNotReady
+	}
+	for _, shard := range health.Shards {
+		if !shard.Ready {
+			return runtimeclient.ErrRuntimeNotReady
+		}
+	}
+	return nil
+}
+
+func selectVersionSnapshot(history []registry.PluginVersion, requestedVersion string, packageHash string) (registry.PluginVersion, []registry.PluginVersion, error) {
 	packageHash = strings.TrimSpace(packageHash)
-	if version == "" && packageHash == "" {
+	if requestedVersion == "" && packageHash == "" {
 		return registry.PluginVersion{}, nil, errors.New("version or package_hash is required")
 	}
+	if requestedVersion != "" {
+		if _, err := version.ParseSemVer(requestedVersion); err != nil {
+			return registry.PluginVersion{}, nil, fmt.Errorf("version is invalid: %w", err)
+		}
+	}
 	for i, snapshot := range history {
-		if (version == "" || snapshot.Version == version) && (packageHash == "" || snapshot.PackageHash == packageHash) {
+		if (requestedVersion == "" || snapshot.Version == requestedVersion) && (packageHash == "" || snapshot.PackageHash == packageHash) {
 			remaining := make([]registry.PluginVersion, 0, len(history)-1)
 			remaining = append(remaining, history[:i]...)
 			remaining = append(remaining, history[i+1:]...)
@@ -4056,6 +4239,11 @@ func (h *Host) validateEnabledRuntimeState(ctx context.Context, record registry.
 func (h *Host) refreshEnabledRuntimeState(ctx context.Context, record registry.PluginRecord) error {
 	if record.EnableState != registry.EnableEnabled {
 		return nil
+	}
+	if pluginHasWorkers(record.Manifest) {
+		if _, err := h.bindCompatibleWorkerRuntime(ctx, record); err != nil {
+			return err
+		}
 	}
 	if err := h.prepareEnabledRuntimeState(ctx, record); err != nil {
 		return err
@@ -4615,15 +4803,37 @@ func (h *Host) StartRuntime(ctx context.Context, req StartRuntimeRequest) (runti
 	}
 	defer releaseOpen()
 	if h.adapters.RuntimeManager == nil {
-		return runtimeclient.ManagerHealth{}, errors.New("runtime manager is required")
+		return runtimeclient.ManagerHealth{}, ErrPluginRuntimeNotConfigured
 	}
-	target := normalizeRuntimeTarget(req.Target)
-	health, err := h.adapters.RuntimeManager.Start(ctx, runtimeclient.Target{OS: target.OS, Arch: target.Arch})
+	target := runtimeclient.Target{OS: req.Target.OS, Arch: req.Target.Arch}
+	if err := runtimeclient.ValidateTarget(target); err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	descriptor, err := h.adapters.RuntimeManager.Preflight(ctx, target)
+	if err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	records, err := h.adapters.Registry.ListPlugins(ctx)
+	if err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
+	for _, record := range records {
+		if record.EnableState != registry.EnableEnabled || !pluginHasWorkers(record.Manifest) {
+			continue
+		}
+		if err := validateWorkerRuntimeDescriptor(record, descriptor, target); err != nil {
+			return runtimeclient.ManagerHealth{}, fmt.Errorf("plugin %q: %w", record.PluginInstanceID, err)
+		}
+	}
+	health, err := h.adapters.RuntimeManager.Start(ctx, target)
 	if err != nil {
 		if errors.Is(err, runtimeclient.ErrManagerLifecycleOutcomeUnknown) {
 			return runtimeclient.ManagerHealth{}, mutation.Unknown(err)
 		}
 		return runtimeclient.ManagerHealth{}, err
+	}
+	if err := validateRuntimeManagerHealth(health, descriptor); err != nil {
+		return runtimeclient.ManagerHealth{}, fmt.Errorf("%w: started runtime health: %v", ErrPluginRuntimeIncompatible, err)
 	}
 	h.audit(ctx, AuditEvent{Type: "plugin.runtime.started"})
 	return health, nil
@@ -4639,7 +4849,7 @@ func (h *Host) StopRuntime(ctx context.Context) error {
 	if h.adapters.RuntimeManager != nil {
 		stopErr = h.adapters.RuntimeManager.Stop(ctx)
 	}
-	revokedSurfaces := h.surfaceTokens.RevokeAllSurfaces(time.Time{})
+	revokedSurfaces := h.surfaceTokens.RevokeSurfacesExceptGeneration(h.surfaceGenerationID, time.Time{})
 	details := map[string]any{"revoked_surface_count": revokedSurfaces}
 	if stopErr != nil {
 		h.diagnostic(ctx, observability.DiagnosticEvent{
@@ -4663,36 +4873,30 @@ func (h *Host) RuntimeHealth(ctx context.Context) (runtimeclient.ManagerHealth, 
 	}
 	defer releaseOpen()
 	if h.adapters.RuntimeManager == nil {
-		return runtimeclient.ManagerHealth{}, nil
-	}
-	return h.adapters.RuntimeManager.Health(ctx)
-}
-
-func (h *Host) currentRuntimeGeneration(ctx context.Context, pluginInstanceID string) (string, error) {
-	if h.adapters.RuntimeManager == nil {
-		return h.surfaceGenerationID, nil
+		return runtimeclient.ManagerHealth{}, ErrPluginRuntimeNotConfigured
 	}
 	health, err := h.adapters.RuntimeManager.Health(ctx)
-	if err != nil {
-		return "", err
+	if err != nil || !health.Ready {
+		return health, err
 	}
-	if !health.Ready {
-		return h.surfaceGenerationID, nil
+	if err := validateRuntimeManagerHealth(health, health.Descriptor); err != nil {
+		return runtimeclient.ManagerHealth{}, err
 	}
-	binding, err := h.adapters.RuntimeManager.BindPlugin(ctx, pluginInstanceID)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(binding.RuntimeGenerationID) == "" {
-		return "", errors.New("ready runtime is missing runtime_generation_id")
-	}
-	return binding.RuntimeGenerationID, nil
+	return health, nil
 }
 
 func (h *Host) requireSurfaceRuntimeGeneration(ctx context.Context, pluginInstanceID, surfaceInstanceID, boundGenerationID string, now time.Time) error {
-	currentGenerationID, err := h.currentRuntimeGeneration(ctx, pluginInstanceID)
+	record, err := h.adapters.Registry.GetPlugin(ctx, pluginInstanceID)
 	if err != nil {
 		return err
+	}
+	currentGenerationID := h.surfaceGenerationID
+	if pluginHasWorkers(record.Manifest) {
+		binding, err := h.bindCompatibleWorkerRuntime(ctx, record)
+		if err != nil {
+			return err
+		}
+		currentGenerationID = binding.RuntimeGenerationID
 	}
 	if strings.TrimSpace(boundGenerationID) == currentGenerationID {
 		return nil
@@ -5175,6 +5379,9 @@ func (h *Host) EnablePlugin(ctx context.Context, req EnableRequest) (registry.Pl
 		return registry.PluginRecord{}, err
 	}
 	if _, _, err := compileConnectivityPolicy(record); err != nil {
+		return registry.PluginRecord{}, err
+	}
+	if err := h.preflightWorkerRuntime(ctx, record); err != nil {
 		return registry.PluginRecord{}, err
 	}
 	shape, err := plugindata.ShapeFromManifest(record.Manifest)
@@ -6088,21 +6295,11 @@ func (h *Host) invokeWorker(ctx context.Context, record registry.PluginRecord, m
 			responseErr = fmt.Errorf("%w: adapter panic", ErrMethodAdapterPanic)
 		}
 	}()
-	if h.adapters.RuntimeManager == nil {
-		return workerMethodDispatch{}, errors.New("runtime manager is required for worker methods")
-	}
 	worker, ok := manifestWorker(record.Manifest, method.Route.WorkerID)
 	if !ok {
 		return workerMethodDispatch{}, fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
 	}
-	health, err := h.adapters.RuntimeManager.Health(ctx)
-	if err != nil {
-		return workerMethodDispatch{}, err
-	}
-	if !health.Ready {
-		return workerMethodDispatch{}, errors.New("runtime manager is not ready")
-	}
-	runtimeBinding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
+	runtimeBinding, err := h.bindCompatibleWorkerRuntime(ctx, record)
 	if err != nil {
 		return workerMethodDispatch{}, err
 	}
@@ -6715,21 +6912,11 @@ func (h *Host) resolveMethodConfirmationTarget(ctx context.Context, record regis
 		hash, err := canonicalDescriptorHash(target)
 		return target, hash, err
 	case manifest.MethodRouteWorker:
-		if h.adapters.RuntimeManager == nil {
-			return capability.TargetDescriptor{}, "", errors.New("runtime manager is required for worker methods")
-		}
 		worker, ok := manifestWorker(record.Manifest, method.Route.WorkerID)
 		if !ok {
 			return capability.TargetDescriptor{}, "", fmt.Errorf("worker %q is not declared", method.Route.WorkerID)
 		}
-		health, err := h.adapters.RuntimeManager.Health(ctx)
-		if err != nil {
-			return capability.TargetDescriptor{}, "", err
-		}
-		if !health.Ready {
-			return capability.TargetDescriptor{}, "", errors.New("runtime manager is not ready")
-		}
-		runtimeBinding, err := h.adapters.RuntimeManager.BindPlugin(ctx, record.PluginInstanceID)
+		runtimeBinding, err := h.bindCompatibleWorkerRuntime(ctx, record)
 		if err != nil {
 			return capability.TargetDescriptor{}, "", err
 		}
@@ -6940,7 +7127,7 @@ func (h *Host) revokePluginRuntimeCapabilities(ctx context.Context, record regis
 	runtimeRevoked := false
 	var runtimeRevokeResult runtimeclient.RevokeResult
 	var runtimeErr error
-	if h.adapters.RuntimeManager != nil {
+	if h.adapters.RuntimeManager != nil && pluginHasWorkers(record.Manifest) {
 		revokeCtx := ctx
 		cancel := func() {}
 		if _, ok := ctx.Deadline(); !ok {
@@ -7448,18 +7635,6 @@ func pluginSettingsResult(record registry.PluginRecord, snapshot plugindata.Sett
 		Values:           values,
 		SecretMetadata:   secretMetadata,
 	}, nil
-}
-
-func normalizeRuntimeTarget(target RuntimeTarget) RuntimeTarget {
-	target.OS = strings.TrimSpace(target.OS)
-	target.Arch = strings.TrimSpace(target.Arch)
-	if target.OS == "" {
-		target.OS = runtime.GOOS
-	}
-	if target.Arch == "" {
-		target.Arch = runtime.GOARCH
-	}
-	return target
 }
 
 func cloneSettingFields(fields []manifest.SettingFieldSpec) []manifest.SettingFieldSpec {

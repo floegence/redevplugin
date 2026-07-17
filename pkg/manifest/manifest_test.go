@@ -55,10 +55,17 @@ func TestValidateMatchesCurrentManifestRequiredFields(t *testing.T) {
 			},
 		},
 		{
+			name:  "plugin version",
+			field: "plugin.version",
+			mutate: func(m *Manifest) {
+				m.Plugin.Version = "1.0"
+			},
+		},
+		{
 			name:  "minimum runtime version",
 			field: "plugin.min_runtime_version",
 			mutate: func(m *Manifest) {
-				m.Plugin.MinRuntimeVersion = ""
+				m.Plugin.MinRuntimeVersion = "v1.0.0"
 			},
 		},
 		{

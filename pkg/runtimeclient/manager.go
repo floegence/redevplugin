@@ -47,11 +47,12 @@ type RuntimeHostServices struct {
 }
 
 type RuntimeBinding struct {
-	RuntimeShardID      string `json:"runtime_shard_id"`
-	RuntimeInstanceID   string `json:"runtime_instance_id"`
-	RuntimeGenerationID string `json:"runtime_generation_id"`
-	IPCChannelID        string `json:"ipc_channel_id"`
-	ConnectionNonce     string `json:"connection_nonce"`
+	RuntimeShardID      string            `json:"runtime_shard_id"`
+	RuntimeInstanceID   string            `json:"runtime_instance_id"`
+	RuntimeGenerationID string            `json:"runtime_generation_id"`
+	IPCChannelID        string            `json:"ipc_channel_id"`
+	ConnectionNonce     string            `json:"connection_nonce"`
+	Descriptor          RuntimeDescriptor `json:"descriptor"`
 }
 
 type ShardHealth struct {
@@ -60,8 +61,9 @@ type ShardHealth struct {
 }
 
 type ManagerHealth struct {
-	Ready  bool          `json:"ready"`
-	Shards []ShardHealth `json:"shards"`
+	Ready      bool              `json:"ready"`
+	Descriptor RuntimeDescriptor `json:"descriptor"`
+	Shards     []ShardHealth     `json:"shards"`
 }
 
 // Manager owns the runtime shard lifecycle for exactly one Host. A new Manager
@@ -74,6 +76,7 @@ type Manager interface {
 	// manager unbound and retryable; a successful call makes every later call
 	// return ErrRuntimeHostServicesBound.
 	BindHostServices(services RuntimeHostServices) error
+	Preflight(ctx context.Context, target Target) (RuntimeDescriptor, error)
 	Start(ctx context.Context, target Target) (ManagerHealth, error)
 	Stop(ctx context.Context) error
 	Health(ctx context.Context) (ManagerHealth, error)
@@ -91,6 +94,7 @@ type ProcessManagerOptions struct {
 }
 
 type processShard interface {
+	Preflight(context.Context, Target) (RuntimeDescriptor, error)
 	Start(context.Context, Target) error
 	Stop(context.Context) error
 	Health(context.Context) (Health, error)
@@ -193,6 +197,10 @@ func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealt
 	if !m.bound {
 		return ManagerHealth{}, ErrRuntimeHostServicesRequired
 	}
+	descriptor, err := m.preflight(ctx, target)
+	if err != nil {
+		return ManagerHealth{}, err
+	}
 
 	started := make([]processManagerShard, 0, len(m.shards))
 	for _, shard := range m.shards {
@@ -205,6 +213,10 @@ func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealt
 			)
 		}
 		if health.Ready {
+			if health.Descriptor != descriptor {
+				rollbackErr := rollbackProcessShards(started)
+				return ManagerHealth{}, managerStartError(ErrRuntimeDescriptorMismatch, rollbackErr)
+			}
 			continue
 		}
 		if err := shard.process.Start(ctx, target); err != nil {
@@ -225,7 +237,56 @@ func (m *ProcessManager) Start(ctx context.Context, target Target) (ManagerHealt
 		rollbackErr := rollbackProcessShards(started)
 		return ManagerHealth{}, managerStartError(ErrRuntimeNotReady, rollbackErr)
 	}
+	if health.Descriptor != descriptor {
+		rollbackErr := rollbackProcessShards(started)
+		return ManagerHealth{}, managerStartError(ErrRuntimeDescriptorMismatch, rollbackErr)
+	}
 	return health, nil
+}
+
+func (m *ProcessManager) Preflight(ctx context.Context, target Target) (RuntimeDescriptor, error) {
+	if m == nil {
+		return RuntimeDescriptor{}, ErrRuntimePathRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return RuntimeDescriptor{}, err
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if !m.bound {
+		return RuntimeDescriptor{}, ErrRuntimeHostServicesRequired
+	}
+	return m.preflight(ctx, target)
+}
+
+func (m *ProcessManager) preflight(ctx context.Context, target Target) (RuntimeDescriptor, error) {
+	if err := ValidateTarget(target); err != nil {
+		return RuntimeDescriptor{}, err
+	}
+	var expected RuntimeDescriptor
+	for _, shard := range m.shards {
+		descriptor, err := shard.process.Preflight(ctx, target)
+		if err != nil {
+			return RuntimeDescriptor{}, fmt.Errorf("preflight runtime shard %s: %w", shard.id, err)
+		}
+		if descriptor.Target() != target {
+			return RuntimeDescriptor{}, fmt.Errorf("%w: runtime shard %s target", ErrRuntimeDescriptorMismatch, shard.id)
+		}
+		if err := descriptor.CompatibleWithPlatform(); err != nil {
+			return RuntimeDescriptor{}, fmt.Errorf("preflight runtime shard %s: %w", shard.id, err)
+		}
+		if expected.Version().String() == "" {
+			expected = descriptor
+			continue
+		}
+		if descriptor != expected {
+			return RuntimeDescriptor{}, fmt.Errorf("%w: runtime shard %s", ErrRuntimeDescriptorMismatch, shard.id)
+		}
+	}
+	if expected.Version().String() == "" {
+		return RuntimeDescriptor{}, ErrRuntimeNotReady
+	}
+	return expected, nil
 }
 
 func (m *ProcessManager) Stop(ctx context.Context) error {
@@ -267,6 +328,14 @@ func (m *ProcessManager) health(ctx context.Context) (ManagerHealth, error) {
 			Health:         processHealth,
 		})
 		health.Ready = health.Ready && processHealth.Ready
+	}
+	if len(health.Shards) != 0 {
+		health.Descriptor = health.Shards[0].Descriptor
+		for _, shard := range health.Shards[1:] {
+			if shard.Descriptor != health.Descriptor {
+				return ManagerHealth{}, fmt.Errorf("%w: runtime shard %s health", ErrRuntimeDescriptorMismatch, shard.RuntimeShardID)
+			}
+		}
 	}
 	return health, nil
 }
@@ -388,6 +457,7 @@ func runtimeBinding(shardID string, health Health) RuntimeBinding {
 		RuntimeGenerationID: health.RuntimeGenerationID,
 		IPCChannelID:        health.IPCChannelID,
 		ConnectionNonce:     health.ConnectionNonce,
+		Descriptor:          health.Descriptor,
 	}
 }
 
@@ -400,6 +470,12 @@ func validateReadyHealth(health Health) error {
 		strings.TrimSpace(health.IPCChannelID) == "" ||
 		strings.TrimSpace(health.ConnectionNonce) == "" {
 		return fmt.Errorf("%w: ready shard health is incomplete", ErrRuntimeBindingInvalid)
+	}
+	if health.Descriptor.Version().String() == "" {
+		return fmt.Errorf("%w: ready shard health descriptor is missing", ErrRuntimeBindingInvalid)
+	}
+	if err := health.Descriptor.CompatibleWithPlatform(); err != nil {
+		return fmt.Errorf("%w: %v", ErrRuntimeBindingInvalid, err)
 	}
 	return nil
 }

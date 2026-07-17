@@ -1123,7 +1123,7 @@ export interface components {
         };
         CapabilityBusinessErrorDetails: {
             capability_id: string;
-            capability_version: string;
+            capability_version: components["schemas"]["StrictSemVer"];
             detail_schema_sha256: string;
             business_error_code: string;
             business_error_details?: {
@@ -1184,7 +1184,7 @@ export interface components {
             plugin_instance_id: string;
             publisher_id: string;
             display_name: string;
-            version: string;
+            version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             intent_id: string;
             method: string;
@@ -1274,14 +1274,47 @@ export interface components {
             runtime_generation_id: string;
             ipc_channel_id?: string;
             connection_nonce?: string;
-            runtime_version?: string;
-            rust_ipc_version?: string;
-            wasm_abi_version?: string;
+            descriptor: components["schemas"]["RuntimeDescriptor"];
             ready: boolean;
+            active_invocations: number;
+            queued_invocations: number;
+            limits: components["schemas"]["RuntimeLimits"];
+            module_cache: components["schemas"]["RuntimeModuleCacheMetrics"];
         };
         PluginRuntimeHealth: {
             ready: boolean;
+            descriptor: components["schemas"]["RuntimeDescriptor"];
             shards: components["schemas"]["PluginRuntimeShardHealth"][];
+        };
+        RuntimeTarget: {
+            /** @enum {string} */
+            os: "darwin" | "linux";
+            /** @enum {string} */
+            arch: "amd64" | "arm64";
+        };
+        StrictSemVer: string;
+        RuntimeDescriptor: {
+            version: components["schemas"]["StrictSemVer"];
+            target: components["schemas"]["RuntimeTarget"];
+            /** @constant */
+            ipc_version: "rust-ipc-v3";
+            /** @constant */
+            wasm_abi_version: "redevplugin-wasm-worker-v2";
+            artifact_sha256: string;
+        };
+        RuntimeLimits: {
+            worker_count: number;
+            queue_capacity: number;
+            per_plugin_concurrency: number;
+            module_cache_entries: number;
+            module_cache_source_bytes: number;
+        };
+        RuntimeModuleCacheMetrics: {
+            hits: number;
+            misses: number;
+            compiles: number;
+            entries: number;
+            source_bytes: number;
         };
         PluginRuntimeStopResult: {
             /** @constant */
@@ -1392,7 +1425,7 @@ export interface components {
             };
         };
         PluginVersion: {
-            version: string;
+            version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             package_hash: string;
             manifest_hash: string;
@@ -1407,6 +1440,7 @@ export interface components {
             capability_contracts?: components["schemas"]["host-capability-pin-v1.schema"][];
             manifest: components["schemas"]["manifest-v5.schema"];
             package_entries: components["schemas"]["PackageEntry"][];
+            runtime_requirement?: components["schemas"]["RuntimeRequirement"];
             /** Format: date-time */
             activated_at: string;
             metadata?: {
@@ -1417,7 +1451,7 @@ export interface components {
             plugin_instance_id: string;
             publisher_id: string;
             plugin_id: string;
-            version: string;
+            version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             package_hash: string;
             manifest_hash: string;
@@ -1438,6 +1472,7 @@ export interface components {
             revoke_epoch: number;
             manifest: components["schemas"]["manifest-v5.schema"];
             package_entries: components["schemas"]["PackageEntry"][];
+            runtime_requirement?: components["schemas"]["RuntimeRequirement"];
             version_history?: components["schemas"]["PluginVersion"][];
             /** Format: date-time */
             installed_at: string;
@@ -1457,6 +1492,10 @@ export interface components {
             sha256: string;
             mode: string;
             content_type?: string;
+        };
+        RuntimeRequirement: {
+            min_version: components["schemas"]["StrictSemVer"];
+            supported_targets?: ("darwin/amd64" | "darwin/arm64" | "linux/amd64" | "linux/arm64")[];
         };
         LocalImportProvenance: {
             import_id: string;
@@ -1479,7 +1518,7 @@ export interface components {
             release_metadata_sha256: string;
             publisher_id: string;
             plugin_id: string;
-            version: string;
+            version: components["schemas"]["StrictSemVer"];
             expected_hashes: components["schemas"]["PackageHashSet"];
         };
         ImportLocalPackageRequest: {
@@ -1502,7 +1541,7 @@ export interface components {
         };
         DowngradeRequest: {
             plugin_instance_id: string;
-            version?: string;
+            version?: components["schemas"]["StrictSemVer"];
             package_hash?: string;
             expected_management_revision: number;
         };
@@ -1531,7 +1570,7 @@ export interface components {
         SurfaceBootstrap: {
             plugin_id: string;
             plugin_instance_id: string;
-            plugin_version: string;
+            plugin_version: components["schemas"]["StrictSemVer"];
             surface_id: string;
             surface_instance_id: string;
             active_fingerprint: string;
@@ -1766,7 +1805,7 @@ export interface components {
             publisher_id: string;
             plugin_id: string;
             plugin_instance_id: string;
-            plugin_version: string;
+            plugin_version: components["schemas"]["StrictSemVer"];
             active_fingerprint: string;
             surface_instance_id?: string;
             owner_session_hash?: string;
@@ -1777,7 +1816,7 @@ export interface components {
             /** @enum {string} */
             route_kind: "capability" | "worker" | "core_action";
             capability_id: string;
-            capability_version: string;
+            capability_version: components["schemas"]["StrictSemVer"];
             binding_id: string;
             contract?: components["schemas"]["host-capability-pin-v1.schema"];
             method: string;
@@ -1867,10 +1906,7 @@ export interface components {
         /** @enum {string} */
         ExecutionFailureCode: "adapter_failed" | "contract_invalid" | "platform_failed" | "quota_exceeded" | "runtime_failed";
         StartRuntimeRequest: {
-            target?: {
-                os?: string;
-                arch?: string;
-            };
+            target: components["schemas"]["RuntimeTarget"];
         };
         ExportDataRequest: {
             plugin_instance_id: string;
@@ -2041,10 +2077,10 @@ export interface components {
             plugin: {
                 plugin_id: string;
                 display_name: string;
-                version: string;
+                version: components["schemas"]["semver"];
                 /** @constant */
                 api_version: "plugin-v1";
-                min_runtime_version: string;
+                min_runtime_version: components["schemas"]["semver"];
                 /** @constant */
                 ui_protocol_version: "plugin-ui-v5";
             };
@@ -2179,6 +2215,7 @@ export interface components {
                 payload_schema?: Record<string, never>;
             }[];
             $defs: {
+                semver: string;
                 method_schema: false | (({
                     $comment?: string;
                     title?: string;

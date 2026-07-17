@@ -40,13 +40,13 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "plugin-platform-openapi",
 		Path:    "spec/openapi/plugin-platform-v5.yaml",
 		Version: "plugin-platform-v5",
-		SHA256:  "6b9d28aa699a21cd57fb8f4e6657cd64593b7038b8376a657d3fb451a1fac1f9",
+		SHA256:  "1aa19f58d8333e9a23a1b2fdcf0526ddf3ec087db61d7b43fbb83f50b4a9d7e5",
 	},
 	{
 		ID:      "manifest-schema",
 		Path:    "spec/plugin/manifest-v5.schema.json",
 		Version: "manifest-v5",
-		SHA256:  "242cf8fae019b50d3a0d04bef4e49b106e925ff9c69d1b6b28904bf3f05b0748",
+		SHA256:  "9695f6163aa539b9e3a933367c98850257c6d7bb8d61b36fd5f83b3ab61746f7",
 	},
 	{
 		ID:      "package-signature-schema",
@@ -58,7 +58,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "release-metadata-schema",
 		Path:    "spec/plugin/release-metadata-v5.schema.json",
 		Version: "release-metadata-v5",
-		SHA256:  "d5ccaaebf1cf13e8c16a84a36faa6ac857d0670aa7a3667322710942cb3f819c",
+		SHA256:  "255ef3deb7d2758a43e69e533a08aa28106f8edc2e7385ab0aec0d50c1ef3d7a",
 	},
 	{
 		ID:      "source-policy-schema",
@@ -106,7 +106,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "release-manifest-schema",
 		Path:    "spec/plugin/release-manifest-v3.schema.json",
 		Version: "release-manifest-v3",
-		SHA256:  "8c3fda908cd71169b2daf7d2a4e0b5b0c26a32e125a567304d872633fc05309b",
+		SHA256:  "c2e7eb7d4ac59b6523f635ca13adef21d94bb059dfab0d3a3300e049ef9bfe02",
 	},
 	{
 		ID:      "worker-invocation-schema",
@@ -172,7 +172,7 @@ var generatedContractArtifacts = []ContractArtifact{
 		ID:      "rust-ipc-schema",
 		Path:    "spec/plugin/ipc-v3.schema.json",
 		Version: "rust-ipc-v3",
-		SHA256:  "2dc438e6144434974e1a3506ad19c44601776079a5d1fa86717a5877e66b7560",
+		SHA256:  "fe6e4b88b875ccad2e7462def073820089507fa6bdda9eb043d7d877cd51b1a4",
 	},
 	{
 		ID:      "wasm-worker-schema",

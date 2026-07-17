@@ -56,7 +56,9 @@ func TestReleaseManifestSchemaMatchesBundleVerifierContract(t *testing.T) {
 	if got := requireNestedObject(t, props, "schema_version")["const"]; got != releaseManifestSchemaVersion {
 		t.Fatalf("schema_version const = %#v, want %q", got, releaseManifestSchemaVersion)
 	}
-	assertStringMinLength(t, requireNestedObject(t, props, "version"), "version", 1)
+	if got := requireNestedObject(t, props, "version")["$ref"]; got != "#/$defs/semver" {
+		t.Fatalf("version property = %#v, want strict semver ref", requireNestedObject(t, props, "version"))
+	}
 	assertLowerHexPattern(t, requireNestedObject(t, props, "source_commit"), "source_commit", 40)
 	assertRuntimeTargetOneOf(t, requireNestedObject(t, props, "runtime_target"))
 	generatedAt := requireNestedObject(t, props, "generated_at")
@@ -134,7 +136,9 @@ func assertReleaseManifestWorkerSDK(t *testing.T, schema map[string]any, propert
 	if got := requireNestedObject(t, props, "name")["const"]; got != "redevplugin-worker-sdk" {
 		t.Fatalf("worker_sdk name const = %#v", got)
 	}
-	assertStringMinLength(t, requireNestedObject(t, props, "version"), "worker_sdk version", 1)
+	if got := requireNestedObject(t, props, "version")["$ref"]; got != "#/$defs/semver" {
+		t.Fatalf("worker_sdk version property = %#v, want strict semver ref", requireNestedObject(t, props, "version"))
+	}
 	if got := requireNestedObject(t, props, "path")["pattern"]; got != `^sdk/redevplugin-worker-sdk-[A-Za-z0-9._+-]+\.crate$` {
 		t.Fatalf("worker_sdk path pattern = %#v", got)
 	}
@@ -173,7 +177,9 @@ func assertReleaseManifestNpmPackage(t *testing.T, schema map[string]any, proper
 	if got := requireNestedObject(t, props, "name")["const"]; got != "@floegence/redevplugin-ui" {
 		t.Fatalf("npm_package name const = %#v", got)
 	}
-	assertStringMinLength(t, requireNestedObject(t, props, "version"), "npm_package version", 1)
+	if got := requireNestedObject(t, props, "version")["$ref"]; got != "#/$defs/semver" {
+		t.Fatalf("npm_package version property = %#v, want strict semver ref", requireNestedObject(t, props, "version"))
+	}
 	if got := requireNestedObject(t, props, "path")["pattern"]; got != `^npm/floegence-redevplugin-ui-[A-Za-z0-9._+-]+\.tgz$` {
 		t.Fatalf("npm_package path pattern = %#v", got)
 	}

@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/observability"
 	"github.com/floegence/redevplugin/pkg/pluginpkg"
 	"github.com/floegence/redevplugin/pkg/runtimeclient"
+	"github.com/floegence/redevplugin/pkg/version"
 )
 
 const (
@@ -22,6 +27,7 @@ const (
 
 type commandRuntimeDependencies struct {
 	Path             string
+	Descriptor       runtimeclient.RuntimeDescriptor
 	Diagnostics      observability.DiagnosticsSink
 	Assets           pluginpkg.AssetStore
 	SurfaceTokens    *bridge.SurfaceTokenService
@@ -30,6 +36,32 @@ type commandRuntimeDependencies struct {
 	NetworkExecutor  connectivity.NetworkExecutor
 	ShardCount       int
 	HandshakeTimeout time.Duration
+}
+
+func describeCommandRuntime(path string, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	if err != nil {
+		return runtimeclient.RuntimeDescriptor{}, err
+	}
+	if err := runtimeclient.ValidateTarget(target); err != nil {
+		return runtimeclient.RuntimeDescriptor{}, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return runtimeclient.RuntimeDescriptor{}, fmt.Errorf("open runtime artifact: %w", err)
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return runtimeclient.RuntimeDescriptor{}, fmt.Errorf("hash runtime artifact: %w", err)
+	}
+	return runtimeclient.NewRuntimeDescriptor(
+		runtimeVersion,
+		target,
+		version.RustIPCVersion,
+		version.WASMABIVersion,
+		hex.EncodeToString(hasher.Sum(nil)),
+	)
 }
 
 func newCommandRuntimeManager(deps commandRuntimeDependencies) (runtimeclient.Manager, error) {
@@ -59,6 +91,7 @@ func newCommandRuntimeManager(deps commandRuntimeDependencies) (runtimeclient.Ma
 		Supervisor: runtimeclient.ProcessSupervisorOptions{
 			Limits:                runtimeclient.DefaultRuntimeLimits(),
 			RuntimePath:           deps.Path,
+			Descriptor:            deps.Descriptor,
 			Diagnostics:           deps.Diagnostics,
 			Artifacts:             commandRuntimeArtifactProvider{assets: deps.Assets},
 			HandleGrants:          commandRuntimeHandleGrantValidator{tokens: deps.SurfaceTokens},

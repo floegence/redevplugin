@@ -366,7 +366,18 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		},
 		EnableState: EnableEnabled,
 		Manifest:    manifest.Manifest{Plugin: manifest.Plugin{PluginID: "com.example.persist", Version: "1.0.0"}},
-		Metadata:    map[string]string{"source": "sqlite-test"},
+		RuntimeRequirement: &RuntimeRequirement{
+			MinVersion:       "0.5.0",
+			SupportedTargets: []string{"darwin/arm64", "linux/amd64"},
+		},
+		VersionHistory: []PluginVersion{{
+			Version: "0.9.0",
+			RuntimeRequirement: &RuntimeRequirement{
+				MinVersion:       "0.4.3",
+				SupportedTargets: []string{"linux/amd64"},
+			},
+		}},
+		Metadata: map[string]string{"source": "sqlite-test"},
 	}
 	stored, err := store.PutPlugin(context.Background(), record, PutOptions{Now: now})
 	if err != nil {
@@ -400,6 +411,12 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 		got.TrustAssessment.Metadata["trust.key_id"] != "official" ||
 		got.LocalImportProvenance == nil ||
 		got.LocalImportProvenance.UnsignedPolicy != "dev_only" ||
+		got.RuntimeRequirement == nil ||
+		got.RuntimeRequirement.MinVersion != "0.5.0" ||
+		len(got.RuntimeRequirement.SupportedTargets) != 2 ||
+		len(got.VersionHistory) != 1 ||
+		got.VersionHistory[0].RuntimeRequirement == nil ||
+		got.VersionHistory[0].RuntimeRequirement.MinVersion != "0.4.3" ||
 		!got.InstalledAt.Equal(now) {
 		t.Fatalf("persisted record mismatch: %#v", got)
 	}
@@ -409,6 +426,67 @@ func TestSQLiteStorePersistsRecordsAcrossOpen(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].TrustAssessment.VerifiedSignature == nil || listed[0].TrustAssessment.VerifiedSignature.KeyID != "official" {
 		t.Fatalf("ListPlugins() trust assessment mismatch: %#v", listed)
+	}
+	authorization, err := reopened.ListAuthorization(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authorization) != 1 || authorization[0].Plugin.RuntimeRequirement == nil || authorization[0].Plugin.RuntimeRequirement.MinVersion != "0.5.0" {
+		t.Fatalf("ListAuthorization() runtime requirement mismatch: %#v", authorization)
+	}
+}
+
+func TestSQLiteStoreMigratesRuntimeRequirementColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "registry.sqlite")
+	legacy, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRecord := PluginRecord{
+		PluginInstanceID:  "plugini_runtime_migration",
+		PublisherID:       "example",
+		PluginID:          "com.example.runtime-migration",
+		Version:           "1.0.0",
+		ActiveFingerprint: "sha256:runtime-migration",
+		TrustState:        TrustVerified,
+		EnableState:       EnableDisabled,
+		Manifest: manifest.Manifest{
+			Plugin:  manifest.Plugin{PluginID: "com.example.runtime-migration", Version: "1.0.0", MinRuntimeVersion: "0.5.0"},
+			Workers: []manifest.WorkerSpec{{WorkerID: "current-worker"}},
+		},
+		VersionHistory: []PluginVersion{{
+			Version: "0.4.3",
+			Manifest: manifest.Manifest{
+				Plugin:  manifest.Plugin{PluginID: "com.example.runtime-migration", Version: "0.4.3", MinRuntimeVersion: "0.4.3"},
+				Workers: []manifest.WorkerSpec{{WorkerID: "historic-worker"}},
+			},
+		}},
+	}
+	if _, err := legacy.PutPlugin(ctx, legacyRecord, PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, `ALTER TABLE plugin_records DROP COLUMN runtime_requirement_json`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := NewSQLiteStore(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = migrated.Close() })
+	got, err := migrated.GetPlugin(ctx, legacyRecord.PluginInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RuntimeRequirement == nil || got.RuntimeRequirement.MinVersion != "0.5.0" || len(got.RuntimeRequirement.SupportedTargets) != 0 {
+		t.Fatalf("migrated current runtime requirement = %#v", got.RuntimeRequirement)
+	}
+	if len(got.VersionHistory) != 1 || got.VersionHistory[0].RuntimeRequirement == nil || got.VersionHistory[0].RuntimeRequirement.MinVersion != "0.4.3" || len(got.VersionHistory[0].RuntimeRequirement.SupportedTargets) != 0 {
+		t.Fatalf("migrated historic runtime requirement = %#v", got.VersionHistory)
 	}
 }
 

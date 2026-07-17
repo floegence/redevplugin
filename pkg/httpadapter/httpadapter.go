@@ -2468,6 +2468,10 @@ func errorCodeForOpenSurfaceError(err error) security.ErrorCode {
 		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return security.ErrUIProtocolUnsupported
+	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
+		return security.ErrRuntimeUnavailable
+	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
+		return security.ErrRuntimeVersionMismatch
 	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
 		return security.ErrRuntimeUnavailable
 	case errors.Is(err, bridge.ErrSurfaceSessionAlreadyExists):
@@ -2482,6 +2486,10 @@ func httpStatusForOpenSurfaceError(err error) int {
 	case errors.Is(err, host.ErrManagementRevisionMismatch):
 		return http.StatusConflict
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
+		return http.StatusConflict
+	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
 		return http.StatusConflict
 	case errors.Is(err, bridge.ErrSurfaceSessionLimitReached):
 		return http.StatusServiceUnavailable
@@ -2525,8 +2533,10 @@ func errorCodeForRPCError(err error) security.ErrorCode {
 		return security.ErrTokenExpired
 	case isGatewayTokenValidationError(err):
 		return errorCodeForGatewayTokenError(err)
-	case errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
+	case errors.Is(err, host.ErrPluginRuntimeNotConfigured), errors.Is(err, runtimeclient.ErrRuntimeNotReady), errors.Is(err, runtimeclient.ErrRuntimeIPCUnavailable), errors.Is(err, runtimeclient.ErrRuntimeRequestFailed), errors.Is(err, runtimeclient.ErrRuntimeHandshake):
 		return security.ErrRuntimeUnavailable
+	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
+		return security.ErrRuntimeVersionMismatch
 	default:
 		return security.ErrPermissionDenied
 	}
@@ -2678,6 +2688,10 @@ func errorCodeForManagementError(err error) security.ErrorCode {
 		return security.ErrManagementRevisionMismatch
 	case errors.Is(err, host.ErrPluginUIProtocolUnsupported):
 		return security.ErrUIProtocolUnsupported
+	case errors.Is(err, host.ErrPluginRuntimeNotConfigured):
+		return security.ErrRuntimeUnavailable
+	case errors.Is(err, host.ErrPluginRuntimeIncompatible):
+		return security.ErrRuntimeVersionMismatch
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, storage.ErrInvalidNamespace), errors.Is(err, storage.ErrNamespaceNotFound):
 		return security.ErrInvalidRequest
 	case errors.Is(err, host.ErrPackageTrustVerificationInvalid):

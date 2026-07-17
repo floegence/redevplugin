@@ -397,6 +397,7 @@ func newPerformanceRuntimeHost(
 	h.adapters.Assets = assets
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           observabilityStore,
 		Artifacts:             runtimeArtifactProvider{assets: assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -415,7 +416,7 @@ func newPerformanceRuntimeHost(
 		t.Fatal(err)
 	}
 	h.adapters.RuntimeManager = performanceRuntimeManager{supervisor: supervisor}
-	if err := supervisor.Start(context.Background(), runtimeclient.Target{OS: "performance", Arch: "native"}); err != nil {
+	if err := supervisor.Start(context.Background(), hostRuntimeTestTarget(t)); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -439,6 +440,10 @@ func (performanceRuntimeManager) BindHostServices(services runtimeclient.Runtime
 	return nil
 }
 
+func (m performanceRuntimeManager) Preflight(ctx context.Context, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+	return m.supervisor.Preflight(ctx, target)
+}
+
 func (m performanceRuntimeManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	if err := m.supervisor.Start(ctx, target); err != nil {
 		return runtimeclient.ManagerHealth{}, err
@@ -455,7 +460,11 @@ func (m performanceRuntimeManager) Health(ctx context.Context) (runtimeclient.Ma
 	if err != nil {
 		return runtimeclient.ManagerHealth{}, err
 	}
-	return runtimeclient.ManagerHealth{Ready: health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_performance", Health: health}}}, nil
+	return runtimeclient.ManagerHealth{
+		Ready:      health.Ready,
+		Descriptor: health.Descriptor,
+		Shards:     []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_performance", Health: health}},
+	}, nil
 }
 
 func (m performanceRuntimeManager) BindPlugin(ctx context.Context, pluginInstanceID string) (runtimeclient.RuntimeBinding, error) {
@@ -472,6 +481,7 @@ func (m performanceRuntimeManager) BindPlugin(ctx context.Context, pluginInstanc
 		RuntimeGenerationID: health.RuntimeGenerationID,
 		IPCChannelID:        health.IPCChannelID,
 		ConnectionNonce:     health.ConnectionNonce,
+		Descriptor:          health.Descriptor,
 	}, nil
 }
 

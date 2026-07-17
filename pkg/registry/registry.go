@@ -83,6 +83,7 @@ type PluginRecord struct {
 	RevokeEpoch              uint64                   `json:"revoke_epoch"`
 	Manifest                 manifest.Manifest        `json:"manifest"`
 	PackageEntries           []pluginpkg.Entry        `json:"package_entries"`
+	RuntimeRequirement       *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
 	VersionHistory           []PluginVersion          `json:"version_history,omitempty"`
 	InstalledAt              time.Time                `json:"installed_at"`
 	EnabledAt                *time.Time               `json:"enabled_at,omitempty"`
@@ -105,8 +106,16 @@ type PluginVersion struct {
 	CapabilityContracts      []capabilitycontract.Pin `json:"capability_contracts,omitempty"`
 	Manifest                 manifest.Manifest        `json:"manifest"`
 	PackageEntries           []pluginpkg.Entry        `json:"package_entries"`
+	RuntimeRequirement       *RuntimeRequirement      `json:"runtime_requirement,omitempty"`
 	ActivatedAt              time.Time                `json:"activated_at"`
 	Metadata                 map[string]string        `json:"metadata,omitempty"`
+}
+
+// RuntimeRequirement is the exact worker-runtime compatibility contract that
+// was verified for an installed package version. UI-only packages leave it nil.
+type RuntimeRequirement struct {
+	MinVersion       string   `json:"min_version"`
+	SupportedTargets []string `json:"supported_targets,omitempty"`
 }
 
 type LocalImportProvenance struct {

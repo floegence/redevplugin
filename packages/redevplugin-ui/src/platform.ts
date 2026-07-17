@@ -153,17 +153,8 @@ export class PluginPlatformClient {
       throw error;
     }
   }
-  startRuntime(request: PluginRuntimeStartRequest = {}): Promise<PluginRuntimeHealth> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/start", request); }
-  async stopRuntime(): Promise<PluginRuntimeStopResult> {
-    try {
-      const result = await this.#requestMutation<PluginRuntimeStopResult>("POST", "/_redevplugin/api/plugins/runtime/stop", {});
-      disposePluginSurfaceScope(this.#surfaceScope);
-      return result;
-    } catch (error) {
-      this.#handleMutationFailure(error);
-      throw error;
-    }
-  }
+  startRuntime(request: PluginRuntimeStartRequest): Promise<PluginRuntimeHealth> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/start", request); }
+  stopRuntime(): Promise<PluginRuntimeStopResult> { return this.#requestMutation<PluginRuntimeStopResult>("POST", "/_redevplugin/api/plugins/runtime/stop", {}); }
   refreshEnabledRuntimeState(): Promise<PluginRuntimeRefreshResult> { return this.#requestMutation("POST", "/_redevplugin/api/plugins/runtime/refresh-enabled", {}); }
   runtimeHealth(): Promise<PluginRuntimeHealth> { return this.#getJSON("/_redevplugin/api/plugins/runtime/health"); }
   getSettingsSchema(pluginInstanceId: string): Promise<PluginSettingsSchema> { return this.#getJSON(`/_redevplugin/api/plugins/${encodeURIComponent(pluginInstanceId)}/settings/schema`); }

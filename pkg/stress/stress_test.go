@@ -5,13 +5,17 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -255,7 +259,6 @@ func TestStressGateOperationCancelOwnershipEvidence(t *testing.T) {
 		Audit:                       audit,
 		Diagnostics:                 diagnostics,
 		Secrets:                     secrets.NewMemoryStore(),
-		RuntimeManager:              platformAdapter,
 		SurfaceCatalog:              platformAdapter,
 		Assets:                      pluginpkg.NewMemoryAssetStore(),
 		InstallStages:               installstage.NewMemoryStore(),
@@ -394,10 +397,12 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	ctx, cancel := context.WithTimeout(stressTestContext(), 5*time.Second)
 	defer cancel()
 
+	target := runtimeclient.Target{OS: goruntime.GOOS, Arch: goruntime.GOARCH}
 	supervisor, err := runtimeclient.NewProcessSupervisor(runtimeclient.ProcessSupervisorOptions{
 		Limits:                runtimeclient.DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		RuntimePath:           os.Args[0],
+		Descriptor:            stressRuntimeDescriptor(t, os.Args[0], target),
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), "REDEVPLUGIN_STRESS_RUNTIME_HELPER=1"),
 		HeartbeatInterval:     250 * time.Millisecond,
@@ -407,7 +412,7 @@ func TestStressGateRuntimeRevokeACKP95(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "stress-os", Arch: "stress-arch"}); err != nil {
+	if err := supervisor.Start(ctx, target); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	defer func() {
@@ -938,37 +943,6 @@ func (stressPlatformAdapter) InvokeCoreAction(context.Context, capability.Invoca
 	return capability.Result{}, errors.New("stress host does not configure core actions")
 }
 
-func (stressPlatformAdapter) Start(context.Context, runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
-	return runtimeclient.ManagerHealth{}, runtimeclient.ErrRuntimeNotReady
-}
-
-func (stressPlatformAdapter) BindHostServices(services runtimeclient.RuntimeHostServices) error {
-	if services.StreamSink == nil {
-		return runtimeclient.ErrRuntimeHostServicesInvalid
-	}
-	return nil
-}
-
-func (stressPlatformAdapter) Stop(context.Context) error {
-	return nil
-}
-
-func (stressPlatformAdapter) Health(context.Context) (runtimeclient.ManagerHealth, error) {
-	return runtimeclient.ManagerHealth{Ready: false, Shards: []runtimeclient.ShardHealth{}}, nil
-}
-
-func (stressPlatformAdapter) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
-	return runtimeclient.RuntimeBinding{}, runtimeclient.ErrRuntimeNotReady
-}
-
-func (stressPlatformAdapter) InvokeWorker(context.Context, runtimeclient.RuntimeBinding, runtimeclient.Lease, string, []byte) ([]byte, error) {
-	return nil, runtimeclient.ErrRuntimeNotReady
-}
-
-func (stressPlatformAdapter) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
-	return runtimeclient.RevokeResult{PluginInstanceID: pluginInstanceID, RevokeEpoch: revokeEpoch}, nil
-}
-
 type stressPolicy struct{}
 
 func (stressPolicy) EvaluateLocalPolicy(context.Context, sessionctx.Context, host.PluginRef, manifest.MethodSpec) (host.PolicyDecision, error) {
@@ -992,6 +966,7 @@ type stressIPCFrame struct {
 }
 
 type stressHelloPayload struct {
+	Target       runtimeclient.Target        `json:"target"`
 	ChannelNonce string                      `json:"channel_nonce"`
 	Limits       runtimeclient.RuntimeLimits `json:"limits"`
 }
@@ -1041,6 +1016,7 @@ func runStressRuntimeHelper() {
 		RuntimeGenerationID: frame.RuntimeGenerationID,
 		Payload: stressRawJSON(map[string]any{
 			"runtime_version":  version.RuntimeVersion,
+			"actual_target":    hello.Target,
 			"rust_ipc_version": version.RustIPCVersion,
 			"wasm_abi_version": version.WASMABIVersion,
 			"channel_nonce":    hello.ChannelNonce,
@@ -1133,6 +1109,34 @@ func stressRawJSON(value any) json.RawMessage {
 		os.Exit(9)
 	}
 	return raw
+}
+
+func stressRuntimeDescriptor(t *testing.T, path string, target runtimeclient.Target) runtimeclient.RuntimeDescriptor {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		t.Fatal(err)
+	}
+	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(
+		runtimeVersion,
+		target,
+		version.RustIPCVersion,
+		version.WASMABIVersion,
+		hex.EncodeToString(hasher.Sum(nil)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
 }
 
 func logStressSummary(t *testing.T, summary stressSummary) {

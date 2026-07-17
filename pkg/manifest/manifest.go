@@ -294,8 +294,8 @@ func Validate(m Manifest) error {
 	if strings.TrimSpace(m.Plugin.DisplayName) == "" {
 		return ValidationError{Field: "plugin.display_name", Message: "is required"}
 	}
-	if strings.TrimSpace(m.Plugin.Version) == "" {
-		return ValidationError{Field: "plugin.version", Message: "is required"}
+	if _, err := version.ParseSemVer(m.Plugin.Version); err != nil {
+		return ValidationError{Field: "plugin.version", Message: "must be a strict semantic version"}
 	}
 	if m.Plugin.APIVersion != "plugin-v1" {
 		return ValidationError{Field: "plugin.api_version", Message: "must be plugin-v1"}
@@ -303,8 +303,8 @@ func Validate(m Manifest) error {
 	if m.Plugin.UIProtocolVersion != version.PluginUIProtocolVersion {
 		return ValidationError{Field: "plugin.ui_protocol_version", Message: "must be " + version.PluginUIProtocolVersion}
 	}
-	if strings.TrimSpace(m.Plugin.MinRuntimeVersion) == "" {
-		return ValidationError{Field: "plugin.min_runtime_version", Message: "is required"}
+	if _, err := version.ParseSemVer(m.Plugin.MinRuntimeVersion); err != nil {
+		return ValidationError{Field: "plugin.min_runtime_version", Message: "must be a strict semantic version"}
 	}
 	if m.Surfaces == nil {
 		return ValidationError{Field: "surfaces", Message: "is required"}

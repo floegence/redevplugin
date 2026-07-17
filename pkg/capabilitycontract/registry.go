@@ -2,10 +2,7 @@ package capabilitycontract
 
 import (
 	"fmt"
-	"strings"
 	"sync"
-
-	"golang.org/x/mod/semver"
 )
 
 type Registry struct {
@@ -58,22 +55,6 @@ func (r *Registry) Require(pin Pin) (VerifiedContract, error) {
 		return VerifiedContract{}, fmt.Errorf("%w: verified contract is not registered", ErrPinMismatch)
 	}
 	return cloneVerifiedContract(record), nil
-}
-
-func normalizedCapabilitySemver(value string) (string, error) {
-	normalized, ok := normalizeSemver(value)
-	if !ok {
-		return "", fmt.Errorf("%w: capability version is invalid", ErrInvalidContract)
-	}
-	return normalized, nil
-}
-
-func normalizeSemver(value string) (string, bool) {
-	if value == "" || strings.TrimSpace(value) != value || strings.HasPrefix(value, "v") {
-		return "", false
-	}
-	normalized := "v" + value
-	return normalized, semver.IsValid(normalized)
 }
 
 func pinKey(pin Pin) string {

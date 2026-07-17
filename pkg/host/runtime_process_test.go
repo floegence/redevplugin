@@ -3,8 +3,11 @@ package host
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,7 +52,11 @@ func (m testProcessManager) Health(ctx context.Context) (runtimeclient.ManagerHe
 	if err != nil {
 		return runtimeclient.ManagerHealth{}, err
 	}
-	return runtimeclient.ManagerHealth{Ready: health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: health}}}, nil
+	return runtimeclient.ManagerHealth{
+		Ready:      health.Ready,
+		Descriptor: health.Descriptor,
+		Shards:     []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: health}},
+	}, nil
 }
 
 func (m testProcessManager) BindPlugin(ctx context.Context, _ string) (runtimeclient.RuntimeBinding, error) {
@@ -58,9 +65,12 @@ func (m testProcessManager) BindPlugin(ctx context.Context, _ string) (runtimecl
 		return runtimeclient.RuntimeBinding{}, err
 	}
 	return runtimeclient.RuntimeBinding{
-		RuntimeShardID: "runtime_shard_00", RuntimeInstanceID: health.RuntimeInstanceID,
-		RuntimeGenerationID: health.RuntimeGenerationID, IPCChannelID: health.IPCChannelID,
-		ConnectionNonce: health.ConnectionNonce,
+		RuntimeShardID:      "runtime_shard_00",
+		RuntimeInstanceID:   health.RuntimeInstanceID,
+		RuntimeGenerationID: health.RuntimeGenerationID,
+		IPCChannelID:        health.IPCChannelID,
+		ConnectionNonce:     health.ConnectionNonce,
+		Descriptor:          health.Descriptor,
 	}, nil
 }
 
@@ -74,6 +84,43 @@ func TestMain(m *testing.M) {
 		return
 	}
 	os.Exit(m.Run())
+}
+
+func hostRuntimeTestTarget(t *testing.T) runtimeclient.Target {
+	t.Helper()
+	target := runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}
+	if err := runtimeclient.ValidateTarget(target); err != nil {
+		t.Fatalf("test runtime target: %v", err)
+	}
+	return target
+}
+
+func hostRuntimeTestDescriptor(t *testing.T, runtimePath string) runtimeclient.RuntimeDescriptor {
+	t.Helper()
+	file, err := os.Open(runtimePath)
+	if err != nil {
+		t.Fatalf("open runtime executable: %v", err)
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		t.Fatalf("hash runtime executable: %v", err)
+	}
+	runtimeVersion, err := version.ParseSemVer(version.RuntimeVersion)
+	if err != nil {
+		t.Fatalf("parse runtime version: %v", err)
+	}
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(
+		runtimeVersion,
+		hostRuntimeTestTarget(t),
+		version.RustIPCVersion,
+		version.WASMABIVersion,
+		hex.EncodeToString(hasher.Sum(nil)),
+	)
+	if err != nil {
+		t.Fatalf("construct runtime descriptor: %v", err)
+	}
+	return descriptor
 }
 
 func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T) {
@@ -94,6 +141,7 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           os.Args[0],
+		Descriptor:            hostRuntimeTestDescriptor(t, os.Args[0]),
 		HandshakeTimeout:      5 * time.Second,
 		Args:                  []string{"-test.run=TestMain"},
 		Env:                   append(os.Environ(), hostRuntimeProcessHelperEnv+"=1"),
@@ -117,7 +165,7 @@ func TestCallPluginMethodWorkerNetworkExecuteThroughRuntimeProcess(t *testing.T)
 			t.Errorf("Stop() error = %v", err)
 		}
 	})
-	if err := supervisor.Start(ctx, runtimeclient.Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(ctx, hostRuntimeTestTarget(t)); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkFixturePackage(t), "worker.view")
@@ -191,6 +239,7 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 					HeartbeatInterval:     2 * time.Second,
 					MaxHeartbeatStaleness: 5 * time.Second,
 					RuntimePath:           os.Args[0],
+					Descriptor:            hostRuntimeTestDescriptor(t, os.Args[0]),
 					Args:                  []string{"-test.run=TestMain"},
 					Env:                   append(os.Environ(), hostRuntimeProcessHelperEnv+"=1", "REDEVPLUGIN_HOST_RUNTIME_HTTP_STREAM=1"),
 					Diagnostics:           deps.Diagnostics,
@@ -215,7 +264,8 @@ func TestCallPluginMethodWorkerHTTPStreamThroughRuntimeProcess(t *testing.T) {
 	if manager == nil {
 		t.Fatal("runtime manager factory did not return the process manager")
 	}
-	if _, err := h.StartRuntime(ctx, StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}}); err != nil {
+	target := hostRuntimeTestTarget(t)
+	if _, err := h.StartRuntime(ctx, StartRuntimeRequest{Target: RuntimeTarget{OS: target.OS, Arch: target.Arch}}); err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
 	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerNetworkSubscriptionFixturePackage(t), "worker.view")
@@ -309,6 +359,7 @@ func TestCallPluginMethodWorkerHTTPStreamMemoryHostcallThroughBuiltRustRuntime(t
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           h.adapters.Diagnostics,
 		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -394,6 +445,7 @@ func TestCallPluginMethodWorkerThroughBuiltRustRuntime(t *testing.T) {
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           h.adapters.Diagnostics,
 		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -475,6 +527,7 @@ func TestCallPluginMethodWorkerNetworkMemoryHostcallThroughBuiltRustRuntime(t *t
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           h.adapters.Diagnostics,
 		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -675,6 +728,7 @@ func TestCallPluginMethodWorkerNetworkSocketMemoryHostcallsThroughBuiltRustRunti
 				HeartbeatInterval:     2 * time.Second,
 				MaxHeartbeatStaleness: 5 * time.Second,
 				RuntimePath:           runtimePath,
+				Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 				Diagnostics:           h.adapters.Diagnostics,
 				Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 				HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -753,6 +807,7 @@ func TestCallPluginMethodWorkerStorageMemoryHostcallThroughBuiltRustRuntime(t *t
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           h.adapters.Diagnostics,
 		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -841,6 +896,7 @@ func TestCallPluginMethodWorkerStorageKVMemoryHostcallThroughBuiltRustRuntime(t 
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           h.adapters.Diagnostics,
 		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -929,6 +985,7 @@ func TestCallPluginMethodWorkerStorageSQLiteMemoryHostcallThroughBuiltRustRuntim
 		HeartbeatInterval:     2 * time.Second,
 		MaxHeartbeatStaleness: 5 * time.Second,
 		RuntimePath:           runtimePath,
+		Descriptor:            hostRuntimeTestDescriptor(t, runtimePath),
 		Diagnostics:           h.adapters.Diagnostics,
 		Artifacts:             runtimeArtifactProvider{assets: h.adapters.Assets},
 		HandleGrants:          runtimeHandleGrantValidator{tokens: h.surfaceTokens},
@@ -1034,6 +1091,7 @@ type hostRuntimeHelloAckPayload struct {
 	RuntimeVersion string                      `json:"runtime_version"`
 	RustIPCVersion string                      `json:"rust_ipc_version"`
 	WASMABIVersion string                      `json:"wasm_abi_version"`
+	ActualTarget   runtimeclient.Target        `json:"actual_target"`
 	ChannelNonce   string                      `json:"channel_nonce"`
 	Limits         runtimeclient.RuntimeLimits `json:"limits"`
 }
@@ -1136,6 +1194,7 @@ func runHostRuntimeProcessHelper() {
 				RuntimeVersion: version.RuntimeVersion,
 				RustIPCVersion: version.RustIPCVersion,
 				WASMABIVersion: version.WASMABIVersion,
+				ActualTarget:   runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH},
 				ChannelNonce:   hello.ChannelNonce,
 				Limits:         hello.Limits,
 			})

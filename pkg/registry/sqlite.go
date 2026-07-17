@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -12,8 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/floegence/redevplugin/pkg/manifest"
 	"github.com/floegence/redevplugin/pkg/mutation"
 	"github.com/floegence/redevplugin/pkg/plugindata"
+	platformversion "github.com/floegence/redevplugin/pkg/version"
 	_ "modernc.org/sqlite"
 )
 
@@ -135,7 +138,7 @@ func (s *SQLiteStore) ListPlugins(ctx context.Context) ([]PluginRecord, error) {
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
-	installed_at, enabled_at, updated_at, deleted_at, metadata_json
+		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
 WHERE deleted_at IS NULL
 ORDER BY plugin_id ASC, plugin_instance_id ASC`)
@@ -384,6 +387,7 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 	manifest_json TEXT NOT NULL,
 	package_entries_json TEXT NOT NULL,
 	version_history_json TEXT NOT NULL,
+	runtime_requirement_json TEXT NOT NULL DEFAULT 'null',
 	installed_at INTEGER NOT NULL,
 	enabled_at INTEGER,
 	updated_at INTEGER NOT NULL,
@@ -391,6 +395,15 @@ CREATE TABLE IF NOT EXISTS plugin_records (
 	metadata_json TEXT NOT NULL
 )`); err != nil {
 		return err
+	}
+	addedRuntimeRequirementColumn, err := ensureRuntimeRequirementColumn(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if addedRuntimeRequirementColumn {
+		if err := migrateLegacyRuntimeRequirements(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plugin_records_plugin_id ON plugin_records(plugin_id)`); err != nil {
 		return err
@@ -464,6 +477,139 @@ CREATE TABLE IF NOT EXISTS plugin_source_security_floors (
 	return tx.Commit()
 }
 
+func ensureRuntimeRequirementColumn(ctx context.Context, tx *sql.Tx) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(plugin_records)`)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			columnID    int
+			name        string
+			columnType  string
+			notNull     int
+			defaultExpr sql.NullString
+			primaryKey  int
+		)
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultExpr, &primaryKey); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		if name != "runtime_requirement_json" {
+			continue
+		}
+		if !strings.EqualFold(columnType, "TEXT") || notNull != 1 || !defaultExpr.Valid || defaultExpr.String != "'null'" || primaryKey != 0 {
+			_ = rows.Close()
+			return false, fmt.Errorf("plugin_records.runtime_requirement_json has an incompatible schema")
+		}
+		found = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if found {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE plugin_records ADD COLUMN runtime_requirement_json TEXT NOT NULL DEFAULT 'null'`); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func migrateLegacyRuntimeRequirements(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT plugin_instance_id, manifest_json, version_history_json FROM plugin_records`)
+	if err != nil {
+		return err
+	}
+	type migration struct {
+		pluginInstanceID       string
+		runtimeRequirementJSON string
+		versionHistoryJSON     string
+	}
+	migrations := make([]migration, 0)
+	for rows.Next() {
+		var pluginInstanceID string
+		var manifestJSON string
+		var versionHistoryJSON string
+		if err := rows.Scan(&pluginInstanceID, &manifestJSON, &versionHistoryJSON); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var pluginManifest manifest.Manifest
+		if err := decodeRegistryJSON(manifestJSON, &pluginManifest); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("migrate runtime requirement for plugin %q: %w", pluginInstanceID, err)
+		}
+		requirement, err := legacyRuntimeRequirement(pluginManifest)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("migrate runtime requirement for plugin %q: %w", pluginInstanceID, err)
+		}
+		var history []PluginVersion
+		if err := decodeRegistryJSON(versionHistoryJSON, &history); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("migrate runtime requirement history for plugin %q: %w", pluginInstanceID, err)
+		}
+		for index := range history {
+			if history[index].RuntimeRequirement != nil {
+				continue
+			}
+			history[index].RuntimeRequirement, err = legacyRuntimeRequirement(history[index].Manifest)
+			if err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("migrate runtime requirement history for plugin %q version %q: %w", pluginInstanceID, history[index].Version, err)
+			}
+		}
+		runtimeRequirementJSON, err := encodeRegistryJSON(requirement)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		migratedHistoryJSON, err := encodeRegistryJSON(history)
+		if err != nil {
+			_ = rows.Close()
+			return err
+		}
+		migrations = append(migrations, migration{
+			pluginInstanceID:       pluginInstanceID,
+			runtimeRequirementJSON: runtimeRequirementJSON,
+			versionHistoryJSON:     migratedHistoryJSON,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, migrated := range migrations {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE plugin_records
+SET runtime_requirement_json = ?, version_history_json = ?
+WHERE plugin_instance_id = ?`, migrated.runtimeRequirementJSON, migrated.versionHistoryJSON, migrated.pluginInstanceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func legacyRuntimeRequirement(pluginManifest manifest.Manifest) (*RuntimeRequirement, error) {
+	if len(pluginManifest.Workers) == 0 {
+		return nil, nil
+	}
+	minimumVersion, err := platformversion.ParseSemVer(pluginManifest.Plugin.MinRuntimeVersion)
+	if err != nil {
+		return nil, err
+	}
+	return &RuntimeRequirement{MinVersion: minimumVersion.String()}, nil
+}
+
 func getSQLitePlugin(ctx context.Context, q sqliteQuerier, pluginInstanceID string, includeDeleted bool) (PluginRecord, bool, error) {
 	query := `
 SELECT
@@ -472,7 +618,7 @@ SELECT
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
-	installed_at, enabled_at, updated_at, deleted_at, metadata_json
+		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
 FROM plugin_records
 WHERE plugin_instance_id = ?`
 	if !includeDeleted {
@@ -503,6 +649,10 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	if err != nil {
 		return err
 	}
+	runtimeRequirementJSON, err := encodeRegistryJSON(record.RuntimeRequirement)
+	if err != nil {
+		return err
+	}
 	metadataJSON, err := encodeRegistryJSON(record.Metadata)
 	if err != nil {
 		return err
@@ -530,8 +680,8 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		source_policy_snapshot_hash, source_policy_snapshot_json, local_import_provenance_json, capability_contracts_json, enable_state,
 		disabled_reason, policy_revision, management_revision,
 		revoke_epoch, manifest_json, package_entries_json, version_history_json,
-		installed_at, enabled_at, updated_at, deleted_at, metadata_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		runtime_requirement_json, installed_at, enabled_at, updated_at, deleted_at, metadata_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(plugin_instance_id) DO UPDATE SET
 	publisher_id = excluded.publisher_id,
 	plugin_id = excluded.plugin_id,
@@ -554,6 +704,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 	manifest_json = excluded.manifest_json,
 	package_entries_json = excluded.package_entries_json,
 	version_history_json = excluded.version_history_json,
+	runtime_requirement_json = excluded.runtime_requirement_json,
 	installed_at = excluded.installed_at,
 	enabled_at = excluded.enabled_at,
 	updated_at = excluded.updated_at,
@@ -581,6 +732,7 @@ func upsertSQLitePlugin(ctx context.Context, tx *sql.Tx, record PluginRecord) er
 		manifestJSON,
 		packageEntriesJSON,
 		versionHistoryJSON,
+		runtimeRequirementJSON,
 		timeToNullableUnix(record.InstalledAt),
 		timePtrToNullableUnix(record.EnabledAt),
 		timeToNullableUnix(record.UpdatedAt),
@@ -609,6 +761,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	var manifestJSON string
 	var packageEntriesJSON string
 	var versionHistoryJSON string
+	var runtimeRequirementJSON string
 	var metadataJSON string
 	var installedAt int64
 	var enabledAt sql.NullInt64
@@ -637,6 +790,7 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 		&manifestJSON,
 		&packageEntriesJSON,
 		&versionHistoryJSON,
+		&runtimeRequirementJSON,
 		&installedAt,
 		&enabledAt,
 		&updatedAt,
@@ -655,6 +809,13 @@ func scanSQLitePlugin(scanner sqlitePluginScanner) (PluginRecord, error) {
 	}
 	if err := decodeRegistryJSON(versionHistoryJSON, &record.VersionHistory); err != nil {
 		return PluginRecord{}, err
+	}
+	if runtimeRequirementJSON != "null" {
+		var requirement RuntimeRequirement
+		if err := decodeRegistryJSON(runtimeRequirementJSON, &requirement); err != nil {
+			return PluginRecord{}, err
+		}
+		record.RuntimeRequirement = &requirement
 	}
 	if err := decodeRegistryJSON(metadataJSON, &record.Metadata); err != nil {
 		return PluginRecord{}, err

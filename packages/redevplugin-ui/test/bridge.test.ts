@@ -13,6 +13,7 @@ import {
   toPluginSurfaceHostBootstrap,
   type FetchInitLike,
   type FetchResponseLike,
+  type PluginRuntimeHealth,
 } from "../src/trusted-parent.js";
 import { PluginTransportError } from "../src/errors.js";
 import { PluginLocalImportClient } from "../src/local-import.js";
@@ -416,8 +417,30 @@ test("platform client installs and updates plugin release refs without package b
 
 test("platform client manages runtime lifecycle routes", async () => {
   const fetch = new FakeFetch();
-  fetch.push({ ok: true, data: { ready: true, shards: [{ runtime_shard_id: "runtime_shard_00", runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", runtime_version: "0.0.0-dev", rust_ipc_version: "rust-ipc-v3", wasm_abi_version: "redevplugin-wasm-worker-v2", ready: true }] } });
-  fetch.push({ ok: true, data: { ready: true, shards: [{ runtime_shard_id: "runtime_shard_00", runtime_instance_id: "runtime_1", runtime_generation_id: "gen_1", ready: true }] } });
+  const descriptor = {
+    version: "0.5.0",
+    target: { os: "darwin", arch: "arm64" },
+    ipc_version: "rust-ipc-v3",
+    wasm_abi_version: "redevplugin-wasm-worker-v2",
+    artifact_sha256: "a".repeat(64),
+  } as const;
+  const runtimeHealth = {
+    ready: true,
+    descriptor,
+    shards: [{
+      runtime_shard_id: "runtime_shard_00",
+      runtime_instance_id: "runtime_1",
+      runtime_generation_id: "gen_1",
+      descriptor,
+      ready: true,
+      active_invocations: 0,
+      queued_invocations: 0,
+      limits: { worker_count: 8, queue_capacity: 32, per_plugin_concurrency: 4, module_cache_entries: 64, module_cache_source_bytes: 134217728 },
+      module_cache: { hits: 0, misses: 0, compiles: 0, entries: 0, source_bytes: 0 },
+    }],
+  } satisfies PluginRuntimeHealth;
+  fetch.push({ ok: true, data: runtimeHealth });
+  fetch.push({ ok: true, data: runtimeHealth });
   fetch.push({ ok: true, data: { results: [
     { plugin_instance_id: "plugin_instance_1", status: "refreshed" },
     { plugin_instance_id: "plugin_instance_2", status: "failed", error: { code: "PLUGIN_RUNTIME_UNAVAILABLE", message: "Plugin runtime state could not be refreshed" } },

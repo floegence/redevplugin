@@ -98,14 +98,12 @@ func obtainAttestedCapabilityRPCError(t *testing.T) error {
 
 func obtainAttestedWorkerRPCError(t *testing.T) error {
 	t.Helper()
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{
-			RuntimeInstanceID: "runtime_source", RuntimeGenerationID: "runtime_gen_source",
-			IPCChannelID: "ipc_source", ConnectionNonce: "connection_nonce_source_1234567890", Ready: true,
-		},
-		err: &runtimeclient.WorkerExecutionError{
-			Code: "WORKER_FAILED", Message: "Worker failed", Origin: runtimeclient.WorkerErrorOriginPlugin,
-		},
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+		RuntimeInstanceID: "runtime_source", RuntimeGenerationID: "runtime_gen_source",
+		IPCChannelID: "ipc_source", ConnectionNonce: "connection_nonce_source_1234567890", Ready: true,
+	})
+	runtime.err = &runtimeclient.WorkerExecutionError{
+		Code: "WORKER_FAILED", Message: "Worker failed", Origin: runtimeclient.WorkerErrorOriginPlugin,
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, runtimeManager: runtime,
@@ -153,12 +151,10 @@ func newRPCErrorReplaySinks(t *testing.T) []rpcErrorReplaySink {
 	})
 	targetInstalled, targetGateway := installEnableAndMintGateway(t, targetHost, buildRPCFixturePackage(t), "rpc.view")
 
-	runtime := &recordingRuntimeManager{
-		health: runtimeclient.Health{
-			RuntimeInstanceID: "runtime_sink", RuntimeGenerationID: "runtime_gen_sink",
-			IPCChannelID: "ipc_sink", ConnectionNonce: "connection_nonce_sink_1234567890", Ready: true,
-		},
-	}
+	runtime := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{
+		RuntimeInstanceID: "runtime_sink", RuntimeGenerationID: "runtime_gen_sink",
+		IPCChannelID: "ipc_sink", ConnectionNonce: "connection_nonce_sink_1234567890", Ready: true,
+	})
 	runtimeHost, _, _ := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, runtimeManager: runtime,
 	})

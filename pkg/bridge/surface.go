@@ -1670,6 +1670,31 @@ func (s *SurfaceTokenService) RevokeAllSurfaces(now time.Time) int {
 	return len(revokedSurfaceIDs)
 }
 
+// RevokeSurfacesExceptGeneration revokes sessions bound to runtime
+// generations other than the explicitly preserved Host generation.
+func (s *SurfaceTokenService) RevokeSurfacesExceptGeneration(preservedGenerationID string, now time.Time) int {
+	if s == nil || strings.TrimSpace(preservedGenerationID) == "" {
+		return 0
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	revokedSurfaceIDs := make([]string, 0)
+	s.mu.Lock()
+	for surfaceInstanceID, state := range s.sessions {
+		if state.session.RuntimeGenerationID == preservedGenerationID {
+			continue
+		}
+		delete(s.sessions, surfaceInstanceID)
+		revokedSurfaceIDs = append(revokedSurfaceIDs, surfaceInstanceID)
+	}
+	s.mu.Unlock()
+	for _, surfaceInstanceID := range revokedSurfaceIDs {
+		s.tokens.RevokeSurface(surfaceInstanceID, now)
+	}
+	return len(revokedSurfaceIDs)
+}
+
 func (s *SurfaceTokenService) RevokePlugin(pluginInstanceID string, minimumRevokeEpoch uint64, now time.Time) (int, error) {
 	if s == nil {
 		return 0, nil

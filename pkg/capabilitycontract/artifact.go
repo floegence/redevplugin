@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/mod/semver"
+	platformversion "github.com/floegence/redevplugin/pkg/version"
 )
 
 const (
@@ -71,7 +71,7 @@ func Build(req BuildRequest) (Bundle, error) {
 	if req.GeneratedAt.IsZero() || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(req.SourceCommit) {
 		return Bundle{}, invalid("generated_at and a 40-character lowercase source_commit are required")
 	}
-	if _, ok := normalizeSemver(req.MinReDevPluginVersion); !ok || !idPattern.MatchString(req.SignatureKeyID) ||
+	if _, err := platformversion.ParseSemVer(req.MinReDevPluginVersion); err != nil || !idPattern.MatchString(req.SignatureKeyID) ||
 		!canonicalDecimalPattern.MatchString(req.SignaturePolicyEpoch) || !canonicalDecimalPattern.MatchString(req.SignatureRevocationEpoch) {
 		return Bundle{}, invalid("compatibility and signature identity are required")
 	}
@@ -280,12 +280,12 @@ func Verify(req VerifyRequest) (VerifiedContract, error) {
 		compatibility.CapabilityVersion != contract.CapabilityVersion {
 		return VerifiedContract{}, fmt.Errorf("%w: compatibility identity mismatch", ErrCompatibility)
 	}
-	minimumVersion, ok := normalizeSemver(compatibility.MinReDevPluginVersion)
-	if !ok {
+	minimumVersion, err := platformversion.ParseSemVer(compatibility.MinReDevPluginVersion)
+	if err != nil {
 		return VerifiedContract{}, fmt.Errorf("%w: min_redevplugin_version is invalid", ErrCompatibility)
 	}
-	currentVersion, valid := normalizeSemver(req.CurrentReDevPluginVersion)
-	if !valid || req.CurrentReDevPluginVersion == "0.0.0-dev" || semver.Compare(currentVersion, minimumVersion) < 0 {
+	currentVersion, err := platformversion.ParseSemVer(req.CurrentReDevPluginVersion)
+	if err != nil || req.CurrentReDevPluginVersion == "0.0.0-dev" || currentVersion.Compare(minimumVersion) < 0 {
 		return VerifiedContract{}, fmt.Errorf("%w: requires redevplugin %s", ErrCompatibility, compatibility.MinReDevPluginVersion)
 	}
 	var notices []Notice
@@ -339,7 +339,7 @@ func validatePin(pin Pin) error {
 			return fmt.Errorf("%w: %s is required", ErrInvalidBundle, name)
 		}
 	}
-	if _, ok := normalizeSemver(pin.ContractVersion); !ok {
+	if _, err := platformversion.ParseSemVer(pin.ContractVersion); err != nil {
 		return fmt.Errorf("%w: contract_version is invalid", ErrInvalidBundle)
 	}
 	if !canonicalDecimalPattern.MatchString(pin.SignaturePolicyEpoch) || !canonicalDecimalPattern.MatchString(pin.SignatureRevocationEpoch) {

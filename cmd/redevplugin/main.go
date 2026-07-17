@@ -1211,7 +1211,6 @@ func newEphemeralCLIAdapters(registryStore registry.Store, pluginData host.Plugi
 		Audit:                       events,
 		Diagnostics:                 events,
 		Secrets:                     secrets.NewMemoryStore(),
-		RuntimeManager:              commandInactiveRuntimeManager{},
 		SurfaceCatalog:              commandSurfaceCatalogSink{},
 		Assets:                      pluginpkg.NewMemoryAssetStore(),
 		InstallStages:               installstage.NewMemoryStore(),

@@ -2634,7 +2634,7 @@ test("unknown plugin mutation outcome closes the surface and notifies the shell"
   );
 });
 
-test("runtime stop tears down the complete local surface scope", async () => {
+test("runtime stop preserves host-owned UI-only surface scope", async () => {
   const frame = new FakeFrame();
   const scope = createPluginSurfaceScope();
   const host = createSurfaceHost(frame, {
@@ -2648,10 +2648,10 @@ test("runtime stop tears down the complete local surface scope", async () => {
 
   await client.stopRuntime();
 
-  assert.throws(
-    () => host.sendLifecycle({ type: "hidden" }),
-    (error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_DISPOSED",
-  );
+	assert.throws(
+		() => host.sendLifecycle({ type: "hidden" }),
+		(error: unknown) => error instanceof PluginBridgeError && error.errorCode === "PLUGIN_BRIDGE_HANDSHAKE_REQUIRED",
+	);
 });
 
 test("local package update tears down matching local surface hosts after success", async () => {

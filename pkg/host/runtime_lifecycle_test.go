@@ -20,20 +20,19 @@ import (
 )
 
 func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
-	supervisor := &recordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-	}
+	supervisor := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode:  true,
 		localGenerated: true,
 		runtimeManager: supervisor,
 	})
 
-	health, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}})
+	target := hostTestRuntimeDescriptor().Target()
+	health, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: target.OS, Arch: target.Arch}})
 	if err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
-	if len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_1" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
+	if len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_1" || supervisor.startedTarget != target {
 		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
 	if !audits.hasEvent("plugin.runtime.started") {
@@ -50,14 +49,16 @@ func TestRuntimeLifecycleUsesInjectedSupervisor(t *testing.T) {
 
 func TestHostCloseStopsRuntimeWithBoundedDeadlineAndWaitsForCompletion(t *testing.T) {
 	manager := &blockingCloseRuntimeManager{
-		stopStarted: make(chan struct{}),
-		stopRelease: make(chan struct{}),
-		deadline:    make(chan time.Time, 1),
+		recordingRuntimeManager: *newRecordingRuntimeManager(),
+		stopStarted:             make(chan struct{}),
+		stopRelease:             make(chan struct{}),
+		deadline:                make(chan time.Time, 1),
 	}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 	pluginData := &recordingClosePluginData{PluginData: h.adapters.PluginData}
 	h.adapters.PluginData = pluginData
-	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: "test-os", Arch: "test-arch"}}); err != nil {
+	target := hostTestRuntimeDescriptor().Target()
+	if _, err := h.StartRuntime(hostTestContext(), StartRuntimeRequest{Target: RuntimeTarget{OS: target.OS, Arch: target.Arch}}); err != nil {
 		t.Fatalf("StartRuntime() error = %v", err)
 	}
 
@@ -103,7 +104,7 @@ func TestHostCloseStopsRuntimeWithBoundedDeadlineAndWaitsForCompletion(t *testin
 func TestHostCloseJoinsRuntimeAndPluginDataFailures(t *testing.T) {
 	runtimeFailure := errors.New("runtime shutdown failed")
 	pluginDataFailure := errors.New("plugin data close failed")
-	manager := &blockingCloseRuntimeManager{stopErr: runtimeFailure}
+	manager := &blockingCloseRuntimeManager{recordingRuntimeManager: *newRecordingRuntimeManager(), stopErr: runtimeFailure}
 	h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager, expectCloseErr: true})
 	pluginData := &recordingClosePluginData{PluginData: h.adapters.PluginData, err: pluginDataFailure}
 	h.adapters.PluginData = pluginData
@@ -156,7 +157,7 @@ func TestHostRuntimeLifecycleRejectsCallsAfterClose(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			manager := &recordingRuntimeManager{}
+			manager := newRecordingRuntimeManager()
 			h, _, _ := newTestHostWithOptions(t, testHostOptions{runtimeManager: manager})
 			if err := h.Close(); err != nil {
 				t.Fatalf("Host.Close() error = %v", err)
@@ -176,18 +177,16 @@ func TestHostRuntimeLifecycleRejectsCallsAfterClose(t *testing.T) {
 
 func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 	stopFailure := errors.New("runtime stop failed at /Users/secret/runtime with vault-token-super-secret")
-	manager := &recordingRuntimeManager{
-		health:      runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true},
-		stopErr:     stopFailure,
-		stopErrOnce: true,
-	}
+	manager := newRecordingRuntimeManagerWithHealth(runtimeclient.Health{RuntimeInstanceID: "runtime_1", RuntimeGenerationID: "runtime_gen_1", IPCChannelID: "ipc_1", ConnectionNonce: "connection_nonce_1234567890", Ready: true})
+	manager.stopErr = stopFailure
+	manager.stopErrOnce = true
 	diagnostics := &diagnosticSink{}
 	h, _, audits := newTestHostWithOptions(t, testHostOptions{
 		developerMode: true, localGenerated: true, runtimeManager: manager,
 		capabilityID: "example.capability.echo", capabilityAdapter: &recordingCapabilityAdapter{result: capability.Result{Data: map[string]any{"echo": "hello"}}},
 		diagnostics: diagnostics,
 	})
-	installed, gateway := installEnableAndMintGateway(t, h, buildRPCFixturePackage(t), "rpc.view")
+	installed, gateway := installEnableAndMintGateway(t, h, buildWorkerFixturePackage(t), "worker.view")
 	err := h.StopRuntime(hostTestContext())
 	if !errors.Is(err, stopFailure) || mutation.ForError(err) != mutation.OutcomeUnknown {
 		t.Fatalf("StopRuntime() error = %v", err)
@@ -210,7 +209,7 @@ func TestStopRuntimeRevokesSurfacesWhenManagerStopFails(t *testing.T) {
 		SurfaceInstanceID: "surface_rpc",
 		BridgeChannelID:   "bridge_rpc",
 		GatewayToken:      gateway.GatewayToken,
-		Method:            "echo.ping",
+		Method:            "worker.echo",
 		Params:            map[string]any{"message": "hello"},
 	})
 	if !errors.Is(callErr, bridge.ErrTokenRevoked) {

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	platformversion "github.com/floegence/redevplugin/pkg/version"
 )
 
 const SchemaVersion = "redevplugin.host_capability_contract.v1"
@@ -220,10 +222,10 @@ func Validate(contract Contract) error {
 			return invalid("%s is invalid", name)
 		}
 	}
-	if _, err := normalizedCapabilitySemver(contract.ContractVersion); err != nil {
+	if _, err := platformversion.ParseSemVer(contract.ContractVersion); err != nil {
 		return invalid("contract_version is invalid")
 	}
-	if _, err := normalizedCapabilitySemver(contract.CapabilityVersion); err != nil {
+	if _, err := platformversion.ParseSemVer(contract.CapabilityVersion); err != nil {
 		return invalid("capability_version is invalid")
 	}
 	if !validTypeScriptDeclarationIdentifier(contract.ClientName) {

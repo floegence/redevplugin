@@ -224,7 +224,7 @@ func TestEd25519RuntimeLeaseVerifierChecksSignatureAndAudience(t *testing.T) {
 func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 	now := time.Date(2026, 7, 4, 11, 0, 0, 0, time.UTC)
 	diagnostics := &runtimeDiagnosticSink{}
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -242,7 +242,7 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	health, err := supervisor.Health(context.Background())
@@ -266,7 +266,7 @@ func TestProcessSupervisorRejectsInvalidLeaseBeforeIPC(t *testing.T) {
 }
 
 func TestProcessSupervisorSendsRuntimeLeasePublicKeysInHello(t *testing.T) {
-	supervisor, err := NewProcessSupervisor(ProcessSupervisorOptions{
+	supervisor, err := newTestProcessSupervisor(t, ProcessSupervisorOptions{
 		Limits:                DefaultRuntimeLimits(),
 		HandshakeTimeout:      5 * time.Second,
 		HeartbeatInterval:     2 * time.Second,
@@ -283,7 +283,7 @@ func TestProcessSupervisorSendsRuntimeLeasePublicKeysInHello(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := supervisor.Start(context.Background(), Target{OS: "test-os", Arch: "test-arch"}); err != nil {
+	if err := supervisor.Start(context.Background(), testRuntimeTarget); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if _, err := supervisor.invokeWorkerForTest(context.Background(), Lease{LeaseID: "lease_auto_signed"}, "worker.echo", workerInvocationFixture()); err != nil {

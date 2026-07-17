@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,6 +42,7 @@ import (
 	"github.com/floegence/redevplugin/pkg/security"
 	"github.com/floegence/redevplugin/pkg/sessionctx"
 	"github.com/floegence/redevplugin/pkg/stream"
+	platformversion "github.com/floegence/redevplugin/pkg/version"
 	"github.com/floegence/redevplugin/pkg/websecurity"
 )
 
@@ -2915,10 +2917,8 @@ func TestHandlerCoreActionCannotForgeCapabilityErrorDetails(t *testing.T) {
 }
 
 func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
-	runtime := &httpRecordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
-		err:    runtimeclient.ErrRuntimeRequestFailed,
-	}
+	runtime := newHTTPRecordingRuntimeManager(t)
+	runtime.err = runtimeclient.ErrRuntimeRequestFailed
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
 	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPWorkerFixturePackage(t))
 	if err != nil {
@@ -2957,10 +2957,8 @@ func TestHandlerWorkerRuntimeErrorMapsToRuntimeUnavailable(t *testing.T) {
 }
 
 func TestHandlerWorkerBusinessErrorPreservesWorkerCode(t *testing.T) {
-	runtime := &httpRecordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
-		err:    &runtimeclient.WorkerExecutionError{Code: "NOTE_NOT_FOUND", Message: "note was not found", Origin: runtimeclient.WorkerErrorOriginPlugin},
-	}
+	runtime := newHTTPRecordingRuntimeManager(t)
+	runtime.err = &runtimeclient.WorkerExecutionError{Code: "NOTE_NOT_FOUND", Message: "note was not found", Origin: runtimeclient.WorkerErrorOriginPlugin}
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: runtime})
 	installed, err := host.ImportLocalPackageBytes(httpTestContext(), h, buildHTTPWorkerFixturePackage(t))
 	if err != nil {
@@ -3578,11 +3576,12 @@ func TestHandlerDiagnosticsAreScopedToAuthenticatedOwner(t *testing.T) {
 func TestHandlerInternalErrorsUseStableMessagesAndOwnerScopedDiagnostics(t *testing.T) {
 	const sensitive = "launch /Users/secret/path/redevplugin-runtime with vault-token-super-secret"
 	diagnostics := newHTTPRecordingDiagnostics()
-	runtimeManager := &httpRecordingRuntimeManager{startErr: errors.New(sensitive)}
+	runtimeManager := newHTTPRecordingRuntimeManager(t)
+	runtimeManager.startErr = errors.New(sensitive)
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{diagnostics: diagnostics, runtimeManager: runtimeManager})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 	envelope := postJSONError(t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
-		"target": map[string]any{"os": "test-os", "arch": "test-arch"},
+		"target": map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH},
 	}, http.StatusServiceUnavailable)
 	if envelope.Code != string(security.ErrRuntimeUnavailable) || envelope.Message != "plugin runtime is unavailable" || envelope.MutationOutcome != string(mutation.OutcomeNotCommitted) {
 		t.Fatalf("runtime public error mismatch: %#v", envelope)
@@ -3695,20 +3694,21 @@ func TestHandlerPatchSettingsReportsUnknownWhenMetadataReadFailsAfterCommit(t *t
 }
 
 func TestHandlerRuntimeLifecycleFlow(t *testing.T) {
-	supervisor := &httpRecordingRuntimeManager{
-		health: runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true},
-	}
+	supervisor := newHTTPRecordingRuntimeManager(t)
 	h := newHTTPTestHostWithOptions(t, httpTestHostOptions{runtimeManager: supervisor})
 	handler := mustNewHandler(t, h, allowHTTPTestGuard())
 
 	health := postJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/start", map[string]any{
-		"target": map[string]any{"os": "test-os", "arch": "test-arch"},
+		"target": map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH},
 	})
-	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_http" || supervisor.startedTarget.OS != "test-os" || supervisor.startedTarget.Arch != "test-arch" {
+	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeInstanceID != "runtime_http" || supervisor.startedTarget != (runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH}) {
 		t.Fatalf("runtime start mismatch: health=%#v supervisor=%#v", health, supervisor)
 	}
+	if health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
+		t.Fatalf("runtime start descriptor mismatch: health=%#v supervisor=%#v", health, supervisor)
+	}
 	health = getJSON[runtimeclient.ManagerHealth](t, handler, "/_redevplugin/api/plugins/runtime/health")
-	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeGenerationID != "runtime_gen_http" {
+	if !health.Ready || len(health.Shards) != 1 || health.Shards[0].RuntimeGenerationID != "runtime_gen_http" || health.Descriptor != supervisor.health.Descriptor || health.Shards[0].Descriptor != health.Descriptor {
 		t.Fatalf("runtime health mismatch: %#v", health)
 	}
 	postJSON[map[string]bool](t, handler, "/_redevplugin/api/plugins/runtime/stop", map[string]any{})
@@ -4113,7 +4113,7 @@ func newHTTPTestHostWithOptions(t *testing.T, opts httpTestHostOptions) *host.Ho
 	}
 	runtimeManager := opts.runtimeManager
 	if runtimeManager == nil {
-		runtimeManager = &httpRecordingRuntimeManager{}
+		runtimeManager = newHTTPRecordingRuntimeManager(t)
 	}
 	releaseSourcePolicy := opts.releaseSourcePolicy
 	if releaseSourcePolicy == nil {
@@ -5215,6 +5215,32 @@ type httpRecordingRuntimeManager struct {
 	hostServices  runtimeclient.RuntimeHostServices
 }
 
+func newHTTPRecordingRuntimeManager(t testing.TB) *httpRecordingRuntimeManager {
+	t.Helper()
+	runtimeVersion, err := platformversion.ParseSemVer("0.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := runtimeclient.NewRuntimeDescriptor(
+		runtimeVersion,
+		runtimeclient.Target{OS: runtime.GOOS, Arch: runtime.GOARCH},
+		platformversion.RustIPCVersion,
+		platformversion.WASMABIVersion,
+		strings.Repeat("a", 64),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &httpRecordingRuntimeManager{health: runtimeclient.Health{
+		RuntimeInstanceID:   "runtime_http",
+		RuntimeGenerationID: "runtime_gen_http",
+		IPCChannelID:        "ipc_http",
+		ConnectionNonce:     "connection_nonce_http_1234567890",
+		Descriptor:          descriptor,
+		Ready:               true,
+	}}
+}
+
 type httpRecordingDiagnostics struct {
 	store  *observability.MemoryStore
 	events []observability.DiagnosticEvent
@@ -5454,13 +5480,27 @@ func (s *httpRecordingSecretStore) DeletePlugin(_ context.Context, pluginInstanc
 	return nil
 }
 
-func (s *httpRecordingRuntimeManager) Start(_ context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
+func (s *httpRecordingRuntimeManager) Preflight(ctx context.Context, target runtimeclient.Target) (runtimeclient.RuntimeDescriptor, error) {
+	if err := ctx.Err(); err != nil {
+		return runtimeclient.RuntimeDescriptor{}, err
+	}
+	descriptor := s.health.Descriptor
+	if descriptor.Version().String() == "" {
+		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorInvalid
+	}
+	if target != descriptor.Target() {
+		return runtimeclient.RuntimeDescriptor{}, runtimeclient.ErrRuntimeDescriptorMismatch
+	}
+	return descriptor, nil
+}
+
+func (s *httpRecordingRuntimeManager) Start(ctx context.Context, target runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
 	s.startedTarget = target
+	if _, err := s.Preflight(ctx, target); err != nil {
+		return runtimeclient.ManagerHealth{}, err
+	}
 	if s.startErr != nil {
 		return runtimeclient.ManagerHealth{}, s.startErr
-	}
-	if s.health == (runtimeclient.Health{}) {
-		s.health = runtimeclient.Health{RuntimeInstanceID: "runtime_http", RuntimeGenerationID: "runtime_gen_http", IPCChannelID: "ipc_http", ConnectionNonce: "connection_nonce_http_1234567890", Ready: true}
 	}
 	return s.managerHealth(), nil
 }
@@ -5484,7 +5524,11 @@ func (s *httpRecordingRuntimeManager) Health(context.Context) (runtimeclient.Man
 }
 
 func (s *httpRecordingRuntimeManager) managerHealth() runtimeclient.ManagerHealth {
-	return runtimeclient.ManagerHealth{Ready: s.health.Ready, Shards: []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: s.health}}}
+	return runtimeclient.ManagerHealth{
+		Ready:      s.health.Ready,
+		Descriptor: s.health.Descriptor,
+		Shards:     []runtimeclient.ShardHealth{{RuntimeShardID: "runtime_shard_00", Health: s.health}},
+	}
 }
 
 func (s *httpRecordingRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
@@ -5494,6 +5538,7 @@ func (s *httpRecordingRuntimeManager) BindPlugin(context.Context, string) (runti
 		RuntimeGenerationID: s.health.RuntimeGenerationID,
 		IPCChannelID:        s.health.IPCChannelID,
 		ConnectionNonce:     s.health.ConnectionNonce,
+		Descriptor:          s.health.Descriptor,
 	}, nil
 }
 

@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schema_version": { "const": "redevplugin.release_manifest.v3" },
-    "version": { "type": "string", "minLength": 1 },
+    "version": { "$ref": "#/$defs/semver" },
     "source_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "runtime_target": {
       "oneOf": [
@@ -36,13 +36,17 @@
     }
   },
   "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
     "npm_package": {
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "version", "path", "sha256", "integrity", "size"],
       "properties": {
         "name": { "const": "@floegence/redevplugin-ui" },
-        "version": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/semver" },
         "path": { "type": "string", "pattern": "^npm/floegence-redevplugin-ui-[A-Za-z0-9._+-]+\\.tgz$" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "integrity": { "type": "string", "pattern": "^sha512-[A-Za-z0-9+/]+={0,2}$" },
@@ -55,7 +59,7 @@
       "required": ["name", "version", "path", "sha256", "size"],
       "properties": {
         "name": { "const": "redevplugin-worker-sdk" },
-        "version": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/semver" },
         "path": { "type": "string", "pattern": "^sdk/redevplugin-worker-sdk-[A-Za-z0-9._+-]+\\.crate$" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "size": { "type": "integer", "minimum": 1 }

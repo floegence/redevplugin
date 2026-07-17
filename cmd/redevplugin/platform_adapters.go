@@ -6,7 +6,6 @@ import (
 
 	"github.com/floegence/redevplugin/pkg/capability"
 	"github.com/floegence/redevplugin/pkg/host"
-	"github.com/floegence/redevplugin/pkg/runtimeclient"
 )
 
 var (
@@ -60,38 +59,3 @@ func (commandCoreActionAdapter) ResolveCoreActionTarget(context.Context, capabil
 func (commandCoreActionAdapter) InvokeCoreAction(context.Context, capability.Invocation) (capability.Result, error) {
 	return capability.Result{}, errCommandCoreActionUnavailable
 }
-
-type commandInactiveRuntimeManager struct{}
-
-func (commandInactiveRuntimeManager) BindHostServices(services runtimeclient.RuntimeHostServices) error {
-	if services.StreamSink == nil {
-		return runtimeclient.ErrRuntimeHostServicesInvalid
-	}
-	return nil
-}
-
-func (commandInactiveRuntimeManager) Start(context.Context, runtimeclient.Target) (runtimeclient.ManagerHealth, error) {
-	return runtimeclient.ManagerHealth{}, runtimeclient.ErrRuntimeNotReady
-}
-
-func (commandInactiveRuntimeManager) Stop(context.Context) error {
-	return nil
-}
-
-func (commandInactiveRuntimeManager) Health(context.Context) (runtimeclient.ManagerHealth, error) {
-	return runtimeclient.ManagerHealth{Ready: false, Shards: []runtimeclient.ShardHealth{}}, nil
-}
-
-func (commandInactiveRuntimeManager) BindPlugin(context.Context, string) (runtimeclient.RuntimeBinding, error) {
-	return runtimeclient.RuntimeBinding{}, runtimeclient.ErrRuntimeNotReady
-}
-
-func (commandInactiveRuntimeManager) InvokeWorker(context.Context, runtimeclient.RuntimeBinding, runtimeclient.Lease, string, []byte) ([]byte, error) {
-	return nil, runtimeclient.ErrRuntimeNotReady
-}
-
-func (commandInactiveRuntimeManager) Revoke(_ context.Context, pluginInstanceID string, revokeEpoch uint64) (runtimeclient.RevokeResult, error) {
-	return runtimeclient.RevokeResult{PluginInstanceID: pluginInstanceID, RevokeEpoch: revokeEpoch}, nil
-}
-
-var _ runtimeclient.Manager = commandInactiveRuntimeManager{}

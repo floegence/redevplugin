@@ -735,6 +735,8 @@ func TestContractValidationRejectsNonCanonicalSemverAndStringSets(t *testing.T) 
 	}{
 		{name: "contract version whitespace", mutate: func(contract *Contract) { contract.ContractVersion = " 1.0.0" }},
 		{name: "capability version whitespace", mutate: func(contract *Contract) { contract.CapabilityVersion = "1.0.0 " }},
+		{name: "short contract version", mutate: func(contract *Contract) { contract.ContractVersion = "1.0" }},
+		{name: "short capability version", mutate: func(contract *Contract) { contract.CapabilityVersion = "1" }},
 		{name: "numeric prerelease leading zero", mutate: func(contract *Contract) { contract.ContractVersion = "1.0.0-01" }},
 		{name: "reserved client name", mutate: func(contract *Contract) { contract.ClientName = "class" }},
 		{name: "reserved client method", mutate: func(contract *Contract) { contract.Methods[0].ClientMethod = "constructor" }},
